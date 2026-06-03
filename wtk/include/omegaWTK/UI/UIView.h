@@ -359,6 +359,16 @@ public:
         ShadowColorA  = 1008
     };
 
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    /// path-node axis for `animatePathNode`. The integer values are
+    /// aligned with the legacy `ElementAnimationKeyPathNodeX/Y`
+    /// constants so a D6 Style apply path can `static_cast` directly
+    /// when consuming `Style::Entry::Kind::ElementPathAnimation`.
+    enum class PathNodeAxis : int {
+        X = ElementAnimationKeyPathNodeX,
+        Y = ElementAnimationKeyPathNodeY,
+    };
+
     /// Phase 4.4: register a scalar tween on one of this view's elements
     /// against the per-window `AnimationScheduler`. Returns immediately;
     /// the next outermost `FrameBuilder::beginFrame` ticks the scheduler,
@@ -373,6 +383,29 @@ public:
                         float durationSec,
                         SharedHandle<Composition::AnimationCurve> curve = nullptr);
 
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    /// register a per-axis tween on one node of an element's path
+    /// against the per-window `AnimationScheduler`. Backed by the
+    /// scheduler's `animatePropertyAt` so the side-table cell is
+    /// keyed by `(elementNodeId(tag), PropertyKey::PathNodeX/Y,
+    /// subIndex=nodeIndex)` — different node indices on the same
+    /// element do NOT collide. Same `(tag, axis, nodeIndex, to)`
+    /// short-circuit semantics as `animateElement`: no restart on
+    /// repeat. `durationSec <= 0` cancels the slot.
+    ///
+    /// The Paint-side reader lives in
+    /// `UIView::Impl::animatedPathNodeValue(tag, axis, nodeIndex)`;
+    /// today only D4's API-level surface lights this path up. D6
+    /// (Style Tier 2) wires `Style::Entry::Kind::ElementPathAnimation`
+    /// through here so authored path animations fire automatically.
+    void animatePathNode(const UIElementTag & tag,
+                         PathNodeAxis axis,
+                         int nodeIndex,
+                         float from,
+                         float to,
+                         float durationSec,
+                         SharedHandle<Composition::AnimationCurve> curve = nullptr);
+
     void update();
 
 private:
@@ -380,11 +413,12 @@ private:
     // order, flipping the window FrameBuilder's currentPhase_ around each.
     //  - tickAnimations(): Tick — drives the per-view animator pump.
     //  - resolveStyles():  Style — resolves `currentStyle` into the
-    //    per-element `ComputedStyle` cache (+ view-level resolved style).
+    //    per-property `styleTable_` (Tier D / D5, 2026-06-03 — pre-D5
+    //    this populated the per-element `ComputedStyle` aggregate cache).
     //  - arrange():        Layout — resolves element rects + z-order into
     //    the arranged cache.
     //  - paint(PaintContext&): Paint — pure build of the DisplayList from
-    //    arranged layout + ComputedStyle + animation values.
+    //    arranged layout + resolved-property cells + animation values.
     // Each reads/writes Impl-side caches; B3 gates none of them yet (they
     // rebuild every frame), B5 wires the cross-phase assertions.
     void tickAnimations();

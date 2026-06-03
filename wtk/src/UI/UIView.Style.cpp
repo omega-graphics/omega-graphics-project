@@ -298,39 +298,80 @@ StyleScope collectStyleScope(const StylePtr & style,const UIViewTag & viewTag){
 
 }
 
-const UIViewInternal::ComputedStyle &
-UIView::Impl::computedStyleFor(const UIElementTag & tag) const {
-    static const UIViewInternal::ComputedStyle kDefault {};
-    auto it = computedStyles_.find(tag);
-    return it != computedStyles_.end() ? it->second : kDefault;
+AnimationScheduler * UIView::Impl::activeAnimationScheduler() const {
+    auto * fb = AppWindow::activeFrameBuilder();
+    return (fb != nullptr) ? fb->animationScheduler() : nullptr;
 }
 
 void UIView::resolveStyles(){
-    // Tier B / B5: ComputedStyle writes happen only in the Style phase.
+    // Tier B / B5: cell writes happen only in the Style phase.
     if(auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr){
         fb->assertPhase(FramePhase::Style);
     }
-    // Tier B / B2: the Style phase. Resolve the view-level style and a
-    // ComputedStyle per element, keyed by element tag. Paint reads these
-    // caches and never recomputes resolution inline. Rebuilt every frame
-    // for now; B3 gates the rebuild on DirtyBit::Style.
-    impl_->resolvedViewStyle_ =
-        UIViewInternal::resolveViewStyle(impl_->currentStyle,impl_->tag);
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+    // resolved-style writes now flow into the per-property
+    // `styleTable_` keyed by `(NodeId, PropertyKey, subIndex)` —
+    // same shape the AnimationScheduler side-table uses. The
+    // aggregate `Resolved*Style` builders survive as transient
+    // resolvers; this method splits their fields into one cell each
+    // and lets Paint query through `resolved<T>(n, k, fallback)`.
+    // The pre-D5 `resolvedViewStyle_` + `computedStyles_` aggregate
+    // stores are deleted — nothing lives between resolveStyles() and
+    // paint() except the cell table.
+    impl_->styleTable_.clear();
 
-    impl_->computedStyles_.clear();
+    const auto viewNodeId = nodeId();
+    const auto resolvedView =
+        UIViewInternal::resolveViewStyle(impl_->currentStyle,impl_->tag);
+    if(resolvedView.backgroundColor){
+        impl_->styleTable_.set<Composition::Color>(
+            viewNodeId, PropertyKey::BackgroundColor, *resolvedView.backgroundColor);
+    }
+    // useBorder / borderColor / borderWidth are resolved into
+    // ResolvedViewStyle but never read in Paint today (the pre-D5
+    // aggregate didn't surface them either). They stay unresolved
+    // here — a future widget that wants a real border will write
+    // BorderColor / BorderWidth cells through this same path.
+
     for(const auto & spec : impl_->currentLayoutV2_.elements()){
-        UIViewInternal::ComputedStyle cs {};
-        cs.brush = UIViewInternal::resolveElementBrush(
+        const auto elementNodeId = impl_->ensureElementNodeId(spec.tag);
+
+        auto brush = UIViewInternal::resolveElementBrush(
             impl_->currentStyle,impl_->tag,spec.tag);
-        cs.effects = UIViewInternal::resolveElementEffectStyle(
+        if(brush != nullptr){
+            impl_->styleTable_.set<SharedHandle<Composition::Brush>>(
+                elementNodeId, PropertyKey::FillBrush, brush);
+        }
+
+        const auto resolvedEffects = UIViewInternal::resolveElementEffectStyle(
             impl_->currentStyle,impl_->tag,spec.tag);
-        // Text resolves against the element's text-style tag (which may
-        // alias a shared style element), then caches under the element's
-        // own tag so Paint can look it up by entry.tag.
+        if(resolvedEffects.dropShadow){
+            impl_->styleTable_.set<Composition::LayerEffect::DropShadowParams>(
+                elementNodeId, PropertyKey::DropShadow, *resolvedEffects.dropShadow);
+        }
+        // gaussianBlur / directionalBlur (and the three Transition
+        // blocks) resolve but no Paint reader pulls them in the
+        // current tree — same status as pre-D5 (the aggregate
+        // carried them too, equally unread). D6 / D7 will wire the
+        // readers as the Style cascade lights them up.
+
+        // Text resolves against the element's text-style tag (which
+        // may alias a shared style element), then writes cells under
+        // the element's OWN NodeId so Paint reads by element identity.
         const UIElementTag textStyleTag = spec.textStyleTag.value_or(spec.tag);
-        cs.text = UIViewInternal::resolveTextStyle(
+        const auto resolvedText = UIViewInternal::resolveTextStyle(
             impl_->currentStyle,impl_->tag,textStyleTag);
-        impl_->computedStyles_[spec.tag] = std::move(cs);
+        if(resolvedText.font != nullptr){
+            impl_->styleTable_.set<SharedHandle<Composition::Font>>(
+                elementNodeId, PropertyKey::TextFont, resolvedText.font);
+        }
+        impl_->styleTable_.set<Composition::Color>(
+            elementNodeId, PropertyKey::TextColor, resolvedText.color);
+        impl_->styleTable_.set<Composition::TextLayoutDescriptor>(
+            elementNodeId, PropertyKey::TextLayout, resolvedText.layout);
+        impl_->styleTable_.set<std::uint32_t>(
+            elementNodeId, PropertyKey::TextLineLimit,
+            static_cast<std::uint32_t>(resolvedText.lineLimit));
     }
 }
 

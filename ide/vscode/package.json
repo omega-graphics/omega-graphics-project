@@ -1,7 +1,7 @@
 {
-    "name": "omegasl-vscode",
-    "displayName": "OmegaSL",
-    "description": "Syntax highlighting and language tooling for the OmegaSL shader language.",
+    "name": "omega-graphics-vscode-extension",
+    "displayName": "Omega Graphics VSCode Extension",
+    "description": "The official Omega Graphics extension for VSCode",
     "version": "0.1.0",
     "author": "Omega Graphics",
     "license": "SEE LICENSE IN ../../LICENSE",
@@ -67,7 +67,8 @@
     "scripts": {
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
-        "vscode:prepublish": "npm run compile"
+        "vscode:prepublish": "npm run compile",
+        "publish": "vsce package"
     },
     "dependencies": {
         "vscode-languageclient": "^9.0.1"

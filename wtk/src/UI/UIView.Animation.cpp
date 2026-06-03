@@ -23,6 +23,32 @@ PropertyKey elementKeyToProperty(int key){
         static_cast<std::uint16_t>(key));
 }
 
+// Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+// path-node axis ints (ElementAnimationKeyPathNodeX/Y) → the built-in
+// `PathNodeX/Y` PropertyKey slots on the scheduler. Built-ins, NOT
+// the UserDefined range, so the (NodeId, PropertyKey, subIndex)
+// table cell aligns with the cross-property surface the scheduler
+// already publishes.
+PropertyKey pathNodeAxisToProperty(int axisKey){
+    return (axisKey == ElementAnimationKeyPathNodeY)
+        ? PropertyKey::PathNodeY
+        : PropertyKey::PathNodeX;
+}
+
+// Pack `(axisKey, nodeIndex)` into a single 64-bit slot for the
+// path-node to-match short-circuit map. `axisKey` is small (0–7) but
+// nodeIndex is unbounded and may legitimately be int-negative for an
+// "unset" sentinel — clamp the negative case to 0 so it lands in the
+// dead zone (no animation registers when nodeIndex < 0 anyway, per
+// the runtime guard in startOrUpdatePathNodeAnimation).
+std::uint64_t packPathNodeKey(int axisKey,int nodeIndex){
+    const auto axisBits = static_cast<std::uint64_t>(
+        static_cast<std::uint32_t>(axisKey));
+    const auto nodeBits = static_cast<std::uint64_t>(
+        static_cast<std::uint32_t>(nodeIndex < 0 ? 0 : nodeIndex));
+    return (axisBits << 32) | nodeBits;
+}
+
 AnimationScheduler * activeScheduler(){
     auto * fb = AppWindow::activeFrameBuilder();
     return (fb != nullptr) ? fb->animationScheduler() : nullptr;
@@ -173,6 +199,102 @@ void UIView::animateElement(const UIElementTag & tag,
                                   from, to, durationSec, curve);
 }
 
+// Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+// per-axis path-node tween. Mirrors `startOrUpdateAnimation` but
+// dispatches to `tweenPropertyAt` so the scheduler side-table cell
+// is keyed by `(node, PathNodeX/Y, subIndex=nodeIndex)` instead of
+// collapsing every node's X/Y onto a single cell. Maintains its own
+// to-match short-circuit via `pathNodeAnimationTargets_`, packed by
+// `(axisKey, nodeIndex)` so two different node indices on the same
+// element animate independently.
+void UIView::Impl::startOrUpdatePathNodeAnimation(const UIElementTag &tag,
+                                                  int axisKey,
+                                                  int nodeIndex,
+                                                  float from,
+                                                  float to,
+                                                  float durationSec,
+                                                  SharedHandle<Composition::AnimationCurve> curve){
+    if(!std::isfinite(from) || !std::isfinite(to)){
+        return;
+    }
+    if(nodeIndex < 0){
+        // Sentinel "no node" — caller hasn't fixed a target node yet.
+        // Drop on the floor (same shape as the scalar guard against
+        // non-finite values).
+        return;
+    }
+
+    auto * scheduler = activeScheduler();
+    if(scheduler == nullptr){
+        // No window scheduler reachable (matches the
+        // `startOrUpdateAnimation` and `View::applyLayoutDelta` bail
+        // paths in this same situation).
+        return;
+    }
+
+    const auto node = ensureElementNodeId(tag);
+    const auto propKey = pathNodeAxisToProperty(axisKey);
+    const auto subIndex = static_cast<std::uint32_t>(nodeIndex);
+    const auto packed = packPathNodeKey(axisKey, nodeIndex);
+
+    if(durationSec <= 0.f || std::fabs(to - from) <= 0.0001f){
+        // Cancel-equivalent: zero-duration tween completes inside the
+        // next tick — `AnimationScheduler::tick` treats `durNs == 0`
+        // as `finished = true`, which erases the side-table cell.
+        // Reads then fall through to the resolved style. Local target
+        // tracking is dropped so the next real call won't short-circuit.
+        auto tagIt = pathNodeAnimationTargets_.find(tag);
+        if(tagIt != pathNodeAnimationTargets_.end()){
+            tagIt->second.erase(packed);
+            if(tagIt->second.empty()){
+                pathNodeAnimationTargets_.erase(tagIt);
+            }
+        }
+        Composition::TimingOptions cancelTiming {};
+        cancelTiming.durationMs = 0;
+        scheduler->tweenPropertyAt<float>(node, propKey, subIndex,
+                                          to, to, cancelTiming,
+                                          Composition::AnimationCurve::Linear());
+        return;
+    }
+
+    auto & propertyMap = pathNodeAnimationTargets_[tag];
+    auto existing = propertyMap.find(packed);
+    if(existing != propertyMap.end() && std::fabs(existing->second - to) <= 0.0001f){
+        return;
+    }
+    propertyMap[packed] = to;
+
+    auto effectiveCurve = curve != nullptr ? curve : Composition::AnimationCurve::Linear();
+    Composition::TimingOptions timing {};
+    timing.durationMs = static_cast<std::uint32_t>(std::max(0.001f, durationSec) * 1000.f);
+
+    scheduler->tweenPropertyAt<float>(node, propKey, subIndex,
+                                      from, to, timing, effectiveCurve);
+
+    if(tag != kUIViewRootEffectTag){
+        markElementDirty(tag,false,false,true,false,false);
+    }
+    styleDirty = true;
+}
+
+void UIView::animatePathNode(const UIElementTag & tag,
+                             PathNodeAxis axis,
+                             int nodeIndex,
+                             float from,
+                             float to,
+                             float durationSec,
+                             SharedHandle<Composition::AnimationCurve> curve){
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    // path-node public entry — thin wrapper that forwards to the
+    // private `Impl::startOrUpdatePathNodeAnimation`. `axis` casts
+    // to its `int` peer (the legacy `ElementAnimationKeyPathNodeX/Y`
+    // constants, by construction of the enum class), so no remap is
+    // needed.
+    impl_->startOrUpdatePathNodeAnimation(tag, static_cast<int>(axis), nodeIndex,
+                                          from, to, durationSec, curve);
+}
+
 NodeId UIView::Impl::ensureElementNodeId(const UIElementTag & tag){
     auto it = elementNodeIds_.find(tag);
     if(it != elementNodeIds_.end()){
@@ -191,15 +313,12 @@ Core::Optional<NodeId> UIView::Impl::tryElementNodeId(const UIElementTag & tag) 
     return it->second;
 }
 
-bool UIView::Impl::advanceAnimations(){
-    // Phase 4.4 (Anim Tier C): the per-view tween pump is gone. The
-    // AnimationScheduler — ticked once per outermost frame from
-    // `FrameBuilder::beginFrame` — is the sole driver of every animated
-    // value reachable from `applyAnimated*` / `animatedValue`. This
-    // method is kept as a private symbol so the 4.8 sweep can delete it
-    // alongside the other dormant animation surfaces in one pass.
-    return false;
-}
+// Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+// `advanceAnimations` deleted. Phase 4.4 already retired its body
+// to a `return false;` stub, and no caller has reached it since —
+// `UIView.Update.cpp:114` already documents the symbol as dormant.
+// The deletion lands header + impl in the same sweep so an external
+// re-introduction would have to declare AND define.
 
 Core::Optional<float> UIView::Impl::animatedValue(const UIElementTag &tag,int key) const{
     // Phase 4.4 (Anim Tier C): read from the AnimationScheduler's side
@@ -217,6 +336,30 @@ Core::Optional<float> UIView::Impl::animatedValue(const UIElementTag &tag,int ke
         return {};
     }
     return scheduler->value<float>(*node, elementKeyToProperty(key));
+}
+
+Core::Optional<float> UIView::Impl::animatedPathNodeValue(const UIElementTag &tag,
+                                                          int axisKey,
+                                                          int nodeIndex) const{
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    // path-node reader mirroring `animatedValue` for the
+    // `(NodeId, PathNodeX/Y, subIndex=nodeIndex)` side-table cell.
+    // Untagged element, negative node index, or no live tween — fall
+    // through to `{}` and let Paint use the resolved-style fallback.
+    if(nodeIndex < 0){
+        return {};
+    }
+    auto * scheduler = activeScheduler();
+    if(scheduler == nullptr){
+        return {};
+    }
+    auto node = tryElementNodeId(tag);
+    if(!node){
+        return {};
+    }
+    return scheduler->value<float>(*node,
+                                   pathNodeAxisToProperty(axisKey),
+                                   static_cast<std::uint32_t>(nodeIndex));
 }
 
 // Phase 4.8: `applyAnimatedColor` / `applyAnimatedShape` deleted.

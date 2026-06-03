@@ -4,8 +4,8 @@
 |---|---|
 | Document | OmegaWTK Widget Markup Language Specification |
 | Status | **Normative — Draft 1** |
-| Version | 0.1.2 |
-| Date | 2026-05-31 |
+| Version | 0.1.3 |
+| Date | 2026-06-03 |
 | Audience | Compiler implementers, engine maintainers, WML authors |
 
 **Normative references** — implementers MUST be familiar with the
@@ -101,28 +101,44 @@ only the OmegaWTK types listed in [UIModel.rst](./UIModel.rst).
 
 ### 1.3 What WML Is and Is Not
 
-**WML is a look-only language.** It defines what a widget looks like,
-how it lays out, what state knobs it exposes, and which events it
-surfaces — never *what to do* when an event fires or *how to compute*
-a value. Behavior lives in the C++ widget subclass; WML names the
-C++ entry points but contains no executable bodies, no expressions
-beyond dotted-path state reads, and no scripting surface. This rule
-governs every other rule in this specification.
+**WML is a look-only language that attaches to an existing C++
+class.** It defines what a widget looks like, how it lays out, and
+which events it surfaces — never *what to do* when an event fires,
+*how to compute* a value, or *what state the widget holds*. The
+widget itself — its properties, its state, its signals, its
+handlers, its constructors, its member variables — is a hand-written
+`OmegaWTK::Widget` subclass authored entirely in C++. WML does not
+generate that class. WML compiles to a free function that, when
+called on an instance of the class, builds the visual tree and wires
+bindings, delegates, and observers against members the class
+already exposes.
+
+The C++ class declares its WML-visible surface explicitly with a
+small family of macros (`OMEGAWTK_WML_WIDGET`,
+`OMEGAWTK_WML_PROPERTY`, `OMEGAWTK_WML_STATE`,
+`OMEGAWTK_WML_SIGNAL`, `OMEGAWTK_WML_HANDLER`). A build-time
+**header extractor** tool scans the project's C++ headers for these
+macros and emits a `.wmlh` declaration header per annotated class.
+The WML compiler reads `.wmlh` files to validate tag references,
+attribute usage, handler names, and binding targets. See §7 for the
+macro surface and §5.7 for the build pipeline.
 
 WML is, in summary:
 
 ```text
-HTML-like markup whose tag names ARE the OmegaWTK C++ class names
+HTML-like markup whose tag names ARE the names of C++ Widget
+subclasses authored by the engine or the project
 + CSS styling (Tier-1 selectors only)
 + four-tier events that compile to ViewDelegate /
   WidgetInteractionDelegate / WidgetObserver / NativeEventProcessor
-  subclasses; the handler string is always a bare C++ method name
-+ dotted-path data bindings (no expressions, no operators)
-+ <property> / <state> / <signal> declarations that compile to
-  setters, state bits, and emit() methods on the C++ subclass
+  subclasses; the handler string is always the bare name of an
+  OMEGAWTK_WML_HANDLER-annotated C++ method
++ dotted-path data bindings against OMEGAWTK_WML_PROPERTY-declared
+  members (no expressions, no operators)
 + theme variables (ThemeVars)
 + state-driven styling (engine's InteractiveState pseudo-classes
-  + :state(name) custom flags)
+  + :state(name) custom flags backed by OMEGAWTK_WML_STATE-declared
+  bits on the C++ class)
 + animations (transitions + keyframes, both driven by
   the per-window AnimationScheduler)
 ```
@@ -137,11 +153,18 @@ WML is **not**:
   the C++ model (`{user.name}`, `{player.health}`). Arithmetic,
   ternaries, function calls, and operators MUST NOT be parsed
   inside `{}`. If a derived value is needed, it MUST be exposed
-  as a property or computed accessor on the C++ widget class.
+  as a property or computed accessor on the C++ widget class via
+  the macros in §7.
 - **An event-handler language.** `on:click="save"` names a C++
-  method. The handler string MUST be a bare identifier. Call-form
+  method that has been annotated with `OMEGAWTK_WML_HANDLER`.
+  The handler string MUST be a bare identifier. Call-form
   expressions such as `on:click="save(item.id)"` MUST be rejected
   by the compiler.
+- **A class-generation language.** A `<widget name="X">` block
+  does not synthesize a C++ class named `X`. The class `X` MUST
+  already exist in the project's C++ sources. If no class `X`
+  with `OMEGAWTK_WML_WIDGET(X)` is visible to the build, the
+  WML compiler MUST report an `unbound widget` error.
 
 ---
 
@@ -194,9 +217,16 @@ For the purposes of this document, the following terms apply.
 **Application** — an instance of `OmegaWTK::AppInst`. Owns the
 process-level `ThemeVars` registry and the global stylesheet stack.
 
+**Author class** — the hand-written `OmegaWTK::Widget` (or
+`OmegaWTK::App`) subclass that a `<widget>` / `<app>` block in
+WML attaches its look to. The author class is the source of
+truth for the widget's properties, states, signals, handlers,
+member variables, and constructors. WML does not generate it.
+
 **Behavior** — executable logic that mutates state, computes
 derived values, or decides which signal to fire. Behavior MUST
-NOT be expressed in WML; it MUST be expressed in C++.
+NOT be expressed in WML; it MUST be expressed in C++ on the
+author class.
 
 **Binding** — a one-way or two-way reference from a WML attribute
 to a property on the enclosing widget's C++ model. Syntax: `{path}`
@@ -213,23 +243,35 @@ widget instance application-globally. Matchable in selectors as
 tree; see §5.6.1.
 
 **Compiler** — a conforming WML compiler. Reads `.wml`, `.wmlh`,
-`.wmls`, and `.wtheme` source files and emits C++ source that,
-linked against OmegaWTK, instantiates the widgets, styles, and
-event wiring the source describes.
+`.wmls`, and `.wtheme` source files and emits C++ source — a
+**look function** per `<widget>` / `<app>` block, plus supporting
+delegate / observer subclasses — that, linked against OmegaWTK and
+against the project's hand-written author classes, builds the
+widget visuals and wires bindings + events the source describes.
+
+**Header Extractor** — a build-time tool, separate from the WML
+compiler, that scans the project's C++ header files for
+`OMEGAWTK_WML_*` macro invocations and emits one `.wmlh` file per
+annotated author class. The extractor is the single source of
+truth for `.wmlh` files in the build; WML authors and the WML
+compiler MUST NOT hand-edit or hand-author `.wmlh` files. See
+§5.7.
 
 **ComputedStyle** — the per-`UIView` cache that holds the resolved
 visual-property values for one frame. Populated by the
 `StyleResolver` during the Style phase of the frame lifecycle.
 Defined by the engine; see [UIModel.rst](./UIModel.rst).
 
-**Custom state** — a named bit on a widget's state bitset declared
-with `<state name="X">`. Matchable in selectors as `:state(X)`.
-See §12.2.
+**Custom state** — a named bit on the author class's state bitset
+declared in C++ with `OMEGAWTK_WML_STATE(X)`. Matchable in
+selectors as `:state(X)`. See §12.2.
 
-**Declaration header (`.wmlh`)** — a file that declares a widget's
-public surface (properties, states, signals, slots, parent kind)
-without defining its body. Authoritative for built-in widgets;
-auto-generated by the compiler for user widgets. See §5.4.
+**Declaration header (`.wmlh`)** — a build-artifact file that
+declares an author class's WML-visible surface (properties,
+states, signals, slots, parent kind) without defining its body.
+Produced exclusively by the Header Extractor (§5.7) from C++
+headers; authoritative for both built-in and user widgets;
+read-only to authors. See §5.4.
 
 **DirtyBit** — one of `Style`, `Layout`, `Content`, `Paint` on a
 `View`. Set by binding updates, state changes, and explicit
@@ -260,30 +302,47 @@ delegate when the event fires.
 `Button.primary` matches kind `Button` AND class `primary`. The
 kind of a widget is the C++ class name of its `Widget` subclass.
 
+**Look** — the visual and structural surface a `<widget>` block
+produces: its element tree, its style rules, its layout, its
+state-driven appearance, its animations. WML defines the look;
+the author class consumes it via `OMEGAWTK_WML_WIDGET` (§7.1).
+
+**Look extension** — the use of `extends-look="X"` on a
+`<widget>` block to layer additional styles and slot fills on
+top of an existing widget's look without restating its element
+tree. See §16. Look extension is a WML construct; it is
+independent of C++ inheritance.
+
+**Look function** — the free function the WML compiler emits for
+each `<widget>` / `<app>` block, conventionally named
+`applyXLook(X &)`. Called by the author class (typically from
+the `rebuildContent()` body generated by `OMEGAWTK_WML_WIDGET`)
+to build the widget's visual tree and wire bindings + delegates.
+
 **Layout properties** — the subset of CSS-like properties that
 control structural geometry (`width`, `height`, `margin`,
 `padding`, `gap`, `flex-*`, `layout`, `dock`, etc.). Compile to
 per-node `LayoutStyle` field assignments, never to `StyleRule`s.
 See §8.2.
 
-**Look** — the visual and structural surface of a widget: its
-element tree, its style rules, its layout properties, its theme
-variables, its state-driven appearance, its animations. WML
-defines look.
-
-**Property (widget property)** — a value declared with
-`<property name="X" type="T">` on a widget. Compiles to a C++
-constructor parameter and a getter/setter pair. Bindings may
-read property values. See §7.1.
+**Property (widget property)** — a value declared on the author
+class with `OMEGAWTK_WML_PROPERTY(name, T)`. The macro generates
+a private member, a getter, and a setter; the Header Extractor
+records the property in the class's `.wmlh`. Bindings (§10)
+may read property values; two-way bindings (§10.3) write through
+the generated setter. See §7.2.
 
 **Selector** — a Tier-1 compound selector — kind, id, classes, and
 pseudo-classes ANDed together. WML rejects Tier-2 combinators
 (§8.3.2).
 
-**Signal** — a typed outbound event declared with
-`<signal name="X" payload="T">`. Fires from the widget's C++ class
-via the compiler-generated `emit_X(const T &)` method. Parents
-subscribe via `on:X="handler"`. See §7.3 and §11.7.
+**Signal** — a typed outbound event declared on the author class
+with `OMEGAWTK_WML_SIGNAL(name)` or `OMEGAWTK_WML_SIGNAL_T(name,
+T)`. The macro generates an `emit_name(...)` method and an
+internal slot list; the Header Extractor records the signal in
+the class's `.wmlh`. Parents subscribe via `on:name="handler"`.
+The author class invokes `emit_name(...)` from C++; markup MUST
+NOT emit signals. See §7.4 and §11.7.
 
 **State (built-in)** — one of the four `InteractiveState` values
 tracked by `WidgetInteractionDelegate`: `Hovered`, `Pressed`,
@@ -321,8 +380,10 @@ See §11.
 Owns a `LayerTree` and a `ViewDelegate`. A widget's root view is
 always a `View` (or a subclass).
 
-**Widget** — an `OmegaWTK::Widget` subclass that builds a view
-subtree. The WML unit of authoring.
+**Widget** — an `OmegaWTK::Widget` subclass authored in C++. Each
+widget kind that participates in WML uses `OMEGAWTK_WML_WIDGET`
+(§7.1) to bind to a `.wml` file of the matching name. The author
+class — never WML — is the unit of widget identity.
 
 **Widget kind** — see *Kind*.
 
@@ -336,24 +397,25 @@ listed output and MUST NOT introduce parallel concepts.
 
 | WML construct | Engine output |
 |---|---|
-| `<widget name="X">` | A `Widget` subclass named `X` whose `rebuildContent()` populates a view subtree at construction. |
+| `<widget name="X">` | A free function `applyXLook(X &)` emitted into a generated `.cpp`, called from the author class's `rebuildContent()` (typically generated by `OMEGAWTK_WML_WIDGET(X)`) to build the visual subtree. |
+| `<app name="X">` | A free function `applyXLook(X &)` of the same shape, where `X` is the author's `OmegaWTK::App` subclass. |
+| `<widget name="X" extends-look="Y">` | A look function `applyXLook(X &)` whose first action is a call to `applyYLook(static_cast<Y&>(x))`, followed by the extension's additional styles + slot fills (§16). |
 | Child element tag `<Y …>` where `Y` is a built-in tag (§6) | An instantiation of `OmegaWTK::Y`. |
-| Child element tag `<Z …>` where `Z` is a user-authored widget | An instantiation of the user's `Z` widget. |
+| Child element tag `<Z …>` where `Z` is a user-authored widget | An instantiation of the user's `Z` author class. |
 | Inline attributes (`width="72"`, `color="red"`) | Per-node `LayoutStyle` (structural) or `Style::Entry` (visual) field assignments. |
+| Attribute matching an `OMEGAWTK_WML_PROPERTY` on the target class | A default-constructed instance, followed by a call to the generated setter (`target->setX(value)`). |
 | `<style>` block — visual rules | `StyleRule`s registered in the widget kind's `StyleSheet` (§17). |
 | `<style>` block — layout properties | Per-node `LayoutStyle` field assignments at instantiation; MUST NOT compile to `StyleRule`s. |
 | `<style>` block — `transition: …` | `LayoutTransitionSpec` or animated `Style::Entry` records consumed by the per-window `AnimationScheduler` via `StyleResolver`. |
 | `<style>` block — `@keyframes` / `animation: …` | `AnimationScheduler` tracks emitted at element construction or state-transition time. |
 | `:hover` / `:pressed` / `:focused` / `:disabled` | The four `InteractiveState` bits tracked by `WidgetInteractionDelegate`. |
-| `:state(name)` | A bit on the widget's custom-state bitset. |
+| `:state(name)` | A bit on the author class's custom-state bitset, declared in C++ via `OMEGAWTK_WML_STATE(name)`. |
 | `var(--name)` | `ThemeVars` lookup at cascade time against `Application::themeVars()`. |
 | `<theme>` block / `.wtheme` file | A `ThemeVars` map registered on `Application`. |
-| `{binding}` | A subscription to the named C++ property; on change, set the appropriate `DirtyBit`s and update the bound attribute. |
-| `bind:attr="path"` | The above, plus a writeback that invokes the C++ setter when the input widget reports a change. |
-| `on:<event>="handler"` | A compiler-generated `ViewDelegate` / `WidgetInteractionDelegate` / `WidgetObserver` / `NativeEventProcessor` subclass that invokes `handler` on the enclosing widget. See §11. |
-| `<property name="X" type="T">` | A constructor parameter on the widget's generated class, plus `T getX()` / `void setX(const T &)`. |
-| `<state name="X">` | A bit on the widget's custom-state bitset, plus `bool isX()` / `void setX(bool)`. |
-| `<signal name="X" payload="T">` | A `void emit_X(const T &)` method plus an internal slot list. |
+| `{path}` | A subscription on the named `OMEGAWTK_WML_PROPERTY` path; on change, set the appropriate `DirtyBit`s and update the bound attribute. |
+| `bind:attr="path"` | The above, plus a writeback that invokes the property's C++ setter when the input widget reports a change. |
+| `on:<event>="handler"` | A compiler-generated `ViewDelegate` / `WidgetInteractionDelegate` / `WidgetObserver` / `NativeEventProcessor` subclass that invokes `handler` (which MUST be an `OMEGAWTK_WML_HANDLER`-annotated method on the enclosing widget's author class) when the event fires. See §11. |
+| `<slot name="X" />` placeholder | A hole in the look-function output that the look-function for an extending widget (§16) or a caller-site `<template slot="X">` fills. |
 
 ### 4.1 PascalCase tag rule
 
@@ -379,31 +441,41 @@ extension as WML source.
 
 | Extension | Contents | Role |
 |---|---|---|
-| `.wml` | Widget markup file. Contains one `<widget name="…">` definition or one `<app name="…">` definition. | Defines a widget or app: surface + body. |
-| `.wmlh` | Widget declaration header. Contains one `<widget name="…">` declaration with no body. | Declares a widget's surface so other `.wml` files can reference its tag, attributes, signals, and slots. See §5.4. |
+| `.wml` | Widget markup file. Contains one `<widget name="…">` definition or one `<app name="…">` definition. Defines the **look** that attaches to a same-named C++ author class. | Defines a widget's or app's visual surface. |
+| `.wmlh` | Widget declaration header. Contains one `<widget name="…">` declaration with no body. **Produced exclusively by the Header Extractor (§5.7) from a C++ header that uses `OMEGAWTK_WML_*` macros.** Read by the WML compiler to validate tag references, attributes, handler names, and binding targets. | Build-artifact contract between the C++ author class and the WML compiler. See §5.4. |
 | `.wmls` | Standalone stylesheet. Contains CSS rules at file scope. | Cross-cutting styling for existing widget kinds. Loads into `Application::stylesheetStack()`. See §5.5. |
 | `.wtheme` | Theme definition file. Contains a single `@theme` block. | Compiles to a `ThemeVars` map registered on `Application`. |
 
-There is no script-file extension. Behavior MUST live in the
-matching C++ source file (e.g. `UserCard.cpp` next to
-`UserCard.wml`), never in a separate WML-specific behavior file.
+There is no script-file extension. Behavior lives in the C++
+author class (typically `UserCard.h` / `UserCard.cpp` next to
+`UserCard.wml`). WML never embeds behavior, and there is no
+WML-specific behavior file.
 
 ### 5.2 Example project layout
 
-*Informative.* A typical project organizes WML sources as:
+*Informative.* A typical project organizes WML sources alongside
+the C++ author classes they attach to:
 
 ```text
 ui/
   widgets/
-    UserCard.wml             # markup (look)
-    UserCard.cpp             # behavior (handlers, computed properties, emit_X())
-    UserCard.wmlh            # auto-generated by the compiler — DO NOT EDIT
-    ProductCard.wml
+    UserCard.h               # author class — declares the surface with OMEGAWTK_WML_*
+    UserCard.cpp             # author class — handler bodies, signal emission, member methods
+    UserCard.wml             # look (attaches to UserCard)
+    UserCard.wmlh            # build artifact, emitted by the Header Extractor — DO NOT EDIT
+    UserCard.wml.gen.cpp     # build artifact, emitted by the WML compiler — DO NOT EDIT
+
+    ProductCard.h
     ProductCard.cpp
-    ProductCard.wmlh         # auto-generated
-    PrimaryButton.wml
+    ProductCard.wml
+    ProductCard.wmlh         # extractor output
+    ProductCard.wml.gen.cpp  # WML compiler output
+
+    PrimaryButton.h
     PrimaryButton.cpp
-    PrimaryButton.wmlh       # auto-generated
+    PrimaryButton.wml
+    PrimaryButton.wmlh
+    PrimaryButton.wml.gen.cpp
 
   themes/
     DarkTheme.wtheme
@@ -414,30 +486,41 @@ ui/
     forms.wmls
 ```
 
-The compiler:
+Three tools collaborate to produce a buildable target:
 
-- Emits a `.cpp`/`.h` pair per `.wml` source for the generated
-  `Widget` subclass; the human-authored `.cpp` next to the `.wml`
-  is included from the generated header to implement the declared
-  handlers, computed properties, and signal-emission sites.
-- Emits a `.wmlh` per `.wml` source declaring the widget's public
-  surface, so other `.wml` files in the project can reference the
-  widget without seeing its body.
-- Reads SDK-shipped `.wmlh` files for every built-in widget (see
-  §5.4.3) before resolving any tag in a user `.wml`.
+- **The Header Extractor** scans `*.h` for `OMEGAWTK_WML_*` macro
+  invocations and emits one `.wmlh` per annotated class. Inputs:
+  C++ headers. Outputs: `.wmlh` files. See §5.7.
+- **The WML compiler** reads `.wml` source plus the `.wmlh` files
+  produced by the extractor (plus SDK-shipped `.wmlh` for built-in
+  widgets) and emits one `<source>.wml.gen.cpp` per `.wml`
+  containing the look function `applyXLook(X &)` and any
+  associated delegate / observer subclasses.
+- **The C++ compiler** compiles the author's `.cpp` files together
+  with each `<source>.wml.gen.cpp` to produce the final target.
+
+The WML compiler does NOT emit a `.h` or a class declaration. The
+class is the author's. The WML compiler only emits the body of the
+look function, plus the delegate types it needs as friend-accessed
+helpers.
 
 ### 5.3 Top-level WML structure
 
 A `.wml` file MUST contain exactly one top-level element, which
-MUST be either `<widget name="…">` (a reusable widget) or `<app
-name="…">` (an application root). The compiler MUST reject files
-that contain neither, both, or multiple of either.
+MUST be either `<widget name="…">` (a reusable widget look) or
+`<app name="…">` (an application root look). The compiler MUST
+reject files that contain neither, both, or multiple of either.
+
+The `name` attribute is the binding to the C++ author class:
+`<widget name="UserCard">` MUST attach to a class
+`OmegaWTK::UserCard` (or the project's namespace equivalent) that
+declares `OMEGAWTK_WML_WIDGET(UserCard)` in its body (§7.1). The
+WML compiler MUST resolve the binding via the `.wmlh` produced by
+the Header Extractor; if no matching `.wmlh` exists, the compiler
+MUST report an `unbound widget` error.
 
 ```html
 <widget name="UserCard">
-  <property name="user" type="User" />
-  <signal name="messageRequested" payload="UserId" />
-
   <style> … </style>
 
   <!-- body: a single root element -->
@@ -447,33 +530,45 @@ that contain neither, both, or multiple of either.
 
 A `<widget>` block MUST contain:
 
-- Zero or more `<property>` declarations (§7.1).
-- Zero or more `<state>` declarations (§7.2).
-- Zero or more `<signal>` declarations (§7.3).
 - Zero or one `<style>` blocks (§8).
+- Zero or more `<slot>` placeholders (§7.5), authored inline in
+  the body where the slot should appear.
 - Exactly one body root element (any built-in or custom widget tag).
 
-The order of `<property>`, `<state>`, `<signal>`, and `<style>`
-declarations relative to one another is not significant. They MUST
-appear before the body root.
+A `<widget>` block MUST NOT contain `<property>`, `<state>`, or
+`<signal>` elements; those are declared in C++ on the author class
+via the macros in §7. The compiler MUST reject these elements with
+a `surface declaration not allowed in WML — declare on the author
+class` error.
 
 ### 5.4 Widget declaration headers (`.wmlh`)
 
-A `.wmlh` file declares a widget's **public surface** — its
-properties, states, signals, slots, and parent kind — without
-defining its body. `.wmlh` is to `.wml` as a C++ `.h` is to a `.cpp`:
-the format that lets one translation unit know enough about a
-widget defined elsewhere to use its tag.
+A `.wmlh` file declares an author class's **WML-visible surface**
+— its properties, states, signals, slots, and parent kind. It is
+a **build artifact produced exclusively by the Header Extractor
+(§5.7)** from the author's C++ header. `.wmlh` files MUST NOT be
+hand-authored by WML authors and MUST NOT be emitted by the WML
+compiler.
 
-A conforming compiler MUST resolve every PascalCase tag against a
-known declaration before emitting code. The set of known
-declarations is the union of:
+`.wmlh` exists to bridge two tools that read different languages:
+the WML compiler reads markup but cannot parse C++; the Header
+Extractor reads C++ headers via a narrow macro-recognition pass
+and emits `.wmlh` as a stable, parseable interface. The WML
+compiler reads `.wmlh` to validate tag references, attribute
+usage, event handler signatures, and binding targets.
 
-1. SDK-shipped `.wmlh` files for built-in widgets (§5.4.3).
-2. Compiler-emitted `.wmlh` files for user widgets in the project
-   (§5.4.2).
-3. The `<widget name="…">` declaration in the file currently being
-   compiled.
+A conforming WML compiler MUST resolve every PascalCase tag
+against a known `.wmlh` declaration before emitting code. The set
+of known declarations is the union of:
+
+1. SDK-shipped `.wmlh` files for built-in widgets (§5.4.2).
+2. Extractor-emitted `.wmlh` files for the project's author
+   classes (§5.4.3).
+
+The `<widget name="…">` element in a `.wml` file is **not** a
+declaration; it is a binding to a class declared elsewhere in
+C++. A `.wml` file's own widget name MUST resolve to a `.wmlh`
+produced by the extractor from the matching C++ author class.
 
 #### 5.4.1 Format
 
@@ -485,18 +580,18 @@ A `<widget>` element inside a `.wmlh` file MAY contain:
 
 | Element | Notes |
 |---|---|
-| `extends="X"` attribute | The parent kind (a widget or `Widget` itself). Optional; default is `Widget`. |
-| `<property>` | Same syntax and semantics as §7.1. |
-| `<state>` | Same syntax and semantics as §7.2. |
-| `<signal>` | Same syntax and semantics as §7.3. |
-| `<slot>` | Same syntax and semantics as §7.4, but with no body. |
+| `extends="X"` attribute | The C++ parent class (a widget kind or `Widget` itself). Optional; default is `Widget`. Reflects the author class's actual base class. |
+| `<property name="X" type="T" default="…" />` | One per `OMEGAWTK_WML_PROPERTY` invocation on the author class. |
+| `<state name="X" />` | One per `OMEGAWTK_WML_STATE` invocation. |
+| `<signal name="X" payload="T" />` | One per `OMEGAWTK_WML_SIGNAL_T` (or `OMEGAWTK_WML_SIGNAL` without payload) invocation. |
+| `<handler name="X" payload="T" />` | One per `OMEGAWTK_WML_HANDLER` annotation, recording the C++ method's name and parameter type. |
+| `<slot name="X" />` | Reserved; slot placeholders live in the `.wml` (§7.5), not on the author class. Present in `.wmlh` only when an explicit slot-binding macro lands in a future revision. |
 
-The compiler MUST reject any other content inside a `.wmlh`
-`<widget>` element. In particular, `<style>` blocks, body root
-elements, and `on:` attributes are forbidden — those are
-definitions, not declarations.
+The WML compiler MUST reject any other content inside a `.wmlh`
+`<widget>` element.
 
-Example — `Label.wmlh`:
+Example — `Label.wmlh` (extracted from the engine's
+`include/omegaWTK/Widgets/Primatives.h`):
 
 ```html
 <widget name="Label" extends="Widget">
@@ -515,55 +610,56 @@ Example — `Button.wmlh`:
 <widget name="Button" extends="Container">
   <!-- The current C++ Button is a Container subclass with no
        additional properties. The .wmlh grows as the C++ class
-       grows; it MUST reflect what the C++ actually exposes. -->
+       grows. -->
 </widget>
 ```
 
-#### 5.4.2 Compiler-emitted `.wmlh` for user widgets
+#### 5.4.2 SDK-shipped `.wmlh` for built-in widgets
 
-When the compiler compiles a `.wml` file `W.wml`, it MUST emit a
-matching `W.wmlh` alongside the generated C++. The emitted `.wmlh`:
+The OmegaWTK SDK MUST ship one `.wmlh` per built-in widget kind
+listed in §6. These are produced once at engine-build time by
+running the Header Extractor over the engine's own headers (which
+themselves use the `OMEGAWTK_WML_*` macros to declare their
+WML-visible surface).
 
-- MUST contain a single `<widget name="W" extends="…">` element.
-- MUST list every `<property>`, `<state>`, `<signal>`, and
-  `<slot>` declared in `W.wml`, with identical names, types,
-  payloads, and defaults.
+A conforming WML compiler MUST locate the SDK `.wmlh` directory
+before compiling any user `.wml` file. The location is
+implementation-defined but SHOULD be a directory named `wmlh/`
+under the SDK install prefix.
+
+If a built-in widget's C++ class gains or loses a property in a
+later release of OmegaWTK, the next extractor run regenerates the
+corresponding `.wmlh` automatically — the engine source is the
+single source of truth.
+
+#### 5.4.3 Extractor-emitted `.wmlh` for project author classes
+
+The Header Extractor (§5.7) MUST emit one `.wmlh` per author class
+in the project that declares `OMEGAWTK_WML_WIDGET(X)`. The emitted
+`.wmlh`:
+
+- MUST contain a single `<widget name="X" extends="…">` element
+  whose `extends` reflects the author class's actual immediate
+  base class.
+- MUST list every `OMEGAWTK_WML_PROPERTY`, `OMEGAWTK_WML_STATE`,
+  `OMEGAWTK_WML_SIGNAL`, and `OMEGAWTK_WML_HANDLER` invocation
+  on the author class, with identical names, types, payloads,
+  and defaults.
 - MUST NOT contain a body root, a `<style>` block, or any other
   content.
 
-The emitted `.wmlh` is a build artifact. Authors SHOULD NOT
-hand-edit it; the source of truth for a user widget's surface is
-its `.wml` file.
-
-#### 5.4.3 SDK-shipped `.wmlh` for built-in widgets
-
-The OmegaWTK SDK MUST ship one `.wmlh` per built-in widget kind
-listed in §6. These headers are the authoritative declaration of
-each built-in widget's surface: they are the source of truth that
-the compiler uses to validate attribute usage, event handler
-signatures, and binding targets when a user `.wml` references a
-built-in tag.
-
-A conforming compiler MUST locate the SDK `.wmlh` directory before
-compiling any user `.wml` file. The location is implementation-
-defined but SHOULD be a directory named `wmlh/` under the SDK
-install prefix.
-
-If a built-in widget's C++ class gains or loses a property in a
-later release of OmegaWTK, the corresponding `.wmlh` MUST be
-updated in lockstep. The `.wmlh` is the API contract for WML
-authors; the C++ header is the contract for C++ callers; the two
-MUST agree.
+Authors MUST NOT hand-edit extractor-emitted `.wmlh` files. The
+source of truth for an author class's WML surface is the C++
+header, not the `.wmlh`.
 
 #### 5.4.4 Include path resolution
 
-The compiler MUST resolve a tag `<X>` to a `.wmlh` declaration by
-searching:
+The WML compiler MUST resolve a tag `<X>` to a `.wmlh` declaration
+by searching:
 
-1. The current translation unit (the `.wml` being compiled).
-2. The set of user `.wmlh` files in the project's WML include
-   path.
-3. The SDK `.wmlh` directory.
+1. The set of project `.wmlh` files in the WML include path
+   (extractor output for the current build).
+2. The SDK `.wmlh` directory.
 
 The first match wins. The compiler MUST report a
 `reserved tag, C++ widget not yet available` error for tags listed
@@ -781,9 +877,10 @@ means:
   `<TextInput id="username">`) MAY use ID literals freely.
 
 Authors who need per-instance identification of internal elements
-in a multi-instance widget MUST pass the identifier in via a
-`<property>` and bind it: `id="{props.uniqueId}"`. The runtime then
-sees distinct IDs per instance.
+in a multi-instance widget MUST expose the identifier as a property
+on the author class via `OMEGAWTK_WML_PROPERTY(uniqueId, …)`
+(§7.2) and bind it: `id="{uniqueId}"`. The runtime then sees
+distinct IDs per instance.
 
 #### 5.6.4 IDs on custom widget instantiations
 
@@ -802,6 +899,87 @@ ID applies to the **root view** of the widget instance:
 
 The selector `#featured-user` matches the root view of the
 `UserCard` instance, not any of its internal child widgets.
+
+### 5.7 Build pipeline
+
+WML's authoring model involves three build-time tools, each with
+a narrow, well-defined responsibility. A conforming OmegaWTK build
+system MUST invoke them in this order:
+
+```text
+   project C++ headers (*.h)
+   with OMEGAWTK_WML_* macros
+            │
+            ▼
+   ┌──────────────────────┐
+   │   Header Extractor   │   reads C++, recognizes the macros,
+   │   (§5.7.1)           │   emits one .wmlh per annotated class
+   └──────────────────────┘
+            │
+            ▼
+   project *.wmlh (build artifacts)  +  SDK-shipped *.wmlh
+            │                                    │
+            └─────────────┬──────────────────────┘
+                          ▼
+        project *.wml (look definitions)
+                          │
+                          ▼
+        ┌────────────────────────────────────┐
+        │           WML Compiler             │   reads .wml + .wmlh,
+        │                                    │   emits one .wml.gen.cpp
+        └────────────────────────────────────┘   per .wml containing
+                          │                      applyXLook(X &) and
+                          ▼                      its delegate types.
+        project *.wml.gen.cpp (build artifacts)
+                          │
+            ┌─────────────┴──────────────┐
+            ▼                            ▼
+   author *.cpp                  *.wml.gen.cpp
+            │                            │
+            └─────────────┬──────────────┘
+                          ▼
+                  ┌───────────────┐
+                  │ C++ Compiler  │
+                  └───────────────┘
+                          │
+                          ▼
+                  linked target
+```
+
+#### 5.7.1 Header Extractor requirements
+
+The Header Extractor is a separate executable from the WML
+compiler. A conforming extractor MUST:
+
+1. Accept a set of C++ header files as input.
+2. Recognize the `OMEGAWTK_WML_WIDGET`, `OMEGAWTK_WML_PROPERTY`,
+   `OMEGAWTK_WML_STATE`, `OMEGAWTK_WML_SIGNAL`,
+   `OMEGAWTK_WML_SIGNAL_T`, and `OMEGAWTK_WML_HANDLER` macros
+   (§7) without requiring a full C++ parse. Lexical recognition
+   sufficient to identify these macros, their arguments, and the
+   class containing them is sufficient.
+3. Emit exactly one `.wmlh` per `OMEGAWTK_WML_WIDGET(X)`
+   invocation found, named `X.wmlh` and placed in the build
+   system's designated WML include path.
+4. Report an error if two distinct classes in the project both
+   declare `OMEGAWTK_WML_WIDGET` with the same `X`.
+5. Report an error if `OMEGAWTK_WML_PROPERTY` / `_STATE` /
+   `_SIGNAL` / `_HANDLER` invocations appear outside a class body
+   that contains `OMEGAWTK_WML_WIDGET`.
+
+The extractor MAY emit additional diagnostics. The extractor MUST
+NOT emit C++ source code or modify the author's headers.
+
+#### 5.7.2 WML compiler dependency order
+
+The WML compiler MUST NOT read `.wml` files until the extractor
+has emitted the project's `.wmlh` files. The WML compiler MAY
+read SDK-shipped `.wmlh` files at any time.
+
+If the C++ header for class `X` changes (a property added, a
+handler renamed), the build system MUST re-run the extractor on
+that header before re-running the WML compiler on any `.wml` that
+references `X`.
 
 ---
 
@@ -907,100 +1085,191 @@ name="X">`. It is referenced by `<X>` from another WML file.
 <SettingsPanel />
 ```
 
-The compiler MUST resolve the name against the set of `<widget>`
-definitions visible to the current translation unit (typically: the
-project's WML source set). Unresolved custom tags MUST be reported
-as compile errors.
+The compiler MUST resolve the name against the set of `.wmlh`
+declarations visible to the current translation unit — i.e. the
+extractor-emitted `.wmlh` files for the project's author classes
+(§5.4.3). Unresolved custom tags MUST be reported as compile
+errors.
 
-Attribute values on custom tags MUST correspond 1:1 to declared
-`<property>` names on the target widget. Unknown attributes MUST be
-rejected.
+Attribute values on custom tags MUST correspond 1:1 to property
+names declared on the target author class via
+`OMEGAWTK_WML_PROPERTY` (§7.2), as recorded in its `.wmlh`.
+Unknown attributes MUST be rejected.
 
 ---
 
-## 7. Declared Widget Surface
+## 7. Author-Class Binding
 
-A widget's public surface — the properties it accepts, the states
-it can be in, and the signals it emits — is declared in the markup
-using top-level child tags inside the `<widget>` block. The C++
-subclass implements them.
+WML attaches a look to an `OmegaWTK::Widget` (or `OmegaWTK::App`)
+subclass authored entirely in C++. The author class is the source
+of truth for the widget's **identity, state, behavior, and
+WML-visible surface**. WML does not generate the class, does not
+add members to it, and does not provide a way to declare
+properties, states, or signals in markup.
 
-WML has no `<script>` block, no function bodies, no statements, no
-assignments. The declarations in this section are the **only**
-mechanisms by which markup exposes surface to C++.
+The C++ surface that WML may reference is declared via a small,
+closed set of macros. The Header Extractor (§5.7.1) recognizes
+these macros, the WML compiler validates `.wml` references against
+them, and the C++ compiler turns them into ordinary member
+declarations.
 
-### 7.1 `<property>`
+### 7.1 `OMEGAWTK_WML_WIDGET(ClassName)`
 
-```html
-<property name="user" type="User" />
-<property name="featured" type="bool" default="false" />
+Marks a class as bindable from a `.wml` file of the matching name.
+
+```cpp
+class UserCard : public Widget {
+public:
+    OMEGAWTK_WML_WIDGET(UserCard)
+    // … properties, states, signals, handlers, member methods …
+};
 ```
 
-| Attribute | Required | Notes |
-|---|---|---|
-| `name` | Yes | A C++-identifier name. |
-| `type` | Yes | A fully-qualified C++ type accessible at compile time. |
-| `default` | No | A literal default value. The compiler MUST accept literals of types `bool`, `int`, `float`, `string`, and `enum`. |
+The macro MUST expand to:
 
-The compiler MUST emit, for each `<property name="X" type="T">`:
+- A friend declaration permitting the WML compiler's emitted
+  `applyUserCardLook(UserCard &)` to access non-public members
+  it needs in order to wire bindings and delegates.
+- A `rebuildContent()` override whose body calls
+  `applyUserCardLook(*this)`. Author classes that need to do
+  additional work in `rebuildContent` MAY override the override
+  in the usual C++ way; subclasses MUST call the look function
+  themselves if they bypass it.
+- An entry in the Header Extractor's recognition table so that a
+  corresponding `UserCard.wmlh` is emitted.
 
-- A constructor parameter `const T & X` (with the declared default
-  when present).
-- A getter `const T & getX() const`.
-- A setter `void setX(const T &)` that stores the new value,
-  marks `DirtyBit::Content | Style | Paint` on the widget's root
-  view, and triggers `rebuildContent()`.
+A class MUST NOT invoke `OMEGAWTK_WML_WIDGET` more than once. The
+extractor MUST report duplicate invocations as an error.
 
-Bindings (§10) MAY read property values via their `name`.
+A `.wml` file whose `<widget name="X">` does not match a class
+declaring `OMEGAWTK_WML_WIDGET(X)` MUST be rejected by the WML
+compiler with an `unbound widget` error.
 
-### 7.2 `<state>`
+### 7.2 `OMEGAWTK_WML_PROPERTY(name, Type)`
 
-```html
-<state name="expanded" />
-<state name="downloading" />
+Declares a WML-visible property.
+
+```cpp
+OMEGAWTK_WML_PROPERTY(user, User)
+OMEGAWTK_WML_PROPERTY(featured, bool)
+OMEGAWTK_WML_PROPERTY(quantity, int)   // default-constructs to 0
 ```
 
-| Attribute | Required | Notes |
-|---|---|---|
-| `name` | Yes | A C++-identifier name. |
+A two-argument form declares a property with a default-constructed
+initial value. A three-argument form supplies an explicit initial
+expression:
 
-The compiler MUST emit, for each `<state name="X">`:
+```cpp
+OMEGAWTK_WML_PROPERTY(featured, bool, false)
+OMEGAWTK_WML_PROPERTY(scale, float, 1.0f)
+```
 
-- A bit on the widget's custom-state bitset.
-- `bool isX() const`.
-- `void setX(bool)` that flips the bit and marks
+Each invocation MUST expand to:
+
+- A private member `Type _name;` (default-initialized when the
+  three-argument form is not used).
+- A getter `const Type & name() const noexcept { return _name; }`.
+- A setter `void setName(const Type & v)` that stores the new
+  value, marks `DirtyBit::Content | Style | Paint` on the
+  widget's root view, and requests a `rebuildContent()` pass via
+  the engine's standard mechanism. (Properties whose changes
+  affect only paint or layout, never content, are not expressible
+  through this macro in v0.2; the author may write the
+  member/getter/setter by hand and decline to annotate it.)
+
+The Header Extractor MUST emit one `<property name="name"
+type="Type" default="…" />` per invocation into the class's
+`.wmlh`.
+
+WML attribute reads (`<UserCard user="{x}" />`) compile to
+default-construction of `UserCard` followed by `userCard->setUser(x)`.
+The author class MUST therefore be default-constructible.
+
+### 7.3 `OMEGAWTK_WML_STATE(name)`
+
+Declares a WML-visible custom state bit.
+
+```cpp
+OMEGAWTK_WML_STATE(expanded)
+OMEGAWTK_WML_STATE(downloading)
+```
+
+Each invocation MUST expand to:
+
+- A bit allocated in the widget's custom-state bitset (the engine
+  surface introduced for `:state(X)` matching).
+- A getter `bool isName() const noexcept`.
+- A setter `void setName(bool)` that flips the bit and marks
   `DirtyBit::Style` on the widget's root view.
 
-Custom states are matchable in selectors as `:state(X)` (§12.2).
+The Header Extractor MUST emit one `<state name="name" />` per
+invocation into the class's `.wmlh`.
 
-### 7.3 `<signal>`
+Custom states are matchable in selectors as `:state(name)` (§12.2).
 
-```html
-<signal name="colorChanged" payload="Composition::Color" />
-<signal name="ready" />
+### 7.4 `OMEGAWTK_WML_SIGNAL(name)` / `OMEGAWTK_WML_SIGNAL_T(name, T)`
+
+Declares a typed outbound event.
+
+```cpp
+OMEGAWTK_WML_SIGNAL(ready)                                  // no payload
+OMEGAWTK_WML_SIGNAL_T(messageRequested, UserId)             // payload type UserId
+OMEGAWTK_WML_SIGNAL_T(colorChanged, Composition::Color)
 ```
 
-| Attribute | Required | Notes |
-|---|---|---|
-| `name` | Yes | A C++-identifier name. |
-| `payload` | No | A fully-qualified C++ type. Absent payload means the signal has no parameter. |
+Each invocation MUST expand to:
 
-The compiler MUST emit, for each `<signal name="X" payload="T">`:
+- A `void emit_name(const T &)` method (or `void emit_name()`
+  when payload is absent) on the author class.
+- A private slot list (`std::vector<std::function<void(const T
+  &)>>`) that the look function appends to whenever a parent
+  registers `on:name="handler"`.
 
-- A `void emit_X(const T &)` method (or `void emit_X()` when
-  payload is absent) on the widget's generated class.
-- An internal slot list of `std::function<void(const T &)>`.
-- For every parent-side `on:X="handler"` registration: a lambda
-  added to the slot list that invokes the parent's `handler`.
+The author class invokes `emit_name(...)` from C++ to fire the
+signal. Markup MUST NOT contain `emit(...)` syntax; the WML
+compiler MUST reject any such attempt.
 
-The widget's C++ subclass invokes `emit_X(...)` to fire the signal.
-The markup MUST NOT contain `emit(...)` calls or any other
-emission syntax.
+The Header Extractor MUST emit one `<signal name="name"
+payload="T" />` (or without `payload`) per invocation into the
+class's `.wmlh`.
 
-### 7.4 `<slot>`
+### 7.5 `OMEGAWTK_WML_HANDLER` (annotation)
 
-A `<slot>` declares a hole in the widget's body that callers fill
-with markup. See §16.
+Marks a member function as callable from a WML `on:*` attribute.
+The macro is a prefix annotation that expands to nothing in C++;
+its sole purpose is to be visible to the Header Extractor.
+
+```cpp
+class UserCard : public Widget {
+public:
+    OMEGAWTK_WML_WIDGET(UserCard)
+    OMEGAWTK_WML_PROPERTY(user, User)
+
+    OMEGAWTK_WML_HANDLER void save();
+    OMEGAWTK_WML_HANDLER void onUserClicked(const Native::MouseEventParams &);
+    OMEGAWTK_WML_HANDLER bool onKeyDown(const Native::KeyDownParams &);
+};
+```
+
+The annotation MUST immediately precede an ordinary C++ member
+function declaration. The Header Extractor MUST emit one
+`<handler name="…" payload="…" />` per annotation into the class's
+`.wmlh`, recording the C++ method's name and parameter type (and
+return type for Tier-1 handlers, which MAY return `bool` per
+§11.2).
+
+The WML compiler MUST reject any `on:*` attribute whose handler
+identifier does not appear in the target class's `.wmlh` handler
+table. Calling a non-annotated public method from WML is a
+compile-time error, even if the method exists in the C++ class.
+
+### 7.6 Slot placeholders (`<slot>`)
+
+A `<slot>` placeholder declares a hole in the widget's look that
+is filled either by an extending widget's `.wml` (§16) or by a
+caller-site `<template slot="name">`. Slots are a markup
+construct only; they do not appear on the C++ author class and
+they have no corresponding macro.
 
 ```html
 <widget name="Card">
@@ -1029,7 +1298,9 @@ Callers fill named slots with `<template slot="name">`:
 ```
 
 The compiler MUST replace each `<slot>` placeholder with the
-caller's matching subtree at widget construction.
+caller's matching subtree (or, in the look-extension case, with
+the extending widget's `<template slot="…">` content) at look
+function emission.
 
 ---
 
@@ -1165,8 +1436,8 @@ the usual way.
 The literal boolean attribute form `attr="true"` MUST desugar to a
 single class `.attr` on the instance. Other forms (`priority="high"`,
 numeric values, string values) MUST NOT desugar; they MUST be
-treated as property bindings against `<property name="…">`
-declarations.
+treated as property bindings against `OMEGAWTK_WML_PROPERTY`
+declarations on the target author class (§7.2).
 
 ```html
 <!-- The "featured" boolean desugars to .featured -->
@@ -1307,9 +1578,9 @@ inside a binding update is forbidden.
 ## 11. Events
 
 Events use `on:<name>="handler"`. The handler string MUST be a bare
-C++ identifier naming a method on the enclosing `<widget>`'s
-generated class. There are four event tiers, each backed by a
-different engine surface.
+C++ identifier naming an `OMEGAWTK_WML_HANDLER`-annotated method
+(§7.5) on the enclosing `<widget>`'s author class. There are four
+event tiers, each backed by a different engine surface.
 
 ### 11.1 Tier overview
 
@@ -1320,10 +1591,12 @@ different engine surface.
 | 3 | `WidgetObserver` ([Widget.h:271](../include/omegaWTK/UI/Widget.h)) | Widget attach / detach / show / hide / resize. |
 | 4 | `NativeEventProcessor` ([NativeEvent.h:107](../include/omegaWTK/Native/NativeEvent.h)) | Scroll, drag, gesture, window/app lifecycle, focus. |
 
-The compiler MUST emit, per widget kind:
+The compiler MUST emit, into the per-`.wml` `.wml.gen.cpp`
+translation unit:
 
 - One `WidgetInteractionDelegate` subclass per child element that
-  uses a Tier-2 event.
+  uses a Tier-2 event. The look function instantiates and
+  installs it during construction.
 - One `ViewDelegate` subclass per child element that uses a Tier-1
   event (installed via `View::setDelegate`).
 - One `WidgetObserver` subclass for the widget root if any Tier-3
@@ -1331,6 +1604,10 @@ The compiler MUST emit, per widget kind:
 - For Tier 4: a `NativeEventProcessor` registered on the view's
   `NativeEventEmitter`, dispatching by
   `NativeEvent::EventType`.
+
+Each emitted delegate holds a back-pointer typed as the author
+class (`Toolbar *parent;` in §18.1's example) so that it can
+invoke the annotated handler directly.
 
 ### 11.2 Tier 1 — pointer and keyboard
 
@@ -1412,30 +1689,47 @@ Tier-4 handlers MUST return `void`.
 ### 11.6 Handler signature resolution
 
 The handler string is **always a bare C++ identifier**. The
-compiler MUST resolve the C++ signature from the event's tier table
-as follows:
+identifier MUST name a method on the enclosing widget's author
+class that has been annotated with `OMEGAWTK_WML_HANDLER` (§7.5).
+The compiler MUST consult the class's `.wmlh` handler table — not
+the C++ header directly — and reject any handler reference that
+does not appear there.
 
-- If the C++ method takes no parameters, the compiler MUST emit a
-  call to `widget->handler()`.
-- If the C++ method takes one parameter and the type matches the
-  event's payload struct, the compiler MUST emit a call to
-  `widget->handler(const PayloadStruct &)`.
-- If the C++ method takes one parameter but the type does not
-  match, the compiler MUST report a type-mismatch error.
-- If the C++ method takes more than one parameter, the compiler
-  MUST report a signature error.
+Given a matching handler entry, the compiler MUST resolve the
+call shape from the event's tier table as follows:
+
+- If the recorded method takes no parameters, the compiler MUST
+  emit a call to `widget->handler()`.
+- If the recorded method takes one parameter and the type matches
+  the event's payload struct, the compiler MUST emit a call to
+  `widget->handler(payload)`.
+- If the recorded method takes one parameter but the type does
+  not match, the compiler MUST report a type-mismatch error.
+- If the recorded method takes more than one parameter, the
+  compiler MUST report a signature error.
+
+For Tier-1 events whose handler is declared `bool`-returning (per
+§11.2), the compiler MUST emit code that respects the return
+value's preventDefault semantics.
 
 Call-form handler strings (`on:click="save(item.id)"`,
 `on:click="count++"`) MUST be rejected by the compiler.
 
 ### 11.7 Custom signals
 
-A `<signal name="X" payload="T">` declaration (§7.3) defines a
-named outbound event. Parents subscribe via `on:X="handler"`.
+A custom signal is declared in C++ via `OMEGAWTK_WML_SIGNAL(name)`
+or `OMEGAWTK_WML_SIGNAL_T(name, T)` on the author class (§7.4).
+The Header Extractor records each signal in the `.wmlh`.
 
-The signal MUST fire from the widget's C++ class via
-`emit_X(payload)`, never from the markup. The compiler MUST NOT
-accept `emit(...)` syntax inside markup; emission is behavior.
+Parents subscribe via `on:name="handler"` on a child custom-widget
+instantiation. The WML compiler MUST validate that `name` appears
+in the target class's `.wmlh` signal table, and MUST emit a
+subscription call against the generated slot list at look-function
+construction.
+
+The signal MUST fire from the author class via `emit_name(...)`,
+which the macro provides. WML MUST NOT contain `emit(...)` syntax;
+emission is behavior.
 
 ### 11.8 Pointer routing
 
@@ -1482,14 +1776,28 @@ root view; the resolver re-cascades the dirty subtree.
 
 ### 12.2 Custom states
 
-Custom states are declared with `<state name="X">` (§7.2) and
-matched in selectors as `:state(X)`.
+Custom states are declared in C++ on the author class with
+`OMEGAWTK_WML_STATE(X)` (§7.3) and matched in WML selectors as
+`:state(X)`.
+
+```cpp
+// DownloadButton.h
+class DownloadButton : public Widget {
+public:
+    OMEGAWTK_WML_WIDGET(DownloadButton)
+
+    OMEGAWTK_WML_STATE(downloading)
+    OMEGAWTK_WML_STATE(complete)
+
+    OMEGAWTK_WML_PROPERTY(labelText, OmegaCommon::UString)
+
+    OMEGAWTK_WML_HANDLER void startDownload();
+};
+```
 
 ```html
+<!-- DownloadButton.wml -->
 <widget name="DownloadButton">
-  <state name="downloading" />
-  <state name="complete" />
-
   <style>
     DownloadButton:state(downloading) { background: #ffaa22; }
     DownloadButton:state(complete)    { background: #2ecc71; }
@@ -1503,13 +1811,16 @@ matched in selectors as `:state(X)`.
 
 The C++ `DownloadButton` class is responsible for:
 
-- Calling `setDownloading(true)` / `setComplete(true)` to flip
-  state bits.
-- Exposing the `labelText` computed property that returns the
-  appropriate string per state.
+- Calling `setDownloading(true)` / `setComplete(true)` (generated
+  by `OMEGAWTK_WML_STATE`) to flip state bits.
+- Setting `labelText` via `setLabelText(...)` (generated by
+  `OMEGAWTK_WML_PROPERTY`) when the displayed string should change.
+  An author preferring a computed-property pattern MAY override
+  `labelText()` by hand and decline the macro; the markup binding
+  `{labelText}` will then call the hand-written getter.
 
-Flipping a custom state MUST set `DirtyBit::Style` on the widget's
-root view.
+Flipping a custom state through the generated setter MUST set
+`DirtyBit::Style` on the widget's root view, per §7.3.
 
 ---
 
@@ -1695,37 +2006,91 @@ outside the frame lifecycle.
 
 ---
 
-## 16. Widget Inheritance
+## 16. Look Extension
 
-WML inheritance is **widget-level composition**, not view-level
-subclassing. The engine's `View` is not designed for inheritance.
+WML has no concept of "widget inheritance" of its own. Widget
+identity is a C++ concern: a subclass `FancyCard : public UserCard`
+inherits the look the same way it inherits any other behavior —
+the inherited `rebuildContent()` calls the inherited
+`applyUserCardLook(*this)`, with `*this` upcasting to `UserCard &`.
+
+What WML *does* offer, separately from C++ inheritance, is **look
+extension**: the ability for one `<widget>` block to layer
+additional styles and slot fills on top of another widget's look
+without restating its element tree.
+
+```cpp
+// FancyCard.h
+class FancyCard : public UserCard {
+public:
+    OMEGAWTK_WML_WIDGET(FancyCard)
+    // FancyCard adds no new WML-visible surface beyond UserCard's.
+};
+```
 
 ```html
-<widget name="PrimaryButton" extends="Button">
+<!-- FancyCard.wml -->
+<widget name="FancyCard" extends-look="UserCard">
   <style>
-    PrimaryButton {
-      background: var(--accent);
-      color: white;
-      border-radius: 10px;
-      padding: 10px 16px;
-    }
-    PrimaryButton:hover { background: var(--accent-hover); }
+    FancyCard       { border: 2px solid var(--accent); }
+    FancyCard:hover { transform: translateY(-1px); }
   </style>
 
-  <slot />
+  <template slot="header">
+    <Badge label="VIP" />
+  </template>
 </widget>
 ```
 
-A widget that declares `extends="X"` MUST compile to a widget that:
+### 16.1 Semantics
 
-- Wraps an instance of `X` as its root child.
-- Forwards properties declared on the extending widget to
-  matching properties on `X` (when names match).
-- Applies any additional `StyleRule`s scoped to the extending
-  widget's kind name.
+A widget block that declares `extends-look="X"` MUST compile to a
+look function `applyFancyCardLook(FancyCard &)` whose body, in
+order:
 
-The extending widget MAY declare additional `<property>`, `<state>`,
-`<signal>`, and `<slot>` elements.
+1. Calls `applyUserCardLook(static_cast<UserCard &>(fancyCard))`
+   — building the parent's element tree and wiring its bindings
+   and delegates.
+2. Registers the extension's additional `<style>` rules into the
+   widget kind's `StyleSheet` (§17.2), scoped to the extending
+   kind name (`FancyCard`).
+3. Fills any `<slot>` placeholders left open by the parent's look
+   with the extension's `<template slot="…">` content.
+
+The WML compiler MUST verify that `X` in `extends-look="X"`
+resolves to a `.wmlh` declaration (§5.4). The C++ author class
+for the extending widget is NOT required to inherit from `X` —
+look extension and C++ inheritance are independent — but the
+typical case is that it does, and the static_cast at step 1
+relies on it.
+
+### 16.2 What look extension may contain (v0.2)
+
+For this revision of the spec, an `extends-look` widget's body
+MUST be limited to:
+
+- Zero or one `<style>` blocks. Rules cascade with the parent's
+  per §17.
+- Zero or more `<template slot="…">` blocks filling slots the
+  parent declared.
+
+A `<widget extends-look="X">` MUST NOT contain a body root
+element other than `<style>` and `<template slot="…">`. In
+particular, look extension MUST NOT modify, reorder, replace, or
+remove elements from the parent's element tree; the only
+tree-level surface is the parent's declared slots.
+
+Element-level overrides (e.g. "target the parent's element by
+class and replace its subtree") are reserved for a future
+revision; see Annex B.
+
+### 16.3 The `extends` attribute (removed)
+
+The `extends="X"` attribute previously documented in this section
+is removed from the language. Authors who want a widget to share
+behavior with another widget MUST use C++ inheritance on the
+author class; authors who want a widget to share look with
+another widget MUST use `extends-look="X"`.
 
 ---
 
@@ -1821,34 +2186,64 @@ contract is defined by the per-construct rules in earlier sections.
 
 ### 18.1 A single button
 
-Inside `<widget name="Toolbar">`:
-
-```html
-<Button class="primary" on:click="save">
-  <Label text="Save" />
-</Button>
-```
-
-The compiler emits, in `Toolbar`'s `rebuildContent()`:
+The author writes a `Toolbar` class:
 
 ```cpp
-auto button = Button::Create(buttonRect);
-button->setClass("primary");
+// Toolbar.h
+class Toolbar : public Widget {
+public:
+    OMEGAWTK_WML_WIDGET(Toolbar)
 
-auto buttonDelegate = Core::makeUnique<ToolbarButtonDelegate>();
-buttonDelegate->parent = this;
-button->viewRef().setDelegate(buttonDelegate.get());
-_buttonDelegate = std::move(buttonDelegate);
-
-auto label = Label::Create(labelRect, LabelProps{
-    .text = OmegaCommon::UString("Save"),
-});
-button->addChild(label);
-addChild(button);
+    OMEGAWTK_WML_HANDLER void save();
+};
 ```
 
-The compiler also emits, in the `Toolbar` class body, the delegate
-subclass:
+```cpp
+// Toolbar.cpp
+void Toolbar::save() { /* author body */ }
+```
+
+The Header Extractor emits `Toolbar.wmlh`:
+
+```html
+<widget name="Toolbar" extends="Widget">
+  <handler name="save" />
+</widget>
+```
+
+The author writes `Toolbar.wml`:
+
+```html
+<widget name="Toolbar">
+  <Button class="primary" on:click="save">
+    <Label text="Save" />
+  </Button>
+</widget>
+```
+
+The WML compiler emits `Toolbar.wml.gen.cpp`. Inside that file,
+the look function body is:
+
+```cpp
+void applyToolbarLook(Toolbar &self) {
+    auto button = Button::Create(buttonRect);
+    button->setClass("primary");
+
+    auto buttonDelegate = Core::makeUnique<ToolbarButtonDelegate>();
+    buttonDelegate->parent = &self;
+    button->viewRef().setDelegate(buttonDelegate.get());
+    self._toolbar_wml_buttonDelegate = std::move(buttonDelegate);   // friend access
+
+    auto label = Label::Create(labelRect, LabelProps{
+        .text = OmegaCommon::UString("Save"),
+    });
+    button->addChild(label);
+    self.addChild(button);
+}
+```
+
+The WML compiler also emits, in the same generated translation
+unit, the delegate type:
 
 ```cpp
 struct ToolbarButtonDelegate : public WidgetInteractionDelegate {
@@ -1872,21 +2267,50 @@ buttonStyle->elementRoundedCorner(button->viewAs<UIView>().tag(), 12.f);
 button->viewAs<UIView>().setStyle(buttonStyle);
 ```
 
-After Phase 2 (Style) of the frame lifecycle, the button's root view
-has a `ComputedStyle` populated by the cascade. Phase 4 (Paint) emits
+`OMEGAWTK_WML_WIDGET(Toolbar)` in the class body expands to (among
+other things) an override:
+
+```cpp
+void rebuildContent() override { applyToolbarLook(*this); }
+```
+
+so the author never has to call the look function explicitly. After
+Phase 2 (Style) of the frame lifecycle, the button's root view has
+a `ComputedStyle` populated by the cascade. Phase 4 (Paint) emits
 one `DrawOp::RoundedRect` to the per-window `DisplayList`.
 
 ### 18.2 Counter demo
+
+The author writes a `DemoApp` class:
+
+```cpp
+// DemoApp.h
+class DemoApp : public App {
+public:
+    OMEGAWTK_WML_WIDGET(DemoApp)
+
+    OMEGAWTK_WML_PROPERTY(count, int, 0)
+
+    OMEGAWTK_WML_HANDLER void increment();
+    OMEGAWTK_WML_HANDLER void decrement();
+};
+```
+
+```cpp
+// DemoApp.cpp
+void DemoApp::increment() { setCount(count() + 1); }
+void DemoApp::decrement() { setCount(count() - 1); }
+```
+
+The author writes `DemoApp.wml`:
 
 ```html
 <app name="DemoApp">
   <theme src="themes/DarkTheme.wtheme" />
   <style src="styles/global.wmls" />
 
-  <property name="count" type="int" default="0" />
-
   <style>
-    App {
+    DemoApp {
       background: var(--background);
       color: var(--text);
       layout: column;
@@ -1910,15 +2334,18 @@ one `DrawOp::RoundedRect` to the per-window `DisplayList`.
 </app>
 ```
 
-The compiler emits an `Application` instance, an `AppWindow`
-carrying the root widget, and a `DemoApp` class with `count` as a
-declared property and `increment` / `decrement` as expected C++
-methods. The application's `.cpp` file MUST implement:
+The Header Extractor emits `DemoApp.wmlh` (one `<property>`, two
+`<handler>` entries). The WML compiler emits
+`DemoApp.wml.gen.cpp` containing `applyDemoAppLook(DemoApp &)` and
+the delegate types for the two buttons. The C++ compiler links
+the author's `DemoApp.cpp` with the generated file to produce the
+final binary.
 
-```cpp
-void DemoApp::increment() { setCount(count() + 1); }
-void DemoApp::decrement() { setCount(count() - 1); }
-```
+No `count` field is declared in the markup — it's declared in C++
+via `OMEGAWTK_WML_PROPERTY`. The `{count}` binding in the
+`<Label>` resolves through the `.wmlh` to `self.count()`; on
+change (via `setCount(...)`), the binding fires and the label
+re-renders.
 
 ---
 
@@ -1929,8 +2356,9 @@ void DemoApp::decrement() { setCount(count() - 1); }
 A **conforming WML compiler** MUST:
 
 1. Accept exactly the file extensions enumerated in §5.1.
-2. Reject any tag not listed in §6 (built-in) or in the project's
-   declared `<widget>` set (custom) or in Annex B (reserved).
+2. Reject any tag not listed in §6 (built-in) or whose name does
+   not resolve to a `.wmlh` produced by the Header Extractor for
+   a project author class (§5.4) or in Annex B (reserved).
 3. Treat WML tag identifiers case-sensitively and reject
    non-PascalCase forms (§4.1).
 4. Route style properties to either `LayoutStyle` (layout) or
@@ -1949,9 +2377,12 @@ A **conforming WML compiler** MUST:
 10. Accept binding syntax exactly as specified in §10.1 — dotted
     paths only — and reject all other expression forms inside `{}`.
 11. Generate the delegate / observer / processor subclasses per
-    §11 and dispatch events through them.
-12. Accept handler strings only in bare-identifier form (§11.6);
-    reject call-form handlers.
+    §11 in the per-`.wml` `.wml.gen.cpp` output and dispatch
+    events through them.
+12. Accept handler strings only in bare-identifier form (§11.6),
+    reject call-form handlers, and reject any handler identifier
+    that does not appear in the target class's `.wmlh` handler
+    table (§7.5).
 13. Emit one `StyleSheet` per widget kind, registered on
     `Application::stylesheetStack()` per §17.
 14. Emit per-property animation tracks through the per-window
@@ -1961,73 +2392,115 @@ A **conforming WML compiler** MUST:
     triggers MUST set `DirtyBit`s and rely on `FrameBuilder` to
     process them.
 16. Resolve every PascalCase tag against the union of SDK-shipped
-    built-in `.wmlh` headers, compiler-emitted user `.wmlh`
-    headers, and the in-file `<widget>` declaration before
-    emitting code (§5.4).
-17. Emit, for every user `.wml` file compiled, a matching `.wmlh`
-    declaration header alongside the generated C++ (§5.4.2). The
-    emitted `.wmlh` MUST list every `<property>`, `<state>`,
-    `<signal>`, and `<slot>` declared in the source file with
-    identical names, types, payloads, and defaults.
-18. Reject any `.wmlh` file whose `<widget>` element contains a
+    built-in `.wmlh` headers and extractor-emitted project `.wmlh`
+    headers before emitting code (§5.4.4). The WML compiler MUST
+    NOT itself emit `.wmlh` files.
+17. Emit, for every `.wml` file compiled, exactly one
+    `<source>.wml.gen.cpp` containing a free function
+    `applyXLook(X &)` (where `X` is the bound author class) plus
+    any delegate / observer / processor types it depends on. The
+    WML compiler MUST NOT emit a class declaration, a header
+    file, or a constructor for `X`.
+18. Reject `<widget>` and `<app>` blocks that contain `<property>`,
+    `<state>`, or `<signal>` child elements (§5.3). Surface
+    declarations live on the author class via the macros in §7;
+    declaring them in WML is a compile error.
+19. Reject any `.wmlh` file whose `<widget>` element contains a
     body root, a `<style>` block, or `on:` attributes (§5.4.1).
-19. Load `.wmls` files into `Application::stylesheetStack()` at
+20. Reject any `.wml` file whose `<widget name="X">` (or `<app
+    name="X">`) does not resolve to a `.wmlh` declaring
+    `OMEGAWTK_WML_WIDGET(X)` for an author class accessible to
+    the build (`unbound widget` error, §5.3).
+21. Load `.wmls` files into `Application::stylesheetStack()` at
     load time, unscoped (§5.5.4). Bare selectors in a `.wmls` file
     MUST NOT be silently rewritten to scope by kind.
-20. Apply the cascade in the order specified in §17.4: theme vars
+22. Apply the cascade in the order specified in §17.4: theme vars
     → global `.wmls` rules → kind-scoped inline `<style>` rules →
     inline attributes. Specificity rules apply within each level.
-21. Accept `<style src="…">` only inside `<app>` blocks. Reject
+23. Accept `<style src="…">` only inside `<app>` blocks. Reject
     `<style src="…">` inside `<widget>` blocks; widget-local
     styling MUST use an inline `<style>` element (§5.5.3).
-22. Validate the uniqueness of every literal `id` value across all
+24. Validate the uniqueness of every literal `id` value across all
     `.wml` files in the translation unit (§5.6.1). Duplicate
     literal IDs MUST be reported as compile errors, accounting
     for expansions of multi-instance widget bodies (§5.6.3).
     Bound IDs (`id="{path}"`) are out of scope for static
     uniqueness validation; the compiler MAY emit a runtime check.
-23. Compute selector specificity as the tuple `(ids, class+pseudo,
+25. Compute selector specificity as the tuple `(ids, class+pseudo,
     kinds)` and resolve same-level cascade by specificity → source
     order → `!important` (§8.5.1).
+26. For `<widget extends-look="X">` (§16): emit a look function
+    whose first action is a call to `applyXLook(static_cast<X
+    &>(self))`. Reject any extension whose body contains anything
+    other than a `<style>` block or `<template slot="…">` blocks
+    in v0.2.
 
-### 19.2 Compiler MAY
+### 19.2 Header Extractor requirements
+
+A **conforming Header Extractor** MUST:
+
+1. Scan a configurable set of C++ header files and recognize the
+   `OMEGAWTK_WML_WIDGET`, `OMEGAWTK_WML_PROPERTY`,
+   `OMEGAWTK_WML_STATE`, `OMEGAWTK_WML_SIGNAL`,
+   `OMEGAWTK_WML_SIGNAL_T`, and `OMEGAWTK_WML_HANDLER` macros
+   without requiring a full C++ parse (§5.7.1).
+2. Emit one `.wmlh` per `OMEGAWTK_WML_WIDGET(X)` invocation,
+   named `X.wmlh`, listing every property / state / signal /
+   handler declared on the same class with matching name, type,
+   and payload (§5.4.3).
+3. Reject duplicate `OMEGAWTK_WML_WIDGET(X)` across the project
+   (§5.7.1).
+4. Reject `OMEGAWTK_WML_PROPERTY` / `_STATE` / `_SIGNAL` /
+   `_HANDLER` invocations outside a class that declares
+   `OMEGAWTK_WML_WIDGET` (§5.7.1).
+5. NOT emit C++ source code and NOT modify the author's headers.
+
+### 19.3 Compiler MAY
 
 A conforming WML compiler MAY:
 
 - Emit additional diagnostics, warnings, or hints beyond the
   required errors.
 - Cache parsed style sheets across translation units.
-- Emit a separate header for each generated widget class or a
-  combined header per WML file.
+- Emit a combined translation unit per directory of `.wml` files
+  instead of one `.wml.gen.cpp` per source, so long as the
+  per-`.wml` look-function symbols remain available to the C++
+  linker.
 - Accept additional ergonomic file layouts (e.g. a single `.wml`
   declaring multiple sibling `<widget>` blocks) so long as the
   rest of this spec is honored.
 
-### 19.3 Author requirements
+### 19.4 Author requirements
 
 A conforming WML author MUST:
 
-- Provide a C++ source file alongside each `<widget>` source file
-  to implement declared handlers, computed properties, and signal
-  emission sites.
-- Ensure that the type of every `<property type="T">` and
-  `<signal payload="T">` is reachable from the project's C++
+- Provide a C++ author class with `OMEGAWTK_WML_WIDGET(X)` for
+  every `.wml` file whose top-level element is `<widget name="X">`
+  or `<app name="X">`, in a header reachable by the Header
+  Extractor.
+- Declare every WML-visible property, state, signal, and handler
+  using the macros in §7. Public C++ methods that are not
+  annotated with `OMEGAWTK_WML_HANDLER` MUST NOT be referenced
+  from WML `on:*` attributes.
+- Ensure that the C++ type of every `OMEGAWTK_WML_PROPERTY` and
+  `OMEGAWTK_WML_SIGNAL_T` is reachable from the project's C++
   include path at compile time.
 - Treat reserved identifiers (Annex B) as forbidden until their
   corresponding C++ widgets land.
-- Treat compiler-emitted `.wmlh` files (§5.4.2) as build artifacts.
-  Authors MUST NOT hand-edit emitted `.wmlh` files; the `.wml`
-  source is the source of truth for a user widget's surface.
-- Treat SDK-shipped `.wmlh` files (§5.4.3) as read-only. Editing
-  an SDK header to claim a property the C++ class does not expose
-  is a conformance violation by the project, not by the engine.
+- Treat extractor-emitted `.wmlh` files (§5.4.3) as build
+  artifacts. Authors MUST NOT hand-edit them; the C++ header is
+  the source of truth for an author class's WML surface.
+- Treat SDK-shipped `.wmlh` files (§5.4.2) as read-only.
 
-### 19.4 Engine requirements
+### 19.5 Engine requirements
 
 The engine is not the target of WML conformance; the engine is the
 target of the compiled output. The engine MUST continue to honor
 the contracts in the normative references in the front matter for
-WML's output to be valid.
+WML's output to be valid, and MUST provide the
+`OMEGAWTK_WML_WIDGET` / `_PROPERTY` / `_STATE` / `_SIGNAL` /
+`_SIGNAL_T` / `_HANDLER` macros with the expansions described in
+§7.
 
 ---
 
@@ -2119,6 +2592,7 @@ The following selector pseudo-classes are reserved:
 | 0.1.0 (Normative — Draft 1) | 2026-05-31 | First formal version of WML. Derived from the proposal draft at [`research/widget_markup_language_spec.md`](./research/widget_markup_language_spec.md). All eight Open Questions from §23 of the proposal are resolved as normative rules in this document or as reserved identifiers in Annex B. |
 | 0.1.1 | 2026-05-31 | Added widget declaration headers (`.wmlh`, §5.4) and renamed the standalone-stylesheet extension from `.wcss` to `.wmls` (§5.5). Expanded §17 to specify the cascade order across the three style surfaces (theme vars, global `.wmls`, kind-scoped inline `<style>`, inline attributes). Conformance items 16–21 added. |
 | 0.1.2 | 2026-05-31 | Formalized universal widget attributes `id` and `class` (§5.6). The `id` attribute identifies a single widget instance application-globally; IDs MUST be unique. ID selectors (`#id`, `Button#id`) are now first-class in the Tier-1 grammar (§8.3.1). Selector specificity computed as `(ids, class+pseudo, kinds)` per §8.5.1. ID selectors inside kind-scoped inline `<style>` blocks are NOT kind-rewritten (§17.2). Conformance items 22–23 added. |
+| 0.1.3 | 2026-06-03 | **Author-class binding model.** WML no longer generates widget classes; it attaches a *look* to a hand-written C++ author class. `<widget name="X">` binds to a class `X` that declares `OMEGAWTK_WML_WIDGET(X)`; the WML compiler emits a free function `applyXLook(X &)` instead of a class. The `<property>` / `<state>` / `<signal>` markup elements are removed; properties, states, signals, and handlers are declared in C++ via the macros `OMEGAWTK_WML_PROPERTY`, `OMEGAWTK_WML_STATE`, `OMEGAWTK_WML_SIGNAL` / `_SIGNAL_T`, and `OMEGAWTK_WML_HANDLER` (§7). A new build-time **Header Extractor** tool (§5.7.1) scans C++ headers for these macros and emits `.wmlh` files, which become pure build artifacts; the WML compiler no longer emits them. Widget inheritance is removed; in its place, §16 introduces *look extension* (`extends-look="X"`), restricted to styles + slot fills for v0.2. C++ subclassing of author classes is the supported path for sharing behavior. New §5.7 documents the three-tool build pipeline (Header Extractor → WML compiler → C++ compiler). Conformance restructured: §19.1 (compiler), new §19.2 (Header Extractor), §19.3 (MAY), §19.4 (author), §19.5 (engine). |
 
 ### Rationale highlights
 
@@ -2131,6 +2605,31 @@ called out because they shaped the design substantially:
 - **Look-only stance (§1.3).** WML defines look; C++ defines
   behavior. The rule rules out scripts, expression bindings,
   and call-form handlers. Every other rule flows from this one.
+- **Author-class binding, not class generation (§7).** The C++
+  class is the noun; WML is a decoration applied to it. The
+  alternative — generating the class from WML — was rejected
+  because it would force authors to use a partial-class
+  workaround (C++ has no real partial classes) and would put
+  member layout, constructors, and base-class choice outside
+  the author's hands. Free-function look + macro-declared
+  surface keeps WML opt-in and the C++ class first-class.
+- **Header Extractor as a separate tool (§5.7).** The WML
+  compiler cannot parse C++; the C++ compiler cannot parse WML.
+  A small extractor that recognizes only the `OMEGAWTK_WML_*`
+  macros bridges the two without putting either through a full
+  parse of the other's grammar. Inspired by Qt's MOC and
+  Unreal's UnrealHeaderTool.
+- **Annotated handlers (§7.5, §11.6).** Requiring
+  `OMEGAWTK_WML_HANDLER` annotation lets the WML compiler give
+  useful errors for typos and lets refactoring tools see the
+  surface. The boilerplate cost is small compared to the cost of
+  silent breakage when a method is renamed and a `.wml`
+  reference goes stale.
+- **Look extension scoped to styles + slots (§16).** Element
+  override is genuinely useful but adds spec surface and a real
+  design question about identifying parent elements (by id?
+  class? path?). Limiting v0.2 to styles + slots lets the
+  feature ship while leaving the override design open.
 - **PascalCase tags equal C++ class names (§4.1).** Generated
   code is debuggable without translation tables; the markup
   cannot invent widgets the engine doesn't have.

@@ -340,8 +340,9 @@ void View::paint(Composition::PaintContext & pc){
 void View::resolveStyles(){
     // Phase 4.7.2: base `View` has no style cache to populate —
     // default is a no-op. `UIView::resolveStyles` overrides to write
-    // its `impl_->resolvedViewStyle_` + `impl_->computedStyles_`
-    // caches that the Paint pass reads.
+    // the per-property `styleTable_` (Tier D / D5, 2026-06-03 — pre-D5
+    // this was the `resolvedViewStyle_` + `computedStyles_` aggregate
+    // cache) that the Paint pass reads through `Impl::resolved<T>`.
 }
 
 void View::arrangeContent(){

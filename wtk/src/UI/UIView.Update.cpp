@@ -110,9 +110,9 @@ void UIView::tickAnimations(){
     // window's `AnimationScheduler::tick` runs once per outermost frame
     // from `FrameBuilder::beginFrame`; UIView's local Tick phase no
     // longer drives animation state. The method is kept for source
-    // compatibility (it is a public surface on `UIView`); 4.8 deletes
-    // both the public method and the no-op `Impl::advanceAnimations`
-    // alongside the rest of the dormant animation surface.
+    // compatibility (it is a public surface on `UIView`). Tier D / D4
+    // (2026-06-03) deleted the `Impl::advanceAnimations` no-op stub
+    // this comment used to pair with.
 }
 
 void UIView::arrangeContent(){
@@ -202,8 +202,12 @@ void UIView::paint(Composition::PaintContext & pc){
         return r;
     };
 
-    const auto & viewStyle = impl_->resolvedViewStyle_;
-    auto backgroundColor = viewStyle.backgroundColor.value_or(Composition::Color::Transparent);
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+    // view-level background reads through the unified per-property
+    // table (animation → style → UA default). The pre-D5
+    // `resolvedViewStyle_` aggregate is gone.
+    auto backgroundColor = impl_->resolved<Composition::Color>(
+        nodeId(), PropertyKey::BackgroundColor, Composition::Color::Transparent);
 
     // UIView-Render-Redesign-Plan Tier 2 Phase 2.1: paint is a pure
     // function of model + layout + style + animation. Every would-be-
@@ -219,7 +223,13 @@ void UIView::paint(Composition::PaintContext & pc){
 
     for(const auto & entry : resolved){
         const auto & spec = *entry.spec;
-        const auto & computed = impl_->computedStyleFor(entry.tag);
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+        // per-element reads route through the unified per-property
+        // table via `resolved<T>` / `resolvedOptional<T>`. The pre-D5
+        // `computedStyleFor(entry.tag)` aggregate read collapsed
+        // here — each field below is one cell lookup, scheduler then
+        // style-table then fallback / nullopt.
+        const auto elementNodeId = impl_->ensureElementNodeId(entry.tag);
 
         // Tier B / B1: the sheet-authored layout-transition path
         // (lastResolvedV2Rects_ delta → resolveLayoutTransition →
@@ -233,14 +243,16 @@ void UIView::paint(Composition::PaintContext & pc){
                 LayoutDiagnosticEntry::Pass::Commit});
         }
 
-        const auto & effectStyle = computed.effects;
-
         if(spec.shape){
             auto shapeToDraw = *spec.shape;
-            auto brush = computed.brush;
+            auto brush = impl_->resolved<SharedHandle<Composition::Brush>>(
+                elementNodeId, PropertyKey::FillBrush,
+                SharedHandle<Composition::Brush>{nullptr});
 
-            if(effectStyle.dropShadow){
-                auto shadowParams = *effectStyle.dropShadow;
+            auto dropShadowOpt = impl_->resolvedOptional<Composition::LayerEffect::DropShadowParams>(
+                elementNodeId, PropertyKey::DropShadow);
+            if(dropShadowOpt){
+                auto shadowParams = *dropShadowOpt;
                 if(auto v = impl_->animatedValue(entry.tag,Impl::EffectAnimationKeyShadowOffsetX); v)
                     shadowParams.x_offset = *v;
                 if(auto v = impl_->animatedValue(entry.tag,Impl::EffectAnimationKeyShadowOffsetY); v)
@@ -376,25 +388,40 @@ void UIView::paint(Composition::PaintContext & pc){
             }
         }
         else if(spec.text){
-            // Tier B / B2: text style was resolved (against this
-            // element's text-style tag) in resolveStyles() and cached
-            // under the element's own tag.
-            const auto & textStyle = computed.text;
-            auto font = textStyle.font != nullptr ? textStyle.font : impl_->resolveFallbackTextFont();
+            // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+            // text style cells were written under the element's own
+            // NodeId in `resolveStyles()` (the text-style tag aliasing
+            // is resolved at write time, so Paint reads by element
+            // identity). One `resolved<T>` lookup per field.
+            auto fontHandle = impl_->resolved<SharedHandle<Composition::Font>>(
+                elementNodeId, PropertyKey::TextFont,
+                SharedHandle<Composition::Font>{nullptr});
+            auto font = fontHandle != nullptr ? fontHandle : impl_->resolveFallbackTextFont();
             if(font != nullptr){
+                auto textColor = impl_->resolved<Composition::Color>(
+                    elementNodeId, PropertyKey::TextColor,
+                    Composition::Color::create8Bit(Composition::Color::Black8));
+                auto textLayout = impl_->resolved<Composition::TextLayoutDescriptor>(
+                    elementNodeId, PropertyKey::TextLayout,
+                    Composition::TextLayoutDescriptor{
+                        Composition::TextLayoutDescriptor::LeftUpper,
+                        Composition::TextLayoutDescriptor::None
+                    });
+                auto lineLimit = impl_->resolved<std::uint32_t>(
+                    elementNodeId, PropertyKey::TextLineLimit, 0u);
+
                 auto textRect = spec.textRect.value_or(localBounds);
                 textRect = LayoutManager::clampRectToParent(textRect,localBounds,layoutClamp);
                 textRect = withOffset(textRect);
                 auto unicodeText = OmegaCommon::UniString::fromUTF32(
                     reinterpret_cast<const OmegaCommon::Unicode32Char *>(spec.text->data()),
                     static_cast<int32_t>(spec.text->size()));
-                auto textLayout = textStyle.layout;
-                textLayout.lineLimit = textStyle.lineLimit;
+                textLayout.lineLimit = lineLimit;
                 // Shape upstream of DrawOp emission so paint stays a
                 // pure function. Bitmap-fallback sub-runs ride
                 // `DrawOp::Bitmap`; MSDF sub-runs ride `DrawOp::TextRun`.
                 auto shaped = Composition::shapeTextForDisplayList(
-                    unicodeText, font, textRect, textStyle.color,
+                    unicodeText, font, textRect, textColor,
                     textLayout, getRenderScale());
                 for(auto & blit : shaped.bitmapBlits){
                     displayList.append(Composition::DrawOp{
@@ -402,7 +429,7 @@ void UIView::paint(Composition::PaintContext & pc){
                 }
                 if(!shaped.msdfSubRuns.empty()){
                     displayList.append(Composition::DrawOp{
-                        std::move(shaped.msdfSubRuns), textRect, textStyle.color});
+                        std::move(shaped.msdfSubRuns), textRect, textColor});
                 }
             }
         }

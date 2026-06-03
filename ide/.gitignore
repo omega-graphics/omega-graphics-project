@@ -4,3 +4,6 @@ vscode/node_modules/
 vscode/out/
 vscode/syntaxes/*.json
 vscode/*.vsix
+!utils/build_vscode_ext.py
+vscode/package-lock.json
+vscode/yarn.lock

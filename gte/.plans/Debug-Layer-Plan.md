@@ -258,10 +258,13 @@ by need.
    new `GTE_NSLOG` macro gated on `isDebugLayerEnabled()`. Three
    sites left raw as Critical-class prototypes for §4: buffer role
    mismatch (L50), GPU command-buffer execution error (L1170),
-   empty-present (L1302). `GTE_NSLOG` retires when §4 lands; the
-   three raw sites migrate to `DEBUG_CRITICAL` (L50, L1302) and
-   `DEBUG_ERROR(QUEUE, …)` (L1170 — engine reports GPU failure, not
-   caller violation).
+   empty-present (L1302). `GTE_NSLOG` is a **holding pattern**, not
+   a final state: when §4 lands its 14 call sites are trimmed and
+   migrated per the curation table in §4's policy section (most to
+   `DEBUG_TRACE`, queue destroy to `DEBUG_INFO`, the per-bind
+   chatter dropped entirely under the §4.1.5 hot-path rule),
+   `GTE_NSLOG` itself retires, and the three raw sites move to
+   `DEBUG_CRITICAL` (L50, L1302) / `DEBUG_ERROR(QUEUE, …)` (L1170).
 8. §4 engine-side API logging — independent of §2/§3 and can
    interleave with them. Order within §4:
    a. §4.4 first — unify `ResourceTracking::Tracker` gating with
@@ -314,8 +317,8 @@ Two log classes, distinguished by *who* the log accuses:
    pass started." "Command buffer completed in 1.3ms." These describe
    what the engine did. They're gated on `isDebugLayerEnabled()` — off
    in release by default, on when the caller opts in. The whole
-   `DEBUG_LOG`/`DEBUG_INFO`/`DEBUG_TRACE` family (§4.5) sits in this
-   class.
+   `DEBUG_LOG`/`DEBUG_ERROR`/`DEBUG_INFO`/`DEBUG_TRACE` family (§4.5)
+   sits in this class.
 
 2. **Caller invalidated our spec.** "You bound a uniform<T> resource to
    a storage<T> slot." "You called `present()` with no enqueued command
@@ -324,8 +327,8 @@ Two log classes, distinguished by *who* the log accuses:
    violating the API contract. They **must surface even when the debug
    layer is off**, because a release build that silently ignores
    misuse turns into a black-texture / silent-no-op bug report we
-   can't diagnose. New macro `DEBUG_CRITICAL(domain, message)`
-   (§4.5) bypasses the master gate.
+   can't diagnose. `DEBUG_CRITICAL(domain, message)` (§4.5) bypasses
+   the master gate.
 
    Critical is **not** a synonym for "fatal" or "engine failed." GPU
    driver errors, OOM after best-effort fallback, fence timeouts —
@@ -333,15 +336,60 @@ Two log classes, distinguished by *who* the log accuses:
    is reserved for *caller-contract violations*: the API was used in a
    way the documented contract forbids.
 
-   The Metal-side `GTE_NSLOG` macro that landed in
-   `src/metal/GEMetal.h` is the gated-side precedent — when §4 lands,
-   its Metal call sites are rewritten through `DEBUG_LOG`/
-   `DEBUG_CRITICAL` and `GTE_NSLOG` retires. The three raw `NSLog`
-   sites left untouched in `GEMetalCommandQueue.mm` (buffer role
-   mismatch L50, GPU CB execution error L1170, empty-present L1302)
-   are the Critical prototype — L50 and L1302 migrate to
-   `DEBUG_CRITICAL`, L1170 migrates to `DEBUG_ERROR(QUEUE, …)` (engine
-   reports GPU failure; not a caller violation).
+### TRACE curation rule
+
+`DEBUG_TRACE` is the per-call surface, but it is **not** the place to
+dump every internal step. A TRACE line earns its place by being
+*important to the diagnostic story*, not by being available. The bar
+is one line per event the user can correlate to their own code:
+
+- **Yes** — pass begin/end, pipeline set, present, command-buffer
+  commit + completion (with duration / error), swapchain rebuild,
+  drawable acquire, queue submit-batch (one line per batch, not per
+  buffer in the batch).
+- **No** — per-bind log on the success path (every `setVertexBuffer`,
+  every `setFragmentTexture`), per-draw call, internal handle pointer
+  dumps, descriptor-heap entries.
+
+The Metal-side `GTE_NSLOG` macro that landed in `src/metal/GEMetal.h`
+is the gated-side precedent — when §4 lands its call sites in
+`GEMetalCommandQueue.mm` migrate through the curation rule above and
+`GTE_NSLOG` retires. Concretely:
+
+| Current `GTE_NSLOG` site | Disposition under §4 |
+|--------------------------|----------------------|
+| Prepare Render Pass For NativeTarget (drawable+texture+layer pointer dump) | Trim to `DEBUG_TRACE(RENDERTGT, "RenderPass begin: native rt=<id> size=WxH")`. Drop the pointer/format/layer detail — they're tracker-event payload, not log lines. |
+| Prepare Render Pass For TextureTarget | Trim to `DEBUG_TRACE(RENDERTGT, "RenderPass begin: texture rt=<id>")`. |
+| Starting Render Pass: `%@` | **Drop.** The `Prepare Render Pass …` line above already announces pass begin; the second line is redundant. |
+| Render Pipeline Set: `%@` | Trim to `DEBUG_TRACE(PIPELINE, "PSO set: pso=<id>")`. |
+| Binding GEBuffer/GETexture at {Vertex,Fragment,Mesh} Shader × 4 | **Drop.** Hot-path rule (§4.1.5) — no per-bind TRACE on the success path. Compile-time opt-in under `OMEGAGTE_DEBUG_TRACE_HOT` for the rare deep-debug session. |
+| Present Drawable | Keep as `DEBUG_TRACE(RENDERTGT, "Present: drawable=<id>")` — important checkpoint. |
+| `[_commit] MTLCommandBuffer=%p status=%lu` | **Drop.** Pre-commit status is implementation detail; the post-completion line covers it. |
+| Successfully completed Command Buffer (logs, warning, duration) | Keep as `DEBUG_TRACE(QUEUE, "CB complete: cb=<id> duration=Xms")`. Important; drop the `logs`/`warning` interpolation (those are tracker payload). |
+| `[submitCB] queue=… enqueue CB=…` | Trim to `DEBUG_TRACE(QUEUE, "CB submit: queue=<id> cb=<id>")` — one line per submit, no batch-size delta noise. |
+| `[commitToGPUAndPresent] commandBuffers.size=%lu` | **Drop.** Setup detail; the present + commit lines below cover it. |
+| Metal Command Queue Destroy | Promote to `DEBUG_INFO(QUEUE, "Queue destroyed: queue=<id>")` — lifecycle event, not per-frame trace. |
+| blit fill 8-bit fallback warning | Keep as `DEBUG_INFO(RESOURCE, …)` — engine took a fallback, the user might want to know. |
+
+Net result: 14 verbose lines become roughly 6 concise ones at TRACE
++ 1 at INFO + 1 INFO fallback, and the success-path bind/draw chatter
+is gone entirely.
+
+The three raw `NSLog` sites left in place during the gating sweep
+fold in the same way:
+
+- **L50 — buffer role mismatch.** `DEBUG_CRITICAL(RESOURCE, "Bind
+  role mismatch: shader=<name> slot=<n> shader expects uniform<T>,
+  buffer was created as Storage")`. The trailing `assert(false && …)`
+  stays for debug builds; Critical handles release-with-debug-on.
+- **L1170 — GPU command-buffer execution error.** Migrate to
+  `DEBUG_ERROR(QUEUE, "CB execution error: cb=<id> error=<MTLError>")`.
+  Engine-side report (GPU told us it failed), not a caller-contract
+  violation; gated like other Errors.
+- **L1302 — `commitToGPUAndPresent` with empty queue.**
+  `DEBUG_CRITICAL(QUEUE, "commitToGPUAndPresent with no buffered
+  command buffers")`. Caller violation; the existing early-return
+  graceful path stays.
 
 ### Existing infrastructure to fold in
 

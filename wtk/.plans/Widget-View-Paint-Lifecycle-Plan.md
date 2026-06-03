@@ -1115,10 +1115,21 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   - **D4 deletions** (in addition to the `advanceAnimations` symbol
     pair noted above): `PropertyAnimationState`
     (`UIViewImpl.h:106`), `PathNodeAnimationState`
-    (`UIViewImpl.h:119`), `EffectAnimationKey*` enum
-    (`UIViewImpl.h:125–138`). All three are unreferenced in `.cpp`
-    files (the routing path no longer touches them) — the only
-    remaining surface area is the header declarations.
+    (`UIViewImpl.h:119`). Both are unreferenced in `.cpp` files —
+    header-only carcasses.
+    **CORRECTION (re-verified 2026-06-03 during D4 prep): the
+    `EffectAnimationKey*` enum (`UIViewImpl.h:125–138`) is NOT
+    deletable in full.** The D0 grep missed `UIView.Update.cpp:244–
+    266`, which reads
+    `Impl::EffectAnimationKey{ShadowOffsetX, ShadowOffsetY,
+    ShadowRadius, ShadowBlur, ShadowOpacity, ShadowColorR,
+    ShadowColorG, ShadowColorB, ShadowColorA}` via
+    `Impl::animatedValue(tag, key)` to merge animated shadow channels
+    into the resolved effect state. The Shadow* nine values are the
+    live read surface for the scheduler-driven shadow animation
+    pipeline. D4 keeps them. The trailing three (`GaussianRadius`,
+    `DirectionalRadius`, `DirectionalAngle`) are unreferenced
+    anywhere in `wtk/` — D4 trims them.
   - **Path-node animation migration is still open.** Plan §5 D4
     says path animations migrate to
     `scheduler.animatePropertyAt(node, PathNodeX/Y, nodeIndex, ...)`.
@@ -1225,15 +1236,19 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
      dispatch path-node keys to `animatePropertyAt` so the
      scheduler keys them by `(node, PropertyKey, subIndex=nodeIndex)`
      instead of collapsing every node's X/Y onto a single cell.
-  2. **Header / impl deletions.** Delete the dormant per-tag tween
-     state now that nothing reads it:
+  2. **Header / impl deletions.** Delete the truly dormant per-tag
+     tween state:
      `UIView::Impl::PropertyAnimationState` (`UIViewImpl.h:106`),
-     `PathNodeAnimationState` (`UIViewImpl.h:119`), the
-     `EffectAnimationKey*` enum (`UIViewImpl.h:125–138`), and the
+     `PathNodeAnimationState` (`UIViewImpl.h:119`), and the
      `advanceAnimations` declaration (`UIViewImpl.h:217`) plus its
-     no-op body at `UIView.Animation.cpp:194–202`. None of these
-     have non-header `.cpp` references after the scalar-routing
-     work landed; D0 grep confirms.
+     no-op body at `UIView.Animation.cpp:194–202`. **Do NOT delete
+     the `EffectAnimationKey*` enum** — `UIView.Update.cpp:244–266`
+     reads the Shadow* nine values to merge animated shadow channels
+     into the resolved effect state. D4 keeps Shadow* and trims only
+     the unreferenced trailing constants `GaussianRadius`,
+     `DirectionalRadius`, `DirectionalAngle` (D0's "all three are
+     unreferenced" grep was wrong; re-verified 2026-06-03 during D4
+     prep).
 
 - **D5 — `ComputedStyle` re-key: split per-property,
   `(NodeId, PropertyKey) → TypedValue`.** With D4 in,
@@ -1859,15 +1874,64 @@ Pending (one entry per Tier-D sub-phase from §5):
   `compositor != nullptr` guard around `setRoot`'s observe bracket
   collapsed to nothing once the bracket was gone, so `setRoot` is
   now a plain assignment.)
-- [ ] **D4** — Anim Tier C: add path-node `animatePropertyAt`
+- [x] **D4** — Anim Tier C: add path-node `animatePropertyAt`
   routing (`PathNodeX/Y` with `subIndex=nodeIndex`); delete dormant
   header symbols `advanceAnimations` / `PropertyAnimationState` /
-  `PathNodeAnimationState` / `EffectAnimationKey*`. Scalar
-  `startOrUpdateAnimation` → scheduler routing is already in tree.
-- [ ] **D5** — split `computedStyles_` per-property into
+  `PathNodeAnimationState`; trim unused `EffectAnimationKey*` tail
+  constants (Shadow* nine kept — live read by `UIView.Update.cpp`).
+  Scalar `startOrUpdateAnimation` → scheduler routing was already
+  in tree. (DONE 2026-06-03; full-tree `ninja` builds 103/103
+  green. New: `AnimationScheduler::tweenPropertyAt<T>` convenience
+  helper; `UIView::PathNodeAxis` enum + `UIView::animatePathNode`
+  public entry; `Impl::startOrUpdatePathNodeAnimation` +
+  `Impl::animatedPathNodeValue` + sibling
+  `pathNodeAnimationTargets_` map for the to-match short-circuit;
+  anon-NS helpers `pathNodeAxisToProperty` + `packPathNodeKey`.
+  Removed: `Impl::PropertyAnimationState`,
+  `Impl::PathNodeAnimationState`, `Impl::advanceAnimations` decl +
+  no-op body, `EffectAnimationKey{Gaussian,Directional}*` tail
+  constants. D0 reconciliation correction noted: D0 grep missed
+  `UIView.Update.cpp:244–266` reading `EffectAnimationKeyShadow*`,
+  so the enum stays (Shadow* nine kept) instead of being fully
+  deleted as the original D4 wording said.)
+- [x] **D5** — split `computedStyles_` per-property into
   `Map<(NodeId, PropertyKey, subIndex), TypedValue>`; Paint reads
   via a uniform `resolved(n,k,fallback)` helper that chains
-  scheduler → style table → UA default.
+  scheduler → style table → UA default. (DONE 2026-06-03; full-tree
+  `ninja` builds 81/81 green. **PropertyKey additions** in
+  `AnimationScheduler.h`: `DropShadow`, `TextFont`, `TextLayout`,
+  `TextLineLimit` (existing `BackgroundColor`, `FillBrush`,
+  `TextColor` reused). **New machinery** in `UIViewImpl.h`:
+  `StyleValue` variant (sibling of `AnimatedValue` — includes Font
+  handle + `TextLayoutDescriptor` slots that have no place in the
+  animation runtime); `StyleTable` class wrapping a
+  `unordered_map<PropertyTableKey, StyleValue, PropertyTableKeyHash>`;
+  `UIViewInternalDetail::VariantHas<T,V>` trait so `Impl::resolved<T>`
+  can `if constexpr`-gate the scheduler probe at compile time when
+  `T` isn't a member of `AnimatedValue` (non-animatable types like
+  Font would otherwise trip the libc++ tuple `static_assert`).
+  **Two reader helpers**: `Impl::resolved<T>(node, key, fallback)`
+  (UA-default flavor) and `Impl::resolvedOptional<T>(node, key)`
+  (used for cells that may legitimately be unset, e.g. `DropShadow`).
+  **Cells written by `resolveStyles()`**: per UIView — `BackgroundColor`
+  on `View::nodeId()`; per element — `FillBrush`, `DropShadow`,
+  `TextFont`, `TextColor`, `TextLayout`, `TextLineLimit` on
+  `ensureElementNodeId(tag)`. **Paint reader** (`UIView::paint()`)
+  rewritten — every pre-D5 `computed.X.Y` field access now goes
+  through `resolved<T>` / `resolvedOptional<T>`. **Deletions**:
+  `Impl::resolvedViewStyle_` field, `Impl::computedStyles_` field,
+  `Impl::computedStyleFor()` method, `UIViewInternal::ComputedStyle`
+  aggregate. `Resolved{View,Text,Effect}Style` survive as transient
+  builder types — they're the return shapes of the `resolve*Style()`
+  helpers that `resolveStyles()` calls to split into cells.
+  **Orphan writers** (`useBorder`, `borderColor`, `borderWidth` on
+  ResolvedViewStyle; `gaussianBlur`, `directionalBlur` + the three
+  `Transition` blocks on ResolvedEffectStyle) are no longer
+  written into cells — pre-D5 they were aggregate fields with no
+  Paint reader either, so this is behavior-preserving. D6 will
+  wire them when the Style cascade lights up readers. Stale
+  cross-reference comments updated in `View.h`, `View.Core.cpp`,
+  `UIView.h`, `UIView.Animation.cpp`.)
 - [ ] **D6** — Style Tier 2: `StyleSheet` (with named keyframe
   declarations) + `Selector` + `StyleRule` + `AppWindow::styleSheets()`
   shared stack + `StyleResolver::resolve(node)` in Phase 2 + pseudo-

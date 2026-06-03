@@ -317,10 +317,11 @@ namespace OmegaWTK {
         /// resolves this view's style into its private cache (read by
         /// the subsequent Paint pass). Default is a no-op (base `View`s
         /// have no style of their own). `UIView` overrides to run the
-        /// existing `resolveViewStyle` + per-element resolution into
-        /// `impl_->resolvedViewStyle_` / `impl_->computedStyles_`. Called
-        /// once per dirty node by `FrameBuilder::buildFrame`'s Style
-        /// pass before Layout / Paint.
+        /// `resolveViewStyle` + per-element resolution into the
+        /// per-property `styleTable_` (Tier D / D5, 2026-06-03 — pre-D5
+        /// this populated the `resolvedViewStyle_` + `computedStyles_`
+        /// aggregate cache). Called once per dirty node by
+        /// `FrameBuilder::buildFrame`'s Style pass before Layout / Paint.
         virtual void resolveStyles();
 
         /// Phase 4.7.2: the polymorphic Layout-pass hook for *intra-node*

@@ -61,9 +61,21 @@ enum class PropertyKey : std::uint16_t {
     TransformX, TransformY,
     TransformScaleX, TransformScaleY,
     TransformRotation,
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+    // aggregate drop-shadow cell. Animatable shadow channels still
+    // ride their own (ShadowOffsetX/Y, ShadowBlur, ShadowColor)
+    // scalar keys — `DropShadow` carries the resolved-style baseline
+    // the Shadow channel animations layer on top of during Paint.
+    DropShadow,
 
     // Text
     TextColor, TextSize,
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+    // text-style cells written by `resolveStyles()` and read during
+    // Paint via the `resolved<T>()` helper. `TextFont` holds a
+    // `SharedHandle<Composition::Font>`, `TextLayout` a
+    // `Composition::TextLayoutDescriptor`, `TextLineLimit` a uint32.
+    TextFont, TextLayout, TextLineLimit,
 
     // Layout (read by the Layout phase — layout-affecting)
     LayoutWidth, LayoutHeight,
@@ -159,6 +171,20 @@ public:
             NodeId node, PropertyKey key, std::uint32_t subIndex,
             Composition::KeyframeTrack<T> track,
             Composition::TimingOptions timing = {});
+
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    /// from→to convenience over `animatePropertyAt`, mirroring
+    /// `tweenProperty` but threading `subIndex` so path-node and
+    /// gradient-stop tweens key by `(node, key, subIndex)` instead
+    /// of collapsing every sub-cell onto `subIndex=0`. Used by
+    /// `UIView::Impl::startOrUpdatePathNodeAnimation` to back
+    /// `UIView::animatePathNode`.
+    template<typename T>
+    Composition::AnimationHandle tweenPropertyAt(
+            NodeId node, PropertyKey key, std::uint32_t subIndex,
+            T from, T to,
+            Composition::TimingOptions timing = {},
+            SharedHandle<Composition::AnimationCurve> curve = Composition::AnimationCurve::Linear());
 
     // ---- Callback animations (fire apply() from tick) ---------------
 
@@ -264,6 +290,19 @@ Composition::AnimationHandle AnimationScheduler::tweenProperty(
     keys.push_back(Composition::KeyframeValue<T>{0.f, std::move(from), std::move(curve)});
     keys.push_back(Composition::KeyframeValue<T>{1.f, std::move(to),   nullptr});
     return animateProperty<T>(node, key, Composition::KeyframeTrack<T>::From(keys), timing);
+}
+
+template<typename T>
+Composition::AnimationHandle AnimationScheduler::tweenPropertyAt(
+        NodeId node, PropertyKey key, std::uint32_t subIndex,
+        T from, T to,
+        Composition::TimingOptions timing,
+        SharedHandle<Composition::AnimationCurve> curve){
+    OmegaCommon::Vector<Composition::KeyframeValue<T>> keys;
+    keys.push_back(Composition::KeyframeValue<T>{0.f, std::move(from), std::move(curve)});
+    keys.push_back(Composition::KeyframeValue<T>{1.f, std::move(to),   nullptr});
+    return animatePropertyAt<T>(node, key, subIndex,
+                                Composition::KeyframeTrack<T>::From(keys), timing);
 }
 
 template<typename T>

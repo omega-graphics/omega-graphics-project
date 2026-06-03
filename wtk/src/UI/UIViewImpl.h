@@ -7,8 +7,83 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <type_traits>
+#include <unordered_map>
+#include <variant>
 
 namespace OmegaWTK {
+
+namespace UIViewInternalDetail {
+
+// Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+// compile-time membership check for `std::variant`. Used to gate the
+// animation-scheduler probe inside `Impl::resolved<T>` — querying
+// `AnimationScheduler::value<T>` with a `T` that isn't in
+// `AnimatedValue` triggers a `std::get_if` static_assert at the
+// libc++ tuple machinery, so we have to skip the probe at compile
+// time for non-animatable types (Font handle, TextLayoutDescriptor)
+// rather than relying on the scheduler returning nullopt at runtime.
+template<typename T, typename Variant>
+struct VariantHas : std::false_type {};
+
+template<typename T, typename... Ts>
+struct VariantHas<T, std::variant<Ts...>> :
+    std::disjunction<std::is_same<T, Ts>...> {};
+
+template<typename T, typename Variant>
+inline constexpr bool VariantHas_v = VariantHas<T, Variant>::value;
+
+}
+
+// Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+// the per-property resolved-style cell. Sibling of the scheduler's
+// `AnimatedValue` — same key space (`PropertyTableKey`) and same
+// `std::monostate` empty slot, but the value alternatives are
+// resolved-style types (which include non-animatable handles like
+// Font and TextLayoutDescriptor that have no business in the
+// animation runtime's variant). The `resolved<T>` helper on
+// `UIView::Impl` queries the scheduler first (animation overrides)
+// then the style cell here, then the caller's UA default.
+using StyleValue = std::variant<
+    std::monostate,
+    Composition::Color,
+    SharedHandle<Composition::Brush>,
+    Composition::LayerEffect::DropShadowParams,
+    SharedHandle<Composition::Font>,
+    Composition::TextLayoutDescriptor,
+    std::uint32_t>;
+
+/// Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+/// per-property resolved-style table. Owns one cell per resolved
+/// property per node; written by `UIView::resolveStyles()` and read
+/// from Paint via `UIView::Impl::resolved<T>`. Keyed by the
+/// scheduler's `PropertyTableKey` shape so the animation side table
+/// and the style side table can be queried interchangeably by the
+/// same `(NodeId, PropertyKey, subIndex)` triple.
+class StyleTable {
+public:
+    void clear() { cells_.clear(); }
+
+    template<typename T>
+    void set(NodeId node, PropertyKey key, T value, std::uint32_t subIndex = 0){
+        cells_[PropertyTableKey{node, key, subIndex}] = StyleValue{std::move(value)};
+    }
+
+    template<typename T>
+    Core::Optional<T> get(NodeId node, PropertyKey key, std::uint32_t subIndex = 0) const {
+        auto it = cells_.find(PropertyTableKey{node, key, subIndex});
+        if(it == cells_.end()){
+            return {};
+        }
+        if(const T * typed = std::get_if<T>(&it->second)){
+            return *typed;
+        }
+        return {};
+    }
+
+private:
+    std::unordered_map<PropertyTableKey, StyleValue, PropertyTableKeyHash> cells_;
+};
 
 namespace UIViewInternal {
 
@@ -44,19 +119,19 @@ struct ResolvedEffectStyle {
     ResolvedEffectTransition directionalBlurTransition {};
 };
 
-// Tier B / B2: the resolved style for one UIView element — the output
-// of the Style phase, consumed during Paint. It is fully resolved
-// (visual + text; layout lives on `UIElementLayoutSpec::layout`). The
-// effect-presence `Optional`s inside `ResolvedEffectStyle` are resolved
-// values ("resolved to no effect"), not unresolved-property markers.
-// `brush` is always a concrete resolved brush (white default) for shape
-// elements. Block 3's `StyleResolver` will produce this; Tier D re-keys
-// the cache from `UIElementTag` to `(NodeId,PropertyKey)`.
-struct ComputedStyle {
-    SharedHandle<Composition::Brush> brush = nullptr;
-    ResolvedEffectStyle effects {};
-    ResolvedTextStyle text {};
-};
+// Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+// `ComputedStyle` aggregate deleted. Pre-D5 it was the per-element
+// resolved-style triple `{brush, effects, text}` stored in
+// `Impl::computedStyles_` and read via `computedStyleFor(tag)`. The
+// resolved-style cache is now the per-property `StyleTable` (one
+// cell per resolved property per element, keyed by
+// `(NodeId, PropertyKey, subIndex)`), and Paint reads via
+// `Impl::resolved<T>(node, key, fallback)`. The transient builder
+// types `ResolvedViewStyle` / `ResolvedTextStyle` /
+// `ResolvedEffectStyle` survive as the return shapes of the
+// `resolve*Style()` helpers used inside `UIView::resolveStyles()`;
+// only the aggregate that *stored* their union as a Map value
+// disappears.
 
 struct StyleScope {
     bool touchesRoot = false;
@@ -103,25 +178,17 @@ struct UIView::Impl {
         bool visibilityDirty = true;
     };
 
-    struct PropertyAnimationState {
-        bool active = false;
-        float from = 0.f;
-        float to = 0.f;
-        float value = 0.f;
-        float lastProgress = 0.f;
-        float durationSec = 0.f;
-        std::chrono::steady_clock::time_point startTime {};
-        SharedHandle<Composition::AnimationCurve> curve = nullptr;
-        Composition::AnimationHandle compositionHandle {};
-        bool compositionClock = false;
-    };
-
-    struct PathNodeAnimationState {
-        int nodeIndex = -1;
-        PropertyAnimationState x;
-        PropertyAnimationState y;
-    };
-
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    // `PropertyAnimationState` + `PathNodeAnimationState` deleted —
+    // both were Phase-4.4-vintage tween-bookkeeping carcasses with
+    // no `.cpp` reader after the scheduler took over the tween pump.
+    //
+    // The `EffectAnimationKey*` enum kept: `UIView.Update.cpp:244–
+    // 266` reads the Shadow* nine values via `animatedValue(tag,
+    // key)` to merge animated shadow channels into the resolved
+    // effect state. The trailing three (`GaussianRadius`,
+    // `DirectionalRadius`, `DirectionalAngle`) had zero in-tree
+    // readers and are trimmed below.
     enum : int {
         EffectAnimationKeyShadowOffsetX = 1000,
         EffectAnimationKeyShadowOffsetY,
@@ -131,10 +198,7 @@ struct UIView::Impl {
         EffectAnimationKeyShadowColorR,
         EffectAnimationKeyShadowColorG,
         EffectAnimationKeyShadowColorB,
-        EffectAnimationKeyShadowColorA,
-        EffectAnimationKeyGaussianRadius,
-        EffectAnimationKeyDirectionalRadius,
-        EffectAnimationKeyDirectionalAngle
+        EffectAnimationKeyShadowColorA
     };
 
     explicit Impl(UIView & ownerRef,UIViewTag tagValue);
@@ -171,6 +235,14 @@ struct UIView::Impl {
     // tracks the last requested `.to` per `(tag, key)` so a repeated call
     // with the same target is a no-op rather than a fresh tween.
     OmegaCommon::Map<UIElementTag,OmegaCommon::Map<int,float>> animationTargets_;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    // sibling of `animationTargets_` for the path-node sub-cell
+    // surface. Outer key is the element tag, inner key packs
+    // `(axisKey, nodeIndex)` into a 64-bit slot so two different
+    // node indices don't collide on the same axis. Same to-match
+    // short-circuit semantics — repeated calls with the same `(tag,
+    // axis, nodeIndex, to)` are a no-op.
+    OmegaCommon::Map<UIElementTag,OmegaCommon::Map<std::uint64_t,float>> pathNodeAnimationTargets_;
     OmegaCommon::Map<UIElementTag,Composition::Color> lastResolvedElementColor;
     OmegaCommon::Map<UIElementTag,EffectState> lastResolvedEffects;
     OmegaCommon::Map<UIElementTag,Shape> previousShapeByTag;
@@ -178,11 +250,19 @@ struct UIView::Impl {
     UIViewLayoutV2 currentLayoutV2_;
     OmegaCommon::Map<UIElementTag,Composition::Rect> lastResolvedV2Rects_;
 
-    // Tier B / B2: resolved-style cache (the Style phase's output).
-    // `resolveStyles()` rebuilds these each frame for now; B3 will gate
-    // the rebuild on DirtyBit::Style. Paint reads them, never writes.
-    UIViewInternal::ResolvedViewStyle resolvedViewStyle_ {};
-    OmegaCommon::Map<UIElementTag,UIViewInternal::ComputedStyle> computedStyles_;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+    // resolved-style cache, re-shaped from the pre-D5 aggregates
+    // (`resolvedViewStyle_` + per-element `computedStyles_`) to one
+    // unified per-property table keyed by `(NodeId, PropertyKey,
+    // subIndex)` — the same shape the AnimationScheduler side-table
+    // uses. `resolveStyles()` writes cells per resolved property
+    // per element (the view-level cells use `View::nodeId()`); Paint
+    // reads via `resolved<T>(node, key, fallback)` which chains
+    // scheduler → style table → UA default. The aggregate
+    // `ResolvedViewStyle` / `ResolvedTextStyle` / `ResolvedEffectStyle`
+    // / `ComputedStyle` structs remain as transient builder types
+    // inside `resolveStyles()`; they are no longer stored fields.
+    StyleTable styleTable_ {};
 
     // Tier B / B3: arranged layout (the Layout phase's output). `arrange()`
     // writes both; `paint()` reads them. Rebuilt every frame for now.
@@ -214,8 +294,37 @@ struct UIView::Impl {
                                 float to,
                                 float durationSec,
                                 SharedHandle<Composition::AnimationCurve> curve);
-    bool advanceAnimations();
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    // path-node sibling. Keys the scheduler side-table cell by
+    // `(ensureElementNodeId(tag), PropertyKey::PathNodeX/Y,
+    // subIndex=nodeIndex)` via `tweenPropertyAt<float>`, so two
+    // different node indices on the same element animate
+    // independently. `axisKey` is one of
+    // `ElementAnimationKeyPathNodeX/Y` — same `int` mapping the
+    // public `UIView::PathNodeAxis` casts to. Maintains the same
+    // `(tag, axis, nodeIndex, to)` to-match short-circuit semantics
+    // as `startOrUpdateAnimation`, via `pathNodeAnimationTargets_`.
+    void startOrUpdatePathNodeAnimation(const UIElementTag & tag,
+                                        int axisKey,
+                                        int nodeIndex,
+                                        float from,
+                                        float to,
+                                        float durationSec,
+                                        SharedHandle<Composition::AnimationCurve> curve);
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    // `advanceAnimations()` deleted. Phase 4.4 already proved no
+    // caller (`UIView.Update.cpp:114` comment confirms);  the
+    // previously kept-as-no-op stub goes with this sweep.
     Core::Optional<float> animatedValue(const UIElementTag & tag,int key) const;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
+    // path-node reader counterpart. `(NodeId, PathNodeX/Y,
+    // subIndex=nodeIndex)` lookup against the scheduler side-table.
+    // Returns nullopt for an untagged element, unknown nodeIndex, or
+    // a cell with no live tween — Paint then falls through to the
+    // resolved-style fallback.
+    Core::Optional<float> animatedPathNodeValue(const UIElementTag & tag,
+                                                int axisKey,
+                                                int nodeIndex) const;
     // Phase 4.4: lazy NodeId allocation for one of this UIView's element
     // tags. `ensure*` writes the map (used by registration paths);
     // `try*` is read-only (used by `animatedValue` so an unknown tag
@@ -231,11 +340,52 @@ struct UIView::Impl {
     SharedHandle<Composition::Font> resolveFallbackTextFont();
     void convertLegacyLayoutToV2();
 
-    // Tier B / B2: read the cached resolved style for an element.
-    // Returns a default (empty) style for tags not in the current
-    // layout — a defensive fall-through; every live element is
-    // populated by resolveStyles() before Paint reads it.
-    const UIViewInternal::ComputedStyle & computedStyleFor(const UIElementTag & tag) const;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+    // unified resolved-property read. Animation scheduler is queried
+    // first (live tweens override resolved-style baselines); then
+    // the style table written by `resolveStyles()`; finally the
+    // caller's UA default. Returns the fallback only when neither
+    // table holds a value of the requested type at the cell.
+    template<typename T>
+    T resolved(NodeId node, PropertyKey key, T fallback,
+               std::uint32_t subIndex = 0) const {
+        if constexpr (UIViewInternalDetail::VariantHas_v<T, AnimatedValue>){
+            if(auto * scheduler = activeAnimationScheduler()){
+                if(auto v = scheduler->value<T>(node, key, subIndex)){
+                    return *v;
+                }
+            }
+        }
+        if(auto v = styleTable_.get<T>(node, key, subIndex)){
+            return *v;
+        }
+        return fallback;
+    }
+
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
+    /// Optional sibling of `resolved<T>` for cells that may legitimately
+    /// be unset (e.g., `DropShadow`: not every element has a shadow).
+    /// Same chain — scheduler → style table — but returns `{}` instead
+    /// of a caller-supplied fallback when neither holds the cell.
+    template<typename T>
+    Core::Optional<T> resolvedOptional(NodeId node, PropertyKey key,
+                                       std::uint32_t subIndex = 0) const {
+        if constexpr (UIViewInternalDetail::VariantHas_v<T, AnimatedValue>){
+            if(auto * scheduler = activeAnimationScheduler()){
+                if(auto v = scheduler->value<T>(node, key, subIndex)){
+                    return *v;
+                }
+            }
+        }
+        return styleTable_.get<T>(node, key, subIndex);
+    }
+
+private:
+    // Internal: same `AppWindow::activeFrameBuilder()` lookup the
+    // `UIView.Animation.cpp` helpers do. Lives on Impl so the
+    // templated `resolved<T>` header below can call it without
+    // re-exposing the inline lookup at every call site.
+    AnimationScheduler * activeAnimationScheduler() const;
 };
 
 }
