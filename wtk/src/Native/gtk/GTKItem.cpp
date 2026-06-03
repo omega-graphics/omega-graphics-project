@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 namespace OmegaWTK::Native::GTK {
 
@@ -40,21 +41,6 @@ static gint toGtkSize(float value){
     return std::max<gint>(1,toGtkCoordinate(value));
 }
 
-static ModifierFlags modifierFlagsFromState(guint state){
-    ModifierFlags flags;
-    flags.shift = (state & GDK_SHIFT_MASK) != 0;
-    flags.control = (state & GDK_CONTROL_MASK) != 0;
-    flags.alt = (state & GDK_MOD1_MASK) != 0;
-#ifdef GDK_META_MASK
-    flags.meta = (state & GDK_META_MASK) != 0;
-#endif
-#ifdef GDK_SUPER_MASK
-    flags.meta = flags.meta || ((state & GDK_SUPER_MASK) != 0);
-#endif
-    flags.capsLock = (state & GDK_LOCK_MASK) != 0;
-    return flags;
-}
-
 static void setWidgetVisibility(GtkWidget *widget,bool visible){
     if(widget == nullptr){
         return;
@@ -66,324 +52,38 @@ static void setWidgetVisibility(GtkWidget *widget,bool visible){
         gtk_widget_hide(widget);
     }
 }
-
-static gboolean onButtonPressEvent(GtkWidget *,GdkEventButton *event,gpointer data){
-    auto *self = static_cast<GTKItem *>(data);
-    if(self == nullptr || event == nullptr){
-        return FALSE;
-    }
-
-    NativeEvent::EventType type = NativeEvent::Unknown;
-    if(event->button == 1u){
-        type = NativeEvent::LMouseDown;
-    }
-    else if(event->button == 3u){
-        type = NativeEvent::RMouseDown;
-    }
-    else {
-        return FALSE;
-    }
-
-    Composition::Point2D clientPos {
-        static_cast<float>(event->x),
-        static_cast<float>(event->y)
-    };
-    Composition::Point2D screenPos {
-        static_cast<float>(event->x_root),
-        static_cast<float>(event->y_root)
-    };
-
-    NativeEventParams params = nullptr;
-    if(type == NativeEvent::LMouseDown){
-        auto *mouseParams = new LMouseDownParams();
-        mouseParams->position = clientPos;
-        mouseParams->screenPosition = screenPos;
-        mouseParams->modifiers = modifierFlagsFromState(event->state);
-        mouseParams->clickCount = 1u;
-        params = mouseParams;
-    }
-    else {
-        auto *mouseParams = new RMouseDownParams();
-        mouseParams->position = clientPos;
-        mouseParams->screenPosition = screenPos;
-        mouseParams->modifiers = modifierFlagsFromState(event->state);
-        mouseParams->clickCount = 1u;
-        params = mouseParams;
-    }
-
-    self->emitIfPossible(NativeEventPtr(new NativeEvent(type,params)));
-    return FALSE;
-}
-
-static gboolean onButtonReleaseEvent(GtkWidget *,GdkEventButton *event,gpointer data){
-    auto *self = static_cast<GTKItem *>(data);
-    if(self == nullptr || event == nullptr){
-        return FALSE;
-    }
-
-    NativeEvent::EventType type = NativeEvent::Unknown;
-    if(event->button == 1u){
-        type = NativeEvent::LMouseUp;
-    }
-    else if(event->button == 3u){
-        type = NativeEvent::RMouseUp;
-    }
-    else {
-        return FALSE;
-    }
-
-    Composition::Point2D clientPos {
-        static_cast<float>(event->x),
-        static_cast<float>(event->y)
-    };
-    Composition::Point2D screenPos {
-        static_cast<float>(event->x_root),
-        static_cast<float>(event->y_root)
-    };
-
-    NativeEventParams params = nullptr;
-    if(type == NativeEvent::LMouseUp){
-        auto *mouseParams = new LMouseUpParams();
-        mouseParams->position = clientPos;
-        mouseParams->screenPosition = screenPos;
-        mouseParams->modifiers = modifierFlagsFromState(event->state);
-        mouseParams->clickCount = 1u;
-        params = mouseParams;
-    }
-    else {
-        auto *mouseParams = new RMouseUpParams();
-        mouseParams->position = clientPos;
-        mouseParams->screenPosition = screenPos;
-        mouseParams->modifiers = modifierFlagsFromState(event->state);
-        mouseParams->clickCount = 1u;
-        params = mouseParams;
-    }
-
-    self->emitIfPossible(NativeEventPtr(new NativeEvent(type,params)));
-    return FALSE;
-}
-
-static gboolean onMotionNotifyEvent(GtkWidget *,GdkEventMotion *event,gpointer data){
-    auto *self = static_cast<GTKItem *>(data);
-    if(self == nullptr || event == nullptr){
-        return FALSE;
-    }
-
-    auto *params = new CursorMoveParams();
-    params->position = Composition::Point2D {
-        static_cast<float>(event->x),
-        static_cast<float>(event->y)
-    };
-    params->screenPosition = Composition::Point2D {
-        static_cast<float>(event->x_root),
-        static_cast<float>(event->y_root)
-    };
-    params->modifiers = modifierFlagsFromState(event->state);
-    self->emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::CursorMove,params)));
-    return FALSE;
-}
-
-static gboolean onEnterNotifyEvent(GtkWidget *,GdkEventCrossing *event,gpointer data){
-    auto *self = static_cast<GTKItem *>(data);
-    if(self == nullptr || event == nullptr){
-        return FALSE;
-    }
-
-    auto *params = new CursorEnterParams();
-    params->position = Composition::Point2D {
-        static_cast<float>(event->x),
-        static_cast<float>(event->y)
-    };
-    self->emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::CursorEnter,params)));
-    return FALSE;
-}
-
-static gboolean onLeaveNotifyEvent(GtkWidget *,GdkEventCrossing *event,gpointer data){
-    auto *self = static_cast<GTKItem *>(data);
-    if(self == nullptr || event == nullptr){
-        return FALSE;
-    }
-
-    auto *params = new CursorExitParams();
-    params->position = Composition::Point2D {
-        static_cast<float>(event->x),
-        static_cast<float>(event->y)
-    };
-    self->emitIfPossible(NativeEventPtr(new NativeEvent(NativeEvent::CursorExit,params)));
-    return FALSE;
-}
-
-static gboolean onScrollEvent(GtkWidget *,GdkEventScroll *event,gpointer data){
-    auto *self = static_cast<GTKItem *>(data);
-    if(self == nullptr || event == nullptr){
-        return FALSE;
-    }
-
-    Composition::Point2D scrollPos {
-        static_cast<float>(event->x),
-        static_cast<float>(event->y)
-    };
-
-    constexpr double epsilon = 0.0001;
-    if(event->direction == GDK_SCROLL_SMOOTH){
-        double deltaX = 0.0;
-        double deltaY = 0.0;
-        if(gdk_event_get_scroll_deltas(reinterpret_cast<GdkEvent *>(event),&deltaX,&deltaY)){
-            if(std::fabs(deltaX) > epsilon || std::fabs(deltaY) > epsilon){
-                self->emitIfPossible(NativeEventPtr(new NativeEvent(
-                        NativeEvent::ScrollWheel,
-                        new ScrollParams {static_cast<float>(deltaX),
-                                          static_cast<float>(deltaY),
-                                          scrollPos})));
-            }
-            if(std::fabs(deltaX) > epsilon){
-                auto type = deltaX > 0.0 ? NativeEvent::ScrollRight : NativeEvent::ScrollLeft;
-                self->emitIfPossible(NativeEventPtr(new NativeEvent(type,new ScrollParams {
-                    static_cast<float>(deltaX),
-                    0.f,
-                    scrollPos
-                })));
-            }
-            if(std::fabs(deltaY) > epsilon){
-                auto type = deltaY > 0.0 ? NativeEvent::ScrollDown : NativeEvent::ScrollUp;
-                self->emitIfPossible(NativeEventPtr(new NativeEvent(type,new ScrollParams {
-                    0.f,
-                    static_cast<float>(deltaY),
-                    scrollPos
-                })));
-            }
-        }
-        return FALSE;
-    }
-
-    float dirDx = 0.f, dirDy = 0.f;
-    switch(event->direction){
-        case GDK_SCROLL_UP:
-            dirDy = -1.f;
-            self->emitIfPossible(NativeEventPtr(new NativeEvent(
-                    NativeEvent::ScrollUp,
-                    new ScrollParams {0.f,-1.f,scrollPos})));
-            break;
-        case GDK_SCROLL_DOWN:
-            dirDy = 1.f;
-            self->emitIfPossible(NativeEventPtr(new NativeEvent(
-                    NativeEvent::ScrollDown,
-                    new ScrollParams {0.f,1.f,scrollPos})));
-            break;
-        case GDK_SCROLL_LEFT:
-            dirDx = -1.f;
-            self->emitIfPossible(NativeEventPtr(new NativeEvent(
-                    NativeEvent::ScrollLeft,
-                    new ScrollParams {-1.f,0.f,scrollPos})));
-            break;
-        case GDK_SCROLL_RIGHT:
-            dirDx = 1.f;
-            self->emitIfPossible(NativeEventPtr(new NativeEvent(
-                    NativeEvent::ScrollRight,
-                    new ScrollParams {1.f,0.f,scrollPos})));
-            break;
-        default:
-            break;
-    }
-    if(std::fabs(dirDx) > epsilon || std::fabs(dirDy) > epsilon){
-        self->emitIfPossible(NativeEventPtr(new NativeEvent(
-                NativeEvent::ScrollWheel,
-                new ScrollParams {dirDx * 10.f, dirDy * 10.f, scrollPos})));
-    }
-    return FALSE;
-}
-
-static void onRenderWidgetMap(GtkWidget *widget,gpointer){
-    if(widget == nullptr){
-        return;
-    }
-    GdkWindow *window = gtk_widget_get_window(widget);
-    if(window != nullptr){
-        gdk_window_ensure_native(window);
-    }
-}
-
-static void onSizeAllocate(GtkWidget *,GtkAllocation *allocation,gpointer data){
-    auto *self = static_cast<GTKItem *>(data);
-    if(self == nullptr || allocation == nullptr){
-        return;
-    }
-    self->handleAllocation(*allocation);
-}
-
-static void onHorizontalAdjustmentChanged(GtkAdjustment *adjustment,gpointer data){
-    auto *self = static_cast<GTKItem *>(data);
-    if(self == nullptr || adjustment == nullptr){
-        return;
-    }
-    self->handleScrollAdjustmentValue(gtk_adjustment_get_value(adjustment),true);
-}
-
-static void onVerticalAdjustmentChanged(GtkAdjustment *adjustment,gpointer data){
-    auto *self = static_cast<GTKItem *>(data);
-    if(self == nullptr || adjustment == nullptr){
-        return;
-    }
-    self->handleScrollAdjustmentValue(gtk_adjustment_get_value(adjustment),false);
-}
 }
 
 GTKItem::GTKItem(Composition::Rect rect,Native::ItemType type):
 rect(sanitizeRect(rect,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f})),
 isScrollItem(type == Native::ScrollItem){
+    // Legacy path — only kept for the cross-platform make_native_item
+    // factory signature. Under §2.13 / the virtual view model nobody
+    // calls this on GTK: the root NativeItem is constructed via the
+    // toplevel-binding ctor below, and non-root NativeItems are not
+    // requested by the virtual view tree. If something does reach this
+    // path, log and synthesize a minimal non-rendering widget so the
+    // call doesn't crash.
+    std::cerr << "[OmegaWTK][GTK] WARN: legacy GTKItem(Rect, ItemType) "
+                 "constructor invoked — virtual view model expects "
+                 "GTKAppWindow to bind the root item to the toplevel."
+              << std::endl;
     if(isScrollItem){
         widget = gtk_scrolled_window_new(nullptr,nullptr);
         contentWidget = nullptr;
         gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(widget),GTK_POLICY_NEVER,GTK_POLICY_NEVER);
-        horizontalScrollEnabled = false;
-        verticalScrollEnabled = false;
-        auto *horizontal = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(widget));
-        if(horizontal != nullptr){
-            lastHorizontalScrollValue = gtk_adjustment_get_value(horizontal);
-            g_signal_connect(horizontal,"value-changed",G_CALLBACK(onHorizontalAdjustmentChanged),this);
-        }
-        auto *vertical = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
-        if(vertical != nullptr){
-            lastVerticalScrollValue = gtk_adjustment_get_value(vertical);
-            g_signal_connect(vertical,"value-changed",G_CALLBACK(onVerticalAdjustmentChanged),this);
-        }
     }
     else {
-        // Drawing area as direct child (no overlay/fixed wrapper) — matches the
-        // BlitTest topology so the GdkWindow Vulkan renders into isn't covered
-        // by a sibling GtkFixed window. Child native items are not supported
-        // in this configuration.
         widget = gtk_drawing_area_new();
         renderWidget = widget;
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
         gtk_widget_set_double_buffered(widget,FALSE);
 G_GNUC_END_IGNORE_DEPRECATIONS
         gtk_widget_set_app_paintable(widget,TRUE);
-        g_signal_connect(widget,"map",G_CALLBACK(onRenderWidgetMap),nullptr);
         contentWidget = nullptr;
     }
     if(widget != nullptr){
         g_object_add_weak_pointer(G_OBJECT(widget),reinterpret_cast<gpointer *>(&widget));
-        g_signal_connect(widget,"size-allocate",G_CALLBACK(onSizeAllocate),this);
-    }
-    auto *eventTarget = renderWidget != nullptr ? renderWidget : widget;
-    if(eventTarget != nullptr){
-        gtk_widget_add_events(eventTarget,
-                              GDK_BUTTON_PRESS_MASK
-                              | GDK_BUTTON_RELEASE_MASK
-                              | GDK_ENTER_NOTIFY_MASK
-                              | GDK_LEAVE_NOTIFY_MASK
-                              | GDK_POINTER_MOTION_MASK
-                              | GDK_SCROLL_MASK
-                              | GDK_SMOOTH_SCROLL_MASK);
-        g_signal_connect(eventTarget,"button-press-event",G_CALLBACK(onButtonPressEvent),this);
-        g_signal_connect(eventTarget,"button-release-event",G_CALLBACK(onButtonReleaseEvent),this);
-        g_signal_connect(eventTarget,"motion-notify-event",G_CALLBACK(onMotionNotifyEvent),this);
-        g_signal_connect(eventTarget,"enter-notify-event",G_CALLBACK(onEnterNotifyEvent),this);
-        g_signal_connect(eventTarget,"leave-notify-event",G_CALLBACK(onLeaveNotifyEvent),this);
-        if(!isScrollItem){
-            g_signal_connect(eventTarget,"scroll-event",G_CALLBACK(onScrollEvent),this);
-        }
     }
     if(renderWidget != nullptr){
         g_object_add_weak_pointer(G_OBJECT(renderWidget),reinterpret_cast<gpointer *>(&renderWidget));
@@ -394,11 +94,37 @@ G_GNUC_END_IGNORE_DEPRECATIONS
     updateWidgetSize();
 }
 
+GTKItem::GTKItem(Composition::Rect rect,GtkWidget *toplevel):
+widget(toplevel),
+renderWidget(nullptr),
+widgetBorrowed(true),
+rect(sanitizeRect(rect,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f})){
+    // Borrowed toplevel — GTKAppWindow owns lifetime. We weak-pointer
+    // the widget so a delete-event tear-down by GTK doesn't leave us
+    // holding a dangling reference; the dtor's `widgetBorrowed` flag
+    // keeps us from calling gtk_widget_destroy on something we don't
+    // own. We deliberately leave `renderWidget` null: a single
+    // `g_object_add_weak_pointer` clears exactly one pointer slot, so
+    // storing the same toplevel in both `widget` and `renderWidget`
+    // would leave `renderWidget` dangling after a delete-event. Code
+    // that wants the render target reads it through `resolveGdkWindow`,
+    // which falls back to `widget` when `renderWidget` is null.
+    if(widget != nullptr){
+        g_object_add_weak_pointer(G_OBJECT(widget),reinterpret_cast<gpointer *>(&widget));
+    }
+}
+
 GtkWidget *GTKItem::getWidget(){
     return widget;
 }
 
 void GTKItem::updateWidgetSize(){
+    if(widgetBorrowed){
+        // Toplevel sizing is GTKAppWindow's job (gtk_window_resize). Do
+        // not force a size-request on the borrowed widget — that would
+        // make the toplevel un-shrinkable below its current size.
+        return;
+    }
     if(widget != nullptr){
         gtk_widget_set_size_request(widget,toGtkSize(rect.w),toGtkSize(rect.h));
     }
@@ -471,7 +197,7 @@ void GTKItem::applyScrollPolicy(){
 }
 
 void GTKItem::moveInParent(){
-    if(widget == nullptr){
+    if(widget == nullptr || widgetBorrowed){
         return;
     }
     GtkWidget *parent = gtk_widget_get_parent(widget);
@@ -499,9 +225,11 @@ void GTKItem::resize(const Composition::Rect &newRect) {
 
 void GTKItem::enable() {
     isVisible = true;
-    setWidgetVisibility(widget,true);
-    setWidgetVisibility(renderWidget,true);
-    setWidgetVisibility(contentWidget,true);
+    if(!widgetBorrowed){
+        setWidgetVisibility(widget,true);
+        setWidgetVisibility(renderWidget,true);
+        setWidgetVisibility(contentWidget,true);
+    }
     if(clippedView != nullptr && clippedView->widget != nullptr){
         setWidgetVisibility(clippedView->widget,clippedView->isVisible);
         setWidgetVisibility(clippedView->contentWidget,clippedView->isVisible);
@@ -517,9 +245,11 @@ void GTKItem::enable() {
 
 void GTKItem::disable() {
     isVisible = false;
-    setWidgetVisibility(widget,false);
-    setWidgetVisibility(renderWidget,false);
-    setWidgetVisibility(contentWidget,false);
+    if(!widgetBorrowed){
+        setWidgetVisibility(widget,false);
+        setWidgetVisibility(renderWidget,false);
+        setWidgetVisibility(contentWidget,false);
+    }
 }
 
 void *GTKItem::getBinding() {
@@ -533,75 +263,18 @@ void *GTKItem::getBinding() {
 }
 
 void GTKItem::addChildNativeItem(NativeItemPtr nativeItem) {
-    auto item = std::dynamic_pointer_cast<GTKItem>(nativeItem);
-    if(item == nullptr || item->widget == nullptr){
-        return;
-    }
-    if(isScrollItem){
-        setClippedView(nativeItem);
-        return;
-    }
-    auto *container = contentWidget != nullptr ? contentWidget : widget;
-    if(container != nullptr && GTK_IS_FIXED(container)){
-        auto *existingParent = gtk_widget_get_parent(item->widget);
-        if(existingParent != nullptr && GTK_IS_CONTAINER(existingParent)){
-            gtk_container_remove(GTK_CONTAINER(existingParent),item->widget);
-        }
-        gtk_fixed_put(GTK_FIXED(container),item->widget,toGtkCoordinate(item->rect.pos.x),toGtkCoordinate(item->rect.pos.y));
-        item->updateWidgetSize();
-        childItems.push_back(item);
-        const bool childVisible = isVisible && item->isVisible;
-        setWidgetVisibility(item->widget,childVisible);
-        setWidgetVisibility(item->contentWidget,childVisible);
-    }
+    // Under the virtual view model the GTK backend never receives a
+    // child NativeItem request. Embedded native surfaces go through
+    // X11SurfaceHost via the visual tree, not through NativeItem.
+    (void)nativeItem;
 }
 
 void GTKItem::removeChildNativeItem(NativeItemPtr nativeItem) {
-    auto item = std::dynamic_pointer_cast<GTKItem>(nativeItem);
-    if(item == nullptr || item->widget == nullptr){
-        return;
-    }
-    auto it = childItems.begin();
-    while(it != childItems.end()){
-        if(*it == item){
-            childItems.erase(it);
-            break;
-        }
-        ++it;
-    }
-    auto *parent = gtk_widget_get_parent(item->widget);
-    if(parent != nullptr && GTK_IS_CONTAINER(parent)){
-        gtk_container_remove(GTK_CONTAINER(parent),item->widget);
-    }
-    if(clippedView == item){
-        clippedView = nullptr;
-    }
+    (void)nativeItem;
 }
 
 void GTKItem::setClippedView(SharedHandle<NativeItem> clippedView) {
-    if(!isScrollItem || widget == nullptr){
-        return;
-    }
-    auto next = std::dynamic_pointer_cast<GTKItem>(clippedView);
-    if(next == nullptr || next->widget == nullptr){
-        return;
-    }
-    if(this->clippedView != nullptr && this->clippedView->widget != nullptr){
-        auto *existingParent = gtk_widget_get_parent(this->clippedView->widget);
-        if(existingParent != nullptr && GTK_IS_CONTAINER(existingParent)){
-            gtk_container_remove(GTK_CONTAINER(existingParent),this->clippedView->widget);
-        }
-    }
-    auto *nextParent = gtk_widget_get_parent(next->widget);
-    if(nextParent != nullptr && GTK_IS_CONTAINER(nextParent)){
-        gtk_container_remove(GTK_CONTAINER(nextParent),next->widget);
-    }
-    gtk_container_add(GTK_CONTAINER(widget),next->widget);
-    next->updateWidgetSize();
-    const bool childVisible = isVisible && next->isVisible;
-    setWidgetVisibility(next->widget,childVisible);
-    setWidgetVisibility(next->contentWidget,childVisible);
-    this->clippedView = next;
+    (void)clippedView;
 }
 
 void GTKItem::toggleHorizontalScrollBar(bool &state) {
@@ -687,12 +360,14 @@ GTKItem::~GTKItem(){
     if(contentWidget != nullptr){
         g_object_remove_weak_pointer(G_OBJECT(contentWidget),reinterpret_cast<gpointer *>(&contentWidget));
     }
-    if(renderWidget != nullptr){
+    if(renderWidget != nullptr && (!widgetBorrowed || renderWidget != widget)){
         g_object_remove_weak_pointer(G_OBJECT(renderWidget),reinterpret_cast<gpointer *>(&renderWidget));
     }
     if(widget != nullptr){
         g_object_remove_weak_pointer(G_OBJECT(widget),reinterpret_cast<gpointer *>(&widget));
-        gtk_widget_destroy(widget);
+        if(!widgetBorrowed){
+            gtk_widget_destroy(widget);
+        }
         widget = nullptr;
     }
     renderWidget = nullptr;
@@ -705,10 +380,13 @@ GTKItem::~GTKItem(){
 
 namespace OmegaWTK::Native {
 NativeItemPtr make_native_item(Composition::Rect rect,Native::ItemType type,NativeItemPtr parent){
-    auto item = NativeItemPtr(new GTK::GTKItem(rect,type));
-    if(parent != nullptr){
-        parent->addChildNativeItem(item);
-    }
-    return item;
+    // Cross-platform factory entry point. Under the virtual view model
+    // GTK only ever receives the root request from GTKAppWindow, and
+    // GTKAppWindow uses the toplevel-binding ctor directly rather than
+    // going through this factory. Anything that lands here is a vestige
+    // of the old per-view NativeItem model; we honour the legacy ctor
+    // so dynamic_pointer_cast<GTKItem> on the result still works.
+    (void)parent;
+    return NativeItemPtr(new GTK::GTKItem(rect,type));
 }
 }

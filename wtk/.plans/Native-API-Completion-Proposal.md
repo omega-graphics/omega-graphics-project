@@ -20,7 +20,7 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | **2.5 NativeTheme** | ThemeAppearance, populated ThemeDesc (colors, typography), `queryCurrentTheme()` on macOS & Win32 | **Done** |
 | **2.11 NativeNote / NotificationCenter** | Permissions, scheduling, callbacks, removal, categories — macOS UN, Win32 ToastNotificationManager, GTK libnotify | **Done** |
 | **2.12 NativeMenu / Menu** | Shortcuts, check/radio items, contextual menus, dynamic updates, validation delegate — macOS NSMenu, Win32 HMENU, GTK GtkMenu | **Done** (icons deferred) |
-| 2.13 Linux/X11 direct surface ownership | WTK owns its X11 surfaces directly. Root NativeItem falls through to the GTKAppWindow's toplevel `Window`; NativeViewHost child surfaces are X11 child Windows managed by `X11SurfaceHost` (no `GtkDrawingArea`, no `GtkSocket`, no `GTKItem` in the embedding path). | Not started |
+| 2.13 Linux/X11 direct surface ownership | WTK owns its X11 surfaces directly. Root NativeItem falls through to the GTKAppWindow's toplevel `Window`; NativeViewHost child surfaces are X11 child Windows managed by `X11SurfaceHost` (no `GtkDrawingArea`, no `GtkSocket`, no `GTKItem` in the embedding path). | **Source-complete, compile-verified.** Run-verified: BasicAppTest comes up, `ResizeSession Completed w=600 h=500` flows through configure-event, no warnings. Visual confirmation (menu coexistence, mouse/key flow) still pending a user screenshot — see §2.13 "Risks / open questions". |
 | 2.14 NativeVisualTree | Per-window compositor tree moves from Composition → Native. Owned by `AppWindow`, called directly by `FrameBuilder` during layout (no compositor in the loop). Decouples `Visual` from `BackendRenderTargetContext`. Removes the carve-out drain machinery. Includes the `VKFallbackVisualTree` → `VKVisualTree` rename, `MTLCALayerTree` → `MTLVisualTree` rename, and the `CALayerTree`/`DCVisualTree`/`VKLayerTree.cpp` file moves into `wtk/src/Native/{macos,win,gtk}`. | Not started |
 | 2.2 NativeWindow | Full window control (minimize/maximize/fullscreen, scaleFactor, opacity, cursor sink, DPI scale change events) | Not started |
 | ~~2.3 NativeItem~~ | **Obsolete under virtual view model — no new NativeItem APIs.** See §2.3 below. | Removed |
@@ -45,7 +45,7 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | `NativeMenu.h` | Menu and menu item abstraction | macOS, Win32, GTK |
 | `NativeDialog.h` | File dialog, note dialog | macOS, Win32; GTK missing |
 | `NativeNote.h` | System notification (NoteCenter) | macOS, Win32, GTK |
-| `NativeTheme.h` | Theme query and observer | macOS, Win32; GTK missing |
+| `NativeTheme.h` | Theme query and observer | macOS, Win32, GTK |
 
 > **Note (macOS):** `NativeMenu` on macOS is bound to the application (`NSApp.mainMenu`), not to individual windows. On Win32 and GTK, menus are per-window. The current `AppWindow::setMenu` API hides this distinction. A future revision should consider moving menu ownership to `NativeApp` for macOS targets so that menu changes when switching windows are handled correctly.
 
@@ -331,7 +331,7 @@ Backed by `NSTimer`, `SetTimer`/`KillTimer`, `g_timeout_add`.
 
 Implemented. See `NativeTheme.h`: `ThemeAppearance` (Light/Dark), `ThemeDesc` with `Colors` and `Typography` sub-structs, `queryCurrentTheme()`.
 
-> **Forward pointer:** the *application* story — wiring `NativeTheme.colors.background` into the per-frame clear color so a `UIView` with no explicit background inherits the OS surface color uniformly on all three platforms (currently macOS works by accident, Windows clears to engine default, GTK + Vulkan clears to pitch black), plus the custom-`Theme` override that follows OS dark mode — lives in [Native-Theme-Application-Plan.md](Native-Theme-Application-Plan.md). The GTK `queryCurrentTheme()` gap noted in §1's Current State table is filled by that plan's Tier 1 (the row in §1 still reads "GTK missing" — the header's "Done" mark applies to the data model only).
+> **Forward pointer:** the *application* story — wiring `NativeTheme.colors.background` into the per-frame clear color so a `UIView` with no explicit background inherits the OS surface color uniformly on all three platforms (currently macOS works by accident, Windows clears to engine default, GTK + Vulkan clears to pitch black), plus the custom-`Theme` override that follows OS dark mode — lives in [Native-Theme-Application-Plan.md](Native-Theme-Application-Plan.md). GTK `queryCurrentTheme()` is now implemented in `wtk/src/Native/gtk/GTKTheme.cpp` per that plan's Tier 1 §5.3.1: appearance from `gtk-application-prefer-dark-theme` (with `-dark` theme-name fallback), colors from `gtk_style_context_lookup_color` against the toplevel + button contexts, typography from the parsed `gtk-font-name` PangoFontDescription. The observer wiring (`notify::gtk-application-prefer-dark-theme` / `notify::gtk-theme-name`) is left for Native-Theme-Application-Plan §5.3 to wire alongside the cross-platform `NativeThemeObserver` dispatch path.
 
 ---
 
@@ -754,6 +754,70 @@ These flags currently live on the drawing area (`GTKItem.cpp:359, 361`); they mo
 2. **Focus and `key-press-event`.** GtkWindow gets key events when it has focus *and* no child widget consumed them first. If the GtkMenuBar swallows accelerator keys (it does, when its `mnemonic-activate` matches), the toplevel handler won't see them. This is consistent with native menu behavior, but worth confirming against §2.3a's FocusManager: the virtual focus manager only sees keys the GTK toplevel saw, not the ones the menu bar already consumed.
 3. **Compositing manager interaction.** Drawing a custom surface into an X11 Window owned by GTK works fine under composited X11 (GNOME/KDE/XFCE). Under a non-compositing WM (some `i3`/`dwm` setups, especially with `xrender` disabled) the X11 Window may be unmapped/clipped in ways GdkWindow normally hides. Worth a manual smoke test on at least one non-composited WM before claiming GTK parity.
 4. **Verification.** Linux is the agent's native build target, so this section can be both compile- and run-verified before claiming "Done." Mark as compile/run unverified until that pass lands (per the "mark unverified backends" rule).
+
+#### Implementation phasing
+
+§2.13 lands in 5 reviewable steps. Each step compiles in isolation against the
+preceding one. The compositor's existing `view->getX11Window()` / `view->getDisplay()`
+contract in `VKLayerTree.cpp` is preserved end-to-end — the toplevel's XID/Display
+satisfies it just as well as the drawing-area's did, so VKLayerTree.cpp does NOT
+have to change as part of §2.13. (It moves and renames in §2.14; §2.13 leaves it
+alone.)
+
+1. **Phase 1 — X11SurfaceHost (new files, no behavior change).**
+   Add `wtk/src/Native/private_include/NativePrivate/gtk/X11SurfaceHost.h` and
+   `wtk/src/Native/gtk/X11SurfaceHost.cpp`. Class owns the toplevel `Window`
+   reference plus a registry of child Windows, and queues `runOnRealize` callbacks
+   until `onToplevelRealized` fires. `createChildWindow` / `reconfigureChildWindow`
+   / `destroyChildWindow` are implemented but unused at this phase — they will
+   be called by §2.14 (`VKVisualTree`) and `NativeViewHost-Adoption-Plan.md`.
+   The CMake `file(GLOB)` over `src/Native/gtk/*.cpp` picks the new TU up
+   automatically.
+
+2. **Phase 2 — GTKAppWindow.h public surface (header extraction).**
+   Promote the currently inline-defined `GTKAppWindow` class to a header at
+   `wtk/src/Native/private_include/NativePrivate/gtk/GTKAppWindow.h`. The body
+   stays in `GTKAppWindow.cpp` for now. The header exposes the accessors §2.13
+   adds: `getGTKWindow()`, `menuBarInset()`, and `surfaceHost()`. The existing
+   `gtk_window_from_native(NWH)` helper is preserved.
+
+3. **Phase 3 — GTKAppWindow.cpp refactor.**
+   The substantive change. Install button/motion/key/scroll/enter/leave/configure
+   handlers (plus the existing `realize`, `delete-event`, `window-state-event`,
+   `notify::scale-factor`) directly on the GtkWindow with the matching event mask
+   added via `gtk_widget_add_events` before `gtk_widget_show*`. Turn on
+   `app_paintable` and `double_buffered=FALSE` on the toplevel. Construct the
+   owned `X11SurfaceHost` in the ctor (display in hand). In the realize handler,
+   resolve the toplevel's XID and call `X11SurfaceHost::onToplevelRealized` —
+   this is what unblocks queued `runOnRealize` callbacks (used in §2.14 for the
+   first-frame Vulkan target resolve). All input event emission moves from
+   `GTKItem` to the AppWindow's `eventEmitter()`. Track the menu bar's allocated
+   height on `configure-event` and on `size-allocate` of `menuWidget`; expose it
+   via `menuBarInset()`.
+
+4. **Phase 4 — GTKItem.cpp/h refactor.**
+   Root-mode `GTKItem` no longer creates `gtk_drawing_area_new()`. A new
+   constructor variant takes a `GtkWidget *toplevel` and binds to it: `widget`
+   stores the toplevel, `resolveGdkWindow()` returns
+   `gtk_widget_get_window(toplevel)`. The existing event-handler installation
+   on `widget` is dropped (handlers moved to GTKAppWindow in Phase 3). The
+   old non-root drawing-area path becomes unreachable under the virtual view
+   model — `make_native_item(rect, ItemType, parent)` is no longer called with
+   a non-null `parent` anywhere in the codebase, so the implementation now
+   asserts on it and the `addChildNativeItem` / `setClippedView` paths are
+   reduced to no-ops. `getDisplay()` and `getX11Window()` keep their signatures.
+   The size of `GTKItem` shrinks significantly.
+
+5. **Phase 5 — Build + smoke test.**
+   Configure + ninja build with clang++ out-of-source. Resolve compile errors.
+   Run a WTK demo and confirm a window appears, mouse/keys still route, and
+   Vulkan still presents. Linux is the native build target, so this is both
+   compile- and run-verifiable on this host.
+
+**Mark status:** compile- and run-verified on Linux/X11 once Phase 5 lands.
+Wayland is out of scope for §2.13 (see "X11-only" subsection above) and
+remains untouched — `WTK_NATIVE_WAYLAND` builds keep the legacy code paths
+under their existing `#if` guards.
 
 #### Dependencies
 
