@@ -1,5 +1,6 @@
 #include "UIViewImpl.h"
 #include "omegaWTK/UI/AppWindow.h"
+#include "omegaWTK/UI/StyleResolver.h"
 #include "FrameBuilder.h"
 
 namespace OmegaWTK {
@@ -319,6 +320,14 @@ void UIView::resolveStyles(){
     // stores are deleted — nothing lives between resolveStyles() and
     // paint() except the cell table.
     impl_->styleTable_.clear();
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6.3 (2026-06-03):
+    // sheet cascade. The resolver walks the owning AppWindow's
+    // style-sheet stack and writes one cell per resolved property
+    // per matching node. The inline-`Style` writes below this call
+    // overwrite cells on overlap — the layered shape decided
+    // 2026-06-03 (inline wins).
+    StyleSheets::StyleResolver::apply(*this);
 
     const auto viewNodeId = nodeId();
     const auto resolvedView =

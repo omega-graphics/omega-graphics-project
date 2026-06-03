@@ -304,6 +304,22 @@ namespace OmegaWTK {
         /// stable for the View's lifetime, never reused.
         std::uint64_t nodeId() const;
 
+        /// Widget-View-Paint-Lifecycle-Plan Tier D / D6.4 (2026-06-03):
+        /// pseudo-class state bitmask. Bit layout matches the
+        /// `OmegaWTK::StyleSheets::PseudoClass` enum (Hover=1,
+        /// Pressed=2, Focused=4, Disabled=8) but exposed as a raw
+        /// `std::uint8_t` so the `View` surface doesn't drag the
+        /// sheet vocabulary into every includer. The
+        /// `WidgetTreeHost` input dispatcher writes these on hover-
+        /// change and mouse-button transitions; `setEnabled()` flips
+        /// the Disabled bit. The `StyleSheets::StyleResolver` reads
+        /// them during selector match.
+        std::uint8_t pseudoClassBits() const;
+        /// Set or clear the bits named in `mask`. `markDirty(Style)`
+        /// is called if anything actually changes, so the next frame
+        /// re-resolves through the cascade with the new state.
+        void setPseudoClassBits(std::uint8_t mask, bool on);
+
         /// Phase 4.7.0: the polymorphic Paint-pass hook. Per-node:
         /// emits THIS view's draw ops into `pc.displayList` and reads
         /// `pc.offset` for absolute window positioning. Does NOT recurse

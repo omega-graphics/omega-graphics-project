@@ -2,6 +2,7 @@
 #define OMEGAWTK_UI_APPWINDOWIMPL_H
 
 #include "omegaWTK/UI/AppWindow.h"
+#include "omegaWTK/UI/StyleSheet.h"
 #include "omegaWTK/Native/NativeWindow.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
@@ -43,6 +44,14 @@ struct AppWindow::Impl {
     // Additive — the legacy ViewAnimator/LayerAnimator path still drives
     // all animation until 4.4.
     std::unique_ptr<AnimationScheduler> animationScheduler_;
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6.2 (2026-06-03):
+    // per-window style-sheet stack. The cascade in D6.3's
+    // `StyleSheets::StyleResolver::resolve(node)` walks this top-to-
+    // bottom; rules at the back of the vector beat earlier rules in
+    // a specificity tie. Sheets are sharable across windows via
+    // `SharedHandle`; the stack itself is per-window.
+    OmegaCommon::Vector<SharedHandle<StyleSheets::StyleSheet>> styleSheets_;
 
     Impl(AppWindow & owner,Composition::Rect rectValue,AppWindowDelegate * delegateValue):
         nativeWindow(Native::make_native_window(rectValue,&owner)),

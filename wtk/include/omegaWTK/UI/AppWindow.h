@@ -26,6 +26,17 @@ namespace Composition {
     class LayerTree;
 }
 
+// Widget-View-Paint-Lifecycle-Plan Tier D / D6.2 (2026-06-03):
+// forward-decl for the per-window style-sheet stack. Full type in
+// `omegaWTK/UI/StyleSheet.h`; the AppWindow API only needs the
+// `SharedHandle<...>` instantiation, which compiles against the
+// forward decl. Namespace is `StyleSheets` (plural) because the
+// legacy inline-style aggregate at `omegaWTK/UI/UIView.h:19` already
+// owns the `Style` identifier — see the StyleSheet.h footer comment.
+namespace StyleSheets {
+    class StyleSheet;
+}
+
 class AppWindowDelegate;
 /**
     @brief A standard application window for attaching and displaying widgets. Similar to a Widget, it can be styled.
@@ -138,6 +149,20 @@ class AppWindowDelegate;
 
         #endif
         
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D6.2 (2026-06-03):
+        // per-window stack of style sheets. The cascade in
+        // `Style::StyleResolver::resolve(node)` walks the stack
+        // top-to-bottom (later-added sheets win specificity ties).
+        // Sheets are sharable across windows via `SharedHandle`.
+        // Mutating the stack dirties root `DirtyBit::Style` and asks
+        // the window to flush a frame.
+        void addStyleSheet(SharedHandle<StyleSheets::StyleSheet> sheet);
+        /// Removes the *first* matching handle from the stack. No-op
+        /// if not present. Matches by identity (`==` on the handle),
+        /// not by sheet equality.
+        void removeStyleSheet(const SharedHandle<StyleSheets::StyleSheet> & sheet);
+        const OmegaCommon::Vector<SharedHandle<StyleSheets::StyleSheet>> & styleSheets() const;
+
         explicit AppWindow(Composition::Rect rect,AppWindowDelegate * delegate = nullptr);
         ~AppWindow() override;
     };

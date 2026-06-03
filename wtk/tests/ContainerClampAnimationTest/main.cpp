@@ -3,6 +3,7 @@
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
 #include <omegaWTK/UI/Menu.h>
+#include <omegaWTK/UI/StyleSheet.h>
 #include <omegaWTK/Widgets/BasicWidgets.h>
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CanvasEffect.h"
@@ -110,25 +111,17 @@ class BlueRectWidget final : public OmegaWTK::Widget {
         uiView->setLayout(layout);
     }
 
-    void applyStyle(){
-        auto style = OmegaWTK::Style::Create();
-        style = style->backgroundColor(
-            "blue_rect_view",
-            OmegaWTK::Composition::Color::Transparent);
-        style = style->elementBrush(
-            "blue_rect",
-            OmegaWTK::Composition::ColorBrush(
-                OmegaWTK::Composition::Color::create8Bit(
-                    OmegaWTK::Composition::Color::Blue8)),
-            false, 0.f);
-        style = style->elementDropShadow(
-            "blue_rect",
-            makeShadow(0.f, kShadowOffsetY,
-                       kShadowGeometryRadius, kShadowBlur,
-                       kShadowOpacity),
-            false, 0.f);
-        uiView->setStyle(style);
-    }
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
+    // styling is now authored on a window-installed StyleSheet (see
+    // `buildClampAnimSheet` below + `omegaWTKMain`). The pre-D6
+    // `applyStyle()` helper that called `Style::Create() ->
+    // backgroundColor / elementBrush / elementDropShadow ->
+    // setStyle(...)` is gone — sheet rules with the same selector
+    // tags ("blue_rect_view" and the "blue_rect" element) feed the
+    // same `(NodeId, PropertyKey)` cells the legacy aggregate did.
+    // The runtime `animateElement` tween below is NOT sheet-driven
+    // — it sits on the AnimationScheduler directly; D7.3 will
+    // promote it to a keyframe-animation declaration on the sheet.
 
 protected:
     void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
@@ -139,19 +132,32 @@ protected:
         auto bounds = rect();
         ensureUIView(bounds);
         applyLayout(localBounds(bounds));
-        applyStyle();
     }
 
+    // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+    // `Widget::onPaint(PaintReason)` is **deprecated** — the
+    // framework no longer dispatches it after the 4.7.4 cutover
+    // (see `Widget.h`'s `[[deprecated]]` note). The override below
+    // intentionally rides the deprecated hook for one specific
+    // reason: the menu-triggered shadow tween needs a frame to keep
+    // running every turn so the AnimationScheduler ticks and the
+    // resolver re-samples the cell. Today there is no
+    // scheduler-side auto-pump for active animations; until the
+    // scheduler grows one (a follow-up to D7, since D7.2/D7.3 hand
+    // it sheet-driven animations to manage), this test self-pumps
+    // through `Widget::invalidate(...)` and only fires while
+    // `Widget::onPaint` still exists. The deprecation warning
+    // suppress is intentional and documented:
+    //   * Geometry refresh moved to `resize()` so it doesn't depend
+    //     on `onPaint` running.
+    //   * The pump itself is the only legitimate `onPaint` use in
+    //     this file.
+#if defined(__clang__) || defined(__GNUC__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     void onPaint(OmegaWTK::PaintReason reason) override {
         (void)reason;
-        // Refresh layout in case the widget was resized; style is
-        // already cached on the UIView. The UIView's own update()
-        // path drives the actual paint.
-        auto bounds = rect();
-        ensureUIView(bounds);
-        applyLayout(localBounds(bounds));
-        uiView->update();
-
         // Keep the frame loop alive while the menu-triggered tween is
         // in flight so the scheduler ticks each turn and Paint re-
         // samples the updated shadow-color value. Invalidate every
@@ -165,6 +171,21 @@ protected:
                 invalidate(OmegaWTK::PaintReason::StateChanged);
             }
         }
+    }
+#if defined(__clang__) || defined(__GNUC__)
+#  pragma GCC diagnostic pop
+#endif
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+    // resize handles the geometry rebuild that pre-D6 lived inside
+    // onPaint. `Widget::onPaint` is deprecated; this is the right
+    // hook for layout-on-resize.
+    void resize(OmegaWTK::Composition::Rect & newRect) override {
+        (void)newRect;
+        auto bounds = rect();
+        ensureUIView(bounds);
+        applyLayout(localBounds(bounds));
+        invalidate(OmegaWTK::PaintReason::Resize);
     }
 
 public:
@@ -203,9 +224,11 @@ protected:
         (void)desc;
     }
 
-    void onPaint(OmegaWTK::PaintReason reason) override {
-        // White backdrop via the hosted UIView (a full-bounds rect
-        // element). Phase 3.9 collapse — no CanvasView::clear.
+    // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+    // backdrop brush is sheet-driven (`buildClampAnimSheet`); only
+    // the geometry (a full-bounds rect element) lives here. Runs
+    // on mount + resize — `Widget::onPaint` is deprecated.
+    void rebuildBackdrop(){
         auto & uv = viewAs<OmegaWTK::UIView>();
         auto r = rect();
         OmegaWTK::UIViewLayout layout {};
@@ -213,16 +236,16 @@ protected:
             OmegaWTK::Composition::Rect{
                 OmegaWTK::Composition::Point2D{0.f, 0.f}, r.w, r.h}));
         uv.setLayout(layout);
-        auto style = OmegaWTK::Style::Create();
-        style = style->elementBrush(
-            "bg",
-            OmegaWTK::Composition::ColorBrush(
-                OmegaWTK::Composition::Color::create8Bit(
-                    OmegaWTK::Composition::Color::White8)),
-            false, 0.f);
-        uv.setStyle(style);
-        uv.update();
-        OmegaWTK::Container::onPaint(reason);
+    }
+
+    void onMount() override {
+        OmegaWTK::Container::onMount();
+        rebuildBackdrop();
+    }
+
+    void resize(OmegaWTK::Composition::Rect & newRect) override {
+        OmegaWTK::Container::resize(newRect);
+        rebuildBackdrop();
     }
 
 public:
@@ -261,6 +284,48 @@ public:
     }
 };
 
+// Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
+// the cascade sheet for this scene. Replaces the per-widget inline
+// `Style::Create() -> ...` blocks in `BlueRectWidget::applyStyle` and
+// `WhiteRootContainer::onPaint`. The animation that flips the shadow
+// R-channel on the menu item still routes through the runtime
+// scheduler API (`UIView::animateElement`) — sheet-driven keyframe
+// animations land in D7.3.
+SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildClampAnimSheet(){
+    OmegaWTK::StyleSheets::StyleSheet::Builder builder;
+
+    // White root-container backdrop.
+    OmegaWTK::StyleSheets::StyleRule bgRule;
+    bgRule.selector.tag = "bg";
+    bgRule.setFillBrush(OmegaWTK::Composition::ColorBrush(
+        OmegaWTK::Composition::Color::create8Bit(
+            OmegaWTK::Composition::Color::White8)));
+    builder.addRule(std::move(bgRule));
+
+    // Blue rect view: transparent backdrop (the rounded rect element
+    // does the actual fill).
+    OmegaWTK::StyleSheets::StyleRule rectViewRule;
+    rectViewRule.selector.tag = "blue_rect_view";
+    rectViewRule.setBackgroundColor(OmegaWTK::Composition::Color::Transparent);
+    builder.addRule(std::move(rectViewRule));
+
+    // Blue rect element: blue fill + big drop shadow. The scheduler-
+    // driven shadow R-channel tween overrides `DropShadow.color.r`
+    // during the animation (D5's resolved-cell + scheduler-cell
+    // chain).
+    OmegaWTK::StyleSheets::StyleRule rectRule;
+    rectRule.selector.tag = "blue_rect";
+    rectRule.setFillBrush(OmegaWTK::Composition::ColorBrush(
+        OmegaWTK::Composition::Color::create8Bit(
+            OmegaWTK::Composition::Color::Blue8)));
+    rectRule.setDropShadow(makeShadow(0.f, kShadowOffsetY,
+                                      kShadowGeometryRadius,
+                                      kShadowBlur, kShadowOpacity));
+    builder.addRule(std::move(rectRule));
+
+    return builder.build();
+}
+
 int omegaWTKMain(OmegaWTK::AppInst *app) {
     // 500×500 window, white root container, one 260×180 blue rounded
     // rect centered with room around it for the drop shadow to spread.
@@ -272,6 +337,12 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     auto window = make<OmegaWTK::AppWindow>(
             OmegaWTK::Composition::Rect{{0, 0}, kWindowW, kWindowH},
             new MyWindowDelegate());
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
+    // install the cascade sheet on the window. Pre-D6 each widget
+    // authored its own inline `Style` per paint; D6 lifts the
+    // declarations to one sheet shared across the window's tree.
+    window->addStyleSheet(buildClampAnimSheet());
 
     auto container = make<WhiteRootContainer>(
             OmegaWTK::Composition::Rect{{0, 0}, kWindowW, kWindowH});

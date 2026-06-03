@@ -2,6 +2,7 @@
 #include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
+#include <omegaWTK/UI/StyleSheet.h>
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CanvasEffect.h"
 #include <omegaWTK/Composition/FontEngine.h>
@@ -198,15 +199,16 @@ class Phase32Widget : public Widget {
 public:
     explicit Phase32Widget(Composition::Rect rect) : Widget(rect) {}
 
-protected:
-    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
-
-    void onMount() override {
-        ensureViews(localBounds(rect()));
-    }
-
-    void onPaint(PaintReason reason) override {
-        (void)reason;
+    // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+    // pre-D6 the static empty-layout + per-view backgroundColor
+    // setup ran inside `Widget::onPaint(PaintReason)`. After D6 the
+    // backgrounds are sheet-driven and the layouts never change, so
+    // the entire setup runs ONCE in `onMount()` (and again in
+    // `resize()` when the window dimensions change). `Widget::onPaint`
+    // is dead in the new model — the framework no longer dispatches
+    // it (see `Widget.h` deprecation note) — so an `onPaint` override
+    // here would be inert.
+    void rebuildScene(){
         const auto bounds = localBounds(rect());
         ensureViews(bounds);
 
@@ -223,30 +225,51 @@ protected:
         leftView_->setLayout(emptyLayout);
         rightView_->setLayout(emptyLayout);
         innerView_->setLayout(emptyLayout);
+    }
 
-        auto leftStyle = Style::Create();
-        leftStyle = leftStyle->backgroundColor("phase32_left",
-            Composition::Color::create8Bit(Composition::Color::Green8));
-        leftView_->setStyle(leftStyle);
-        leftView_->update();
+protected:
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
 
-        auto rightStyle = Style::Create();
-        rightStyle = rightStyle->backgroundColor("phase32_right",
-            Composition::Color::create8Bit(Composition::Color::Red8));
-        rightView_->setStyle(rightStyle);
-        rightView_->update();
+    void onMount() override {
+        rebuildScene();
+    }
 
-        // Inner blue rect — its absolute position must be
-        // {kInnerOffsetX, kInnerOffsetY} since leftView_ is at
-        // {0,0}. Proves the FrameBuilder accumulator composes per-level
-        // deltas correctly across leftView_ -> innerView_.
-        auto innerStyle = Style::Create();
-        innerStyle = innerStyle->backgroundColor("phase32_inner",
-            Composition::Color::create8Bit(Composition::Color::Blue8));
-        innerView_->setStyle(innerStyle);
-        innerView_->update();
+    void resize(Composition::Rect & newRect) override {
+        (void)newRect;
+        rebuildScene();
+        invalidate(PaintReason::Resize);
     }
 };
+
+// Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
+// the post-D6 sheet for the Phase 3.2 / 3.4 scene. One rule per UIView,
+// each binding the view-scope `BackgroundColor` cell to the legacy
+// per-view color (green / red / blue) by selector tag. The sheet is
+// installed on the AppWindow in `omegaWTKMain`; the cascade reads it
+// fresh every Style phase.
+SharedHandle<StyleSheets::StyleSheet> buildScene32Sheet(){
+    StyleSheets::StyleSheet::Builder builder;
+
+    StyleSheets::StyleRule leftRule;
+    leftRule.selector.tag = "phase32_left";
+    leftRule.setBackgroundColor(
+        Composition::Color::create8Bit(Composition::Color::Green8));
+    builder.addRule(std::move(leftRule));
+
+    StyleSheets::StyleRule rightRule;
+    rightRule.selector.tag = "phase32_right";
+    rightRule.setBackgroundColor(
+        Composition::Color::create8Bit(Composition::Color::Red8));
+    builder.addRule(std::move(rightRule));
+
+    StyleSheets::StyleRule innerRule;
+    innerRule.selector.tag = "phase32_inner";
+    innerRule.setBackgroundColor(
+        Composition::Color::create8Bit(Composition::Color::Blue8));
+    builder.addRule(std::move(innerRule));
+
+    return builder.build();
+}
 
 class MyWindowDelegate : public AppWindowDelegate {
 public:
@@ -259,11 +282,22 @@ public:
 int omegaWTKMain(AppInst *app){
     // Tier 3 Phase 3.8: window-scoped paint is the only route, so the
     // multi-UIView scene is unconditional.
-    std::cout << "RootWidgetTest: Phase 3.8 multi-UIView window-scoped scene" << std::endl;
+    std::cout << "RootWidgetTest: Phase 3.8 multi-UIView window-scoped scene"
+              << " — Tier D / D6 (2026-06-03): styling now lives on a"
+              << " window-installed StyleSheet" << std::endl;
 
     const Composition::Rect windowRect{{0,0}, 420, 420};
 
     auto window = make<AppWindow>(windowRect, new MyWindowDelegate());
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
+    // install the cascade sheet BEFORE the widget tree is built.
+    // Order doesn't actually matter — the resolver reads the
+    // AppWindow's stack fresh on every Style phase — but installing
+    // up-front keeps the relationship "this is the styling, this is
+    // the geometry" obvious at the call site.
+    window->addStyleSheet(buildScene32Sheet());
+
     auto widget = make<Phase32Widget>(windowRect);
     window->setRootWidget(widget);
 

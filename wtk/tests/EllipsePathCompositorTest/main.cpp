@@ -2,6 +2,7 @@
 #include <omegaWTK/UI/UIView.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
+#include <omegaWTK/UI/StyleSheet.h>
 #include <omegaWTK/Widgets/Containers.h>
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CanvasEffect.h"
@@ -44,25 +45,19 @@ class RoundedFrameWidget final : public OmegaWTK::Widget {
             uiView->resize(localBounds);
         }
     }
-protected:
-    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
-        (void)desc;
-    }
-
-    void onMount() override {
-        ensureUIView(rect());
-    }
-
-    void onPaint(OmegaWTK::PaintReason reason) override {
-        (void)reason;
+    // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+    // geometry-only refresh. Brush + drop-shadow are now resolved
+    // from the window-installed StyleSheet (`buildScenesSheet`); the
+    // pre-D6 inline `Style::Create()->elementBrush/elementDropShadow`
+    // block is gone. Runs once at mount and again on resize —
+    // `Widget::onPaint` is deprecated (never dispatched after the
+    // 4.7.4 cutover) so geometry can't piggy-back on it any more.
+    void rebuildGeometry(){
         auto bounds = localViewBounds(rect());
         ensureUIView(bounds);
 
         const float outerSize = std::min(bounds.w,bounds.h) * 0.70f;
-        const float thickness = 8.0f;
         const float outerRadius = 14.0f;
-        const float innerSize = std::max(1.0f,outerSize - (thickness * 2.0f));
-        const float innerRadius = std::max(1.0f,outerRadius - (thickness * 0.75f));
 
         OmegaWTK::Composition::RoundedRect outer{
             OmegaWTK::Composition::Point2D{
@@ -72,34 +67,29 @@ protected:
             outerSize,
             outerRadius,
             outerRadius};
-        OmegaWTK::Composition::RoundedRect inner{
-            OmegaWTK::Composition::Point2D{
-                outer.pos.x + thickness,
-                outer.pos.y + thickness},
-                innerSize,
-                innerSize,
-                innerRadius,
-                innerRadius};
 
         OmegaWTK::UIViewLayout layout {};
         layout.shape("rounded_outer",OmegaWTK::Shape::RoundedRect(outer));
-        // layout.shape("rounded_inner",OmegaWTK::Shape::RoundedRect(inner));
         uiView->setLayout(layout);
-
-        auto style = OmegaWTK::Style::Create();
-        style = style->backgroundColor("rounded_frame_view",OmegaWTK::Composition::Color::Transparent);
-        style = style->elementBrush("rounded_outer",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Red8)),
-            true,
-            0.28f);
-        style = style->elementDropShadow("rounded_outer",makeShadow(0.f,4.f,2.f,8.f,0.55f),true,0.28f);
-        uiView->setStyle(style);
-        uiView->update();
 
         if(!loggedLayout){
             std::cout << "[EllipsePathCompositorTest] RoundedFrameWidget rendered via UIView." << std::endl;
             loggedLayout = true;
         }
+    }
+protected:
+    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
+        (void)desc;
+    }
+
+    void onMount() override {
+        rebuildGeometry();
+    }
+
+    void resize(OmegaWTK::Composition::Rect & newRect) override {
+        (void)newRect;
+        rebuildGeometry();
+        invalidate(OmegaWTK::PaintReason::Resize);
     }
 
     bool isLayoutResizable() const override {
@@ -124,17 +114,10 @@ class EllipseOnlyWidget final : public OmegaWTK::Widget {
             uiView->resize(localBounds);
         }
     }
-protected:
-    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
-        (void)desc;
-    }
-
-    void onMount() override {
-        ensureUIView(rect());
-    }
-
-    void onPaint(OmegaWTK::PaintReason reason) override {
-        (void)reason;
+    // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+    // see RoundedFrameWidget — same sheet-driven, geometry-only
+    // shape; `Widget::onPaint` is deprecated.
+    void rebuildGeometry(){
         auto bounds = localViewBounds(rect());
         ensureUIView(bounds);
         OmegaWTK::Composition::Ellipse ellipse{
@@ -147,20 +130,24 @@ protected:
         layout.shape("ellipse_shape",OmegaWTK::Shape::Ellipse(ellipse));
         uiView->setLayout(layout);
 
-        auto style = OmegaWTK::Style::Create();
-        style = style->backgroundColor("ellipse_view",OmegaWTK::Composition::Color::Transparent);
-        style = style->elementBrush("ellipse_shape",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Green8)),
-            true,
-            0.30f);
-        style = style->elementDropShadow("ellipse_shape",makeShadow(0.f,5.f,2.f,9.f,0.55f),true,0.30f);
-        uiView->setStyle(style);
-        uiView->update();
-
         if(!loggedLayout){
             std::cout << "[EllipsePathCompositorTest] EllipseOnlyWidget rendered via UIView." << std::endl;
             loggedLayout = true;
         }
+    }
+protected:
+    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
+        (void)desc;
+    }
+
+    void onMount() override {
+        rebuildGeometry();
+    }
+
+    void resize(OmegaWTK::Composition::Rect & newRect) override {
+        (void)newRect;
+        rebuildGeometry();
+        invalidate(OmegaWTK::PaintReason::Resize);
     }
 
     bool isLayoutResizable() const override {
@@ -185,17 +172,10 @@ class PathOnlyWidget final : public OmegaWTK::Widget {
             uiView->resize(localBounds);
         }
     }
-protected:
-    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
-        (void)desc;
-    }
-
-    void onMount() override {
-        ensureUIView(rect());
-    }
-
-    void onPaint(OmegaWTK::PaintReason reason) override {
-        (void)reason;
+    // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+    // see RoundedFrameWidget — same sheet-driven, geometry-only
+    // shape; `Widget::onPaint` is deprecated.
+    void rebuildGeometry(){
         auto bounds = localViewBounds(rect());
         ensureUIView(bounds);
 
@@ -215,20 +195,24 @@ protected:
         layout.shape("path_shape",OmegaWTK::Shape::Path(std::move(compPath),6));
         uiView->setLayout(layout);
 
-        auto style = OmegaWTK::Style::Create();
-        style = style->backgroundColor("path_view",OmegaWTK::Composition::Color::Transparent);
-        style = style->elementBrush("path_shape",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::Yellow8)),
-            true,
-            0.30f);
-        style = style->elementDropShadow("path_shape",makeShadow(0.f,5.f,2.f,8.f,0.50f),true,0.30f);
-        uiView->setStyle(style);
-        uiView->update();
-
         if(!loggedLayout){
             std::cout << "[EllipsePathCompositorTest] PathOnlyWidget rendered via UIView." << std::endl;
             loggedLayout = true;
         }
+    }
+protected:
+    void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
+        (void)desc;
+    }
+
+    void onMount() override {
+        rebuildGeometry();
+    }
+
+    void resize(OmegaWTK::Composition::Rect & newRect) override {
+        (void)newRect;
+        rebuildGeometry();
+        invalidate(OmegaWTK::PaintReason::Resize);
     }
 
     bool isLayoutResizable() const override {
@@ -246,22 +230,29 @@ protected:
         (void)desc;
     }
 
-    void onPaint(OmegaWTK::PaintReason reason) override {
-        // Tier 3 Phase 3.9: white backdrop via the hosted UIView
-        // (a full-bounds rect element) instead of CanvasView::clear.
+    // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+    // the "hstack_bg" element's brush is sheet-driven; the geometry
+    // is just a full-bounds rect that needs to track the widget's
+    // size. `Widget::onPaint` is deprecated (never dispatched by the
+    // framework after the 4.7.4 cutover), so the backdrop rebuild
+    // hooks `onMount` + `resize` instead of `onPaint`.
+    void rebuildBackdrop(){
         auto & uv = viewAs<OmegaWTK::UIView>();
         auto r = rect();
         OmegaWTK::UIViewLayout layout {};
         layout.shape("hstack_bg",OmegaWTK::Shape::Rect(
             OmegaWTK::Composition::Rect{OmegaWTK::Composition::Point2D{0.f,0.f},r.w,r.h}));
         uv.setLayout(layout);
-        auto style = OmegaWTK::Style::Create();
-        style = style->elementBrush("hstack_bg",OmegaWTK::Composition::ColorBrush(
-            OmegaWTK::Composition::Color::create8Bit(OmegaWTK::Composition::Color::White8)),
-            false,0.f);
-        uv.setStyle(style);
-        uv.update();
-        OmegaWTK::HStack::onPaint(reason);
+    }
+
+    void onMount() override {
+        OmegaWTK::HStack::onMount();
+        rebuildBackdrop();
+    }
+
+    void resize(OmegaWTK::Composition::Rect & newRect) override {
+        OmegaWTK::HStack::resize(newRect);
+        rebuildBackdrop();
     }
 
 public:
@@ -279,12 +270,74 @@ public:
     }
 };
 
+// Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
+// the cascade sheet for the geometry-showcase scene. One rule per
+// (UIView background OR shape element). Selector tag matches either
+// the UIView's tag (BackgroundColor → view nodeId) or the element's
+// tag (FillBrush / DropShadow → element nodeId); the `scopeOf` helper
+// in `StyleResolver` routes each declaration to the correct NodeId
+// automatically. The legacy `transition=true, dur=0.28` per-rule
+// kwargs the inline `Style::elementBrush(..., true, 0.28f)` carried
+// are dropped — the source/destination values never change in this
+// scene, so the legacy transition never fired. D7's sheet-driven
+// transitions (via the D6.5 recording surface) supersede that
+// per-property knob.
+SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildScenesSheet(){
+    OmegaWTK::StyleSheets::StyleSheet::Builder builder;
+
+    using OmegaWTK::Composition::Color;
+    using OmegaWTK::Composition::ColorBrush;
+
+    // ----- View-level transparent backdrops -----
+    for(const auto * viewTag : {"rounded_frame_view",
+                                "ellipse_view",
+                                "path_view"}){
+        OmegaWTK::StyleSheets::StyleRule rule;
+        rule.selector.tag = viewTag;
+        rule.setBackgroundColor(Color::Transparent);
+        builder.addRule(std::move(rule));
+    }
+
+    // ----- Shape element brushes + drop shadows -----
+    struct ShapeRule {
+        const char *                                              tag;
+        Color::Eight                                              color;
+        OmegaWTK::Composition::LayerEffect::DropShadowParams      shadow;
+    };
+    const ShapeRule shapes[] = {
+        {"rounded_outer", Color::Red8,    makeShadow(0.f,4.f,2.f,8.f,0.55f)},
+        {"ellipse_shape", Color::Green8,  makeShadow(0.f,5.f,2.f,9.f,0.55f)},
+        {"path_shape",    Color::Yellow8, makeShadow(0.f,5.f,2.f,8.f,0.50f)},
+    };
+    for(const auto & s : shapes){
+        OmegaWTK::StyleSheets::StyleRule rule;
+        rule.selector.tag = s.tag;
+        rule.setFillBrush(ColorBrush(Color::create8Bit(s.color)));
+        rule.setDropShadow(s.shadow);
+        builder.addRule(std::move(rule));
+    }
+
+    // ----- HStack white backdrop -----
+    OmegaWTK::StyleSheets::StyleRule bgRule;
+    bgRule.selector.tag = "hstack_bg";
+    bgRule.setFillBrush(ColorBrush(Color::create8Bit(Color::White8)));
+    builder.addRule(std::move(bgRule));
+
+    return builder.build();
+}
+
 int omegaWTKMain(OmegaWTK::AppInst *app) {
     const OmegaWTK::Composition::Rect windowRect{{0,0},500,500};
 
     auto window = make<OmegaWTK::AppWindow>(
         windowRect,
         new MyWindowDelegate());
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
+    // install the cascade sheet on the window. Each widget's
+    // `onPaint` now does geometry only; the cascade fills the
+    // resolved-style cells from the sheet at Style phase.
+    window->addStyleSheet(buildScenesSheet());
 
     OmegaWTK::StackOptions options {};
     options.spacing = 18.0f;

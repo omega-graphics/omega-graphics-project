@@ -117,6 +117,16 @@ struct View::Impl {
     Composition::Rect rect {Composition::Point2D{0.f,0.f},1.f,1.f};
     ViewDelegate * delegate = nullptr;
     bool enabled_ = true;
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D6.4 (2026-06-03):
+    /// pseudo-class state bitmask. Bit layout matches the
+    /// `StyleSheets::PseudoClass` enum in
+    /// `omegaWTK/UI/StyleSheet.h` (Hover=1, Pressed=2, Focused=4,
+    /// Disabled=8). The input dispatcher in
+    /// `WidgetTreeHost::dispatchInputEvent` flips Hover / Pressed
+    /// when the hovered View changes or a mouse button transitions;
+    /// `setEnabled()` flips Disabled. The resolver consults this via
+    /// `View::pseudoClassBits()` during selector match.
+    std::uint8_t pseudoClassBits_ = 0;
     /// Widget-View-Paint-Lifecycle-Plan Tier A: deferred-paint dirty mask.
     /// Per-node bits (Style / Layout / Content / Paint) set by
     /// `markDirty(bits)` on the node that actually changed.

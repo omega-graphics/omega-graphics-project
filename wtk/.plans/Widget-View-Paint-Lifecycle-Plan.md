@@ -1369,6 +1369,38 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   the §1025 / §1035 cross-references, add a `StyleSheet` /
   `StyleResolver` / `ThemeVars` section.
 
+  **D8 also retires `Widget::onPaint(PaintReason)`.** Added to D8
+  scope 2026-06-03 (observation from external review of D6 test
+  refactors). The Phase 4.7.4 cutover already stopped the framework
+  from dispatching `Widget::onPaint` — `FrameBuilder::buildFrame`
+  walks the `View` tree and calls `View::paint(PaintContext &)`
+  (the 4.7.0 hook) at each node, and D1 (2026-06-03) then deleted
+  `Widget::executePaint`, removing the last symbol that could ever
+  have called it. The base virtual was marked `[[deprecated]]` in
+  `Widget.h` on the same date with the deletion target pointing
+  here. D8's job: (a) delete the base virtual declaration in
+  `Widget.h`; (b) delete every in-tree override of it —
+  `Rectangle::onPaint`, `RoundedRectangle::onPaint`,
+  `Ellipse::onPaint`, `Path::onPaint`, `Separator::onPaint`,
+  `Label::onPaint`, `Icon::onPaint`, `Image::onPaint`
+  (`Primatives.cpp`), `Container::onPaint`
+  (`BasicWidgets.cpp`), `StackWidget::onPaint`
+  (`Containers.cpp`) — all of which are vestigial empty bodies that
+  the framework no longer dispatches; (c) sweep test overrides
+  (the canonical pattern is `onMount()` + `resize()`, see
+  `wtk/tests/TextCompositorTest/main.cpp`); (d) the one currently-
+  legitimate override is `BlueRectWidget::onPaint` in
+  `wtk/tests/ContainerClampAnimationTest/main.cpp`, which rides
+  the deprecated hook to self-pump the AnimationScheduler while a
+  menu-triggered tween is active — D8 must either replace it with
+  a scheduler-side auto-pump (the scheduler calls
+  `AppWindow::requestFrame()` when its active set is non-empty)
+  or accept that the test loses its animation pump until the pump
+  lands separately. Removing `onPaint` is a clean source-level
+  break for every downstream override — the deprecation comment
+  in `Widget.h` documents the migration path so external code can
+  prep for D8.
+
 #### D9. Dependency / shipping order
 
 - **D1, D2 ship together** — Block 2 closeout. Smallest change, no
@@ -1932,17 +1964,107 @@ Pending (one entry per Tier-D sub-phase from §5):
   wire them when the Style cascade lights up readers. Stale
   cross-reference comments updated in `View.h`, `View.Core.cpp`,
   `UIView.h`, `UIView.Animation.cpp`.)
-- [ ] **D6** — Style Tier 2: `StyleSheet` (with named keyframe
+- [x] **D6** — Style Tier 2: `StyleSheet` (with named keyframe
   declarations) + `Selector` + `StyleRule` + `AppWindow::styleSheets()`
   shared stack + `StyleResolver::resolve(node)` in Phase 2 + pseudo-
   class state bits + transition/keyframe binding *recording*.
+  (DONE 2026-06-03; full-tree `ninja` builds 81/81 green.
+  **Five sub-phases landed:**
+  - **D6.1 vocabulary** — new `OmegaWTK::StyleSheets` namespace
+    (the literal `Style` identifier was taken by the legacy inline
+    aggregate at `omegaWTK/UI/UIView.h:19`). New public header
+    `omegaWTK/UI/StyleSheet.h` with `Selector`, `StyleRule`,
+    `StyleSheet`, `KeyframeAnimation`, `KeyframeAnimationProperty`,
+    `TransitionSpec`, `PseudoClass` enum. `Selector::specificity()`
+    uses CSS `id*100 + (class+pseudo)*10 + tag*1`.
+    `StyleRule::beats()` mirrors the comparator at
+    `wtk/src/UI/Layout.cpp:266`. Sheets are immutable-once-installed
+    via a `Builder`. The `PropertyKey` enum, `StyleValue` variant,
+    `PropertyTableKey`, `PropertyTableKeyHash`, and `AnimatedValue`
+    variant were lifted to a new public header
+    `omegaWTK/UI/StyleProperty.h` so sheet authoring doesn't reach
+    into private scheduler internals; the private AnimationScheduler
+    and UIView::Impl include the new public header.
+  - **D6.2 AppWindow stack** — `addStyleSheet`, `removeStyleSheet`,
+    `styleSheets()` accessors. Per-window storage in
+    `AppWindow::Impl::styleSheets_`. Mutations call `requestFrame()`
+    so the resolver picks up the new stack on the next frame; the
+    cascade reads the stack fresh every Style phase.
+  - **D6.3 StyleResolver integration** — chosen shape: **layered**
+    (resolver runs FIRST in `UIView::resolveStyles()`, then the
+    existing inline-`Style` writes overwrite on cell overlap so
+    inline wins per §0.3 layering). New public header
+    `omegaWTK/UI/StyleResolver.h` + private impl
+    `wtk/src/UI/StyleResolver.cpp`. `StyleResolver::apply(view)`
+    walks the AppWindow sheet stack, collects winners per
+    `(NodeId, PropertyKey)` via `StyleRule::beats()`, then writes
+    cells. Property-key scope (view vs element NodeId) routed via a
+    `scopeOf(PropertyKey)` helper. `FrameBuilder` gained a `window()`
+    accessor so the resolver can reach the stack from
+    `AppWindow::activeFrameBuilder()`.
+  - **D6.4 pseudo-class state** — `View::Impl::pseudoClassBits_`
+    `uint8_t` field (bit layout matches `StyleSheets::PseudoClass`).
+    Public `View::pseudoClassBits()` + `View::setPseudoClassBits(mask,
+    on)`. The setter marks `DirtyBit::Style` only on actual change so
+    mouse-stable frames don't dirty. `View::enable()` / `disable()`
+    flip Disabled. `WidgetTreeHost::dispatchInputEvent` wires:
+    Hover bit on hover-change (set on new target, clear on old);
+    Pressed bit on LMouseDown/Up on the current target.
+    `StyleResolver::selectorMatches` consults the view's bits via
+    subset match — every bit required by the selector must be set
+    on the view (`Hover|Pressed` requires BOTH). `:focused` is
+    deferred to D7 (no focus tracker today).
+  - **D6.5 transition / animation-binding recording** — new
+    `ResolvedSheetBindings` struct on `UIView::Impl` holds
+    `transitions: Vector<{NodeId, TransitionSpec}>` and
+    `animationBindings: Vector<{NodeId, String}>`. The resolver
+    clears + repopulates this every Style pass; for each winning
+    rule, every node the rule won contributes the rule's
+    transitions + animation name (if any) to the records. Nothing
+    reads the records yet — D7.2 wires `scheduler.transition(...)`
+    against transitions; D7.3 wires `scheduler.animateProperty(...)`
+    against animationBindings.
+
+  **File inventory:**
+  - New public: `wtk/include/omegaWTK/UI/StyleProperty.h`,
+    `omegaWTK/UI/StyleSheet.h`, `omegaWTK/UI/StyleResolver.h`.
+  - New private: `wtk/src/UI/StyleSheet.cpp`, `wtk/src/UI/StyleResolver.cpp`.
+  - Modified: `omegaWTK/UI/AppWindow.h` (stack API + fwd-decl),
+    `omegaWTK/UI/View.h` (pseudo-class accessors),
+    `omegaWTK/UI/UIView.h` (friend of StyleResolver),
+    `wtk/src/UI/AppWindow.cpp` (impl bodies),
+    `wtk/src/UI/AppWindowImpl.h` (storage + include),
+    `wtk/src/UI/ViewImpl.h` (state field),
+    `wtk/src/UI/View.Core.cpp` (pseudo-class impl + setEnabled wiring),
+    `wtk/src/UI/UIViewImpl.h` (StyleSheet include +
+    ResolvedSheetBindings struct + sheetBindings_ field),
+    `wtk/src/UI/UIView.Style.cpp` (resolver call before inline writes),
+    `wtk/src/UI/WidgetTreeHost.cpp` (hover/pressed wiring in
+    dispatchInputEvent),
+    `wtk/src/UI/FrameBuilder.h` (window() accessor),
+    `wtk/src/UI/AnimationScheduler.h` (dedup with StyleProperty.h).
+
+  **Verified:** full-tree build 81/81 green. The resolver runs every
+  Style pass; with no sheets installed the cascade short-circuits
+  to the existing inline-style behavior (zero behavior change for
+  apps that don't use sheets). With sheets, inline `Style` still
+  wins on cell overlap per the layered decision.
+
+  **Risk paid:** Medium-High (the original §5 D6 estimate). The
+  selector matcher is Tier-1 (single-compound, tag + pseudo only —
+  id/class authoring deferred). Specificity follows CSS. The
+  cascade traverses the whole stack per resolve and is O(rules ×
+  elements); fine for current tree sizes.)
 - [ ] **D7** — Style Tier 3 + Anim Tier D: `ThemeVars`; transitions
   wired to `scheduler.transition(...)` with retargeting; keyframe
   animations wired to `scheduler.animateProperty<T>(track, timing)`
   with bind/unbind lifecycle; `:state(name)`; UA default sheet.
 - [ ] **D8** — final Anim Tier E + residual cleanup: strip dead anim
   forward decls, delete `flushPendingPaint` if D1 left it
-  callerless, update `API.rst`.
+  callerless, update `API.rst`. **Also retires the deprecated
+  `Widget::onPaint(PaintReason)` virtual + every in-tree override**
+  — added to D8 scope 2026-06-03 (see §5 D8 for the override list
+  and the `BlueRectWidget` scheduler-pump caveat).
 
 ### Block 5 — WML front-end (last)
 

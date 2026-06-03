@@ -136,6 +136,36 @@ protected:
     void notifyObservers(WidgetEventType eventType,WidgetEventParams params);
 
     virtual void onMount(){};
+    /// **Deprecated** — `Widget::onPaint` is **never dispatched** by
+    /// the framework after the Widget-View-Paint-Lifecycle-Plan
+    /// Phase 4.7.4 cutover. Pre-4.7.4 the chain was
+    /// `Widget::executePaint` → `onPaint(PaintReason)` → `UIView::update`
+    /// → `submitView`. After 4.7.4, `FrameBuilder::buildFrame` walks
+    /// the `View` tree directly, calling each node's
+    /// `View::paint(PaintContext &)` (Phase 4.7.0 hook), and
+    /// `Widget::onPaint` is never reached. Tier D / D1 (2026-06-03)
+    /// then deleted `Widget::executePaint` entirely, removing the
+    /// last symbol that could have called it.
+    ///
+    /// **Do not override.** Move setup that used to live in
+    /// `onPaint` to `onMount` (called once when the widget attaches
+    /// to the tree) plus a `resize(Composition::Rect &)` override
+    /// (called when the widget rect changes) — that pair is the
+    /// canonical replacement pattern (see
+    /// `wtk/tests/TextCompositorTest/main.cpp::rebuildContent`).
+    ///
+    /// **Scheduled for deletion** in Widget-View-Paint-Lifecycle-Plan
+    /// Tier D / D8 — see the §11 Block 4 D8 entry. Until then the
+    /// virtual stays on the class so the existing in-tree overrides
+    /// (`Rectangle`, `RoundedRectangle`, `Ellipse`, `Path`,
+    /// `Separator`, `Label`, `Icon`, `Image`, `Container`,
+    /// `StackWidget`) still compile; each emits a
+    /// `-Wdeprecated-declarations` warning that points back here.
+    [[deprecated("Widget::onPaint is never dispatched after the "
+                 "Phase 4.7.4 cutover. Move setup to onMount() + a "
+                 "resize() override; see Widget.h for the canonical "
+                 "pattern. Scheduled for deletion in "
+                 "Widget-View-Paint-Lifecycle-Plan Tier D / D8.")]]
     virtual void onPaint(PaintReason reason){};
     virtual Composition::Rect clampChildRect(const Widget & child,const GeometryProposal & proposal) const;
     virtual void onChildRectCommitted(const Widget & child,

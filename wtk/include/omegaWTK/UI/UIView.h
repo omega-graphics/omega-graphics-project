@@ -265,7 +265,16 @@ public:
     bool hasElement(UIElementTag tag) const;
 };
 
+// Widget-View-Paint-Lifecycle-Plan Tier D / D6.3 (2026-06-03):
+// forward decl for the cascade walker. Resolver writes cells into
+// `Impl::styleTable_` (private) via the `friend` declaration inside
+// `UIView`.
+namespace StyleSheets {
+    class StyleResolver;
+}
+
 class OMEGAWTK_EXPORT UIView : public View {
+    friend class StyleSheets::StyleResolver;
 public:
     struct UpdateDiagnostics {
         std::size_t activeTagCount = 0;

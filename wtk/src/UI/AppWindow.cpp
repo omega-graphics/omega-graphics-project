@@ -102,6 +102,51 @@ void AppWindow::flushFrame(){
     impl_->widgetTreeHost->paintDirty();
 }
 
+// ---------------------------------------------------------------
+// Widget-View-Paint-Lifecycle-Plan Tier D / D6.2 (2026-06-03):
+// per-window style-sheet stack. The stack is consulted by the D6.3
+// `StyleSheets::StyleResolver`; mutating it dirties root Style so
+// the next frame re-resolves cells against the new cascade and asks
+// the window to flush.
+// ---------------------------------------------------------------
+
+namespace {
+
+void markRootStyleDirty(AppWindow & window){
+    // The resolver reads the stack fresh on every Style phase, so
+    // the only thing the stack mutation has to do is wake the
+    // window so a frame actually runs. The pre-`setRootWidget`
+    // case (no tree, no view) still wakes the window harmlessly —
+    // `flushFrame` early-returns on a null tree.
+    window.requestFrame();
+}
+
+} // namespace
+
+void AppWindow::addStyleSheet(SharedHandle<StyleSheets::StyleSheet> sheet){
+    if(sheet == nullptr){
+        return;
+    }
+    impl_->styleSheets_.push_back(std::move(sheet));
+    markRootStyleDirty(*this);
+}
+
+void AppWindow::removeStyleSheet(const SharedHandle<StyleSheets::StyleSheet> & sheet){
+    auto & stack = impl_->styleSheets_;
+    for(auto it = stack.begin(); it != stack.end(); ++it){
+        if(*it == sheet){
+            stack.erase(it);
+            markRootStyleDirty(*this);
+            return;
+        }
+    }
+}
+
+const OmegaCommon::Vector<SharedHandle<StyleSheets::StyleSheet>> &
+AppWindow::styleSheets() const {
+    return impl_->styleSheets_;
+}
+
 void AppWindow::setRootWidget(WidgetPtr widget){
     impl_->widgetTreeHost = WidgetTreeHost::Create();
     impl_->widgetTreeHost->setRoot(widget);

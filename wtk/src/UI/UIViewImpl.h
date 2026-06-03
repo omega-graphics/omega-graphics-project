@@ -2,6 +2,7 @@
 #define OMEGAWTK_UI_UIVIEWIMPL_H
 
 #include "omegaWTK/UI/UIView.h"
+#include "omegaWTK/UI/StyleSheet.h"  // D6.1: TransitionSpec, KeyframeAnimation
 #include "AnimationScheduler.h"   // Phase 4.4: NodeId, PropertyKey, scheduler API.
 
 #include <algorithm>
@@ -35,23 +36,37 @@ inline constexpr bool VariantHas_v = VariantHas<T, Variant>::value;
 
 }
 
-// Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
-// the per-property resolved-style cell. Sibling of the scheduler's
-// `AnimatedValue` — same key space (`PropertyTableKey`) and same
-// `std::monostate` empty slot, but the value alternatives are
-// resolved-style types (which include non-animatable handles like
-// Font and TextLayoutDescriptor that have no business in the
-// animation runtime's variant). The `resolved<T>` helper on
-// `UIView::Impl` queries the scheduler first (animation overrides)
-// then the style cell here, then the caller's UA default.
-using StyleValue = std::variant<
-    std::monostate,
-    Composition::Color,
-    SharedHandle<Composition::Brush>,
-    Composition::LayerEffect::DropShadowParams,
-    SharedHandle<Composition::Font>,
-    Composition::TextLayoutDescriptor,
-    std::uint32_t>;
+// Widget-View-Paint-Lifecycle-Plan Tier D / D6.1 (2026-06-03):
+// `StyleValue` (D5) lifted to the public header
+// `omegaWTK/UI/StyleProperty.h` so the new sheet vocabulary can
+// share the same cell-value union. Included transitively via
+// `AnimationScheduler.h`.
+
+/// Widget-View-Paint-Lifecycle-Plan Tier D / D6.5 (2026-06-03):
+/// per-node records the cascade walker emits so D7 has somewhere
+/// to read transition / keyframe-animation bindings from when it
+/// wires the firing. The resolver clears + repopulates these every
+/// Style pass; D7.2 / D7.3 read them to call
+/// `scheduler.transition(...)` / `scheduler.animateProperty(...)`.
+/// Tier D / D6.5 only RECORDS — there is no firing path on this
+/// data yet; the records are inert until D7 grows readers.
+struct ResolvedSheetBindings {
+    struct TransitionRecord {
+        NodeId                       node = 0;
+        StyleSheets::TransitionSpec  spec {};
+    };
+    struct AnimationBindingRecord {
+        NodeId                       node = 0;
+        OmegaCommon::String          name {};
+    };
+    OmegaCommon::Vector<TransitionRecord>          transitions {};
+    OmegaCommon::Vector<AnimationBindingRecord>    animationBindings {};
+
+    void clear() {
+        transitions.clear();
+        animationBindings.clear();
+    }
+};
 
 /// Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
 /// per-property resolved-style table. Owns one cell per resolved
@@ -263,6 +278,14 @@ struct UIView::Impl {
     // / `ComputedStyle` structs remain as transient builder types
     // inside `resolveStyles()`; they are no longer stored fields.
     StyleTable styleTable_ {};
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6.5 (2026-06-03):
+    // recorded transition / keyframe-animation bindings from the
+    // sheet cascade. `StyleSheets::StyleResolver::apply()` clears
+    // and repopulates this every Style pass. D7 reads it to fire
+    // `scheduler.transition(...)` and `scheduler.animateProperty(...)`.
+    // Tier D / D6 only writes; nothing reads yet.
+    ResolvedSheetBindings sheetBindings_ {};
 
     // Tier B / B3: arranged layout (the Layout phase's output). `arrange()`
     // writes both; `paint()` reads them. Rebuilt every frame for now.

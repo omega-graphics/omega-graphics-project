@@ -198,10 +198,43 @@ void View::resize(Composition::Rect newRect){
 
 void View::enable() {
     impl_->enabled_ = true;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6.4 (2026-06-03):
+    // clear the Disabled pseudo-class bit so the cascade re-resolves
+    // without the `:disabled` rules. PseudoClass::Disabled == 0x08.
+    setPseudoClassBits(0x08U, false);
 }
 
 void View::disable() {
     impl_->enabled_ = false;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6.4 (2026-06-03):
+    // set the Disabled pseudo-class bit. PseudoClass::Disabled == 0x08.
+    setPseudoClassBits(0x08U, true);
+}
+
+std::uint8_t View::pseudoClassBits() const {
+    return impl_->pseudoClassBits_;
+}
+
+void View::setPseudoClassBits(std::uint8_t mask, bool on){
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6.4 (2026-06-03):
+    // bit-set / bit-clear with change detection so the Style dirty
+    // bit only fires when the cascade input actually changes. The
+    // resolver re-runs from `UIView::resolveStyles()` which is gated
+    // by `DirtyBit::Style` upstream; without the change check, a
+    // hover-stable mouse-move would mark every frame as dirty.
+    const auto before = impl_->pseudoClassBits_;
+    auto after = before;
+    if(on){
+        after |= mask;
+    }
+    else {
+        after = static_cast<std::uint8_t>(after & ~mask);
+    }
+    if(after == before){
+        return;
+    }
+    impl_->pseudoClassBits_ = after;
+    markDirty(View::Style);
 }
 
 void View::applyLayoutDelta(const LayoutDelta & delta,

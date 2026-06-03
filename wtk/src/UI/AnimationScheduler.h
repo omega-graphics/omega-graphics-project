@@ -2,10 +2,9 @@
 #define OMEGAWTK_UI_ANIMATIONSCHEDULER_H
 
 #include "omegaWTK/Core/Core.h"
-#include "omegaWTK/Composition/Animation.h"   // KeyframeTrack, AnimationHandle, TimingOptions, AnimationCurve
-#include "omegaWTK/Composition/Brush.h"        // Color, Brush
-#include "omegaWTK/Composition/Geometry.h"     // Point2D, Rect
-#include "omegaWTK/Composition/Layer.h"        // LayerEffect::{DropShadowParams,TransformationParams}
+#include "omegaWTK/UI/StyleProperty.h"          // NodeId, PropertyKey, PropertyTableKey, StyleValue
+#include "omegaWTK/Composition/Animation.h"     // KeyframeTrack, AnimationHandle, TimingOptions, AnimationCurve
+#include "omegaWTK/Composition/Geometry.h"      // Point2D, Rect
 
 #include <cstdint>
 #include <functional>
@@ -35,58 +34,15 @@ class AppWindow;
 // Composition placement. The app-facing surface is exposed later via an
 // AppWindow accessor; for now the only caller is FrameBuilder.
 
-/// A scene node (`View`) identity. The NodeId -> View mapping does not
-/// exist yet (4.7); in 4.3 the scheduler only stores values against it.
-using NodeId = std::uint64_t;
-
-/// Phase 4.4: process-wide atomic counter behind `View::nodeId()` and the
-/// per-`(UIView, UIElementTag)` NodeIds UIView allocates lazily. Stable
-/// across the lifetime of the process; never reused. The counter lives
-/// here (alongside the only consumer of NodeIds) rather than on `View`
-/// itself so element identities — which are not `View`s — can share the
-/// allocator without leaking through the public View surface.
-NodeId allocateNodeId();
-
-/// Animatable property channels (Animation-Scheduler-Plan §3.2). The
-/// Layout* keys are layout-affecting (see isLayoutProperty); the rest are
-/// paint-only.
-enum class PropertyKey : std::uint16_t {
-    // Visuals (read by Paint)
-    BackgroundColor,
-    BorderColor,
-    BorderWidth,
-    Opacity,
-    FillBrush,
-    ShadowOffsetX, ShadowOffsetY, ShadowBlur, ShadowColor,
-    TransformX, TransformY,
-    TransformScaleX, TransformScaleY,
-    TransformRotation,
-    // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
-    // aggregate drop-shadow cell. Animatable shadow channels still
-    // ride their own (ShadowOffsetX/Y, ShadowBlur, ShadowColor)
-    // scalar keys — `DropShadow` carries the resolved-style baseline
-    // the Shadow channel animations layer on top of during Paint.
-    DropShadow,
-
-    // Text
-    TextColor, TextSize,
-    // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
-    // text-style cells written by `resolveStyles()` and read during
-    // Paint via the `resolved<T>()` helper. `TextFont` holds a
-    // `SharedHandle<Composition::Font>`, `TextLayout` a
-    // `Composition::TextLayoutDescriptor`, `TextLineLimit` a uint32.
-    TextFont, TextLayout, TextLineLimit,
-
-    // Layout (read by the Layout phase — layout-affecting)
-    LayoutWidth, LayoutHeight,
-    LayoutX, LayoutY,
-
-    // Sub-indexed (subIndex addresses the path node / gradient stop)
-    PathNodeX, PathNodeY,
-
-    // App-allocated keys start here
-    UserDefined = 0x8000
-};
+// Widget-View-Paint-Lifecycle-Plan Tier D / D6.1 (2026-06-03):
+// `NodeId`, `allocateNodeId()`, `PropertyKey`, `PropertyTableKey`,
+// `PropertyTableKeyHash`, and the `StyleValue` variant moved to the
+// public header `omegaWTK/UI/StyleProperty.h` so app-authored
+// `StyleSheet`s can name properties without including private
+// scheduler internals. The animation-side `AnimatedValue` variant
+// remains here because it carries types specific to the animation
+// runtime (Point2D / Rect / TransformationParams) that the
+// resolved-style table never sees.
 
 /// Monotonic, vsync-notional frame timestamp. Until the frame pacer
 /// (Frame-Pacing-Plan) lands, FrameBuilder synthesizes this from a
@@ -96,42 +52,11 @@ struct FrameTime {
     std::uint32_t frameIndex  = 0;
 };
 
-/// One side-table cell. `BrushPtr` in the plan is a
-/// `Core::SharedPtr<Composition::Brush>` in this tree. `std::monostate`
-/// is the empty/unset state.
-using AnimatedValue = std::variant<
-    std::monostate,
-    float, int, std::uint32_t,
-    Composition::Color,
-    Composition::Point2D,
-    Composition::Rect,
-    Core::SharedPtr<Composition::Brush>,
-    Composition::LayerEffect::DropShadowParams,
-    Composition::LayerEffect::TransformationParams>;
-
-/// Side-table / active-property key. `subIndex` is 0 for the common case
-/// and addresses path nodes / gradient stops for the *At variants.
-struct PropertyTableKey {
-    NodeId        node     = 0;
-    PropertyKey   key      = PropertyKey::Opacity;
-    std::uint32_t subIndex = 0;
-
-    bool operator==(const PropertyTableKey & other) const {
-        return node == other.node && key == other.key && subIndex == other.subIndex;
-    }
-};
-
-struct PropertyTableKeyHash {
-    std::size_t operator()(const PropertyTableKey & k) const {
-        // node dominates the entropy; fold key+subIndex into the low bits.
-        std::size_t h = std::hash<std::uint64_t>{}(k.node);
-        h ^= (static_cast<std::size_t>(k.key) + 0x9e3779b97f4a7c15ULL +
-              (h << 6) + (h >> 2));
-        h ^= (static_cast<std::size_t>(k.subIndex) + 0x9e3779b97f4a7c15ULL +
-              (h << 6) + (h >> 2));
-        return h;
-    }
-};
+// Widget-View-Paint-Lifecycle-Plan Tier D / D6.1 (2026-06-03):
+// `AnimatedValue`, `PropertyTableKey`, `PropertyTableKeyHash` lifted
+// to `omegaWTK/UI/StyleProperty.h` so the public `StyleSheet`
+// vocabulary can name them. Included transitively here through that
+// public header.
 
 class AnimationScheduler {
 public:

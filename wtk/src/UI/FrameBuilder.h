@@ -109,6 +109,13 @@ public:
     FrameBuilder(const FrameBuilder &) = delete;
     FrameBuilder & operator=(const FrameBuilder &) = delete;
 
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D6.3 (2026-06-03):
+    /// the owning window. `StyleResolver` reaches through this from
+    /// `AppWindow::activeFrameBuilder()` to read
+    /// `window().styleSheets()` during Phase 2. Lifetime matches the
+    /// FrameBuilder's, which matches the AppWindow's.
+    AppWindow & window() const { return window_; }
+
     // Open the window-level composition session for this frame.
     // Idempotent across nesting via the depth counter.
     void beginFrame();

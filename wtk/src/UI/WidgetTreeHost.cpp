@@ -566,6 +566,11 @@ namespace OmegaWTK {
             case NativeEvent::CursorExit: {
                 // Cursor left the window — send exit to hovered view.
                 if(hoveredView_ != nullptr){
+                    // Widget-View-Paint-Lifecycle-Plan Tier D / D6.4
+                    // (2026-06-03): clear the Hover bit on the View
+                    // leaving the cursor's reach so the next Style
+                    // pass re-resolves without `:hover`.
+                    hoveredView_->setPseudoClassBits(0x01U, false);
                     hoveredView_->emit(event);
                     hoveredView_ = nullptr;
                 }
@@ -593,6 +598,9 @@ namespace OmegaWTK {
         // Synthesize CursorEnter/CursorExit when the hovered view changes.
         if(target != hoveredView_){
             if(hoveredView_ != nullptr){
+                // Widget-View-Paint-Lifecycle-Plan Tier D / D6.4
+                // (2026-06-03): clear Hover on the View losing focus.
+                hoveredView_->setPseudoClassBits(0x01U, false);
                 auto *exitParams = new Native::CursorExitParams();
                 exitParams->position = pos;
                 hoveredView_->emit(Native::NativeEventPtr(
@@ -600,11 +608,25 @@ namespace OmegaWTK {
             }
             hoveredView_ = target;
             if(hoveredView_ != nullptr){
+                // Tier D / D6.4 (2026-06-03): set Hover on the new target.
+                hoveredView_->setPseudoClassBits(0x01U, true);
                 auto *enterParams = new Native::CursorEnterParams();
                 enterParams->position = pos;
                 hoveredView_->emit(Native::NativeEventPtr(
                     new NativeEvent(NativeEvent::CursorEnter,enterParams)));
             }
+        }
+
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D6.4 (2026-06-03):
+        // Pressed bit on left-mouse transitions. Down sets, Up clears
+        // — on whichever view is the current target (so a button you
+        // press then drag off does not stay pressed on the original).
+        // PseudoClass::Pressed == 0x02.
+        if(event->type == NativeEvent::LMouseDown && target != nullptr){
+            target->setPseudoClassBits(0x02U, true);
+        }
+        else if(event->type == NativeEvent::LMouseUp && target != nullptr){
+            target->setPseudoClassBits(0x02U, false);
         }
 
         if(target != nullptr){
