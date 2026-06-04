@@ -208,6 +208,18 @@ public:
     // is dead in the new model — the framework no longer dispatches
     // it (see `Widget.h` deprecation note) — so an `onPaint` override
     // here would be inert.
+    //
+    // Each nested UIView ends with `update()` — i.e.
+    // `markDirty(Style | Layout | Paint)`. `Widget::init()` marks
+    // the widget's OWN view dirty, but `makeSubView<UIView>(...)`
+    // creates UIViews as CHILDREN of the widget's view. The Style
+    // walker recurses only when `(self.dirty | self.descendant) &
+    // Style` is set, so without the per-child markDirty here the
+    // walker never visits these UIViews — `resolveStyles` never
+    // runs, the sheet cells never land in `styleTable_`, and Paint
+    // reads back the UA-default `Color::Transparent` for every
+    // background. (Same fix on every other test that holds sub-
+    // UIViews via `makeSubView`.)
     void rebuildScene(){
         const auto bounds = localBounds(rect());
         ensureViews(bounds);
@@ -225,6 +237,10 @@ public:
         leftView_->setLayout(emptyLayout);
         rightView_->setLayout(emptyLayout);
         innerView_->setLayout(emptyLayout);
+
+        leftView_->update();
+        rightView_->update();
+        innerView_->update();
     }
 
 protected:

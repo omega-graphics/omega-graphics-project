@@ -1180,9 +1180,9 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   checkbox flips and the §5 D3 / D4 rewording — D0 itself is just
   this reconciliation block.
 
-- **D1 — Tier C deletions, pass 1: `Widget` paint plumbing.** Phase
-  asserts (B5) already make the reentrancy state dead; this just
-  removes the carrier. Delete `Widget::executePaint`
+- **D1 — Tier C deletions, pass 1: `Widget` paint plumbing. [DONE
+  2026-06-03.]** Phase asserts (B5) already make the reentrancy
+  state dead; this just removes the carrier. Delete `Widget::executePaint`
   (`Widget.Paint.cpp:13`); inline "mark dirty bits + request frame"
   at each live caller (`init()`, `invalidateNow()`,
   `flushPendingPaint()`, `WidgetTreeHost::invalidateWidgetRecurse`).
@@ -1196,7 +1196,8 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   is collapsed into the new `invalidateNow` body. Estimated ~80 LOC
   removed.
 
-- **D2 — Tier C deletions, pass 2: `View` / `WidgetTreeHost` shims.**
+- **D2 — Tier C deletions, pass 2: `View` / `WidgetTreeHost` shims.
+  [DONE 2026-06-03.]**
   Remove `View::submitPaintFrame(int)` (`View.h:311`) once D1 kills
   its last `Widget`-side caller. Replace
   `WidgetTreeHost::invalidateWidgetRecurse` (sole caller is the
@@ -1217,8 +1218,8 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   unit.
 
 - **D4 — Anim Tier C: scheduler-routing deletions + path-node
-  migration.** Scalar tween routing is already in tree (D0
-  verified): `UIView::Impl::startOrUpdateAnimation`
+  migration. [DONE 2026-06-03.]** Scalar tween routing is already in
+  tree (D0 verified): `UIView::Impl::startOrUpdateAnimation`
   (`UIView.Animation.cpp:92`) routes to
   `scheduler->tweenProperty<float>(...)` at lines 138 / 154 and
   preserves the `(tag, key)` `to`-match short-circuit via
@@ -1251,8 +1252,8 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
      prep).
 
 - **D5 — `ComputedStyle` re-key: split per-property,
-  `(NodeId, PropertyKey) → TypedValue`.** With D4 in,
-  the resolved-style cache and the scheduler side table share the
+  `(NodeId, PropertyKey) → TypedValue`. [DONE 2026-06-03.]** With D4
+  in, the resolved-style cache and the scheduler side table share the
   same identity *and* the same shape. Replace
   `UIView::Impl::computedStyles_` (`UIViewImpl.h:185`,
   `Map<UIElementTag, ComputedStyle>`) with a per-property table keyed
@@ -1276,8 +1277,8 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   aggregate as a stored value is gone.
 
 - **D6 — Style Tier 2: global `StyleSheet` + `Selector` +
-  `StyleResolver` + keyframe declarations.** Largest single phase
-  (per Style plan §5 Tier 2). Five sub-steps:
+  `StyleResolver` + keyframe declarations. [DONE 2026-06-03.]**
+  Largest single phase (per Style plan §5 Tier 2). Five sub-steps:
 
   - **D6.1 — Vocabulary.** `Selector` (Tier-1 single-compound: tag +
     class + id + pseudo-class), `StyleRule` (selector + property →
@@ -1400,6 +1401,69 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   break for every downstream override — the deprecation comment
   in `Widget.h` documents the migration path so external code can
   prep for D8.
+
+  **D8 should also retire two layout-manager / View-tree bugs
+  uncovered during the D6 test conversions on 2026-06-03.**
+
+  (a) `AbsoluteLayout::arrange` and `FillLayout::arrange`
+  (`wtk/src/UI/LayoutManager.cpp:128, :154`) were passing the input
+  `finalRectLocal` straight to `clampRectToParent`, but the caller
+  in `FrameBuilder::layoutSubtree` recurses with
+  `child->getRect()` — a rect whose `pos` is the node's position in
+  its OWN parent's space (non-zero whenever any parent layout had
+  already positioned the node), not a local-origin clamp box.
+  Children get addressed in the node's LOCAL space (origin 0), so
+  passing the parent-space rect forced every child's `pos` UP to
+  `finalRectLocal.pos` as a minimum. The paint walker then added
+  the parent's offset again, doubling the accumulated `paintOffset`
+  by exactly the parent's pos. Visible in `EllipsePathCompositorTest`
+  and `ContainerClampAnimationTest` as children drifting off-screen
+  on Retina builds. Patched 2026-06-03 by building the clamp box at
+  origin (0, 0) inside each manager. `FlexLayout` accidentally
+  side-stepped the same bug because it already built its own
+  `contentBoundsRect` with `pos = padding`. **D8 should harden the
+  contract**: rename `LayoutSubtree`'s argument from `finalRect` to
+  something that makes the parent-space interpretation explicit
+  (e.g., `nodeRectInParent`), and have either the walker or the
+  manager base class derive a local-origin rect before dispatching
+  to `arrange`. The fix landed at the manager level for now because
+  that was the targeted patch; doing it at the walker level would
+  remove the same trap from any future manager subclass.
+
+  (b) The sub-UIView `markDirty` propagation sharp edge —
+  Surfaced 2026-06-03 by the D6 test conversions: when a widget
+  hosts a `UIView` created via `makeSubView<UIView>(rect, "tag")`
+  (i.e. the UIView is a CHILD of the widget's own view, not the
+  widget's view itself — `EllipsePathCompositorTest`,
+  `ContainerClampAnimationTest::BlueRectWidget`,
+  `RootWidgetTest::Phase32Widget` all do this), the new UIView
+  starts with `dirtyBits_ = 0`. `Widget::init()` marks the
+  widget's OWN view dirty but does not propagate down, and
+  `View::addSubView` does NOT mark the new subview dirty either —
+  so the FrameBuilder's pre-order Style/Layout/Paint walkers
+  (`FrameBuilder.cpp` `styleSubtree` / `layoutSubtree` /
+  `paintSubtree`) never visit the new UIView, the resolver never
+  writes its sheet cells, and Paint reads back UA defaults.
+  Today every widget that hosts sub-UIViews papers over this by
+  calling `uiView->update()` after `setLayout(...)` — a
+  rediscover-every-time bug class. Pick one of these for D8 (or
+  earlier if it bites again):
+  (1) `View::addSubView` inherits the parent's current `dirtyBits`
+      onto the new child — the simplest mechanical change, no
+      coupling between `View` and `UIView`. The child immediately
+      participates in whatever passes the parent is dirty for.
+  (2) `UIView::setLayout` / `setLayoutV2` / equivalent calls
+      `markDirty(View::Layout | View::Paint)` themselves — covers
+      layout authoring but not style; couples mutators to dirty
+      mechanics, which is the right model.
+  (3) Both. (1) handles the "child created after parent already
+      dirty" case; (2) handles the "model mutated after dirty
+      bits were cleared" case. Combined, they remove the need for
+      app code to ever call `update()` explicitly.
+  The fix is small (<30 LOC) but it's a behavior change to public
+  semantics — `addSubView` propagating dirty is observable to
+  anyone who relies on "new subview is clean." Worth getting in
+  before too much external code builds on the current shape.
 
 #### D9. Dependency / shipping order
 

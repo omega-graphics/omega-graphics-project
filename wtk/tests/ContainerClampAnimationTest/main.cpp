@@ -132,6 +132,15 @@ protected:
         auto bounds = rect();
         ensureUIView(bounds);
         applyLayout(localBounds(bounds));
+        // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+        // mark the sub-UIView Style|Layout|Paint-dirty. `uiView` was
+        // created via `makeSubView<UIView>(...)` so it is a CHILD of
+        // this Widget's view, and `Widget::init()` only marks the
+        // widget's OWN view dirty. Without this call the Style
+        // walker never visits the child, the sheet cells never get
+        // written to `styleTable_`, and Paint reads back the UA
+        // defaults — visible as an invisible scene.
+        uiView->update();
     }
 
     // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
@@ -185,6 +194,7 @@ protected:
         auto bounds = rect();
         ensureUIView(bounds);
         applyLayout(localBounds(bounds));
+        uiView->update();   // see onMount comment
         invalidate(OmegaWTK::PaintReason::Resize);
     }
 

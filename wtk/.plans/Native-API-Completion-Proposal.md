@@ -20,9 +20,9 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | **2.5 NativeTheme** | ThemeAppearance, populated ThemeDesc (colors, typography), `queryCurrentTheme()` on macOS & Win32 | **Done** |
 | **2.11 NativeNote / NotificationCenter** | Permissions, scheduling, callbacks, removal, categories — macOS UN, Win32 ToastNotificationManager, GTK libnotify | **Done** |
 | **2.12 NativeMenu / Menu** | Shortcuts, check/radio items, contextual menus, dynamic updates, validation delegate — macOS NSMenu, Win32 HMENU, GTK GtkMenu | **Done** (icons deferred) |
-| 2.13 Linux/X11 direct surface ownership | WTK owns its X11 surfaces directly. Root NativeItem falls through to the GTKAppWindow's toplevel `Window`; NativeViewHost child surfaces are X11 child Windows managed by `X11SurfaceHost` (no `GtkDrawingArea`, no `GtkSocket`, no `GTKItem` in the embedding path). | **Source-complete, compile-verified.** Run-verified: BasicAppTest comes up, `ResizeSession Completed w=600 h=500` flows through configure-event, no warnings. Visual confirmation (menu coexistence, mouse/key flow) still pending a user screenshot — see §2.13 "Risks / open questions". |
+| **2.13 Linux/X11 direct surface ownership** | WTK owns its X11 surfaces directly. Root NativeItem falls through to the GTKAppWindow's toplevel `Window`; NativeViewHost child surfaces are X11 child Windows managed by `X11SurfaceHost` (no `GtkDrawingArea`, no `GtkSocket`, no `GTKItem` in the embedding path). | **Source-complete, compile-verified.** Run-verified: BasicAppTest comes up, `ResizeSession Completed w=600 h=500` flows through configure-event, no warnings. - **Done (Verified by Developer seperately)**|
 | 2.14 NativeVisualTree | Per-window compositor tree moves from Composition → Native. Owned by `AppWindow`, called directly by `FrameBuilder` during layout (no compositor in the loop). Decouples `Visual` from `BackendRenderTargetContext`. Removes the carve-out drain machinery. Includes the `VKFallbackVisualTree` → `VKVisualTree` rename, `MTLCALayerTree` → `MTLVisualTree` rename, and the `CALayerTree`/`DCVisualTree`/`VKLayerTree.cpp` file moves into `wtk/src/Native/{macos,win,gtk}`. | Not started |
-| 2.2 NativeWindow | Full window control (minimize/maximize/fullscreen, scaleFactor, opacity, cursor sink, DPI scale change events) | Not started |
+| 2.2 NativeWindow | Full window control (minimize/maximize/fullscreen, scaleFactor, opacity, cursor sink, DPI scale change events) | **Mostly done.** Header surface complete (`NativeWindow.h`), `WindowScaleFactorChanged` event type + params in `NativeEvent.h`, all three backends (`CocoaAppWindow.mm`, `WinAppWindow.cpp`, `GTKAppWindow.cpp`) implement every method and emit the scale-change event on the right native trigger. **Remaining:** the `AppWindow` default handler that subscribes to `WindowScaleFactorChanged` and runs the renderScale propagation + repaint chain — `AppWindow.cpp` currently only sets `renderScale` once at construction. Plus the `ViewRenderTarget::scaleChanged()` cross-plan rebuild trigger (owned by `DPI-Aware-Text-Plan.md`'s per-monitor-DPI section). |
 | ~~2.3 NativeItem~~ | **Obsolete under virtual view model — no new NativeItem APIs.** See §2.3 below. | Removed |
 | 2.3a View / Widget / TreeHost focus + cursor + tooltip | Virtual focus manager, declarative cursor shape, virtual tooltip popups | Not started |
 | 2.4 NativeApp | Delegate, command-line args, timers | Not started |
@@ -71,6 +71,23 @@ Implemented. See `NativeEvent.h`: `ModifierFlags`, `MouseEventParams`, `CursorMo
 ---
 
 ### 2.2 NativeWindow — Full Window Control + OS Sinks
+
+**Status: mostly done.** What's landed and what isn't, point-by-point against the spec below:
+
+| Item                                                                                                       | Status |
+|------------------------------------------------------------------------------------------------------------|--------|
+| `NativeWindow.h` header surface (`minimize` / `maximize` / `restore` / `toggleFullscreen` / `isMinimized` / `isMaximized` / `isFullscreen` / `isVisible` / `getRect` / `setRect` / `scaleFactor` / `setMinSize` / `setMaxSize` / `setResizable` / `orderFront` / `orderBack` / `setOpacity` / `getOpacity` / `setCursorShape` / `isKeyWindow` / `becomeKeyWindow`) + `CursorShape` enum | ✅ Done — see `wtk/include/omegaWTK/Native/NativeWindow.h:138–186` |
+| `#ifdef TARGET_MACOS` guards around `rect` / `eventEmitter` removed                                         | ✅ Done — both are unguarded on the base interface |
+| `WindowScaleFactorChanged` event type + `WindowScaleFactorChangedParams` struct in `NativeEvent.h`         | ✅ Done — `wtk/include/omegaWTK/Native/NativeEvent.h:97` (params), `:142` (enum case) |
+| **macOS** `CocoaAppWindow` — all methods + scale-change emit on `-windowDidChangeBackingProperties:`       | ✅ Done — `wtk/src/Native/macos/CocoaAppWindow.mm:179–284` |
+| **Win32** `WinAppWindow` — all methods + scale-change emit on `WM_DPICHANGED` with `suggestedRect`         | ✅ Done — `wtk/src/Native/win/WinAppWindow.cpp:266–544` |
+| **GTK** `GTKAppWindow` — all methods + scale-change emit on `notify::scale-factor`                          | ✅ Done — `wtk/src/Native/gtk/GTKAppWindow.cpp:268–1127`. Wayland `wp_fractional_scale_v1::preferred_scale` + X11 `Xft.dpi` listeners are still future work (integer scale covers the common case). |
+| `AppWindow` default handler — subscribe to `WindowScaleFactorChanged`, call `view->setRenderScale(newScale)`, invalidate the tree, call `setRect(suggestedRect)` on Win32 | ❌ **Not done.** `wtk/src/UI/AppWindow.cpp:178` only seeds `renderScale` once at construction. There is no subscription anywhere in `AppWindow.cpp`. The native side emits the event; nobody listens. |
+| `ViewRenderTarget::scaleChanged()` rebuild trigger                                                          | ❌ **Not done.** Cross-plan item owned by `DPI-Aware-Text-Plan.md` "Per-monitor DPI updates"; not in this proposal's scope to implement but the AppWindow handler can't fully ship without it. |
+
+**Net:** the platform surface is wired and emits the right events; the cross-platform consumer that turns those events into crisp glyphs on the new monitor is the one piece left. An app today can call any of the §2.2 APIs (`minimize`/`maximize`/`setOpacity`/`setCursorShape`/etc.) and they work; an app that's moved between monitors will get the event fired but no automatic re-render at the new scale until the AppWindow handler lands.
+
+---
 
 **Goal:** Platform-uniform window management. Because the window owns the only NativeItem, all OS-level "per-view" concerns that aren't actually per-view (cursor, opacity, key-window state) live here.
 
@@ -220,35 +237,176 @@ Under the virtual view model, every per-View OS feature originally proposed here
 
 **Goal:** Implement the per-view features in the virtual layer where the views actually live, with a dispatcher that commits the active value to the single root NativeItem.
 
+> **Cross-plan dependencies (this section).**
+>
+> **What §2.3a needs from other plans:**
+> - **Tooltip rendering** needs [Overlay-Z-Order-Plan O1–O3](Overlay-Z-Order-Plan.md#9-phases) (an `OverlayHost` with the `Tooltip` tier). The dispatcher constructs a one-Label overlay and calls `present(..., OverlayTier::Tooltip, ...)`.
+> - **Tooltip hover delay** needs [§2.4 `NativeTimer`](#24-nativeapp--lifecycle-arguments-timers) (recurring timer on `WidgetTreeHost`).
+> - **Focus** depends on nothing else — it's a producer, not a consumer.
+> - **Cursor shape** consumes [§2.2 `NativeWindow::setCursorShape`](#22-nativewindow--full-window-control--os-sinks) (the single per-window OS cursor sink).
+>
+> **What other plans need from §2.3a:**
+> - [Widget-Stub Phase 4B TextInput](Widget-Stub-Implementation-Plan.md#phase-4b-textinput--blocked-on-focusmanager) is blocked on Focus **steps 1–3** (FocusPolicy + FocusManager skeleton + key routing).
+> - [Widget-Stub Phase 6](Widget-Stub-Implementation-Plan.md#phase-6-overlay-and-feedback-widgets) `ContextMenu` / `Modal` dismissal returns focus → Focus **step 5** (`pushRestorationPoint` / `popAndRestore`). Modal tab-trap → Focus **step 4** (`focusNext` / `focusPrevious`).
+> - [Widget-Stub Phase 4B tab traversal across forms](Widget-Stub-Implementation-Plan.md#cross-plan-dependencies) → Focus **steps 4 + 6** (traversal + `setTabOrder`).
+> - [Widget-Stub Phase 9 `FocusRingHost`](Widget-Stub-Implementation-Plan.md#phase-9-accessibility-and-system-integration) reads `FocusManager::focusedView()` + `lastFocusReason()` to decide when the ring renders.
+> - [Overlay-Z-Order-Plan O4 + O5](Overlay-Z-Order-Plan.md#9-phases) consume Focus steps 5 and 4 respectively.
+> - [Widget-Stub Phase 6 `Tooltip`](Widget-Stub-Implementation-Plan.md#6b-tooltip) is implemented through the `Widget::setTooltip` API defined in this section.
+>
+> The Focus → Tooltip dependency is internal to this section: the tooltip dispatcher doesn't read FocusManager. They share `WidgetTreeHost` but otherwise compose independently.
+
 #### Focus — virtual focus manager
 
 There is exactly one OS focus per window (the root NativeItem is always first responder when the window is key). Per-view keyboard focus is a virtual concept managed by `WidgetTreeHost`.
+
+##### Prior art (which abstractions WTK imports and which it doesn't)
+
+This section is informed by the four production focus managers we expect to interoperate with in some form:
+
+- **Chromium `views::FocusManager`** ([source](https://source.chromium.org/chromium/chromium/src/+/main:ui/views/focus/focus_manager.h)). One per top-level `Widget`. Owns `focused_view_`, `stored_focused_view_` (for restore on modal dismiss), and a `FocusTraversable` chain for nested traversal (embedded webviews, child dialogs). `FocusChangeReason` enum disambiguates direct-set vs. tab-traversal vs. restore. `AdvanceFocus(reverse)` walks the traversal tree.
+- **Qt `QApplication::focusWidget()` + `QWidget::setFocusPolicy`** ([docs](https://doc.qt.io/qt-6/qwidget.html#focus-and-the-keyboard)). `Qt::FocusReason` is rich (`MouseFocusReason`, `TabFocusReason`, `BacktabFocusReason`, `ActiveWindowFocusReason`, `PopupFocusReason`, `ShortcutFocusReason`, `MenuBarFocusReason`, `OtherFocusReason`) and **drives focus-ring visibility** — the ring shows on `TabFocusReason` and friends but not on `MouseFocusReason`. `setFocusProxy` delegates focus to another widget (essential for composite controls). `setTabOrder(prev, next)` overrides creation-order traversal.
+- **AppKit first-responder chain.** `makeFirstResponder:` / `acceptsFirstResponder` / `becomeFirstResponder` / `resignFirstResponder`. `nextKeyView` / `previousKeyView` form an explicit linked-list traversal.
+- **GTK** `gtk_widget_grab_focus`, `gtk_widget_child_focus(GTK_DIR_TAB_FORWARD|BACKWARD|UP|DOWN|LEFT|RIGHT)`. Directional focus is **first-class** here (GTK supports D-pad / spatial navigation natively).
+- **Win32** `SetFocus` / `GetFocus`; `IsDialogMessage` performs tab traversal *only* in dialog message loops.
+
+What WTK imports verbatim: Qt's **`FocusReason`** (the only sensible way to gate focus-ring rendering) and **`FocusPolicy`** (per-View declaration of focusability). What WTK imports adapted: Chromium's **focus restoration** (modal/popover dismiss returns focus to prior owner) and Chromium's **focus traversal** model walking the virtual view tree. What WTK **defers**: directional / spatial focus (GTK-style `GTK_DIR_UP/DOWN/LEFT/RIGHT`) — useful for game-controller and TV UIs but out of scope until a concrete use case lands; and `FocusProxy` chains — useful for composite controls but easy to add later without API churn (a `View*` member on the proxying View).
+
+##### View-side API
 
 ```cpp
 // New: focus state lives on View
 class View {
     // ... existing ...
-    void setFocusable(bool focusable);
-    bool isFocusable() const;
-    bool isFocused() const;     // True iff the host's focus manager has selected this view
-    void focus();               // Request focus from the host's focus manager
+
+    // Per-view "can this be focused, and how?"
+    //   NoFocus       — never receives focus (default for shape primitives, Label).
+    //   ClickFocus    — focusable only by direct mouse click + View::focus().
+    //   TabFocus      — focusable only by keyboard traversal (Tab / Shift-Tab / Shortcut).
+    //   StrongFocus   — ClickFocus | TabFocus. Default for interactive widgets
+    //                   (Button, TextInput, Checkbox).
+    //   WheelFocus    — StrongFocus | gains focus on scroll-wheel events too.
+    //                   Default for editable scrollable surfaces (TextArea).
+    enum class FocusPolicy : uint8_t {
+        NoFocus     = 0,
+        ClickFocus  = 1 << 0,
+        TabFocus    = 1 << 1,
+        StrongFocus = ClickFocus | TabFocus,
+        WheelFocus  = StrongFocus | (1 << 2)
+    };
+
+    void setFocusPolicy(FocusPolicy policy);
+    FocusPolicy focusPolicy() const;
+
+    // Convenience predicates derived from focusPolicy().
+    bool isFocusable() const;     // policy != NoFocus
+    bool isClickFocusable() const;
+    bool isTabFocusable() const;
+
+    // True iff the host's focus manager has selected this view.
+    bool isFocused() const;
+
+    // Request focus from the host's focus manager. The reason is what
+    // decides whether the focus ring renders (see FocusReason below).
+    void focus(FocusReason reason = FocusReason::Other);
     void blur();
 };
 
-// New: the focus manager. Owned by WidgetTreeHost (one per AppWindow).
-class FocusManager {
-public:
-    void setFocus(View * view);     // Emits FocusLost on previous, FocusGained on new
-    View * focusedView() const;
-    void clearFocus();
-
-    // Tab traversal — host-level keyboard navigation.
-    void focusNext();
-    void focusPrevious();
+// Why focus changed. Used by FocusManager to decide whether to commit
+// a focus ring; widgets that paint a custom focus indicator read it via
+// View::lastFocusReason() in their rebuildStyle() hook.
+enum class FocusReason : uint8_t {
+    Mouse,          // ClickFocus path; ring usually suppressed
+    Tab,            // FocusManager::focusNext
+    Backtab,        // FocusManager::focusPrevious
+    Shortcut,       // hotkey landed on this view
+    ActiveWindow,   // window became key; restored focus
+    Popup,          // owner of a popup got focus back when popup closed
+    Restore,        // explicit clearFocus() returned focus to prior holder
+    Other           // programmatic View::focus() with no reason
 };
 ```
 
-When the AppWindow receives a `KeyDown` / `KeyUp` event from its root NativeItem, the WidgetTreeHost routes it to `focusManager->focusedView()` instead of broadcasting. `FocusGained` / `FocusLost` events (already defined in `NativeEvent.h`) are emitted virtually by the focus manager — no native call required.
+`FocusPolicy` is a bitmask enum (the `1<<n` shifts), not a plain enum class for ergonomics — operator `|`/`&` overloads in `View` make `policy & FocusPolicy::TabFocus` legible.
+
+##### FocusManager — owned by WidgetTreeHost
+
+```cpp
+class FocusManager {
+public:
+    // Direct set / clear. Emits FocusLost on previous (with the
+    // previous View's lastFocusReason), then FocusGained on new with
+    // `reason`. Both events flow through NativeEventEmitter (already
+    // defined as FocusGained / FocusLost in NativeEvent.h).
+    void setFocus(View * view, FocusReason reason = FocusReason::Other);
+    View * focusedView() const;
+    FocusReason lastFocusReason() const;
+    void clearFocus();
+
+    // Traversal. Walks the View tree under WidgetTreeHost's root,
+    // skipping NoFocus / !TabFocus views. Returns false if no
+    // focusable view exists in the requested direction.
+    bool focusNext();        // FocusReason::Tab
+    bool focusPrevious();    // FocusReason::Backtab
+
+    // Tab-order override. Without this, traversal follows the View
+    // tree in pre-order (parent, then children, then siblings) —
+    // matching DOM tab-order, which is what users intuit.
+    // setTabOrder(a, b) forces b to come immediately after a in
+    // traversal regardless of tree order.
+    void setTabOrder(View * a, View * b);
+
+    // Focus restoration. push() captures the current focusedView();
+    // popAndRestore() re-focuses it with FocusReason::Popup
+    // (so the focus ring re-appears if it was tab-focused before).
+    // Used by Modal / Popover / ContextMenu dismiss.
+    void pushRestorationPoint();
+    void popAndRestore();
+};
+```
+
+##### Routing keyboard events
+
+When the AppWindow receives a `KeyDown` / `KeyUp` from its root NativeItem, the WidgetTreeHost:
+
+1. If the key is `Tab` (no modifiers): `focusManager->focusNext()`, consume.
+2. If the key is `Shift+Tab`: `focusManager->focusPrevious()`, consume.
+3. Otherwise: forward the event to `focusManager->focusedView()->getDelegate()->onKeyDown(...)` (or `nullptr` short-circuit if no view is focused).
+
+This replaces the current broadcast pipe — today, with no `FocusManager`, key events have no defined target, which is exactly why TextInput is blocked on this section. Step (1)/(2) intentionally happen *before* delegate dispatch so a focused TextInput cannot swallow Tab; if a widget genuinely needs Tab (a Tab character in a code editor), it sets `View::setTabCaptured(true)` to opt into delegate dispatch first — but that's a Phase 4B+ knob, not part of the base API.
+
+##### Focus on mouse click
+
+The hit-test dispatcher (the same one driving `CursorEnter`/`CursorExit` and overlay dismissal) walks `View::containsPoint` top-down. When a mouseDown lands on a view with `ClickFocus | StrongFocus`, it calls `focusManager->setFocus(view, FocusReason::Mouse)` before delivering the mouseDown to the delegate. This is the AppKit / Qt order and avoids the surprising case where a widget receives mouseDown without being focused.
+
+##### Focus ring visibility — the headline behavior
+
+A widget's `rebuildStyle()` (the Button / TextInput pattern from [Widget-Stub-Implementation-Plan §4A](Widget-Stub-Implementation-Plan.md#phase-4a-button--base-implementation)) reads:
+
+```cpp
+bool shouldDrawFocusRing = view->isFocused() &&
+    isKeyboardReason(focusManager->lastFocusReason());
+
+constexpr bool isKeyboardReason(FocusReason r) {
+    return r == FocusReason::Tab        || r == FocusReason::Backtab ||
+           r == FocusReason::Shortcut   || r == FocusReason::Popup   ||
+           r == FocusReason::ActiveWindow;
+}
+```
+
+This is the same gate Qt and Chromium use. A user who tab-traversed to a button sees the ring; a user who clicked it does not. Programmatic `focus(FocusReason::Other)` does not show the ring — the default is conservative.
+
+##### Implementation order
+
+| Step | What lands                                                                                         | Blocks                              |
+|------|----------------------------------------------------------------------------------------------------|-------------------------------------|
+| 1    | `View::FocusPolicy` + `setFocusPolicy`/`isFocusable`/`focus(reason)`/`blur` + `FocusReason` enum   | —                                   |
+| 2    | `FocusManager` skeleton with `setFocus`/`focusedView`/`clearFocus` and FocusGained/Lost emission   | nothing (broadcast still works)     |
+| 3    | `WidgetTreeHost` routes KeyDown/KeyUp to `focusedView()`; removes broadcast                        | TextInput v0 can land               |
+| 4    | `focusNext`/`focusPrevious` tree walk + Tab/Shift-Tab interception                                 | tab-traversal across forms          |
+| 5    | `pushRestorationPoint`/`popAndRestore`                                                              | Modal / Popover dismissal           |
+| 6    | `setTabOrder(a, b)` override                                                                       | hand-tuned form order               |
+
+Steps 1–3 unblock TextInput. Steps 4–6 are independent and can land in any order.
 
 #### Cursor shape — declarative on View, committed by the dispatcher
 
@@ -262,21 +420,83 @@ class View {
 
 The hover dispatcher in `WidgetTreeHost` (the same one that emits virtual `CursorEnter` / `CursorExit`) calls `nativeWindow->setCursorShape(...)` whenever the topmost hovered virtual view changes. Views never touch the OS cursor directly.
 
-#### Tooltip — virtual popup on Widget
+#### Tooltip — per-Widget, virtual popup
 
 `NSView.toolTip` and `gtk_widget_set_tooltip_text` only work on real native views. Since virtual views aren't native views, tooltips must be rendered by WTK itself — a small composited popup window (or sibling layer) shown after a hover delay.
+
+> **API placement: `Widget`.** A tooltip is a logical-control concept (one control, one tooltip), not a per-render-surface concept. Anchoring on `Widget` matches Qt's `QWidget::setToolTip` (the conventional placement) and keeps the API at the same altitude as the rest of the input surface (`Widget::setOnPress`, `Widget::setEnabled` once we add it, etc.). The hover dispatcher already knows how to resolve a hit `View` back to its owning `Widget` (the same path that delivers per-Widget events), so per-Widget tooltips cost nothing the per-View design would have saved.
 
 ```cpp
 class Widget {
     // ... existing ...
     void setTooltip(const OmegaCommon::String & text);
     void clearTooltip();
+    const OmegaCommon::String & tooltip() const;   // empty => no tooltip
 };
 ```
 
-The `WidgetTreeHost` runs the hover-delay timer (via `NativeTimer`, §2.4) and owns the popup surface. On platforms that support a borderless toplevel (`NSPanel`/`WS_POPUP`/`GtkPopover`) this is straightforward; on macOS specifically, an alternative is to set `NSView.toolTip` on the *root* NativeItem and rewrite it on hover — but the WTK-rendered popup keeps platforms uniform.
+##### Activation pipeline
 
-> **Note:** Hit-testing is already covered by `View::containsPoint`.
+`WidgetTreeHost` owns:
+
+1. A `NativeTimer` (§2.4) configured for the platform-conventional hover delay (500ms on Win32 / macOS / GTK).
+2. A `currentTooltipPopup_` — an overlay surface rendered by the in-window overlay layer (see [Overlay-Z-Order-Plan.md](Overlay-Z-Order-Plan.md), tier `Tooltip`).
+
+The hover dispatcher already emits `CursorEnter` / `CursorExit` per `View`. The tooltip dispatcher resolves the hit View to its owning Widget (via the `View::ownerWidget()` accessor `WidgetTreeHost` already maintains for per-Widget event routing) and subscribes to:
+
+- `CursorEnter(view)`: resolve `widget = view->ownerWidget()`. If `widget->tooltip()` is non-empty, (re)start the hover timer with the widget's tooltip string captured.
+- `CursorMove(view)`: pet the timer's "cursor still inside" flag. Restart the delay only on *widget* change, not on view change — matching macOS / Qt behavior so moving the cursor inside a multi-view composite control does not retrigger the delay.
+- `CursorExit(view)`: if the new hit Widget differs from the timer's captured Widget, cancel the timer and dismiss `currentTooltipPopup_` if it was for the previous Widget.
+- Timer fires: present `currentTooltipPopup_` anchored to the cursor (offset +12px down/right, with edge-clamping) at tier `Tooltip`.
+- Any `mouseDown` / `KeyDown`: dismiss immediately.
+
+##### Sub-View granularity (when a single tooltip per Widget is not enough)
+
+A composite Widget that genuinely needs different tooltips for different sub-views (e.g. an inspector row with separate "name" and "value" sub-views) handles this itself by routing its own `CursorEnter`/`CursorExit` on each sub-view to swap its single `widget->setTooltip(...)` string at hover time. The public API does not multiply to accommodate this case — it is rare enough that the widget's own dispatcher is the right place for the logic.
+
+##### Rendering surface
+
+The implementation uses the in-window overlay tier (`OverlayHost::Tier::Tooltip`). Tooltips, like every other overlay, are **window-bound** — they are clipped to the hosting `AppWindow` (or `AppPanel`, which has its own independent `OverlayHost`). A tooltip anchored near the window edge is repositioned by the dispatcher's edge-clamping math (the same math that flips `AboveWidget` to `BelowWidget` when the widget is near the window's top); a tooltip with no usable rect after clamping is suppressed for that frame. There is no escape path into an `AppPanel` — `AppPanel` is for separate top-level UI (tool palettes, tear-off inspectors), not for spilling overlays past a window boundary ([Overlay-Z-Order-Plan §7](Overlay-Z-Order-Plan.md#7-relationship-to-apppanel--they-are-separate-not-coupled)).
+
+> **Note:** Hit-testing is already covered by `View::containsPoint`. Tooltips are non-interactive — they never absorb hits (`OverlayHost::Tier::Tooltip` overlays render with `hitTestEnabled=false`).
+
+##### Customization — follow-up, not v0
+
+The v0 `Widget::setTooltip(text)` is intentionally minimal: a plain string with platform-default placement, font, and chrome (a `controlBackground` rectangle, a hairline `separator` border, `controlForeground` text, and a small drop shadow). That covers the conventional case and matches what `NSView.toolTip` / `gtk_widget_set_tooltip_text` give users by default.
+
+Real-world tooltip use ultimately needs three knobs on top of that. Each is opt-in via an overload that takes a descriptor, so the existing one-argument call continues to work unchanged:
+
+```cpp
+enum class TooltipPlacement : uint8_t {
+    Cursor,            // default — anchored to cursor with +12px down/right gap (v0 behavior)
+    AboveWidget,       // edge-centered above the Widget's window rect
+    BelowWidget,
+    LeftOfWidget,
+    RightOfWidget,
+    InsideWidget       // overlays the widget itself; rare, for hover-state previews
+};
+
+struct TooltipDesc {
+    OmegaCommon::UString text {};
+    TooltipPlacement     placement = TooltipPlacement::Cursor;
+    float                gap       = 4.f;          // pixels between anchor edge and tooltip
+    Core::Optional<StylePtr> style {};             // see "StyleRules" below
+    bool                 dropShadow = true;        // opt-out for a flat, chromeless tooltip
+};
+
+class Widget {
+    void setTooltip(const OmegaCommon::String & text);   // v0, preserved
+    void setTooltip(const TooltipDesc & desc);            // follow-up
+};
+```
+
+1. **Placement.** `placement` selects where the tooltip's rect anchors relative to the Widget's window-space rect (or the cursor, when `Cursor`). Edge clamping against window bounds is still automatic — `AboveWidget` near the top of the window flips to `BelowWidget` exactly the way every native toolkit does. The dispatcher resolves placement at present time; the API user states the *preference*, not the final rect.
+
+2. **StyleRules.** The tooltip's root `UIView` is styled like any other widget — `style` is a regular `StylePtr` (`bg` fill / border / text font and color, plus `dropShadow` per the next bullet). When `style` is unset, the dispatcher synthesizes one from the current `ThemeDesc` (the v0 defaults above). This is the same pattern Phase 4A Button uses for theme-derived styling, so nothing new on the rendering side — just exposing the existing surface.
+
+3. **Drop shadow.** `dropShadow = true` is the v0 default and the right default: every native tooltip on every platform has a soft shadow. The dispatcher applies a small dark drop shadow via `Style::dropShadow` on the tooltip's root view at present time (offset 0,2 / radius 4 / opacity 0.25 — matching the macOS / GTK convention). `dropShadow = false` removes it; an API user who needs a different shadow sets one through `style` directly (which takes precedence over the dispatcher-applied default).
+
+The customization surface is **tooltip-specific**. For every other overlay tier — popovers, dropdown menus, modals, sheets, snackbars — the overlay's *content* is a `Widget` the API user constructs themselves, with the full `Style` surface already at their disposal. The `OverlayHost` doesn't need a TooltipDesc-shaped knob for those; see [Overlay-Z-Order-Plan §4.3](Overlay-Z-Order-Plan.md#43-ornamentation--drop-shadow-is-the-only-baseline-host-provides) for the rule.
 
 ---
 
@@ -1016,7 +1236,7 @@ All `Native::VisualTree` mutations happen on the main thread — the same rule t
 |----------|---------|-----------|
 | ~~**P0**~~ **Done** | 2.1 NativeEvent | Implemented |
 | ~~**P0**~~ **Done** | 2.5 NativeTheme | Implemented |
-| **P1** | 2.2 NativeWindow (state, scaleFactor, opacity, cursor sink, key-window) | Basic window management + the OS sinks the virtual tree commits to |
+| ~~P1~~ **Mostly done** | 2.2 NativeWindow (state, scaleFactor, opacity, cursor sink, key-window) | Header surface + all three backends shipped including the `WindowScaleFactorChanged` emit. Remaining: AppWindow's auto-propagation handler for the scale-change event (one cross-platform `.cpp` change) and `ViewRenderTarget::scaleChanged()` (cross-plan to `DPI-Aware-Text-Plan.md`). |
 | **P1** | 2.3a View focus + cursor + Widget tooltip + WidgetTreeHost FocusManager | Per-view keyboard routing, hover cursor, tooltip popups |
 | **P1** | 2.4 NativeApp (args, delegate, timers) | App lifecycle and command-line |
 | **P1** | 2.6 NativeClipboard | Copy/paste is fundamental UX |

@@ -568,67 +568,256 @@ public:
 
 All input widgets use the `WidgetInteractionDelegate` from Phase 0 for hover/press/focus tracking.
 
-### Button
+### Phase 4A: Button — Base Implementation
 
-Replace the stub. A `Container` (to support icon + label composition) backed by `UIView`.
+Replace the stub. **Leaf `Widget`** backed by a single `UIView` with three element tags. The earlier sketch had `Button : Container`; the leaf-Widget shape is preferred to match the rest of the catalog (`Label`, `Rectangle`, planned `Toggle`/`Checkbox`/`RadioButton`) — there is no use case for arbitrary child widgets inside a base Button, and adopting `Container` would expose `addChild`/`removeChild`/clamp policy on a leaf control. Composite buttons (icon-plus-label-plus-badge) can layer on top by adding extra tags or by a future `CompositeButton : Container` variant; the base stays narrow.
+
+#### Header — `wtk/include/omegaWTK/Widgets/UserInputs.h`
 
 ```cpp
-struct ButtonProps {
+struct OMEGAWTK_EXPORT ButtonProps {
     OmegaCommon::UString text {};
-    OmegaCommon::String iconToken {};
-    bool enabled = true;
+    OmegaCommon::String  iconToken {};            // empty => no icon
+    bool                 enabled    = true;
+    float                cornerRadius = 4.f;
+    // Optional overrides — when unset, the theme colors are used.
+    Core::Optional<Composition::Color> tintOverride {};      // bg accent in hover/pressed
+    Core::Optional<Composition::Color> labelColorOverride {};
 };
 
-class Button : public Container {
-    ButtonProps props_;
-    InteractiveState interactiveState_ = InteractiveState::Idle;
-    std::function<void()> onPress_ = nullptr;
-    // Internal delegate for mouse events
+class OMEGAWTK_EXPORT Button : public Widget {
+    ButtonProps                                          props_;
+    Native::ThemeDesc                                    theme_ {};
+    InteractiveState                                     state_ = InteractiveState::Idle;
+    std::function<void()>                                onPress_ {};
+    Core::UniquePtr<class ButtonInteractionDelegate>     delegate_;
+
 protected:
     void onMount() override;
-    void onPaint(PaintReason reason) override;
+    void onThemeSet(Native::ThemeDesc & desc) override;
+    void resize(Composition::Rect & newRect) override;
+
+    // Two rebuild paths, split intentionally:
+    //  - rebuildContent(): element list + sub-rects (icon/label boxes).
+    //    Runs on onMount / resize / setProps when the layout changes.
+    //  - rebuildStyle():   per-state Style (bg fill, text color).
+    //    Runs on every interaction state change — much cheaper than
+    //    re-laying out the element list.
+    void rebuildContent();
+    void rebuildStyle();
+
+    void onInteractionStateChanged(InteractiveState newState, bool clickConfirmed);
+
 public:
     explicit Button(Composition::Rect rect, const ButtonProps & props = {});
-    void setOnPress(std::function<void()> callback);
+    ~Button() override;
+
     void setProps(const ButtonProps & props);
+    const ButtonProps & props() const;
+
+    void setOnPress(std::function<void()> callback);
+    void setEnabled(bool enabled);
+    bool isEnabled() const;
+
+    InteractiveState interactionState() const;   // for tests / introspection
 };
 ```
 
-`onPaint` applies different `StyleSheet` states for idle/hovered/pressed/disabled.
+#### Element-tag layout
 
-### TextInput
+The `UIView` carries three element tags:
 
-Replace the stub. Single-line text entry.
+| Tag       | Shape                  | Purpose                                                  |
+|-----------|------------------------|----------------------------------------------------------|
+| `"bg"`    | `Shape::RoundedRect`   | Background. Fill comes from `Style`, not `RectangleProps`. |
+| `"icon"`  | text element (glyph)   | Optional. Square, vertically centered, left-aligned in content rect with leading padding. Hidden when `iconToken.empty()`. |
+| `"label"` | text element           | Centered (or right of the icon when present). Fills the remaining content rect. |
+
+`rebuildContent()` is the single source of truth for sub-rect math — `onMount`, `resize`, and `setProps` all go through it. Roughly:
 
 ```cpp
-struct TextInputProps {
+constexpr float kHPad = 12.f;
+constexpr float kIconGap = 6.f;
+
+void Button::rebuildContent() {
+    auto & uv = viewAs<UIView>();
+    auto & lv2 = uv.layoutV2();
+    lv2.clear();
+
+    Composition::Rect r = rect();
+    Composition::RoundedRect bg { r.pos, r.w, r.h, props_.cornerRadius, props_.cornerRadius };
+
+    UIElementLayoutSpec bgSpec;
+    bgSpec.tag = "bg";
+    bgSpec.shape = Shape::RoundedRect(bg);
+    lv2.element(bgSpec);
+
+    float cursorX = r.pos.x + kHPad;
+    if (!props_.iconToken.empty()) {
+        float iconSide = std::min(r.h - 4.f, 16.f);
+        UIElementLayoutSpec iconSpec;
+        iconSpec.tag = "icon";
+        iconSpec.text = OmegaCommon::UString(props_.iconToken.begin(), props_.iconToken.end());
+        iconSpec.textRect = { {cursorX, r.pos.y + (r.h - iconSide) * 0.5f}, iconSide, iconSide };
+        lv2.element(iconSpec);
+        cursorX += iconSide + kIconGap;
+    }
+
+    UIElementLayoutSpec labelSpec;
+    labelSpec.tag = "label";
+    labelSpec.text = props_.text;
+    labelSpec.textRect = { {cursorX, r.pos.y}, r.pos.x + r.w - kHPad - cursorX, r.h };
+    lv2.element(labelSpec);
+
+    rebuildStyle();
+}
+```
+
+#### State → Style mapping
+
+`rebuildStyle()` derives the per-state Style from `theme_` and `state_`. The mapping:
+
+| State      | `bg` fill                                           | `label`/`icon` color                          | Alpha |
+|------------|------------------------------------------------------|-----------------------------------------------|-------|
+| `Idle`     | `controlBackground`                                  | `controlForeground`                           | 1.0   |
+| `Hovered`  | `controlBackground` blended 10% toward `accent`      | `controlForeground`                           | 1.0   |
+| `Pressed`  | `tintOverride.value_or(accent)`                      | contrast of pressed bg (white on dark accent) | 1.0   |
+| `Focused`  | same as Idle + 2px `accent` focus ring on `"bg"`     | `controlForeground`                           | 1.0   |
+| `Disabled` | `controlBackground`                                  | `controlForeground`                           | 0.4   |
+
+The focus ring is drawn by setting `border("bg", true)` + `borderColor("bg", accent)` + `borderWidth("bg", 2.f)`. The 2px width is the wire convention; a real `Style::focusRing` helper can land later.
+
+The contrast color for `Pressed` is computed from the resolved bg using a simple luminance threshold (`r*0.299 + g*0.587 + b*0.114 > 0.5 ? black : white`). This is the same heuristic Chromium's `views::Button` uses for its disabled-on-accent text color and is good enough until a designer overrides via `labelColorOverride`.
+
+#### Event wiring
+
+```cpp
+class ButtonInteractionDelegate : public WidgetInteractionDelegate {
+    Button * button_;
+    bool     pendingClick_ = false;   // true between mouseDown and mouseUp inside
+public:
+    explicit ButtonInteractionDelegate(Button * b)
+        : WidgetInteractionDelegate(b), button_(b) {}
+
+    void onLeftMouseDown(Native::NativeEventPtr e) override {
+        WidgetInteractionDelegate::onLeftMouseDown(e);
+        if (state == InteractiveState::Pressed) pendingClick_ = true;
+    }
+    void onLeftMouseUp(Native::NativeEventPtr e) override {
+        bool fired = pendingClick_;
+        pendingClick_ = false;
+        WidgetInteractionDelegate::onLeftMouseUp(e);    // Pressed -> Hovered
+        if (fired) button_->onInteractionStateChanged(state, /*clickConfirmed=*/true);
+        else       button_->onInteractionStateChanged(state, false);
+    }
+    void onMouseExit(Native::NativeEventPtr e) override {
+        pendingClick_ = false;                          // cancel click on drag-off
+        WidgetInteractionDelegate::onMouseExit(e);
+    }
+};
+```
+
+The "click confirmed" flag is what disambiguates `mouseUp-while-still-inside` (a click) from `mouseUp-after-drag-off` (a cancel). The cursor-exit cancels the click, matching every native button on all three platforms.
+
+`onInteractionStateChanged` updates `state_`, calls `rebuildStyle()`, calls `invalidate(StateChanged)`, and (when `clickConfirmed`) invokes `onPress_`. The state change does **not** call `rebuildContent()` — only the Style is dirtied.
+
+#### Construction + lifetime
+
+```cpp
+Button::Button(Composition::Rect rect, const ButtonProps & props)
+    : Widget(ViewPtr(new UIView(rect, nullptr, "button"))),
+      props_(props),
+      delegate_(Core::make_unique<ButtonInteractionDelegate>(this)) {
+    view->setDelegate(delegate_.get());
+    if (!props_.enabled) delegate_->setDisabled(true);
+}
+```
+
+The delegate is owned by the Button (via `UniquePtr`) and outlives the view's raw pointer because the view is also Widget-owned. `~Button` runs after `view` and `delegate_` destructors — both are members. No manual teardown needed beyond `Widget`'s base.
+
+#### Theme integration
+
+`onThemeSet(Native::ThemeDesc & desc)` caches `desc` into `theme_` then calls `rebuildStyle()`. This is the same pattern `Container::onThemeSet` is being slotted into for theme switching at runtime (Light → Dark).
+
+#### Layout participation
+
+`measureSelf` is **not** overridden in v0. The widget honors whatever rect the parent layout gives it; if a `StackWidget` needs intrinsic sizing for an auto-sized button row, `Button::measureSelf` will land alongside Phase 2A `Font::measureText` (a Button's intrinsic width is `kHPad*2 + iconWidth + kIconGap + labelWidth`).
+
+#### Source files
+
+- `wtk/src/Widgets/UserInputs.Button.cpp` — `Button` + `ButtonInteractionDelegate`.
+
+#### Test
+
+- `wtk/tests/ButtonTest/main.cpp` — renders four buttons (Idle / disabled / icon-only / text-and-icon) and a fifth that counts clicks via `setOnPress`. Visual + interactive verification per AGENTS.md "Visual Debugging" — user supplies the screenshot.
+
+#### Phase-4A verification checklist
+
+- [ ] Idle / hover / pressed / disabled visuals match the state table.
+- [ ] `onPress` fires on mouseUp **inside** the widget after a mouseDown, and **does not** fire when the cursor leaves before mouseUp.
+- [ ] `setEnabled(false)` greys out the widget and suppresses `onPress`.
+- [ ] Theme switch (Light → Dark) re-tints without rebuilding the element list (no flicker, no resize).
+- [ ] Resizing the parent (StackWidget) re-runs `rebuildContent` so the label rect updates.
+- [ ] Cursor-exit during a press visually returns to Idle and cancels the click.
+
+---
+
+### Phase 4B: TextInput — **blocked on FocusManager**
+
+The TextInput base implementation is **deferred until the per-window `FocusManager` lands** (see [Native-API-Completion-Proposal §2.3a](Native-API-Completion-Proposal.md#23a-virtual-focus-cursor-and-tooltip-in-the-view-tree)). Rationale: a leaf-Widget TextInput needs to claim keyboard focus and route key events from `WidgetTreeHost` rather than from the broadcast pipe — a hack today would have to be migrated immediately after FocusManager ships, and the migration touches the editing loop and caret-rendering paths. Better to wait one phase.
+
+When FocusManager is available the v0 shape is:
+
+```cpp
+struct OMEGAWTK_EXPORT TextInputProps {
     OmegaCommon::UString placeholder {};
     OmegaCommon::UString initialValue {};
-    bool enabled = true;
+    bool                 enabled = true;
+    float                cornerRadius = 4.f;
 };
 
-class TextInput : public Container {
-    TextInputProps props_;
-    OmegaCommon::UString text_ {};
-    std::size_t caretPosition_ = 0;
-    Core::Optional<std::pair<std::size_t, std::size_t>> selection_ {};
-    InteractiveState interactiveState_ = InteractiveState::Idle;
-    std::function<void(const OmegaCommon::UString &)> onValueChange_ = nullptr;
-    // Internal: key event delegate, caret blink timer
+class OMEGAWTK_EXPORT TextInput : public Widget {
+    TextInputProps                                       props_;
+    OmegaCommon::UString                                 text_ {};
+    std::size_t                                          caretPosition_ = 0;
+    Native::ThemeDesc                                    theme_ {};
+    std::function<void(const OmegaCommon::UString &)>    onValueChange_ {};
+    Core::UniquePtr<class TextInputDelegate>             delegate_;
+    // Phase 4B+: selection_, caret blink timer, IME pre-edit string.
 protected:
     void onMount() override;
-    void onPaint(PaintReason reason) override;
+    void onThemeSet(Native::ThemeDesc & desc) override;
+    void resize(Composition::Rect & newRect) override;
+    void rebuildContent();    // bg / border / label / caret element rects
+    void rebuildStyle();      // theme-driven colors, focus-ring on/off
 public:
     explicit TextInput(Composition::Rect rect, const TextInputProps & props = {});
+    ~TextInput() override;
     void setText(const OmegaCommon::UString & text);
     const OmegaCommon::UString & text() const;
     void setOnValueChange(std::function<void(const OmegaCommon::UString &)> callback);
 };
 ```
 
-Elements: `"bg"` background rect, `"label"` for displayed text / placeholder, caret as a thin `"caret"` rect element toggled by a timer.
+Element tags: `"bg"` (RoundedRect background), `"border"` (focus ring, hidden when not `View::isFocused()`), `"label"` (displayed text or dimmed placeholder), `"caret"` (1px-wide `Shape::Rect`, only present when focused).
 
-Key event handling: `onKeyDown` appends/deletes characters, moves caret. Selection via shift+arrow. IME support is a follow-up.
+v0 scope:
+- Single line; no wrapping.
+- Editing: append (printable chars), backspace, delete, left/right arrow. **No** selection, **no** IME, **no** clipboard.
+- Caret X is computed from `props_.font` size × `caretPosition_` with a `* 0.6f` mono-approximation until Phase 2A `Font::measureText` ships. Accurate caret positioning is Phase 4B+.
+- Caret blink: deferred to a follow-up that introduces a timer surface (see [Native-API-Completion-Proposal §2.4 `NativeTimer`](Native-API-Completion-Proposal.md#24-nativeapp--lifecycle-arguments-timers)).
+
+Out of scope for the base — each is its own follow-up:
+
+| Follow-up               | Depends on                                          |
+|-------------------------|------------------------------------------------------|
+| Caret blink             | `NativeTimer` (§2.4)                                |
+| Accurate caret X        | Phase 2A `Font::measureText`                         |
+| Selection (Shift+arrow, double-click word, click+drag) | accurate caret X |
+| Clipboard (Cmd/Ctrl+C/V/X) | `NativeClipboard` (§2.6)                        |
+| IME pre-edit + commit   | platform IME bridges (separate plan)                 |
+| Tab-traversal sequencing | `FocusManager::focusNext/Previous`                  |
+| Multi-line (`TextArea`) | line breaking + scroll                               |
 
 ### TextArea
 
@@ -984,23 +1173,32 @@ public:
 
 ## Phase 6: Overlay and Feedback Widgets
 
-**Goal:** Implement overlays from catalog section G. Requires a `ZStack`-based overlay host or a top-level overlay layer strategy.
+**Goal:** Implement overlays from catalog section G.
+
+> **Authoritative spec for the overlay layer itself:** [Overlay-Z-Order-Plan.md](Overlay-Z-Order-Plan.md). That plan resolves the long-standing "are overlays Widgets, Views, or something else?" question, defines the per-window `OverlayHost`, and specifies how the FrameBuilder paint walk gets overlays above the main `WidgetSlice` set. This Phase 6 section is **just the per-widget recipes** — `Tooltip`, `Popover`, `ContextMenu`, `Modal`, etc. — which assume that plan's infrastructure is in place.
+>
+> **One-line summary from that plan:** Overlays are **Widgets**. They live in the `OverlayHost` slot on `WidgetTreeHost` (not in the main widget tree). The FrameBuilder paint walker visits the main tree first, then visits the overlay slot last, so overlay `WidgetSlice`s land above every main-tree slice in the resulting `CompositeFrame`. Overlays are **window-bound** — they are clipped to the hosting `AppWindow` (or `AppPanel`, which has its own independent `OverlayHost`). Content that needs to live *outside* an `AppWindow` (floating tool palettes, tear-off inspectors) is a separate construct — an `AppPanel` ([Panels-And-Window-Customization-Plan Part A](Panels-And-Window-Customization-Plan.md#part-a--detached-panels)) — not an overlay.
 
 ### 6A. Overlay Infrastructure
 
-Before individual overlay widgets, establish an overlay hosting mechanism:
+The `OverlayHost` API is defined in [Overlay-Z-Order-Plan.md §3](Overlay-Z-Order-Plan.md#3-overlayhost-api). The recipes below use it as:
 
 ```cpp
-class OverlayHost {
-    // Manages a ZStack-like layer above the main widget tree
-    // Overlays are positioned relative to an anchor widget
+class OverlayHost {                          // defined in Overlay-Z-Order-Plan.md
 public:
-    void present(WidgetPtr overlay, Widget *anchor, /* positioning params */);
-    void dismiss(WidgetPtr overlay);
+    // Tier governs both paint order and dismissal precedence.
+    enum class Tier : uint8_t { Floating, Modal, Tooltip, DragGhost };
+
+    OverlayHandle present(WidgetPtr overlay,
+                          Tier tier,
+                          const OverlayAnchor & anchor,
+                          OverlayDismissPolicy policy);
+    void dismiss(OverlayHandle handle);
+    void dismissAll(Tier tier);
 };
 ```
 
-This can live on `AppWindow` or be a standalone utility that widgets access through their `treeHost`.
+The host lives on `WidgetTreeHost` (one per `AppWindow` / `AppPanel`); widgets access it via `treeHost->overlayHost()`.
 
 ### 6B. Tooltip
 
@@ -1385,13 +1583,40 @@ Phases 4 and 5 depend on earlier phases but can overlap.
 Phase 6 depends on Phases 3 and 4.
 Phases 7 and 9 come last.
 
----
+### Cross-plan dependencies
 
-## Open Questions
+The graph above is intra-plan only. The phases below also pull in work tracked in other `.plans/` documents. Listed by which phase here consumes which external piece. Plans that *consume from* this plan (e.g. [Overlay-Z-Order-Plan §12](Overlay-Z-Order-Plan.md#12-cross-plan-dependencies)) list their inward dependencies in their own dependencies section.
+
+| This plan, phase                                                                                          | External dep                                                                                                                                                                       | Why                                                                                                                                                                                       |
+|-----------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Phase 4A Button** (base)                                                                                | None at the plan-doc level. Uses existing Phase 0 (`WidgetInteractionDelegate`), `UIView`, `Style`, `ThemeDesc`.                                                                    | Buildable today.                                                                                                                                                                          |
+| **Phase 4B TextInput base** (deferred)                                                                    | [Native-API-Completion-Proposal §2.3a Focus](Native-API-Completion-Proposal.md#focus--virtual-focus-manager) **steps 1–3** (`FocusPolicy`, `FocusManager` skeleton, key routing)    | TextInput must claim keyboard focus and receive `KeyDown` from `WidgetTreeHost`. Without FocusManager the routing is undefined.                                                            |
+| **Phase 4B caret blink** follow-up                                                                        | [Native-API-Completion-Proposal §2.4 NativeTimer](Native-API-Completion-Proposal.md#timers)                                                                                          | Blink needs a recurring timer.                                                                                                                                                            |
+| **Phase 4B accurate caret X** follow-up                                                                    | This plan's own **Phase 2A Text Measurement** (`Composition::Font::measureText`)                                                                                                     | Caret position must align with glyph advances.                                                                                                                                            |
+| **Phase 4B clipboard (Cmd/Ctrl+C/V/X)** follow-up                                                          | [Native-API-Completion-Proposal §2.6 NativeClipboard](Native-API-Completion-Proposal.md#26-nativeclipboard-new)                                                                       | Clipboard read/write.                                                                                                                                                                     |
+| **Phase 4B tab traversal across forms** follow-up                                                          | [Native-API-Completion-Proposal §2.3a Focus](Native-API-Completion-Proposal.md#focus--virtual-focus-manager) **steps 4 + 6** (`focusNext` / `focusPrevious`, `setTabOrder`)           | Tab/Shift-Tab across multiple TextInputs.                                                                                                                                                 |
+| **Phase 6 overlay widget hosts** (Tooltip, Popover, Snackbar, Sheet)                                       | [Overlay-Z-Order-Plan O1–O3](Overlay-Z-Order-Plan.md#9-phases) (OverlayHost + paint walk + dismissal)                                                                                | These widgets are mounted via `OverlayHost::present`; their paint/dismiss is owned by the host.                                                                                            |
+| **Phase 6 `ContextMenu` / `PopupMenu` focus return on dismiss**                                            | [Overlay-Z-Order-Plan O4](Overlay-Z-Order-Plan.md#9-phases) + Native-API §2.3a Focus **step 5**                                                                                       | Dismissing the menu must return focus to the opener with `FocusReason::Popup` (so the focus ring re-appears).                                                                              |
+| **Phase 6 `Modal` focus trap**                                                                             | [Overlay-Z-Order-Plan O5](Overlay-Z-Order-Plan.md#9-phases) + Native-API §2.3a Focus **step 4**                                                                                       | Tab/Shift-Tab inside a Modal must not reach widgets behind it.                                                                                                                            |
+| **Phase 6 `Select` / dropdown windowing**                                                                  | [Overlay-Z-Order-Plan O1–O3](Overlay-Z-Order-Plan.md#9-phases) only.                                                                                                                | Dropdowns are window-bound like every other overlay. Long lists near the window edge clip or reposition via anchor edge-clamping; there is no `AppPanel` escape hatch ([Overlay-Z-Order-Plan §7](Overlay-Z-Order-Plan.md#7-relationship-to-apppanel--they-are-separate-not-coupled)). |
+| **Phase 6 `Tooltip` rendering surface**                                                                    | [Native-API-Completion-Proposal §2.3a Tooltip](Native-API-Completion-Proposal.md#tooltip--per-widget-virtual-popup) (the dispatcher and `Widget::setTooltip` API)                    | Tooltips are dispatcher-constructed (single-Label overlay); the per-widget recipe in Phase 6 is just defaults + how widgets call `setTooltip`.                                              |
+| **Phase 6 `Tooltip` activation timer**                                                                     | [Native-API-Completion-Proposal §2.4 NativeTimer](Native-API-Completion-Proposal.md#timers)                                                                                          | Hover delay before the tooltip appears.                                                                                                                                                   |
+| **Phase 9 `FocusRingHost`**                                                                                | [Native-API-Completion-Proposal §2.3a Focus](Native-API-Completion-Proposal.md#focus--virtual-focus-manager) (full)                                                                  | Reads `FocusManager::focusedView()` + `lastFocusReason()` to know when to draw the ring.                                                                                                  |
+| **Phase 9 `InspectorPanel`**                                                                               | [Native-API-Completion-Proposal §2.10 NativeAccessibility](Native-API-Completion-Proposal.md#210-nativeaccessibility-new) (when promoted past stubs)                                  | Inspector reads accessibility metadata from widgets.                                                                                                                                      |
+
+Three external chains gate most of the cross-plan blocking work:
+
+1. **Native-API §2.3a Focus + Tooltip** — unblocks Phase 4B TextInput, Phase 6 ContextMenu/Modal/Tooltip, Phase 9 FocusRingHost. Internally landed in 6 steps; only steps 1–3 are needed for the immediate-next batch.
+2. **Native-API §2.4 NativeTimer** — unblocks Phase 4B caret blink, Phase 6 Tooltip activation. Independent of (1) and (3).
+3. **Overlay-Z-Order-Plan** — unblocks all of Phase 6. Internally depends on (1) for its O4/O5 phases. O1–O3 land independently of (1).
+
+`AppPanel` ([Panels-And-Window-Customization-Plan Part A](Panels-And-Window-Customization-Plan.md#part-a--detached-panels)) is *not* in any of those chains. It is a separate top-level surface for content that lives outside an `AppWindow` (tool palettes, tear-off inspectors), not a render mode for overlays — overlays are window-bound by design ([Overlay-Z-Order-Plan §7](Overlay-Z-Order-Plan.md#7-relationship-to-apppanel--they-are-separate-not-coupled)). An application that wants window-escaping floating UI constructs an `AppPanel` directly; the Widget Stub plan does not depend on Panels Part A for any phase.
+
+No cycles.
 
 1. **Icon system**: Font-based glyphs or SVG icons? Or both with a unified `IconProvider` interface?
 2. **Text measurement**: Does `Composition::Font` currently expose text extent measurement? If not, that's a prerequisite for `Label::measureSelf` and all text-based intrinsic sizing.
-3. **Focus management**: Is there a global focus tracking system, or does each widget manage focus independently? Overlays and `Modal` need focus trapping.
+3. ~~**Focus management**: Is there a global focus tracking system, or does each widget manage focus independently? Overlays and `Modal` need focus trapping.~~ **Resolved.** [Native-API-Completion-Proposal §2.3a](Native-API-Completion-Proposal.md#focus--virtual-focus-manager) defines a per-window `FocusManager` owned by `WidgetTreeHost`, with `FocusPolicy` per View, a `FocusReason` enum that gates focus-ring visibility (keyboard reasons show the ring, mouse reasons don't), and `pushRestorationPoint`/`popAndRestore` for modal/popover dismissal. Modal tab-trap is [Overlay-Z-Order-Plan O5](Overlay-Z-Order-Plan.md#9-phases).
 4. **Theme system**: Should interactive state styles (hover, pressed, disabled) be driven by `StyleSheet` state variants, or by swapping entire stylesheets?
 5. **Select popup**: Should the dropdown overlay use the native `Menu` system (from `Menu.h`) or a custom in-view overlay? Native gives platform-correct behavior; custom gives full style control.
 6. **Button inheritance**: The current stub has `Button : public Container`. The catalog suggests it should support icon + text composition, which justifies Container. But simple buttons could just be `Widget`. Keep `Container` to support flexible content?

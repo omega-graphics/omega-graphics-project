@@ -2,7 +2,7 @@
 
 This document proposes two related additions to the WTK UI layer:
 
-- **Part A — Detached Panels (`NativePanel` / `AppPanel`):** a way to render compositor content in a *second native surface outside the `AppWindow`* — floating tool palettes, tear-off inspectors, and overlays (popovers, tooltips, menus) that need to escape the window's bounds.
+- **Part A — Detached Panels (`NativePanel` / `AppPanel`):** a way to render compositor content in a *second native surface outside the `AppWindow`* — floating tool palettes, tear-off inspectors, and anchored secondary windows constructed by the application. (This is **not** an escape hatch for in-window overlays — overlays are window-bound by design; see [Overlay-Z-Order-Plan §7](Overlay-Z-Order-Plan.md#7-relationship-to-apppanel--they-are-separate-not-coupled).)
 - **Part B — Fully customizable `AppWindow` chrome:** app-drawn ("client-side decoration") title bars, menus, and minimize/maximize/close controls, uniform across all three platforms, with macOS able to keep its native traffic-light buttons (repositioned) for convenience.
 
 Related documents:
@@ -10,7 +10,8 @@ Related documents:
 - [UI-Engine-Roadmap.md](UI-Engine-Roadmap.md) — high-level engine roadmap
 - [Native-API-Completion-Proposal.md](Native-API-Completion-Proposal.md) — Native abstraction gaps (§2.2 `NativeWindow`, §2.9 `NativeScreen`)
 - [Native-View-Architecture-Plan.md](done/Native-View-Architecture-Plan.md) — the one-NativeItem-per-window virtual view model this plan builds on
-- [Widget-Type-Catalog-Proposal.md](Widget-Type-Catalog-Proposal.md) / [Widget-Stub-Implementation-Plan.md](Widget-Stub-Implementation-Plan.md) — overlay widgets (`Popover`, `Tooltip`, `ContextMenu`, `Modal`, `PopupMenu`) that Part A can host
+- [Widget-Type-Catalog-Proposal.md](Widget-Type-Catalog-Proposal.md) / [Widget-Stub-Implementation-Plan.md](Widget-Stub-Implementation-Plan.md) — Phase 6 widgets that an application *can* place inside an `AppPanel` it constructs as the panel's `rootWidget` (panel hosts its own widget tree; those widgets become overlays *of the panel*, not of any other window)
+- [Overlay-Z-Order-Plan.md](Overlay-Z-Order-Plan.md) — the in-window overlay layer; §7 documents the separation from `AppPanel`
 
 > **Architecture note (virtual view model):** Under the current design there is **exactly one `NativeItem` per window** — the root surface owned by the platform `NativeWindow` implementation — and the virtual `View`/`Widget` tree composites into it through `Composition::Layer`s. The full hosting chain is:
 >
@@ -34,7 +35,6 @@ Related documents:
 | **A0** | `NativeSurface` extraction (shared base for `NativeWindow` + `NativePanel`) | Planned |
 | **A1** | `NativePanel` native impls + `AppPanel` UI wrapper + compositor hosting | Planned |
 | **A2** | Panel positioning, parent association, non-activating panels | Planned |
-| **A3** | Route overlay widgets (`Popover`/`Tooltip`/`ContextMenu`/`Modal`) through `AppPanel` | Planned |
 | **B0** | `WindowChrome` mode enum (`Native` / `Custom`) + borderless plumbing (generalize `setEnableWindowHeader`) | Planned |
 | **B1** | Draggable caption + resize regions (cross-platform native hit-test API) | Planned |
 | **B2** | `Custom` mode controls: GTK + Win32 fully app-drawn; macOS reposition native traffic lights only | Planned |
@@ -58,7 +58,7 @@ Related documents:
 
 ### Key gaps
 
-1. **No detached render surface.** Every widget tree is bound to exactly one `AppWindow`. Overlays that must exceed window bounds (a dropdown near the window edge, a floating palette, a screen-anchored tooltip) cannot be expressed.
+1. **No detached render surface.** Every widget tree is bound to exactly one `AppWindow`. There is no way to render UI that lives *outside* an `AppWindow` — a floating tool palette, a tear-off inspector, an anchored secondary window. (In-window overlays — popovers, dropdowns, tooltips, modals — are a different concept and **do not** spill into panels; they are clipped to their host `AppWindow` by design. See [Overlay-Z-Order-Plan §7](Overlay-Z-Order-Plan.md#7-relationship-to-apppanel--they-are-separate-not-coupled).)
 2. **Custom chrome is non-uniform and incomplete.** The only custom-control hooks are Win32-only `View` accessors. There is no borderless mode contract, no draggable-caption hit-testing, and no cross-platform control story. This violates the front-end-uniformity rule (one chrome API surface; platform realization can differ but mode availability must not).
 3. **No client-side-decoration (CSD) drag/resize.** A borderless window currently cannot be moved or resized by the user, because the native layer has no way to ask the virtual layer "is this point a caption / resize border?"
 4. **Menus are native and per-platform-coded.** Today menus are bound to OS objects (`NSMenu`, `HMENU`, `GtkMenuBar`) via the `NativeMenu` interface, with three separate native impls. Styling, theming, and keyboard handling diverge per platform, and there is no way to embed a menu inside a custom title bar. Replaced by a virtual `MenuBar` widget (Part B3).
@@ -177,10 +177,6 @@ namespace OmegaWTK {
 - **Parent association:** `setParentWindow` makes the panel a child surface — it follows the parent on move/minimize and orders above it.
 - **Non-activating panels:** `PanelConfig::activating = false` keeps keyboard focus on the owner; key events still route through the parent's virtual focus manager.
 
-### A.3 Overlay widgets on panels (consumes Part A)
-
-The overlay widgets in [Widget-Stub-Implementation-Plan.md](Widget-Stub-Implementation-Plan.md) Phase 6 (`Popover`, `Tooltip`, `ContextMenu`, `Modal`, `PopupMenu`) currently assume an in-window `ZStack` host, which clips them to the window. With `AppPanel` available, each overlay gains an optional **panel-hosted mode**: present its content in an `AppPanel` so it can extend past the window edge. The in-window `ZStack` path stays as the default (no extra native surface); panel-hosting is opt-in per overlay (e.g. a long menu near the screen edge).
-
 ### Exit criteria (Part A)
 
 - An `AppPanel` renders an arbitrary widget tree in a window separate from any `AppWindow`, with its own DPI scale.
@@ -263,7 +259,7 @@ Removed:
 
 Replaced by:
 
-- A new **`MenuBar` widget** (`Widgets/Navigation.h`) that hosts horizontal menu titles. Clicking a title opens a `PopupMenu` / `ContextMenu` (the in-view overlay widgets from [Widget-Stub-Implementation-Plan.md](Widget-Stub-Implementation-Plan.md)). Menus that overflow the window edge host their flyout in an **`AppPanel`** (Part A).
+- A new **`MenuBar` widget** (`Widgets/Navigation.h`) that hosts horizontal menu titles. Clicking a title opens a `PopupMenu` / `ContextMenu` (the in-view overlay widgets from [Widget-Stub-Implementation-Plan.md](Widget-Stub-Implementation-Plan.md)). Menus that would overflow the window edge clip or reposition via anchor edge-clamping (the standard `OverlayHost` behavior — [Overlay-Z-Order-Plan §5](Overlay-Z-Order-Plan.md#5-hit-testing-and-dismissal)); they do **not** escape into an `AppPanel`.
 - The existing **`UI/Menu.h` data model** (`Menu`, `MenuItem`, `CategoricalMenu`, `ButtonMenuItem`, `MenuItemSeperator`, delegates) is retained — `MenuBar` consumes it as its model so application call sites that already build a `Menu` tree need only swap `appWindow.setMenu(menu)` for `menuBar.setModel(menu)` (or equivalent).
 
 **macOS — `MacAppMenu` stand-alone helper.** macOS retains its app-global top-of-screen menu strip (`NSApp.mainMenu`) because it is OS-level: the system delivers `Cmd+Q`, standard edit-menu shortcuts, and the Apple-menu inheritance through it, and apps that do not register one render as broken to platform users. Replacement path:
@@ -278,7 +274,7 @@ Replaced by:
 - A borderless `AppWindow` under `WindowChrome::Custom` can be moved by dragging an app-defined caption region and resized from its edges, on all three platforms.
 - On GTK + Win32 under `Custom`: app-drawn min/max/close buttons drive the corresponding `AppWindow` operations; no native window controls are visible.
 - On macOS under `Custom`: the native traffic lights are repositioned to `setNativeControlRect`'s rect and remain functional; no other native chrome is visible.
-- `Native::NativeMenu` and its three native impls (`WinMenu`, `GTKMenu`, `CocoaMenu`) are deleted; `MenuBar` widget renders the same `UI/Menu.h` model on GTK + Win32; an edge-overflowing menu renders fully via `AppPanel`.
+- `Native::NativeMenu` and its three native impls (`WinMenu`, `GTKMenu`, `CocoaMenu`) are deleted; `MenuBar` widget renders the same `UI/Menu.h` model on GTK + Win32; an edge-overflowing menu repositions or clips via the standard `OverlayHost` anchor edge-clamping behavior (no `AppPanel` involvement).
 - macOS retains its top-of-screen menu via the stand-alone `MacAppMenu` helper (no `Native::*` interface involvement); the same `UI/Menu.h` tree drives it.
 - A `grep` for `Native::NativeMenu`, `make_native_menu`, `WinMenu`, `GTKMenu`, `CocoaMenu` returns zero hits outside of git history.
 

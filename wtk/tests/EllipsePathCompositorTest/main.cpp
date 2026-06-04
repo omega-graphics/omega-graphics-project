@@ -72,6 +72,15 @@ class RoundedFrameWidget final : public OmegaWTK::Widget {
         layout.shape("rounded_outer",OmegaWTK::Shape::RoundedRect(outer));
         uiView->setLayout(layout);
 
+        // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
+        // mark the sub-UIView Style|Layout|Paint-dirty so the
+        // FrameBuilder's pre-order walk actually visits it next
+        // frame. Without this the sheet cells never get written —
+        // the walker skips subviews whose parent has clean Style
+        // descendant masks, and `Widget::init()` only marks the
+        // widget's OWN view (a base View, not this UIView).
+        uiView->update();
+
         if(!loggedLayout){
             std::cout << "[EllipsePathCompositorTest] RoundedFrameWidget rendered via UIView." << std::endl;
             loggedLayout = true;
@@ -129,6 +138,7 @@ class EllipseOnlyWidget final : public OmegaWTK::Widget {
         OmegaWTK::UIViewLayout layout {};
         layout.shape("ellipse_shape",OmegaWTK::Shape::Ellipse(ellipse));
         uiView->setLayout(layout);
+        uiView->update();   // see RoundedFrameWidget's rebuildGeometry comment
 
         if(!loggedLayout){
             std::cout << "[EllipsePathCompositorTest] EllipseOnlyWidget rendered via UIView." << std::endl;
@@ -194,6 +204,7 @@ class PathOnlyWidget final : public OmegaWTK::Widget {
         OmegaWTK::UIViewLayout layout {};
         layout.shape("path_shape",OmegaWTK::Shape::Path(std::move(compPath),6));
         uiView->setLayout(layout);
+        uiView->update();   // see RoundedFrameWidget's rebuildGeometry comment
 
         if(!loggedLayout){
             std::cout << "[EllipsePathCompositorTest] PathOnlyWidget rendered via UIView." << std::endl;

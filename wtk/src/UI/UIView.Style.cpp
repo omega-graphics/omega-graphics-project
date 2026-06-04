@@ -56,13 +56,26 @@ ResolvedViewStyle resolveViewStyle(const StylePtr & style,const UIViewTag & view
 SharedHandle<Composition::Brush> resolveElementBrush(const StylePtr & style,
                                                      const UIViewTag & viewTag,
                                                      const UIElementTag & elementTag){
-    auto brush = Composition::ColorBrush(
-            Composition::Color::create8Bit(Composition::Color::White8));
-
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D6 follow-up
+    // (2026-06-03): return `nullptr` when no inline `ElementBrush`
+    // entry matches this element. Pre-D6 this returned a White8
+    // default brush so legacy widget code that called the resolver
+    // through `setStyle()` saw "white if not styled". After D6 the
+    // caller (`UIView::resolveStyles`) guards `if(brush != nullptr)`
+    // before writing the cell into `styleTable_`, so returning a
+    // non-null default here would BLINDLY OVERWRITE whatever
+    // `StyleSheets::StyleResolver::apply()` just wrote — meaning a
+    // sheet rule that supplied a `FillBrush` would be clobbered by
+    // the inline path's white. The fallback now happens at the
+    // *read* site instead: `UIView::paint` calls
+    // `resolved<SharedHandle<Brush>>(node, FillBrush, nullptr)` and
+    // shapes with neither inline nor sheet brush still render as
+    // they did pre-D6 (the DrawOp's null-brush behavior).
     if(style == nullptr){
-        return brush;
+        return nullptr;
     }
 
+    SharedHandle<Composition::Brush> brush = nullptr;
     for(const auto & entry : style->entries){
         if(entry.kind != Style::Entry::Kind::ElementBrush){
             continue;
@@ -367,20 +380,36 @@ void UIView::resolveStyles(){
         // Text resolves against the element's text-style tag (which
         // may alias a shared style element), then writes cells under
         // the element's OWN NodeId so Paint reads by element identity.
-        const UIElementTag textStyleTag = spec.textStyleTag.value_or(spec.tag);
-        const auto resolvedText = UIViewInternal::resolveTextStyle(
-            impl_->currentStyle,impl_->tag,textStyleTag);
-        if(resolvedText.font != nullptr){
-            impl_->styleTable_.set<SharedHandle<Composition::Font>>(
-                elementNodeId, PropertyKey::TextFont, resolvedText.font);
+        //
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D6 follow-up
+        // (2026-06-03): only run the text-cell writes when the
+        // inline `Style` aggregate is actually authored. Pre-D6
+        // `resolveTextStyle` returned non-empty defaults for every
+        // field when `style == nullptr` (default black color,
+        // default LeftUpper / None layout, line limit 0), and writing
+        // those unconditionally here would BLINDLY OVERWRITE any
+        // sheet rule that supplied `TextColor` / `TextLayout` /
+        // `TextLineLimit`. The TextFont cell was already guarded by
+        // its own non-null check; this guard handles the remaining
+        // three. Authored inline styles still override sheets per
+        // the layered cascade decision — same fix shape as
+        // `resolveElementBrush`.
+        if(impl_->currentStyle != nullptr){
+            const UIElementTag textStyleTag = spec.textStyleTag.value_or(spec.tag);
+            const auto resolvedText = UIViewInternal::resolveTextStyle(
+                impl_->currentStyle,impl_->tag,textStyleTag);
+            if(resolvedText.font != nullptr){
+                impl_->styleTable_.set<SharedHandle<Composition::Font>>(
+                    elementNodeId, PropertyKey::TextFont, resolvedText.font);
+            }
+            impl_->styleTable_.set<Composition::Color>(
+                elementNodeId, PropertyKey::TextColor, resolvedText.color);
+            impl_->styleTable_.set<Composition::TextLayoutDescriptor>(
+                elementNodeId, PropertyKey::TextLayout, resolvedText.layout);
+            impl_->styleTable_.set<std::uint32_t>(
+                elementNodeId, PropertyKey::TextLineLimit,
+                static_cast<std::uint32_t>(resolvedText.lineLimit));
         }
-        impl_->styleTable_.set<Composition::Color>(
-            elementNodeId, PropertyKey::TextColor, resolvedText.color);
-        impl_->styleTable_.set<Composition::TextLayoutDescriptor>(
-            elementNodeId, PropertyKey::TextLayout, resolvedText.layout);
-        impl_->styleTable_.set<std::uint32_t>(
-            elementNodeId, PropertyKey::TextLineLimit,
-            static_cast<std::uint32_t>(resolvedText.lineLimit));
     }
 }
 

@@ -128,14 +128,33 @@ void AbsoluteLayout::arrange(View & node, const Composition::Rect & finalRectLoc
     // Default semantic: each child keeps its own rect, optionally
     // clamped to the parent's content area via FitContent semantics
     // (the pre-migration default `ChildResizeSpec`).
+    //
+    // Widget-View-Paint-Lifecycle-Plan Tier D follow-up (2026-06-03):
+    // `finalRectLocal.pos` carries the node's position in its OWN
+    // parent's space (the caller in `FrameBuilder::layoutSubtree`
+    // recurses with `child->getRect()` whose pos != 0 once a parent
+    // layout positioned the node). Children, however, are addressed
+    // in this node's LOCAL space (origin 0). Passing the
+    // parent-space rect straight to `clampRectToParent` would force
+    // every child's `pos` UP to `finalRectLocal.pos`, doubling the
+    // accumulated `paintOffset` once for the parent and once for the
+    // child — visible as widgets drifting off-screen on Retina
+    // builds of the multi-view tests (`EllipsePathCompositorTest`,
+    // `ContainerClampAnimationTest`). Build the clamp box at origin
+    // 0 to keep the reference frame consistent.
     ChildResizeSpec spec {};
     spec.policy = ChildResizePolicy::FitContent;
+    const Composition::Rect localBox{
+        Composition::Point2D{0.f, 0.f},
+        finalRectLocal.w,
+        finalRectLocal.h
+    };
     for(auto * child : node.subviews()){
         if(child == nullptr){
             continue;
         }
         auto requested = child->getRect();
-        auto clamped   = clampRectToParent(requested, finalRectLocal, spec);
+        auto clamped   = clampRectToParent(requested, localBox, spec);
         if(!ViewInternal::sameRect(child->getRect(), clamped)){
             child->resize(clamped);
         }
@@ -151,8 +170,14 @@ LayoutSize FillLayout::measure(View & /*node*/, const Composition::Rect & avail)
 }
 
 void FillLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
+    // Widget-View-Paint-Lifecycle-Plan Tier D follow-up (2026-06-03):
+    // children are addressed in this node's LOCAL space — pos
+    // starts at 0, NOT at `finalRectLocal.pos`. See the matching
+    // note on `AbsoluteLayout::arrange` for the full story; the bug
+    // shape is identical (parent-space pos leaking into child-space
+    // clamp).
     const Composition::Rect childRect {
-        Composition::Point2D{finalRectLocal.pos.x, finalRectLocal.pos.y},
+        Composition::Point2D{0.f, 0.f},
         std::max(1.f, finalRectLocal.w),
         std::max(1.f, finalRectLocal.h)
     };
