@@ -126,11 +126,43 @@ namespace {
 // `Widget::onThemeSetRecurse`, minus the native `onThemeSet` hook
 // dispatch (which only carries a `ThemeDesc` for OS light/dark
 // observers — not relevant to the app-level style cascade).
+//
+// D7.2 fixup (2026-06-04): the original v1 of this helper called
+// `widget->invalidate(ThemeChanged)` per widget — which marks the
+// widget's MAIN view dirty but DOES NOT propagate down to sub-views
+// created via `makeSubView<UIView>(...)`. `View::markDirty` only
+// walks UP (OR-ing into ancestor `descendantDirty`), so sub-UIViews
+// stayed clean and the FrameBuilder's `styleSubtree` walker
+// skipped them (gated on `(self | desc) & Style`). The visible
+// symptom: D7.2 transitions on sub-UIView-hosted elements (the
+// canonical pattern: a `BlueRectWidget` with a `blue_rect_view`
+// sub-UIView containing a `blue_rect` element) never fired,
+// because the sub-UIView's `resolveStyles` never ran and
+// `applyTransitions` never saw the cell change. This is D8 (b) —
+// the "sub-UIView markDirty propagation sharp edge" — surfacing
+// at runtime. Fix: walk the VIEW subtree at each widget (not just
+// the widget tree) so every render node, including sub-UIViews,
+// gets a fresh self-dirty bit.
+void markViewSubtreeDirty(View & view){
+    constexpr uint8_t kCascadeBits =
+        View::Style | View::Layout | View::Paint;
+    view.markDirty(kCascadeBits);
+    for(auto * sv : view.subviews()){
+        if(sv != nullptr){
+            markViewSubtreeDirty(*sv);
+        }
+    }
+}
+
 void invalidateCascadeRecurse(Widget * widget){
     if(widget == nullptr){
         return;
     }
-    widget->invalidate(PaintReason::ThemeChanged);
+    // Walk the widget's full view subtree (main view + every
+    // sub-view created via `makeSubView`). Replaces the pre-fixup
+    // `widget->invalidate(ThemeChanged)` call, which only marked
+    // the widget's main view.
+    markViewSubtreeDirty(widget->viewRef());
     for(const auto & child : widget->childWidgets()){
         if(child != nullptr){
             invalidateCascadeRecurse(child.get());

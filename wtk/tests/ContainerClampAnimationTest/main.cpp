@@ -8,16 +8,24 @@
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/CanvasEffect.h"
 #include <omegaWTK/Main.h>
-#include <chrono>
 
-// Scene: one blue rounded rect with a nice big drop shadow, centered
-// in a white container. The "Animate" menu's "Animate Shadow" item
-// tweens the shadow's R channel from 0 → 1 over 1.5s EaseInOut
-// (resting black → vivid red → revert on completion via the
-// AnimationScheduler's clear-on-complete rule). This is the visible
-// validator for the Phase 4.4 AnimationScheduler integration; the
-// clamp / red→blue / requestRect machinery that used to live here
-// belonged to an older test purpose and is gone (2026-05-31).
+// Scene: one blue rounded rect with a big drop shadow, centered in a
+// white container. The "Animate" menu's "Animate Shadow" item swaps
+// a "highlight" StyleSheet onto the window — the highlight sheet's
+// `blue_rect` rule declares a different DropShadow value PLUS a
+// `TransitionSpec` for the DropShadow property. The StyleResolver
+// detects the cell change between frames and fires
+// `scheduler.transition<DropShadowParams>` via the D7.2 friend hook;
+// the scheduler tweens DropShadowParams (lerping every channel)
+// over the spec's timing.
+//
+// Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+// pre-D7.2 this test triggered the animation via
+// `uiView->animateElement(ShadowColorR, ...)` — a direct
+// scheduler.tweenProperty<float> call against a UserDefined key. That
+// validated the scheduler but did NOT exercise the D7.2 cascade →
+// transition path. The sheet-swap version below is the canonical
+// D7.2 verification.
 
 namespace {
 
@@ -49,44 +57,15 @@ constexpr float kShadowGeometryRadius= 16.f;   // shadow geometry corner
 constexpr float kShadowBlur          = 28.f;
 constexpr float kShadowOpacity       = 0.65f;
 
-// Menu-triggered tween: black → vivid red.
+// Menu-triggered transition duration. The TransitionSpec on both
+// sheet rules uses this; the EaseInOut curve completes the visible
+// effect.
 constexpr float kShadowAnimDurationSec = 1.5f;
-constexpr float kShadowAnimFromColorR  = 0.f;
-constexpr float kShadowAnimToColorR    = 1.f;
 
 }
 
 class BlueRectWidget final : public OmegaWTK::Widget {
     OmegaWTK::UIViewPtr uiView {};
-
-    // While `shadowAnimActive_` is true the widget self-invalidates each
-    // repaint so the per-window FrameBuilder keeps ticking the
-    // AnimationScheduler — every frame, Paint re-reads the shadow side-
-    // table cell. Without the loop a single repaint would freeze on
-    // whatever sampled value the scheduler had at that instant.
-    bool shadowAnimActive_ = false;
-    std::chrono::steady_clock::time_point shadowAnimDeadline_ {};
-
-    // DirtyBits-gap workaround (Phase 4.4/4.5 era — fixed in Phase F /
-    // Phase 4.7). `Widget::invalidate()` only sets THIS widget's Paint
-    // bit. The FrameBuilder's composite frame is rebuilt per frame from
-    // whichever widgets paint; widgets whose Paint bit is NOT set
-    // contribute no draw ops, so their previous visuals (e.g. the
-    // parent container's white backdrop) disappear from the framebuffer.
-    // For this two-deep tree (root container → blue rect) invalidating
-    // the immediate parent is enough — the root container repaints
-    // its white backdrop, our child repaints its blue rect, and the
-    // animating shadow color lands in the same composite frame. C++'s
-    // protected-access rule blocks walking past `this->parent` from a
-    // Widget* (we can call `parent->invalidate()` — public — but not
-    // read `parent->parent` from a derived class on a base-class
-    // pointer), so we only invalidate one level here. Phase F /
-    // Phase 4.7 makes this irrelevant.
-    void invalidateAncestors(){
-        if(parent != nullptr){
-            parent->invalidate(OmegaWTK::PaintReason::StateChanged);
-        }
-    }
 
     void ensureUIView(const OmegaWTK::Composition::Rect & bounds){
         auto local = localBounds(bounds);
@@ -111,17 +90,15 @@ class BlueRectWidget final : public OmegaWTK::Widget {
         uiView->setLayout(layout);
     }
 
-    // Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
-    // styling is now authored on a window-installed StyleSheet (see
-    // `buildClampAnimSheet` below + `omegaWTKMain`). The pre-D6
-    // `applyStyle()` helper that called `Style::Create() ->
-    // backgroundColor / elementBrush / elementDropShadow ->
-    // setStyle(...)` is gone — sheet rules with the same selector
-    // tags ("blue_rect_view" and the "blue_rect" element) feed the
-    // same `(NodeId, PropertyKey)` cells the legacy aggregate did.
-    // The runtime `animateElement` tween below is NOT sheet-driven
-    // — it sits on the AnimationScheduler directly; D7.3 will
-    // promote it to a keyframe-animation declaration on the sheet.
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+    // styling is sheet-driven (see `buildClampInitialSheet` /
+    // `buildClampHighlightSheet` below). The pre-D7.2 self-pump via
+    // `Widget::onPaint(PaintReason)` is GONE — the
+    // FrameBuilder-side auto-pump (`AnimationScheduler::stats()` >
+    // 0 → invalidate root + requestFrame) now keeps the frame loop
+    // alive while any animation is active. The pre-D7.2 hover-class
+    // `invalidateAncestors()` helper is also gone — the auto-pump
+    // marks the tree-host root Paint-dirty each tick.
 
 protected:
     void onThemeSet(OmegaWTK::Native::ThemeDesc & desc) override {
@@ -144,48 +121,6 @@ protected:
     }
 
     // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
-    // `Widget::onPaint(PaintReason)` is **deprecated** — the
-    // framework no longer dispatches it after the 4.7.4 cutover
-    // (see `Widget.h`'s `[[deprecated]]` note). The override below
-    // intentionally rides the deprecated hook for one specific
-    // reason: the menu-triggered shadow tween needs a frame to keep
-    // running every turn so the AnimationScheduler ticks and the
-    // resolver re-samples the cell. Today there is no
-    // scheduler-side auto-pump for active animations; until the
-    // scheduler grows one (a follow-up to D7, since D7.2/D7.3 hand
-    // it sheet-driven animations to manage), this test self-pumps
-    // through `Widget::invalidate(...)` and only fires while
-    // `Widget::onPaint` still exists. The deprecation warning
-    // suppress is intentional and documented:
-    //   * Geometry refresh moved to `resize()` so it doesn't depend
-    //     on `onPaint` running.
-    //   * The pump itself is the only legitimate `onPaint` use in
-    //     this file.
-#if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic push
-#  pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-    void onPaint(OmegaWTK::PaintReason reason) override {
-        (void)reason;
-        // Keep the frame loop alive while the menu-triggered tween is
-        // in flight so the scheduler ticks each turn and Paint re-
-        // samples the updated shadow-color value. Invalidate every
-        // ancestor too — see the comment on `invalidateAncestors`.
-        if(shadowAnimActive_){
-            if(std::chrono::steady_clock::now() >= shadowAnimDeadline_){
-                shadowAnimActive_ = false;
-            }
-            else {
-                invalidateAncestors();
-                invalidate(OmegaWTK::PaintReason::StateChanged);
-            }
-        }
-    }
-#if defined(__clang__) || defined(__GNUC__)
-#  pragma GCC diagnostic pop
-#endif
-
-    // Widget-View-Paint-Lifecycle-Plan Tier D (2026-06-03):
     // resize handles the geometry rebuild that pre-D6 lived inside
     // onPaint. `Widget::onPaint` is deprecated; this is the right
     // hook for layout-on-resize.
@@ -201,31 +136,6 @@ protected:
 public:
     explicit BlueRectWidget(OmegaWTK::Composition::Rect rect):
             OmegaWTK::Widget(rect){}
-
-    // Called from the menu delegate. Registers a scheduler tween on
-    // the rounded rect's drop-shadow R channel: shadow shifts from
-    // black to vivid red over 1.5s EaseInOut and back (the scheduler
-    // clears the side-table cell on completion → the resolved style's
-    // black wins again). Arms the self-invalidate loop + kicks one
-    // repaint so the pump starts immediately.
-    void triggerShadowAnimation(){
-        if(uiView == nullptr){
-            return;
-        }
-        const auto durationSec = kShadowAnimDurationSec;
-        uiView->animateElement(
-            "blue_rect",
-            OmegaWTK::UIView::AnimationChannel::ShadowColorR,
-            kShadowAnimFromColorR,
-            kShadowAnimToColorR,
-            durationSec,
-            OmegaWTK::Composition::AnimationCurve::EaseInOut());
-        shadowAnimActive_ = true;
-        shadowAnimDeadline_ = std::chrono::steady_clock::now() +
-            std::chrono::milliseconds(static_cast<long>(durationSec * 1000.f));
-        invalidateAncestors();
-        invalidate(OmegaWTK::PaintReason::StateChanged);
-    }
 };
 
 class WhiteRootContainer final : public OmegaWTK::Container {
@@ -272,36 +182,12 @@ public:
     }
 };
 
-class AnimMenuDelegate final : public OmegaWTK::MenuDelegate {
-    SharedHandle<BlueRectWidget> target_;
-public:
-    explicit AnimMenuDelegate(SharedHandle<BlueRectWidget> target):
-        target_(std::move(target)) {}
-
-    void onSelectItem(unsigned itemIndex) override {
-        switch(itemIndex){
-            case 0:
-                if(target_){
-                    target_->triggerShadowAnimation();
-                }
-                break;
-            case 2:
-                OmegaWTK::AppInst::terminate();
-                break;
-            default:
-                break;
-        }
-    }
-};
-
-// Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
-// the cascade sheet for this scene. Replaces the per-widget inline
-// `Style::Create() -> ...` blocks in `BlueRectWidget::applyStyle` and
-// `WhiteRootContainer::onPaint`. The animation that flips the shadow
-// R-channel on the menu item still routes through the runtime
-// scheduler API (`UIView::animateElement`) — sheet-driven keyframe
-// animations land in D7.3.
-SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildClampAnimSheet(){
+// Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+// the initial sheet — black drop shadow on the blue rect. Lives at
+// the bottom of the AppWindow stack for the whole session; menu
+// click pushes / pops the `highlight` sheet ABOVE this one to
+// trigger the cascade change.
+SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildClampInitialSheet(){
     OmegaWTK::StyleSheets::StyleSheet::Builder builder;
 
     // White root-container backdrop.
@@ -312,17 +198,18 @@ SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildClampAnimSheet(){
             OmegaWTK::Composition::Color::White8)));
     builder.addRule(std::move(bgRule));
 
-    // Blue rect view: transparent backdrop (the rounded rect element
-    // does the actual fill).
+    // Blue rect view: transparent backdrop.
     OmegaWTK::StyleSheets::StyleRule rectViewRule;
     rectViewRule.selector.tag = "blue_rect_view";
     rectViewRule.setBackgroundColor(OmegaWTK::Composition::Color::Transparent);
     builder.addRule(std::move(rectViewRule));
 
-    // Blue rect element: blue fill + big drop shadow. The scheduler-
-    // driven shadow R-channel tween overrides `DropShadow.color.r`
-    // during the animation (D5's resolved-cell + scheduler-cell
-    // chain).
+    // Blue rect element: blue fill + black drop shadow (initial state).
+    // Carries a `TransitionSpec` for `DropShadow` so swapping to the
+    // highlight sheet's red-shadow value fires
+    // `scheduler.transition<DropShadowParams>` via the D7.2 friend
+    // hook. The spec stays on the initial rule too so the reverse
+    // direction (highlight → initial) ALSO transitions.
     OmegaWTK::StyleSheets::StyleRule rectRule;
     rectRule.selector.tag = "blue_rect";
     rectRule.setFillBrush(OmegaWTK::Composition::ColorBrush(
@@ -331,10 +218,91 @@ SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildClampAnimSheet(){
     rectRule.setDropShadow(makeShadow(0.f, kShadowOffsetY,
                                       kShadowGeometryRadius,
                                       kShadowBlur, kShadowOpacity));
+    OmegaWTK::StyleSheets::TransitionSpec shadowTransition;
+    shadowTransition.key = OmegaWTK::PropertyKey::DropShadow;
+    shadowTransition.timing.durationMs =
+        static_cast<std::uint32_t>(kShadowAnimDurationSec * 1000.f);
+    shadowTransition.curve = OmegaWTK::Composition::AnimationCurve::EaseInOut();
+    rectRule.transitions.push_back(shadowTransition);
     builder.addRule(std::move(rectRule));
 
     return builder.build();
 }
+
+// Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+// the `highlight` overlay. Same selector (`blue_rect`), different
+// shadow color (red). Pushing this on top of the initial sheet via
+// `AppWindow::addStyleSheet` makes its rule win the cascade tie
+// through StyleRule::beats's source-order `>=` tiebreak — the
+// StyleResolver writes the red-shadow cell to styleTable_, the
+// previous frame's black-shadow cell sits in previousStyleTable_,
+// and `StyleResolver::applyTransitions` fires the registered
+// scheduler.transition<DropShadowParams> for the change.
+SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildClampHighlightSheet(){
+    OmegaWTK::StyleSheets::StyleSheet::Builder builder;
+
+    auto redShadow = makeShadow(0.f, kShadowOffsetY,
+                                kShadowGeometryRadius,
+                                kShadowBlur, kShadowOpacity);
+    redShadow.color = OmegaWTK::Composition::Color::create8Bit(
+        OmegaWTK::Composition::Color::Red8);
+
+    OmegaWTK::StyleSheets::StyleRule rectRule;
+    rectRule.selector.tag = "blue_rect";
+    // Override only the DropShadow. FillBrush / background-color from
+    // the initial sheet still win their cells (the initial rule's
+    // values are unchanged and the highlight sheet doesn't author
+    // them; the cascade preserves them via the same source-order
+    // logic that gave us the DropShadow swap).
+    rectRule.setDropShadow(redShadow);
+    OmegaWTK::StyleSheets::TransitionSpec shadowTransition;
+    shadowTransition.key = OmegaWTK::PropertyKey::DropShadow;
+    shadowTransition.timing.durationMs =
+        static_cast<std::uint32_t>(kShadowAnimDurationSec * 1000.f);
+    shadowTransition.curve = OmegaWTK::Composition::AnimationCurve::EaseInOut();
+    rectRule.transitions.push_back(shadowTransition);
+    builder.addRule(std::move(rectRule));
+
+    return builder.build();
+}
+
+class AnimMenuDelegate final : public OmegaWTK::MenuDelegate {
+    OmegaWTK::AppWindow * window_;
+    SharedHandle<OmegaWTK::StyleSheets::StyleSheet> highlightSheet_;
+    bool highlightOn_ = false;
+public:
+    AnimMenuDelegate(OmegaWTK::AppWindow * window,
+                     SharedHandle<OmegaWTK::StyleSheets::StyleSheet> highlight):
+        window_(window), highlightSheet_(std::move(highlight)) {}
+
+    void onSelectItem(unsigned itemIndex) override {
+        switch(itemIndex){
+            case 0:
+                // Toggle the highlight sheet. Push it onto the stack
+                // (red shadow wins the cascade) → next Style phase
+                // detects the cell change vs the previous frame's
+                // black shadow and fires the transition. Pop on the
+                // next click → black wins again, transition fires
+                // back. Each toggle is one full D7.2 cycle.
+                if(window_ == nullptr || highlightSheet_ == nullptr){
+                    return;
+                }
+                if(highlightOn_){
+                    window_->removeStyleSheet(highlightSheet_);
+                }
+                else {
+                    window_->addStyleSheet(highlightSheet_);
+                }
+                highlightOn_ = !highlightOn_;
+                break;
+            case 2:
+                OmegaWTK::AppInst::terminate();
+                break;
+            default:
+                break;
+        }
+    }
+};
 
 int omegaWTKMain(OmegaWTK::AppInst *app) {
     // 500×500 window, white root container, one 260×180 blue rounded
@@ -348,11 +316,13 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
             OmegaWTK::Composition::Rect{{0, 0}, kWindowW, kWindowH},
             new MyWindowDelegate());
 
-    // Widget-View-Paint-Lifecycle-Plan Tier D / D6 (2026-06-03):
-    // install the cascade sheet on the window. Pre-D6 each widget
-    // authored its own inline `Style` per paint; D6 lifts the
-    // declarations to one sheet shared across the window's tree.
-    window->addStyleSheet(buildClampAnimSheet());
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+    // install the initial cascade sheet on the window. The menu
+    // toggles the `highlight` overlay sheet (built once below, kept
+    // alive on the delegate's stack) to fire the DropShadow
+    // transition.
+    window->addStyleSheet(buildClampInitialSheet());
+    auto highlightSheet = buildClampHighlightSheet();
 
     auto container = make<WhiteRootContainer>(
             OmegaWTK::Composition::Rect{{0, 0}, kWindowW, kWindowH});
@@ -369,7 +339,7 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     // Menu: "Animate" > "Animate Shadow" (item 0) | sep (1) | "Quit" (2).
     // Delegate is `static` so it outlives this function — the menu
     // captures it by raw pointer.
-    static AnimMenuDelegate animMenuDelegate(child);
+    static AnimMenuDelegate animMenuDelegate(window.get(), highlightSheet);
     auto menu = make<OmegaWTK::Menu>(
         "MainMenu",
         std::initializer_list<SharedHandle<OmegaWTK::MenuItem>>{

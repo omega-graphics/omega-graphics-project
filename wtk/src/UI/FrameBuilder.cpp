@@ -2,6 +2,7 @@
 
 #include "AppWindowImpl.h"
 #include "WidgetTreeHost.h"
+#include "omegaWTK/UI/Widget.h"   // D7.2 auto-pump uses Widget::invalidate
 
 #include <cassert>
 #include <chrono>
@@ -78,6 +79,50 @@ void FrameBuilder::beginFrame(){
     if(impl->animationScheduler_){
         ScopedPhase tickPhase(this, FramePhase::Tick);
         impl->animationScheduler_->tick(FrameTime{steadyFrameClockNs(), frameIndex_++});
+
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+        // scheduler-side auto-pump. While the active set is non-empty,
+        // the tick has just sampled fresh values into the side table —
+        // but `buildFrame`'s `rootMask == 0` gate skips the paint pass
+        // when no widget marked itself dirty, and the deprecated
+        // `Widget::onPaint(PaintReason)` pump (formerly the self-loop
+        // path) is no longer dispatched (Phase 4.7.4 cutover). Without
+        // this pump, every scheduler-driven animation — `animateElement`,
+        // `tweenProperty`, the D7.2 `transition` hook — runs one tick
+        // after registration and then freezes at t≈0.
+        //
+        // Two parts:
+        //   1. Mark the widget tree's root view `Paint`-dirty so
+        //      `buildFrame` continues into the Paint pass this frame.
+        //      The paint walker visits every subview unconditionally —
+        //      marking only the root is enough to refresh the whole
+        //      tree (per-node dirty culling is a Tier 5 follow-up).
+        //   2. Request another vsync turn so the next frame fires its
+        //      own tick + paint. Naturally winds down once
+        //      `propertyAnims` / `callbackAnims` go empty.
+        //
+        // Documented under D8 as the canonical replacement for the
+        // `BlueRectWidget::onPaint` self-pump in
+        // `wtk/tests/ContainerClampAnimationTest/main.cpp`.
+        const auto schedStats = impl->animationScheduler_->stats();
+        if(schedStats.activeProperty + schedStats.activeCallback > 0){
+            // `Widget::invalidate(StateChanged)` is the public surface that
+            // both marks the view's Paint bit AND calls
+            // `treeHost->requestFrame()` — equivalent to two separate
+            // calls (markDirty + window_.requestFrame) but avoids
+            // touching Widget's protected `view` field. The
+            // `dirtyBitsForReason(StateChanged)` derivation maps to
+            // exactly `Paint` (no Style / Layout) which is what we want:
+            // animations write the scheduler side table, Paint reads it,
+            // Style / Layout do not need to re-run.
+            auto * treeHost = impl->widgetTreeHost.get();
+            if(treeHost != nullptr && treeHost->root != nullptr){
+                treeHost->root->invalidate(PaintReason::StateChanged);
+            }
+            else {
+                window_.requestFrame();
+            }
+        }
     }
 
     pending_.clear();
@@ -147,6 +192,26 @@ void FrameBuilder::endFrame(){
         impl->windowSurface->deposit(compositeFrame_);
     }
     compositeFrame_.reset();
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 fixup (2026-06-04):
+    // late auto-pump check. The pre-Style auto-pump in `beginFrame`
+    // catches "an animation was already running when this frame
+    // started." But transitions registered DURING this frame's Style
+    // phase (via `StyleResolver::applyTransitions` →
+    // `scheduler.transition<T>` → `tweenProperty`) only become active
+    // AFTER the early auto-pump's `stats()` snapshot. Without this
+    // late check, the very first cell-change-triggered transition
+    // registers a tween that never gets ticked, because no further
+    // requestFrame ever fires. Re-check the scheduler state at the
+    // end of every outermost frame and schedule another vsync if
+    // anything is active — the next frame's `beginFrame` auto-pump
+    // then takes over the per-frame pump duty.
+    if(impl->animationScheduler_){
+        const auto schedStats = impl->animationScheduler_->stats();
+        if(schedStats.activeProperty + schedStats.activeCallback > 0){
+            window_.requestFrame();
+        }
+    }
 
     g_activeFrameBuilder = nullptr;
 }

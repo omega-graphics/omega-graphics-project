@@ -171,32 +171,65 @@ void StyleResolver::apply(UIView & view){
     // cascade resolves. Tracks the best matching rule so the inline-
     // style writes that follow this resolver can blow it away (per
     // §0.3 layering decision: inline wins).
+    //
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 fixup
+    // (2026-06-04): the comparator now threads `sheetIndex` into the
+    // cascade tie-break. Pre-fixup, ties on specificity tie-broke on
+    // `StyleRule::sourceOrder` alone — but `Builder::addRule` stamps
+    // source-order independently per sheet, so a "later" sheet whose
+    // rule has source-order 0 lost to an "earlier" sheet whose rule
+    // had source-order 2, contradicting the CSS cascade
+    // (later-in-the-stack should beat earlier-in-the-stack on a
+    // specificity tie). With this fix, ties resolve as
+    // specificity → sheetIndex → sourceOrder, which matches the
+    // canonical cascade and unblocks D7.2 transitions when the
+    // user swaps a "highlight" sheet onto a window.
     struct CellWinner {
         const StyleRule * rule       = nullptr;
         StyleValue        value      {};
+        std::size_t       sheetIndex = 0;
     };
     std::unordered_map<PropertyTableKey, CellWinner,
                        PropertyTableKeyHash> winners;
 
     auto consider = [&](NodeId node, PropertyKey key,
                         const StyleValue & value,
-                        const StyleRule & rule){
+                        const StyleRule & rule,
+                        std::size_t sheetIndex){
         const PropertyTableKey cellKey{node, key, 0};
         auto it = winners.find(cellKey);
-        if(it == winners.end() || rule.beats(*it->second.rule)){
-            winners[cellKey] = CellWinner{&rule, value};
+        if(it == winners.end()){
+            winners[cellKey] = CellWinner{&rule, value, sheetIndex};
+            return;
+        }
+        const auto & cur = it->second;
+        const auto a = rule.selector.specificity();
+        const auto b = cur.rule->selector.specificity();
+        bool wins;
+        if(a != b){
+            wins = a > b;
+        }
+        else if(sheetIndex != cur.sheetIndex){
+            wins = sheetIndex > cur.sheetIndex;
+        }
+        else {
+            // Same sheet, same specificity — fall back to the rule's
+            // local source order (the conventional last-rule-wins
+            // within a sheet). `>=` so a rule beats itself, preserving
+            // stability when the same rule is re-considered for a
+            // different element on the same node.
+            wins = rule.sourceOrder >= cur.rule->sourceOrder;
+        }
+        if(wins){
+            it->second = CellWinner{&rule, value, sheetIndex};
         }
     };
 
-    // Walk the sheet stack and collect winners. Outer index is
-    // sheet-stack position; tie-break inside a sheet uses each
-    // rule's `sourceOrder` via `StyleRule::beats`. Sheets later in
-    // the stack don't get an implicit specificity boost — they only
-    // win ties through `sourceOrder` because `Builder::addRule`
-    // stamps source order monotonically inside a single sheet, and
-    // across sheets the cascade is whatever specificity says.
+    // Walk the sheet stack and collect winners.
+    std::size_t sheetIndex = 0;
     for(const auto & sheet : stack){
         if(sheet == nullptr){
+            ++sheetIndex;
             continue;
         }
         for(const auto & rule : sheet->rules()){
@@ -206,7 +239,7 @@ void StyleResolver::apply(UIView & view){
                 forEachDeclaration(rule,
                                    [&](PropertyKey k, const StyleValue & v){
                     if(scopeOf(k) == PropertyScope::View){
-                        consider(viewNodeId, k, v, rule);
+                        consider(viewNodeId, k, v, rule, sheetIndex);
                     }
                 });
             }
@@ -222,11 +255,12 @@ void StyleResolver::apply(UIView & view){
                 forEachDeclaration(rule,
                                    [&](PropertyKey k, const StyleValue & v){
                     if(scopeOf(k) == PropertyScope::Element){
-                        consider(elNode, k, v, rule);
+                        consider(elNode, k, v, rule, sheetIndex);
                     }
                 });
             }
         }
+        ++sheetIndex;
     }
 
     // Apply winners to the style table. Inline `Style` writes

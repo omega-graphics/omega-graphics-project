@@ -6,6 +6,7 @@
 #include <omegaWTK/Widgets/Primatives.h>
 #include <omegaWTK/Widgets/Containers.h>
 #include <omegaWTK/Widgets/BasicWidgets.h>
+#include <omegaWTK/Widgets/UserInputs.h>
 
 using namespace OmegaWTK;
 
@@ -194,14 +195,72 @@ int RunBasicAppTest(AppInst *app) {
     // Description
     LabelProps descProps;
     descProps.text = U"This test exercises shape primitives (Rectangle, RoundedRectangle, "
-                     U"Ellipse), text (Label), layout (VStack/HStack), and the app menu "
-                     U"system (File > Open, Help > About).";
+                     U"Ellipse), text (Label), layout (VStack/HStack), the Button widget "
+                     U"with hover transitions, and the app menu system "
+                     U"(File > Open, Help > About).";
     descProps.textColor = Composition::Color::create8Bit(0xCCCCCC);
     descProps.alignment = Composition::TextLayoutDescriptor::LeftUpper;
     descProps.wrapping = Composition::TextLayoutDescriptor::WrapByWord;
     auto descLabel = make<Label>(
         Composition::Rect{{0, 0}, contentW, 60.f}, descProps);
     root->addChild(descLabel, StackSlot{.flexGrow = 1.f});
+
+    // Button row — exercises the Phase 4A Button base implementation with
+    // explicit transition specs on hover. The default
+    // ButtonProps::hoverTransitionDuration is 150 ms (matches the macOS
+    // / Win32 convention); this row demonstrates it with three buttons
+    // at different durations, plus a disabled one.
+    auto buttonRow = make<HStack>(
+        Composition::Rect{{0, 0}, contentW, 40.f},
+        StackOptions{
+            .spacing = 12.f,
+            .mainAlign = StackMainAlign::Center,
+            .crossAlign = StackCrossAlign::Center
+        });
+
+    // Default 150 ms hover transition (per ButtonProps default).
+    ButtonProps clickMeProps;
+    clickMeProps.text = U"Click me";
+    auto clickMe = make<Button>(
+        Composition::Rect{{0, 0}, 120.f, 32.f}, clickMeProps);
+    clickMe->setOnPress([](){
+        if(nc){
+            nc->send({"BasicAppTest", "Button clicked — default 150ms hover transition."});
+        }
+    });
+    buttonRow->addChild(clickMe);
+
+    // Slow 400 ms hover transition with a custom accent color.
+    ButtonProps slowProps;
+    slowProps.text = U"Slow hover";
+    slowProps.hoverTransitionDuration = 0.4f;
+    slowProps.tintOverride = Composition::Color::create8Bit(0x2A6FCC); // deep blue
+    auto slowHover = make<Button>(
+        Composition::Rect{{0, 0}, 140.f, 32.f}, slowProps);
+    slowHover->setOnPress([](){
+        if(nc){
+            nc->send({"BasicAppTest", "Slow-hover button clicked — 400ms transition."});
+        }
+    });
+    buttonRow->addChild(slowHover);
+
+    // Snap (no transition) — instant state change for comparison.
+    ButtonProps snapProps;
+    snapProps.text = U"Snap";
+    snapProps.hoverTransitionDuration = 0.f;
+    auto snapBtn = make<Button>(
+        Composition::Rect{{0, 0}, 80.f, 32.f}, snapProps);
+    buttonRow->addChild(snapBtn);
+
+    // Disabled — dimmed at 0.4 alpha, never enters hover/pressed.
+    ButtonProps disabledProps;
+    disabledProps.text = U"Disabled";
+    disabledProps.enabled = false;
+    auto disabledBtn = make<Button>(
+        Composition::Rect{{0, 0}, 100.f, 32.f}, disabledProps);
+    buttonRow->addChild(disabledBtn);
+
+    root->addChild(buttonRow, StackSlot{.flexGrow = 0.f});
 
     window->setRootWidget(root);
 

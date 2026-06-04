@@ -1354,13 +1354,156 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
     dirty fanout reaches that window only; when multi-window lands,
     `setThemeVars` is the single call site that needs to grow.
 
-  - **D7.2 — Transitions wired.** `StyleResolver` caches the
-    previous-frame resolved value per `(NodeId, PropertyKey)`. On
-    change *with a transition recorded* (D6.5), the resolver calls
-    `scheduler.transition(nodeId, key, prev, next, spec)` via the
-    `friend` hook (Animation-Scheduler-Plan §3.7). Scheduler
-    retargets in place if a transition is already active for that
-    `(node, key)`.
+  - **D7.2 — Transitions wired. [DONE 2026-06-04.]** New
+    `UIView::Impl::previousStyleTable_` (`StyleTable`) snapshots the
+    previous Style phase's resolved cells — `UIView::resolveStyles`
+    swaps the current and previous tables at the top of the method,
+    so the resolver / inline-style writes that follow populate a
+    fresh `styleTable_` while `previousStyleTable_` carries last
+    frame's content for comparison. New
+    `StyleResolver::applyTransitions(view)` (called at the bottom
+    of `resolveStyles` after both the cascade and the inline
+    writes have settled) walks `sheetBindings_.transitions` —
+    populated by D6.5 — and for each record looks up the raw cell
+    in both tables. A `std::visit` over the `StyleValue` variant
+    dispatches on the cell's runtime type; only the transitionable
+    intersection (`Color`, `std::uint32_t`,
+    `LayerEffect::DropShadowParams`) reaches the scheduler. Brush
+    handle swaps and Font / TextLayoutDescriptor / monostate / Var
+    cells snap directly — matching CSS "non-animatable property
+    snaps." `AnimationScheduler::transition<T>(...)` is the new
+    friend-only retargeting hook (templated; `friend class
+    StyleSheets::StyleResolver`): looks up an active animation for
+    the `(node, key)`; if found, captures the current sampled
+    value as the new `from` (smooth retarget); seeds the
+    scheduler's side table with `from` via the also-new
+    `seedTableFromStyle` (Phase-Style-allowed bypass of the public
+    `setTableValue`'s Tick-only assert) so this frame's Paint
+    reads the pre-transition value; then delegates to
+    `tweenProperty<T>` which cancels the prior animation and
+    installs a fresh one with the spec's timing + curve.
+    Animation.h gains a `KeyframeLerp<Composition::Color>`
+    specialization — the canonical transition target had no
+    specialization pre-D7.2 and would have tripped the
+    `is_arithmetic_v<T>` static_assert. Files touched:
+    `wtk/include/omegaWTK/Composition/Animation.h` (Color lerp),
+    `wtk/include/omegaWTK/UI/StyleResolver.h` (`applyTransitions`
+    decl), `wtk/src/UI/StyleResolver.cpp` (`applyTransitions` +
+    type-dispatched valuesEqual table), `wtk/src/UI/UIViewImpl.h`
+    (`previousStyleTable_`, `StyleTable::swap` /
+    `StyleTable::getRaw`), `wtk/src/UI/UIView.Style.cpp` (snapshot
+    swap + applyTransitions call), `wtk/src/UI/AnimationScheduler.h`
+    (`friend class StyleResolver`, private `transition<T>` +
+    `seedTableFromStyle`), `wtk/src/UI/AnimationScheduler.cpp`
+    (`seedTableFromStyle` impl with Style-phase assert). Full-tree
+    build green (59/59 on this macOS host).
+
+    **Follow-up landed same session 2026-06-04: scheduler auto-pump
+    + ContainerClampAnimationTest conversion.** During runtime
+    verification, the menu-triggered drop-shadow animation in
+    `wtk/tests/ContainerClampAnimationTest` ran one tick then froze
+    — the framework stopped dispatching `Widget::onPaint(PaintReason)`
+    at the 4.7.4 cutover, so the test's self-pump (which lived
+    inside an `onPaint` override per the D8 caveat) was dead. Without
+    a pump, *no* scheduler-driven animation observes the second
+    frame — neither D7.2 transitions nor pre-existing
+    `animateElement` tweens. Added the canonical scheduler-side
+    auto-pump in `FrameBuilder::beginFrame`: when
+    `AnimationScheduler::stats()` reports any active
+    property/callback animations after `tick()`, invalidate the
+    widget tree's root via
+    `root->invalidate(PaintReason::StateChanged)` (marks Paint
+    dirty + calls `treeHost->requestFrame()` for the next vsync)
+    so this frame's `buildFrame` doesn't early-return on
+    `rootMask == 0` and the next frame fires its own tick. Winds
+    down naturally when the active set empties. This replaces the
+    D8-tracked `BlueRectWidget::onPaint` self-pump caveat.
+    Simultaneously rewrote `ContainerClampAnimationTest` to actually
+    exercise the D7.2 path: built TWO sheets (`buildClampInitialSheet`
+    + `buildClampHighlightSheet`), both with a `TransitionSpec` for
+    `PropertyKey::DropShadow` (1.5 s, EaseInOut). The "Animate"
+    menu toggles `addStyleSheet` / `removeStyleSheet` on the
+    highlight sheet; the cascade tie (same selector, source-order
+    `>=` tiebreak) flips the resolved `DropShadow` cell, the new
+    `applyTransitions` pass detects the prev→curr delta, the
+    transition record matches, and `scheduler.transition<DropShadowParams>`
+    fires the lerp. Deleted the pre-D7.2 `triggerShadowAnimation`,
+    the `Widget::onPaint` self-pump, the `chrono`-driven deadline,
+    and the `invalidateAncestors` workaround — all replaced by the
+    sheet swap. Files: `wtk/src/UI/FrameBuilder.cpp` (auto-pump in
+    `beginFrame`),
+    `wtk/tests/ContainerClampAnimationTest/main.cpp` (sheet-swap
+    test rewrite). Full-tree build green (57/57 on this macOS
+    host).
+
+    **Two further fixups landed same session 2026-06-04 after
+    runtime verification showed the lerp still wasn't visible:**
+
+    *Sub-UIView markDirty propagation* (the D8 (b) bug, surfacing
+    at runtime). `applyCascadeChange` was calling
+    `widget->invalidate(ThemeChanged)` per widget, which marks the
+    widget's MAIN view dirty but does NOT propagate down — sub-
+    UIViews created via `makeSubView<UIView>(...)` stayed clean.
+    `View::markDirty` only walks UP (OR-ing into ancestor
+    `descendantDirty`), so the FrameBuilder's `styleSubtree`
+    walker gated each node on its OWN `dirtyBits() & Style` and
+    skipped sub-UIViews entirely. Their `resolveStyles` never ran,
+    their `sheetBindings_.transitions` stayed empty,
+    `applyTransitions` never saw the cell change. Fixed by
+    replacing the per-widget `invalidate` call with a free-helper
+    `markViewSubtreeDirty(view)` that walks the View subtree at
+    each widget, marking Style|Layout|Paint on every render node
+    including sub-UIViews. The fix is the cascade-path
+    instantiation of one of the D8 (b) options noted there.
+
+    *Late auto-pump check* in `FrameBuilder::endFrame`. The
+    pre-Style auto-pump in `beginFrame` catches "an animation was
+    already running when this frame started," but a transition
+    registered DURING this frame's Style phase (`applyTransitions`
+    → `scheduler.transition<T>` → `tweenProperty`) only becomes
+    active AFTER that snapshot. Without a late check, the very
+    first cascade-change-triggered transition registered a tween
+    that never got ticked. Added a `stats()` re-check at the end
+    of every outermost `endFrame`: if any animation is active,
+    call `window_.requestFrame()` so the next frame's `beginFrame`
+    auto-pump takes over the per-frame pump duty.
+
+    Files: `wtk/src/UI/AppWindow.cpp` (`markViewSubtreeDirty`
+    replaces the old per-widget invalidate path),
+    `wtk/src/UI/FrameBuilder.cpp` (`endFrame` stats-check). Full-
+    tree build green (57/57 on this macOS host).
+
+    **Third runtime fixup — cascade sheet-order tie-break.** The
+    second round of verification (diag logs in `applyTransitions`
+    + `endFrame`) revealed `transitions.size=1` on `blue_rect_view`
+    but no `scheduler.transition<T>` call and
+    `endFrame schedStats=0/0`. Root cause: the `StyleRule::beats`
+    tie-break ordered `(specificity, sourceOrder)`, but
+    `StyleSheet::Builder::addRule` stamps `sourceOrder`
+    independently per sheet — so an "earlier" sheet whose
+    `blue_rect` rule had `sourceOrder=2` (the third rule added)
+    beat a "later" highlight sheet whose `blue_rect` rule had
+    `sourceOrder=0` (its only rule). The cell never changed
+    between frames, `applyTransitions` saw equal prev/curr, and
+    no transition fired. The fix lives in
+    `StyleResolver::apply` — the cascade tie-break now threads a
+    `sheetIndex` through the `consider()` closure, ordering as
+    `(specificity, sheetIndex, sourceOrder)`. This matches the
+    canonical CSS cascade (later-in-the-stack wins on specificity
+    tie). The `StyleRule::beats` method itself is unchanged —
+    only the resolver's inline comparator is updated, because
+    `beats` does not have access to the sheet stack and the
+    cleanest fix is at the call site that does. Files:
+    `wtk/src/UI/StyleResolver.cpp`. Full-tree build green.
+
+    **Runtime-verified end-to-end 2026-06-04.** Screenshot from
+    `ContainerClampAnimationTest.app` after the menu click shows
+    the blue rounded rect with a fully lerped red drop shadow —
+    the canonical D7.2 verification. The diag `[WTK_RP]` traces
+    (`applyCascadeChange`, `applyTransitions`,
+    `scheduler.transition<T>`, `endFrame schedStats`) added
+    during the bisect were removed in the same pass once the
+    chain was confirmed.
 
   - **D7.3 — Keyframe animations wired.** When a keyframe binding
     becomes active on a node (a rule with `animation: <name>`
@@ -1416,15 +1559,17 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   (`Containers.cpp`) — all of which are vestigial empty bodies that
   the framework no longer dispatches; (c) sweep test overrides
   (the canonical pattern is `onMount()` + `resize()`, see
-  `wtk/tests/TextCompositorTest/main.cpp`); (d) the one currently-
-  legitimate override is `BlueRectWidget::onPaint` in
-  `wtk/tests/ContainerClampAnimationTest/main.cpp`, which rides
-  the deprecated hook to self-pump the AnimationScheduler while a
-  menu-triggered tween is active — D8 must either replace it with
-  a scheduler-side auto-pump (the scheduler calls
-  `AppWindow::requestFrame()` when its active set is non-empty)
-  or accept that the test loses its animation pump until the pump
-  lands separately. Removing `onPaint` is a clean source-level
+  `wtk/tests/TextCompositorTest/main.cpp`); (d) the previously-
+  legitimate `BlueRectWidget::onPaint` override in
+  `wtk/tests/ContainerClampAnimationTest/main.cpp` was deleted
+  during the D7.2 auto-pump landing (2026-06-04). The auto-pump
+  lives in `FrameBuilder::beginFrame`: when
+  `AnimationScheduler::stats()` reports any active animations
+  after `tick()`, the FrameBuilder invalidates the widget-tree
+  root Paint-dirty and requests another vsync, keeping the loop
+  alive until the active set empties. D8 no longer has to choose
+  between killing the test's animation and preserving an
+  `onPaint` override. Removing `onPaint` is a clean source-level
   break for every downstream override — the deprecation comment
   in `Widget.h` documents the migration path so external code can
   prep for D8.
