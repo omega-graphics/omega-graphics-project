@@ -2036,10 +2036,31 @@ mechanism means one trigger point, one validator, one cache-invalidation
 rule for Phase G to reason about — not two parallel ones.
 
 **DPI scale change is not just a repaint — it's a three-step coupling
-(developer, 2026-06-02):** the full-tree repaint covers the *content*
-side of a scale change, but two other surfaces have to update in the
-same `onRealize` callback before the repaint walks, or the walk
-rasterizes into stale infrastructure:
+that touches *every* element, not just text (developer, 2026-06-02;
+clarified 2026-06-04):** the full-tree repaint covers the *content* side
+of a scale change, but two other surfaces have to update in the same
+`onRealize` callback before the repaint walks, or the walk rasterizes
+into stale infrastructure.
+
+> **Every element, not just glyphs.** A scale change re-rasterizes
+> *everything* the tree emits — `Shape::Rect`, `Shape::RoundedRect`,
+> `Shape::Ellipse`, `Shape::Path`, gradient brushes, drop shadows,
+> bitmap images, SVG content, and text — at the new pixel density.
+> Text is the easiest case to spot a regression in (blurry glyphs are
+> instantly visible), which is why early drafts framed this as a text
+> story, but the contract is general: every `DrawOp` in the
+> `DisplayList` is re-emitted and re-rasterized against the new
+> `renderScale`. SDF primitives (Rect/RoundedRect/Ellipse with a color
+> brush) re-author their 6-vertex quad against the new pixel rect;
+> `DrawOp::VectorPath` re-triangulates at the new size; bitmap
+> `DrawOp::Image` re-samples the source at the new destination scale;
+> drop shadows re-rasterize their blur kernel against the new radius
+> in pixels. Phase G's content cache is what keeps this affordable —
+> non-dirty primitives reuse their cached mesh/texture when the size
+> dimension matches — but the *correctness* contract is that every
+> element re-rasterizes, full stop.
+
+The three coupled steps:
 
 1. **`renderTarget` resize.** Backing dimensions are
    `renderTargetSize × renderScale` (see
@@ -2060,17 +2081,38 @@ rasterizes into stale infrastructure:
    each backend's tree). The compositor needs the new scale before
    any new visual or surface allocation runs, otherwise mid-frame
    scale-dependent decisions (texture sizes for blur scratches,
-   tessellation tolerance) use the old value. The `onRealize`
-   callback should pull `NativeWindow::scaleFactor()` and push it
-   through the same path the existing
-   `NativeEvent::WindowScaleFactorChanged` handler uses today, so
-   there is one canonical "tell the compositor the scale changed"
-   site instead of an onRealize-specific shortcut.
+   tessellation tolerance for paths, SDF supersampling) use the old
+   value. The `onRealize` callback should pull the new scale from
+   the *screen* — `currentScreen().scaleFactor`
+   ([Native-API §2.9 NativeScreen](Native-API-Completion-Proposal.md#29-nativescreen-new--prerequisite-for-22s-dpi-consumer-phase-f-and-phase-h)) — and push it through the
+   same path the existing `NativeEvent::WindowScaleFactorChanged`
+   handler uses today, so there is one canonical "tell the
+   compositor the scale changed" site instead of an
+   onRealize-specific shortcut. Reading from the screen (rather than
+   from `NativeWindow::scaleFactor()`) matters because the canonical
+   trigger for a scale change is "the window now lives on a different
+   screen, and that screen has a different DPI" — querying the
+   destination screen directly is the right altitude.
 3. **Then the repaint walks.** With (1) and (2) updated, the
    `dispatchResize*ToHosts` `ScopedFrame` walks the tree and re-emits
-   every widget's `DisplayList` against fresh `renderTargetSize_` and
-   `renderScale_`. Without ordering steps 1 and 2 first, the walk
-   sees a transiently inconsistent backend state.
+   *every widget's complete `DisplayList`* against fresh
+   `renderTargetSize_` and `renderScale_`. Every `DrawOp` is
+   re-authored. Without ordering steps 1 and 2 first, the walk sees
+   a transiently inconsistent backend state.
+
+> **Phase F owns the AppWindow-side handler that
+> [Native-API-Completion-Proposal §2.2](Native-API-Completion-Proposal.md#22-nativewindow--full-window-control--os-sinks)
+> flags as remaining work.** §2.2 ships the native-side surface and
+> emit (`WindowScaleFactorChanged`); the consumer that closes the loop
+> — subscribing to the event, ordering the three steps above, forcing
+> the full-tree repaint regardless of `DirtyBits` — is the same
+> machinery Phase F builds for resize. The AppWindow's
+> `WindowScaleFactorChanged` listener and its `onRealize` callback
+> share one implementation: same step ordering, same
+> `dispatchResize*ToHosts` `ScopedFrame`, same "every element
+> re-rasterizes" semantic. Implementing this twice would let resize
+> and DPI-change drift into subtly different repaint contracts; one
+> shared path keeps them honest.
 
 The validator (added to Phase F's existing one): a windowed
 `gtk_window_set_default_size`-equivalent triggered scale change (e.g.
@@ -2078,7 +2120,13 @@ dragging from a 1× monitor to a 2× monitor on a multi-display X11
 session) should produce a crisp full-resolution frame on the new
 monitor without a visible 1× intermediate frame. A "blurry first
 frame after monitor swap" is the canonical symptom of missing
-sub-step (1) or (2).
+sub-step (1) or (2). To stress the "every element, not just text"
+side: include shapes, gradients, drop shadows, and bitmap images in
+the validator scene — every one of them must look crisp on the new
+monitor; if only the glyphs are crisp and the rest is stretched,
+the repaint walk is finding sub-step (3) but the backend is still
+reading stale `renderScale_` somewhere (most often a Compositor /
+visual-tree path that escaped sub-step 2).
 
 Sequencing: depends on Block 2's `LayoutManager` (4.5/4.6) for relayout
 and on **Phase G** for the cache that makes full-tree repaint affordable,
@@ -2133,81 +2181,331 @@ just resize. Merge if the two land together.)*
 Sequencing: after Phase F (which defines the full-repaint workload the
 cache optimizes) and after the backend DrawOp path (4.0–4.2, done).
 
-##### Phase H (follow-up) — Frame pacing: real `FrameTime` + load-aware frame gating (folds Frame-Pacing-Plan)
+##### Phase H (follow-up) — Frame pacing: vsync-aligned production + real `FrameTime` + load-aware frame gating (folds Frame-Pacing-Plan)
 
 **Goal:** Replace Phase 4.3's interim `steady_clock` `FrameTime` stand-in
-with a real per-window frame pacer, and add cooperative backpressure so
-the FrameBuilder *defers a non-critical frame before it is built* rather
-than dropping it after the GPU work is wasted. This folds
-[Frame-Pacing-Plan.md](Frame-Pacing-Plan.md) into the post-Tier-4 frame
-loop.
+with a real per-window frame pacer driven by the platform display link,
+align frame production to vsync (BeginFrame-style — one `buildFrame` per
+vsync, never more), and layer load-aware backpressure so the FrameBuilder
+*defers a non-critical frame before it is built* rather than dropping it
+after the GPU work is wasted. This folds the (now-stale)
+`stale/Frame-Pacing-Plan.md` mechanism into the post-Tier-4 frame loop and
+upgrades its "Vsync-aligned frame production" future-extension to a
+first-class part of the phase.
 
-**Ownership (same split as the scheduler).** Frame-Pacing-Plan.md owns
-the *mechanism* — `PaceHint`, the per-lane time-windowed
-`FramePacingMonitor` (100ms quantised windows, asymmetric hysteresis,
-discontinuity reset), and the two-layer inner-loop (`waitForLaneAdmission`)
-/ outer-loop (pace hint) architecture. This phase only **sequences and
-re-homes** its integration points onto the SceneNode / FrameBuilder /
-`DirtyBits` pipeline, exactly as Tier 4 folds in the `AnimationScheduler`.
-It does not re-specify the monitor's internals.
+###### How vsync helps frame pacing — two separate things, one signal
 
-**Why it needs re-homing (the pacing plan predates Tier 4).** The plan's
-producer-side integration (its Phases 3–5) is written against the old
-per-view paint model and must move:
+The display link gives the pacer two distinct goods, and conflating them
+is the trap. Spelling them out:
 
-- The plan hooks `Widget::executePaint(PaintReason, immediate)` to consult
-  `view->compositorPaceHint()` and defer via `hasPendingInvalidate`. After
-  Phase 4.7, `executePaint` is no longer a paint driver — it is "mark
-  `DirtyBits` + request a frame." So the pace check moves up to the
-  **frame-request / `FrameBuilder::buildFrame` gating** point: when an
-  invalidation requests a frame, the window reads the `PaceHint` and either
-  runs the Measure → Arrange → Paint pass or **leaves the dirty bits set
-  and skips this frame's build**. `DirtyBits` already coalesce
-  (invalidations between frames union into one paint), so deferral is
-  "skip the build, the bits persist" — no separate `hasPendingInvalidate`
-  flag, and the next admitted frame drains them naturally.
-- The plan's `PaintReason`-based `isPaceCritical` / `isPaceDeferrable`
-  classification maps onto the new world: a **resize** frame (Phase F's
-  forced full-tree repaint) is pace-critical and never deferred; a
-  **Paint-only animation tick** (`DirtyBit::Paint` set by the scheduler)
-  is deferrable under `Saturated`; first paint is never deferred.
-- The plan's Motivation talks about wasting a recorded `VisualCommand`
-  list / `CanvasFrame` snapshot. Those types are gone (Block 1); the work
-  now avoided is *building a `DisplayList` and `submitDisplayList`-ing it*.
-  The principle — don't build a frame the inner loop would just block on —
-  is unchanged.
+1. **A timer to *gate frame production* on.** Vsync is when the
+   compositor latches the next presented frame. Building a `DisplayList`
+   that lands after the vsync deadline is wasted work — the frame either
+   tears (if the swap chain isn't waiting on vsync) or sits in the queue
+   adding a full frame of latency (if it is). Free-running production
+   *over*-produces during fast frames and *misses* during slow ones.
+   Vsync-aligned production runs `buildFrame` **once per vsync, at a
+   fixed offset before the deadline** — so `DirtyBits` set between vsync
+   N and vsync N+1 coalesce into one build, no matter how many
+   `Widget::invalidate` calls fired in that window.
 
-**Concrete connection to what already landed:**
+2. **A monotonic timestamp for `FrameTime`.** `AnimationScheduler::tick`
+   needs a clock to step keyframes against. Today (Phase 4.3) that clock
+   is `steady_clock` — correct under no contention, but it drifts from
+   the actual presentation cadence under load. A vsync-aligned pacer
+   gives `FrameTime{monotonicNs, frameIndex}` where `monotonicNs` is the
+   **predicted presentation time of the frame we're about to build** —
+   i.e. the time the user will see what we paint. Animations stepped
+   against that time stay glued to display time, not CPU time. This
+   closes Phase 4.3's `// TODO: real FrameTime` seam.
+
+These two consumers want the same vsync signal but read different fields
+of it: the gate wants "did vsync N happen yet?", the timestamp wants
+"what will vsync N+1's presentation time be?". One per-window
+`FramePacer` object exposes both.
+
+###### Per-platform vsync source — owned by `NativeScreen`, not by the pacer
+
+> **The vsync signal is a property of the *screen*, not the window.** Two
+> windows on the same monitor share one vsync source; a window moving
+> between monitors crosses between distinct sources. Phase H's
+> `FramePacer` therefore does **not** wrap a platform display-link
+> directly — it consumes
+> [`Native::displayLinkForScreen(currentScreen())`](Native-API-Completion-Proposal.md#29-nativescreen-new--prerequisite-for-22s-dpi-consumer-phase-f-and-phase-h),
+> the per-screen `NativeDisplayLink` exposed by §2.9. The per-platform
+> wiring (which API to call, which thread it fires on, how to query the
+> refresh rate) lives in `NativeScreen`'s platform impls; the pacer is
+> platform-agnostic.
+
+`NativeDisplayLink` is the type spelled out in §2.9 — `subscribe(cb)` /
+`unsubscribe()` / `expectedFrameIntervalNs()`. Every backend's
+implementation wraps the obvious OS API (`CADisplayLink` on macOS, an
+`IDXGIOutput::WaitForVBlank` pacer thread or
+`DCompositionWaitForCompositorClock` on Windows, `wl_surface.frame` +
+`wp_presentation_feedback` on Wayland, `GLX_INTEL_swap_event` on X11),
+caches one instance per physical display, and hands the same link to
+every window currently on that display. The pacer never sees the OS
+APIs directly.
+
+###### Cross-screen rebind
+
+When the owning `AppWindow` crosses screen boundaries — drag a window
+from a 60 Hz monitor to a 120 Hz monitor, or dock/undock the laptop —
+the pacer unsubscribes from the old screen's `NativeDisplayLink` and
+subscribes to the new screen's. The signal that drives the rebind is
+[Phase F's `onRealize`](#phase-f-follow-up--window-resize-always-relayouts--repaints-no-resize-opt-in)
+callback (which already fires on this kind of display transition), so
+there is one trigger point for both "the DPI changed" and "the vsync
+source changed." Concretely:
+
+```cpp
+// Phase H's onRealize handler (composed with Phase F's)
+void AppWindow::Impl::onScreenChange() {
+    auto screen = nativeWindow->currentScreen();   // §2.9
+    framePacer->bindTo(Native::displayLinkForScreen(screen));
+    // Phase F's three-step DPI coupling continues from here.
+}
+```
+
+The pacer's `FrameTime` clock is monotonic across the rebind — the
+clock source is the OS monotonic timer (`mach_absolute_time` /
+`QueryPerformanceCounter` / `clock_gettime(CLOCK_MONOTONIC)`), not the
+display link, so the `AnimationScheduler` never sees a time jump even
+though the refresh rate may change. Only the *interval* changes,
+which `FramePacingMonitor` absorbs through its 100 ms windowed
+average.
+
+###### Architecture — `FramePacer` slot on `AppWindow`
+
+```cpp
+// wtk/include/omegaWTK/UI/FramePacer.h  (UI-private, like FrameBuilder)
+class FramePacer {
+public:
+    // Bind to the display link for the screen the owning AppWindow
+    // currently lives on. Called once at construction with
+    // displayLinkForScreen(window.currentScreen()), and again on every
+    // cross-screen transition (driven by Phase F's onRealize).
+    void bindTo(Native::NativeDisplayLinkPtr link);
+
+    // Frame-request gate. Called by Widget::invalidate / AppWindow's
+    // requestFrame. Returns true iff a build should be scheduled for
+    // the next vsync of the currently bound display link; false iff
+    // the bits should persist and the next admitted frame drains them.
+    bool shouldBuildNextVsync(PaceHint hint);
+
+    // The FrameTime AnimationScheduler::tick consumes. monotonicNs is
+    // OS monotonic time (NOT the display link's timestamp — so the
+    // clock survives cross-screen rebinds without a discontinuity);
+    // frameIndex increments per build.
+    FrameTime currentFrameTime() const;
+
+    // Expected frame interval, forwarded from the bound display link.
+    // 16.667ms @ 60Hz, 8.333ms @ 120Hz, variable under VRR / ProMotion.
+    // Used by the FramePacingMonitor for under-budget vs. over-budget
+    // classification.
+    std::uint64_t expectedFrameIntervalNs() const;
+
+    // Pulled from Frame-Pacing-Plan: 100ms windowed PaceHint over
+    // measured per-lane GPU times.
+    PaceHint paceHint() const;
+};
+```
+
+`AppWindow::Impl` owns one `FramePacer` next to its `FrameBuilder` and
+`AnimationScheduler`. The bound `NativeDisplayLink` drives the
+`FramePacer` internally (the link's `subscribe(cb)` registers a closure
+that schedules the next build on the UI thread). The `FrameBuilder`
+build entry reads `currentFrameTime()` for the
+`AnimationScheduler::tick` argument and consults `paceHint()` to gate.
+
+###### Vsync ↔ `PaceHint` — outer clock + inner backpressure
+
+These compose; they do not race. The signal flow:
+
+```
+display link  ─►  onVsync(t, interval)
+                       │
+                       ▼
+              FramePacer.currentFrameTime ← {t, ++frameIndex}
+                       │
+                       ▼
+        (invalidate fires; DirtyBits get set somewhere in the tree)
+                       │
+                       ▼
+              FramePacer.shouldBuildNextVsync(hint)?
+              ├── hint == Saturated  AND  DirtyBits are deferrable
+              │     → return false      (skip this vsync; bits persist)
+              └── otherwise
+                    → FrameBuilder.buildFrame(root)
+                         │
+                         ▼
+                  scheduler.tick(currentFrameTime)
+                         │
+                         ▼
+                  Style / Layout / Paint walkers
+                         │
+                         ▼
+                  submitDisplayList → present on this vsync
+```
+
+- **Vsync** decides *when* a build *can* happen (once per refresh, no
+  more).
+- **`PaceHint`** decides *whether* a vsync-aligned build *should*
+  happen (skip the build if the GPU is still draining a backlog).
+- The two are independent because they answer different questions; the
+  inner loop (`waitForLaneAdmission`, GPU-safety gate) stays unchanged
+  underneath both.
+
+Critical exceptions where the pacer never skips, regardless of
+`PaceHint`:
+
+1. **Resize frames** (Phase F's forced full-tree repaint). Skipping a
+   resize frame leaves the screen showing stretched stale content for
+   another vsync — visually unacceptable.
+2. **DPI scale-change frames** (also Phase F). Same reason: a transient
+   1× frame after a 2× monitor swap is the canonical regression.
+3. **Live-animation frames.** `AnimationScheduler::stats().activeProperty
+   > 0` ⇒ pace-critical. Throttling under load would cause animation
+   stutter, which is worse than the throttling buys.
+4. **First paint.** Never throttled.
+
+The pacer implements these by classifying the *reason a frame was
+requested* (the `DirtyBits` set, plus a `PaceClass` field that resize /
+scale-change / animation set explicitly).
+
+###### Display refresh rate detection and VRR / ProMotion
+
+The refresh-rate question is two questions, answered at different
+altitudes:
+
+- **"What is this screen's nominal refresh rate?"** — answered by
+  `NativeScreenDesc::refreshHz` (60, 120, 144, …). Static for a given
+  screen; populated by `Native::enumerateScreens()` and re-queried
+  whenever screens are added or removed. The pacer reads this once at
+  bind time for budgeting hints.
+- **"What is the *actual* interval to the next vsync this frame?"** —
+  answered per-tick by the `NativeDisplayLink`'s callback. On VRR
+  displays this is delivered per-frame (`CADisplayLink.targetTimestamp
+  - .timestamp`, `wp_presentation_feedback.refresh`); on fixed-rate
+  displays it equals the nominal rate's reciprocal every frame. The
+  pacer reads this on every tick because under VRR it genuinely varies.
+
+`expectedFrameIntervalNs()` on the pacer is the cached most-recent
+value from the second question. `FramePacingMonitor`'s 100 ms windowed
+average smooths the per-frame variance into a stable budget without
+lagging by more than a tenth of a second.
+
+What this handles:
+
+- **Fixed-rate high-refresh displays** (120 Hz / 144 Hz / 240 Hz). The
+  `NativeScreenDesc::refreshHz` reports the nominal rate; the display
+  link delivers a constant interval. Dragging a window between a 60 Hz
+  and a 144 Hz display fires Phase F's `onRealize`, the pacer rebinds
+  to the new screen's `NativeDisplayLink`, and the new interval lands
+  on the very next vsync.
+- **ProMotion (macOS) / G-Sync / FreeSync.** `NativeScreenDesc` reports
+  `variableRefreshRate = true` and a `maxRefreshHz` / `minRefreshHz`
+  range. The pacer treats VRR displays as fixed-rate at the monitor's
+  *maximum* refresh for budgeting purposes (worst-case latency) — the
+  one place where a static answer beats a dynamic one, because budgeting
+  needs a stable target. The GPU naturally paces down to the actual
+  delivered rate; this matches Chromium's behavior on ChromeOS VRR
+  panels.
+- **External monitor changes** (plug/unplug, dock/undock). Phase F's
+  `onRealize` re-realize path covers screen-set changes too. The pacer
+  rebinds via `displayLinkForScreen(currentScreen())` on the
+  callback; `NativeScreen::enumerateScreens()` re-queries the OS for
+  the new screen set.
+
+Variable-rate displays interact subtly with the "skip this vsync" path:
+under VRR the next "vsync" is whenever we submit, so skipping doesn't
+recover frame time the way it does on fixed-rate. Treating VRR as
+max-refresh for budgeting (above) is what keeps the throttle decision
+stable on those panels.
+
+###### Concrete connection to what already landed
 
 - **The pacer becomes the source of `AnimationScheduler::tick`'s
-  `FrameTime` (closes the 4.3 seam).** `FrameTime{monotonicNs, frameIndex}`
-  is exactly what a vsync-aligned pacer produces; it replaces 4.3's
-  `steadyFrameClockNs()` + the `FrameBuilder` frame counter. Until this
-  phase lands, the `steady_clock` stand-in is correct-but-free-running.
-- **Animation-aware pacing** (Frame-Pacing-Plan "Future extensions"): the
-  `AnimationScheduler` self-regulates, so a live animation's Paint frames
-  bypass throttling and pacing never causes animation stutter. The
-  scheduler already knows its active set (`hasAnyAnimationFor` /
+  `FrameTime` (closes the 4.3 seam).** `FrameTime{monotonicNs,
+  frameIndex}` is exactly what a vsync-aligned pacer produces; it
+  replaces 4.3's `steadyFrameClockNs()` + the `FrameBuilder` frame
+  counter. Until this phase lands, the `steady_clock` stand-in is
+  correct-but-free-running.
+- **Animation-aware pacing** (Frame-Pacing-Plan "Future extensions"):
+  the `AnimationScheduler` self-regulates, so a live animation's Paint
+  frames bypass throttling and pacing never causes animation stutter.
+  The scheduler already knows its active set (`hasAnyAnimationFor` /
   `stats().activeProperty`), so it can mark its tick-driven frames
   pace-critical instead of inventing a `PaceHint::Override` packet flag.
+- **Producer-side re-homing.** The stale Frame-Pacing-Plan hooked
+  `Widget::executePaint(PaintReason, immediate)` to consult
+  `view->compositorPaceHint()` and defer via `hasPendingInvalidate`.
+  After Phase 4.7, `executePaint` is no longer a paint driver — it is
+  "mark `DirtyBits` + request a frame." So the pace check moves up to
+  the **frame-request / `FrameBuilder::buildFrame` gating** point: when
+  an invalidation requests a frame, the window reads the `PaceHint` and
+  either runs the Measure → Arrange → Paint pass or **leaves the dirty
+  bits set and skips this vsync's build**. `DirtyBits` already coalesce
+  (invalidations between vsyncs union into one paint), so deferral is
+  "skip the build, the bits persist" — no separate
+  `hasPendingInvalidate` flag, and the next admitted vsync drains them
+  naturally.
+- **Old `VisualCommand` / `CanvasFrame` references retired.** The stale
+  plan's "wasted recorded work" framing talked about those types; they
+  are gone (Block 1). The work now avoided is *building a `DisplayList`
+  and `submitDisplayList`-ing it*. Principle unchanged.
 
-**Inner loop unchanged.** Lane admission (`waitForLaneAdmission`) stays as
-the per-frame hard GPU-safety gate; this phase only adds the outer-loop
-time-windowed `PaceHint`. Per the pacing plan, it also assumes the stale
-frame-coalescing removal (`Stale-Frame-Coalescing-Removal-Plan.md`) has
-landed.
+**Inner loop unchanged.** Lane admission (`waitForLaneAdmission`) stays
+as the per-frame hard GPU-safety gate; this phase only adds the outer
+loop (vsync alignment + time-windowed `PaceHint`). Per the stale pacing
+plan, it also assumes the stale frame-coalescing removal
+(`stale/Stale-Frame-Coalescing-Removal-Plan.md`) has landed.
 
-Sequencing: the monitor + query side (Frame-Pacing-Plan Phases 1–2, on
-`Compositor` / `CompositorClientProxy`) is architecture-agnostic and can
-land independently/earlier; the producer-side gating (its Phases 3–5)
-depends on Phase 4.7's `FrameBuilder` `DirtyBits` loop being the single
-frame entry point, and complements **Phase F** (resize = pace-critical)
-and **Phase G** (the content cache makes throttled/deferred repaints
-cheap). Files: the monitor/hint side per Frame-Pacing-Plan's own file
-table (`Compositor.{h,cpp}`, `CompositorClient.{h,cpp}`); the producer
-side re-homes from `Widget.Paint.cpp` to `FrameBuilder.{h,cpp}` +
-`AppWindow.cpp` (frame-request gating) and `AnimationScheduler.{h,cpp}`
-(`FrameTime` source + animation-aware override).
+###### Ownership (same split as the scheduler)
+
+The (now-stale) Frame-Pacing-Plan.md owned the *mechanism* — `PaceHint`,
+the per-lane time-windowed `FramePacingMonitor` (100 ms quantised
+windows, asymmetric hysteresis, discontinuity reset), and the
+two-layer inner-loop (`waitForLaneAdmission`) / outer-loop (pace hint)
+architecture. This phase **folds that mechanism in and adds the vsync
+alignment on top**, exactly as Tier 4 folds in the `AnimationScheduler`.
+It does not re-specify the monitor's internals — they survive verbatim
+from the stale plan; only the integration points re-home onto the
+SceneNode / FrameBuilder / `DirtyBits` pipeline + the new
+`FramePacer`.
+
+###### Sequencing
+
+Phase H **requires [Native-API §2.9 NativeScreen](Native-API-Completion-Proposal.md#29-nativescreen-new--prerequisite-for-22s-dpi-consumer-phase-f-and-phase-h)** because the `NativeDisplayLink` it consumes lives there (vsync is per-screen, not per-window — §2.9 owns the platform display-link impls). §2.9 lands first.
+
+After §2.9: the monitor + query side (stale Frame-Pacing-Plan Phases
+1–2, on `Compositor` / `CompositorClientProxy`) is architecture-
+agnostic and can land independently. The producer-side gating (its
+Phases 3–5) depends on Phase 4.7's `FrameBuilder` `DirtyBits` loop
+being the single frame entry point, and complements **Phase F**
+(resize = pace-critical, never deferred — same applies to DPI-change
+frames; Phase F's `onRealize` callback is also what triggers the
+pacer's cross-screen rebind) and **Phase G** (the content cache makes
+throttled/deferred repaints cheap). The vsync-alignment piece
+(`FramePacer` + `NativeDisplayLink` consumption) lands last — it
+needs the rest of the integration to already be on the FrameBuilder
+side so it can drive that build entry instead of inventing a parallel
+one.
+
+Files inside this plan:
+
+- `wtk/src/UI/FramePacer.{h,cpp}` — new, UI-private (like `FrameBuilder`). Calls into `Native::displayLinkForScreen(...)`; does not know which platform it's on.
+- `wtk/src/UI/FrameBuilder.{h,cpp}` + `wtk/src/UI/AppWindow.cpp` — frame-request gating + the `onRealize` hook that calls `framePacer->bindTo(...)` on cross-screen transitions.
+- `wtk/src/UI/AnimationScheduler.{h,cpp}` — `FrameTime` source (replaces 4.3's `steady_clock` stand-in) + animation-aware pace-critical override.
+
+Files outside this plan (in Native-API §2.9):
+
+- `wtk/include/omegaWTK/Native/NativeScreen.h` — `NativeDisplayLink` interface + `displayLinkForScreen()` factory + `NativeScreenDesc::refreshHz` / `minRefreshHz` / `variableRefreshRate` fields.
+- `wtk/src/Native/macos/NativeScreen.mm` — `CADisplayLink` wrapper bound to `CGDirectDisplayID`.
+- `wtk/src/Native/win/NativeScreen.cpp` — `IDXGIOutput::WaitForVBlank` pacer thread or `DCompositionWaitForCompositorClock`, bound to the `IDXGIOutput` of the screen.
+- `wtk/src/Native/gtk/NativeScreen.cpp` — `wl_surface.frame` + `wp_presentation_feedback` (Wayland) or `GLX_INTEL_swap_event` (X11), keyed by `GdkMonitor`.
+
+Phase H is platform-agnostic on its side; every platform-specific concern lives in §2.9.
 
 ##### Phase 4.3 — `AnimationScheduler` lands alongside the old animator (folds Animation-Scheduler-Plan Tier A) [DONE]
 

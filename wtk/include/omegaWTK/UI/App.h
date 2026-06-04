@@ -13,11 +13,19 @@ namespace OmegaWTK {
     };
 
 class AppWindowManager;
+class ThemeVars;
 
 class OMEGAWTK_EXPORT AppInst {
     Native::NAP ptr;
     static AppInst *instance;
     OmegaCommon::Optional<OmegaCommon::AssetBundle> assetBundle;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.1 (2026-06-04):
+    // process-wide active theme. Referenced by sheet-rule `Var{name}`
+    // values; the `StyleResolver` substitutes through this map at
+    // cascade time. Null until app code calls `setThemeVars(...)` —
+    // a null theme makes every `Var` resolve to "unbound" and the
+    // resolver skips the cell (the inline-`Style` path still runs).
+    SharedHandle<ThemeVars> themeVars_;
 public:
     OMEGACOMMON_CLASS("OmegaWTK.AppInst")
 
@@ -56,6 +64,21 @@ public:
     Native::NAP & getNAP();
     OmegaCommon::AssetBundle * getAssetBundle();
     const OmegaCommon::AssetBundle * getAssetBundle() const;
+
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D7.1 (2026-06-04):
+    /// the active process-wide theme. Returns the currently installed
+    /// `ThemeVars` handle, or a null handle if app code has not called
+    /// `setThemeVars(...)`. The `StyleResolver` uses this to substitute
+    /// `StyleSheets::Var{name}` rule values during the Style phase.
+    SharedHandle<ThemeVars> themeVars() const;
+    /// Swap the active theme. The replacement handle takes effect on
+    /// the next frame: every known `AppWindow` is marked
+    /// style-dirty so the resolver re-walks every cascade against the
+    /// new bindings. Passing a null handle clears the active theme —
+    /// subsequent `Var{name}` lookups resolve as unbound and the
+    /// resolver skips those cells, matching CSS `var()` fallthrough.
+    void setThemeVars(SharedHandle<ThemeVars> theme);
+
     ~AppInst();
 };
 

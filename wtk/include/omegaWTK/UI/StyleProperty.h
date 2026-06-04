@@ -70,11 +70,38 @@ enum class PropertyKey : std::uint16_t {
     UserDefined = 0x8000
 };
 
+/// Widget-View-Paint-Lifecycle-Plan Tier D / D7.1 (2026-06-04):
+/// A reference to a named theme variable held on `ThemeVars`
+/// (owned by `AppInst`). The `StyleResolver` substitutes a `Var`
+/// occurrence with the concrete `StyleValue` it points to during the
+/// Style phase; if the name is unbound (no `ThemeVars` installed, or
+/// the name is missing, or the lookup produces another `Var` — chains
+/// are not followed in D7.1), the resolver skips the cell write and
+/// the inline-`Style` writes that follow the resolver still get to
+/// author the property. This matches CSS `var()` fallthrough.
+///
+/// Lives in the `StyleSheets` namespace because it is purely a sheet-
+/// authoring construct — once the resolver has run, the runtime
+/// `StyleTable` never holds a `Var` value (the substitute is already
+/// written).
+namespace StyleSheets {
+struct OMEGAWTK_EXPORT Var {
+    OmegaCommon::String name;
+    bool operator==(const Var & other) const { return name == other.name; }
+};
+}
+
 /// Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
 /// the per-property resolved-style cell. Sibling of the scheduler's
 /// `AnimatedValue` — the StyleValue variant carries the non-animatable
 /// handles (Font, TextLayoutDescriptor) that have no place in the
 /// animation runtime's variant.
+///
+/// D7.1 (2026-06-04) adds `StyleSheets::Var` as the last alternative:
+/// a sheet rule may declare a property whose value is a named theme
+/// variable; the resolver substitutes the concrete value at cascade
+/// time so the variant entry only ever appears inside rule
+/// declarations, not inside the runtime `StyleTable`.
 using StyleValue = std::variant<
     std::monostate,
     Composition::Color,
@@ -82,7 +109,8 @@ using StyleValue = std::variant<
     Composition::LayerEffect::DropShadowParams,
     SharedHandle<Composition::Font>,
     Composition::TextLayoutDescriptor,
-    std::uint32_t>;
+    std::uint32_t,
+    StyleSheets::Var>;
 
 /// Widget-View-Paint-Lifecycle-Plan Tier D / D6.1 (2026-06-03):
 /// animation-runtime cell value. Lifted out of `AnimationScheduler.h`

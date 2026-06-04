@@ -112,23 +112,53 @@ void AppWindow::flushFrame(){
 
 namespace {
 
-void markRootStyleDirty(AppWindow & window){
-    // The resolver reads the stack fresh on every Style phase, so
-    // the only thing the stack mutation has to do is wake the
-    // window so a frame actually runs. The pre-`setRootWidget`
-    // case (no tree, no view) still wakes the window harmlessly —
-    // `flushFrame` early-returns on a null tree.
-    window.requestFrame();
+// Widget-View-Paint-Lifecycle-Plan Tier D / D7.1 (2026-06-04):
+// Walk a Widget subtree, marking each widget's view Style|Layout|Paint
+// dirty so the next FrameBuilder pass re-resolves every cascade
+// against whatever cascade input just changed (sheet stack or
+// `ThemeVars`). Pre-D7.1 the sheet-stack mutators only called
+// `requestFrame()`, which is enough for the first frame after
+// `setRootWidget` (every view starts dirty) but silently misses
+// runtime sheet swaps and theme-var changes once views have gone
+// clean — the `styleSubtree` walker in `FrameBuilder` gates on each
+// view's *own* `dirtyBits() & Style`, so without a per-node dirty bit
+// the cascade does not re-evaluate. Mirrors the shape of
+// `Widget::onThemeSetRecurse`, minus the native `onThemeSet` hook
+// dispatch (which only carries a `ThemeDesc` for OS light/dark
+// observers — not relevant to the app-level style cascade).
+void invalidateCascadeRecurse(Widget * widget){
+    if(widget == nullptr){
+        return;
+    }
+    widget->invalidate(PaintReason::ThemeChanged);
+    for(const auto & child : widget->childWidgets()){
+        if(child != nullptr){
+            invalidateCascadeRecurse(child.get());
+        }
+    }
 }
 
 } // namespace
+
+void AppWindow::applyCascadeChange(){
+    if(impl_->widgetTreeHost != nullptr && impl_->widgetTreeHost->root != nullptr){
+        invalidateCascadeRecurse(impl_->widgetTreeHost->root.get());
+    }
+    // Defensive request — `Widget::invalidate` already routes through
+    // `treeHost->requestFrame()` for every visited node, but a
+    // pre-`setRootWidget` mutation (no tree, no view) still needs the
+    // native side to schedule the next-frame turn so a subsequent
+    // setRootWidget actually paints. `requestFrame` coalesces, so the
+    // extra call is free when a tree exists.
+    requestFrame();
+}
 
 void AppWindow::addStyleSheet(SharedHandle<StyleSheets::StyleSheet> sheet){
     if(sheet == nullptr){
         return;
     }
     impl_->styleSheets_.push_back(std::move(sheet));
-    markRootStyleDirty(*this);
+    applyCascadeChange();
 }
 
 void AppWindow::removeStyleSheet(const SharedHandle<StyleSheets::StyleSheet> & sheet){
@@ -136,7 +166,7 @@ void AppWindow::removeStyleSheet(const SharedHandle<StyleSheets::StyleSheet> & s
     for(auto it = stack.begin(); it != stack.end(); ++it){
         if(*it == sheet){
             stack.erase(it);
-            markRootStyleDirty(*this);
+            applyCascadeChange();
             return;
         }
     }

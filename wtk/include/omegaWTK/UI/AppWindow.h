@@ -163,6 +163,18 @@ class AppWindowDelegate;
         void removeStyleSheet(const SharedHandle<StyleSheets::StyleSheet> & sheet);
         const OmegaCommon::Vector<SharedHandle<StyleSheets::StyleSheet>> & styleSheets() const;
 
+        /// Widget-View-Paint-Lifecycle-Plan Tier D / D7.1 (2026-06-04):
+        /// Mark every widget in this window's tree style-dirty and
+        /// schedule a frame. Used by sheet-stack mutations and by
+        /// `AppInst::setThemeVars(...)` — both change the inputs to
+        /// the cascade for every node, so a single dirty bit on the
+        /// root is not enough (the `FrameBuilder` style-walker gates
+        /// on each view's *own* dirty bit). The tree walk runs
+        /// `Widget::invalidate(PaintReason::ThemeChanged)` per
+        /// widget, which goes through `dirtyBitsForReason()` to mark
+        /// `Style | Layout | Paint`.
+        void applyCascadeChange();
+
         explicit AppWindow(Composition::Rect rect,AppWindowDelegate * delegate = nullptr);
         ~AppWindow() override;
     };

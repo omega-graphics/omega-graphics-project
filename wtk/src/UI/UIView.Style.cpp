@@ -322,6 +322,16 @@ void UIView::resolveStyles(){
     if(auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr){
         fb->assertPhase(FramePhase::Style);
     }
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+    // snapshot the previous frame's resolved `styleTable_` so the
+    // transition-firing pass at the end of this method can compare
+    // prev vs. current and fire `scheduler.transition(...)` for
+    // cells that changed AND have a `TransitionSpec` recorded by
+    // D6.5. Swap (not copy) — `previousStyleTable_` becomes the
+    // prior frame's content; `styleTable_` becomes the empty
+    // backing the resolver / inline writers will populate.
+    impl_->previousStyleTable_.clear();
+    impl_->styleTable_.swap(impl_->previousStyleTable_);
     // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
     // resolved-style writes now flow into the per-property
     // `styleTable_` keyed by `(NodeId, PropertyKey, subIndex)` —
@@ -332,6 +342,10 @@ void UIView::resolveStyles(){
     // The pre-D5 `resolvedViewStyle_` + `computedStyles_` aggregate
     // stores are deleted — nothing lives between resolveStyles() and
     // paint() except the cell table.
+    // (D7.2: clear() is now redundant after the swap above —
+    // `styleTable_` came out of the swap empty — but kept as a
+    // belt-and-braces guard against future paths that might mutate
+    // the table between the swap and the resolver call.)
     impl_->styleTable_.clear();
 
     // Widget-View-Paint-Lifecycle-Plan Tier D / D6.3 (2026-06-03):
@@ -411,6 +425,18 @@ void UIView::resolveStyles(){
                 static_cast<std::uint32_t>(resolvedText.lineLimit));
         }
     }
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+    // After both the sheet cascade AND the inline-style writes have
+    // settled into `styleTable_`, fire `scheduler.transition(...)`
+    // for cells that changed since the previous frame AND carry a
+    // `TransitionSpec` in `sheetBindings_.transitions`. The
+    // resolver compares `previousStyleTable_` (snapshot taken at the
+    // top of this method) against the just-resolved `styleTable_`
+    // and dispatches per variant alternative. Cells without a
+    // transition record snap to the new value — Paint reads the
+    // current `styleTable_` cell unchanged.
+    StyleSheets::StyleResolver::applyTransitions(*this);
 }
 
 void UIView::setStyle(const StylePtr &style){

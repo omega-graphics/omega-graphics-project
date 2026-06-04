@@ -253,6 +253,29 @@ namespace OmegaWTK::Composition {
             }
         };
 
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+        // Color is the canonical transition target (CSS:
+        // `transition: background-color 200ms`). Lerp the four
+        // floating-point channels independently. `Color` carries `r/g/b/a`
+        // as `float`, so straight-line interpolation in the same space —
+        // gamma-aware interpolation is a follow-up for the rendering
+        // pipeline, not the scheduler. (The pre-D7.2 default template
+        // tripped a `std::is_arithmetic_v<Color>` static_assert; the
+        // canonical transition therefore did not compile until now.)
+        template<>
+        struct KeyframeLerp<Composition::Color> {
+            static Composition::Color apply(const Composition::Color & lhs,
+                                            const Composition::Color & rhs,
+                                            float t){
+                Composition::Color out {};
+                out.r = lerp(lhs.r, rhs.r, t);
+                out.g = lerp(lhs.g, rhs.g, t);
+                out.b = lerp(lhs.b, rhs.b, t);
+                out.a = lerp(lhs.a, rhs.a, t);
+                return out;
+            }
+        };
+
         template<>
         struct KeyframeLerp<LayerEffect::TransformationParams> {
             static LayerEffect::TransformationParams apply(const LayerEffect::TransformationParams & lhs,

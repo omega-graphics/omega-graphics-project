@@ -1322,10 +1322,37 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
 - **D7 — Style Tier 3 + Anim Tier D: themes, transitions, keyframes,
   custom states.**
 
-  - **D7.1 — `ThemeVars`** on `Application`. `StyleValue::Var(name)`
-    is resolved at cascade time. Theme swap propagates root-level
-    `DirtyBit::Style`. Variables are shareable across `AppWindow`s
-    the same way sheets are.
+  - **D7.1 — `ThemeVars` on `AppInst`. [DONE 2026-06-04.]**
+    `StyleValue` gains a `StyleSheets::Var{name}` variant alternative
+    (rule values may name a theme variable). `AppInst` owns a
+    `SharedHandle<ThemeVars>` — a `StyleSheet`-shaped immutable
+    handle (Builder + `Create()`) so themes are shareable across
+    `AppWindow`s. The `StyleResolver` substitutes `Var` against the
+    active theme during the Style phase via a new local
+    `resolveVar(value, theme)` helper; unresolved Vars (no theme
+    installed / missing name / `Var`→`Var` chain / `monostate`
+    binding) collapse to `monostate` so the cell write is skipped
+    and the inline-`Style` writes that follow the resolver still
+    get to author the property — matching CSS `var()` fallthrough.
+    Chains are intentionally not followed in D7.1; revisit if a
+    real use case appears. `AppInst::setThemeVars(...)` dirties
+    every known `AppWindow`'s cascade via the new public
+    `AppWindow::applyCascadeChange()` walker, which runs
+    `Widget::invalidate(PaintReason::ThemeChanged)` over the whole
+    widget tree (this fix also closes the pre-existing
+    `addStyleSheet` / `removeStyleSheet` runtime hole — pre-D7.1
+    they only `requestFrame()`'d, which the `FrameBuilder::
+    styleSubtree` walker gates against per-view, so clean views
+    silently missed runtime sheet swaps). Files: new
+    `omegaWTK/UI/ThemeVars.h` + `wtk/src/UI/ThemeVars.cpp`;
+    StyleValue extension in `omegaWTK/UI/StyleProperty.h`; AppInst
+    surface in `omegaWTK/UI/App.h` + `wtk/src/UI/App.cpp`; AppWindow
+    helper in `omegaWTK/UI/AppWindow.h` + `wtk/src/UI/AppWindow.cpp`;
+    Var substitution in `wtk/src/UI/StyleResolver.cpp`. Full-tree
+    build green (89/89 on this macOS host). Multi-window note:
+    `AppWindowManager` currently tracks only `rootWindow`, so the
+    dirty fanout reaches that window only; when multi-window lands,
+    `setThemeVars` is the single call site that needs to grow.
 
   - **D7.2 — Transitions wired.** `StyleResolver` caches the
     previous-frame resolved value per `(NodeId, PropertyKey)`. On
@@ -1651,14 +1678,16 @@ public:
 
 ## 8. Open questions
 
-1. **Frame pacing.** `buildFrame()` should run at most once per vsync.
-   The render redesign plan mentions a "frame pacer" but does not
-   specify it. This plan assumes `AppWindow` has a platform-provided
-   vsync callback (CVDisplayLink on macOS, IDXGIOutput::WaitForVBlank
-   on Windows) that calls `buildFrame()`. If the pacer doesn't exist
-   yet, Tier A can use a simple flag + manual trigger.
+1. ~~**Frame pacing.** `buildFrame()` should run at most once per vsync.~~ **Resolved.** [UIView-Render-Redesign-Plan Phase H](UIView-Render-Redesign-Plan.md#phase-h-follow-up--frame-pacing-vsync-aligned-production--real-frametime--load-aware-frame-gating-folds-frame-pacing-plan) now spells out the full mechanism:
 
-   This will be addressed by Phase H of UIVIew-Render-Plan
+   - A **per-window `FramePacer`** (one per `AppWindow` — the pacer owns this window's frame loop and animation timeline).
+   - Consuming a **per-screen vsync source**: `Native::displayLinkForScreen(currentScreen())` from [Native-API §2.9 NativeScreen](Native-API-Completion-Proposal.md#29-nativescreen-new--prerequisite-for-22s-dpi-consumer-phase-f-and-phase-h). Vsync is a property of the *display*, not the window; §2.9 owns the per-platform display-link wiring (`CADisplayLink` on macOS, `IDXGIOutput::WaitForVBlank` / `DCompositionWaitForCompositorClock` on Windows, `wl_surface.frame` + `wp_presentation_feedback` under Wayland, `GLX_INTEL_swap_event` under X11). The pacer rebinds on cross-screen transitions (driven by Phase F's `onRealize`).
+   - Vsync provides two distinct goods — (a) a *gate* for frame production (one `buildFrame` per refresh, never more) and (b) a monotonic `FrameTime{monotonicNs, frameIndex}` for the `AnimationScheduler::tick` argument that replaces Phase 4.3's `steady_clock` stand-in.
+   - The outer-loop vsync clock composes with the inner-loop `PaceHint` from the (now-stale) Frame-Pacing-Plan — vsync says when a build *can* happen, `PaceHint` says whether it *should*.
+   - Pace-critical exceptions (resize, DPI scale change, live-animation frames, first paint) bypass throttling.
+   - Refresh-rate detection is per-onVsync (handles drag between 60 Hz / 120 Hz / 144 Hz displays); ProMotion / G-Sync / FreeSync VRR is handled by `NativeScreenDesc::variableRefreshRate` plus the per-frame predicted interval from the `NativeDisplayLink`, with VRR treated as max-refresh for budgeting.
+
+   §2.9 NativeScreen is the prerequisite that lands first; Phase H is then platform-agnostic on its side. While both are unimplemented, Tier A's "simple flag + manual trigger" remains the interim shim (Tier A is already shipped — see §0).
 
 2. **Manual-mode widgets.** `PaintMode::Manual` widgets currently skip
    `executePaint` entirely. In the new lifecycle, manual widgets skip

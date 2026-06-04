@@ -4,6 +4,7 @@
 
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/UI/AppWindow.h"
+#include "omegaWTK/UI/ThemeVars.h"
 
 #include "omega-common/assets.h"
 
@@ -105,6 +106,34 @@ const OmegaCommon::AssetBundle * AppInst::getAssetBundle() const{
         return nullptr;
     }
     return &(*assetBundle);
+}
+
+// ---------------------------------------------------------------
+// Widget-View-Paint-Lifecycle-Plan Tier D / D7.1 (2026-06-04):
+// process-wide active theme. Sheet rules reference theme variables
+// via `StyleSheets::Var{name}`; the `StyleResolver` substitutes
+// against `themeVars()` during the Style phase. Swapping the theme
+// (`setThemeVars(...)`) dirties every known AppWindow's cascade so
+// the next frame re-evaluates with the new bindings.
+// ---------------------------------------------------------------
+
+SharedHandle<ThemeVars> AppInst::themeVars() const {
+    return themeVars_;
+}
+
+void AppInst::setThemeVars(SharedHandle<ThemeVars> theme){
+    themeVars_ = std::move(theme);
+    // Multi-window note: `AppWindowManager` currently only tracks
+    // `rootWindow` — the `windows` vector / `addWindow` plumbing is
+    // declared but not populated. When that ships, this is the call
+    // site that needs to fan out across every tracked window. For
+    // now, dirtying the root window is the complete coverage.
+    if(windowManager == nullptr){
+        return;
+    }
+    if(auto rootHandle = windowManager->getRootWindow(); rootHandle != nullptr){
+        rootHandle->applyCascadeChange();
+    }
 }
 
 };

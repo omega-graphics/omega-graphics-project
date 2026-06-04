@@ -33,6 +33,24 @@ namespace StyleSheets {
 class OMEGAWTK_EXPORT StyleResolver {
 public:
     static void apply(UIView & view);
+
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+    /// transition firing pass. Called by `UIView::resolveStyles()`
+    /// AFTER both the sheet cascade (`apply` above) and the inline-
+    /// `Style` writes have settled into `styleTable_`. Compares the
+    /// just-resolved cells to the previous-frame snapshot
+    /// (`previousStyleTable_`) for every `(node, key)` that has a
+    /// `TransitionSpec` recorded in `sheetBindings_.transitions`,
+    /// and calls `AnimationScheduler::transition<T>(node, key, prev,
+    /// curr, spec)` via the `friend` hook when prev != curr.
+    /// Cells without a transition record snap to the new value (the
+    /// resolver / inline writes have already populated
+    /// `styleTable_`; Paint reads it directly). Type dispatch
+    /// happens through `std::visit` on the variant; only types in
+    /// both `StyleValue` and the scheduler's `AnimatedValue`
+    /// (`Color`, `uint32_t`, `Brush` handle, `DropShadowParams`)
+    /// trigger a transition — non-animatable types snap silently.
+    static void applyTransitions(UIView & view);
 };
 
 } // namespace StyleSheets

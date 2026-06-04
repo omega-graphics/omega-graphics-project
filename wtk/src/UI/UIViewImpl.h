@@ -78,6 +78,7 @@ struct ResolvedSheetBindings {
 class StyleTable {
 public:
     void clear() { cells_.clear(); }
+    void swap(StyleTable & other) noexcept { cells_.swap(other.cells_); }
 
     template<typename T>
     void set(NodeId node, PropertyKey key, T value, std::uint32_t subIndex = 0){
@@ -94,6 +95,19 @@ public:
             return *typed;
         }
         return {};
+    }
+
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+    /// Return the raw `StyleValue` cell at `(node, key, subIndex)`,
+    /// or `nullptr` if the cell does not exist. Used by the
+    /// transition-firing pass in `StyleResolver::applyTransitions`
+    /// to compare previous vs. current values across all variant
+    /// alternatives without committing to a single `T` up front —
+    /// the visit lambda dispatches on the variant.
+    const StyleValue * getRaw(NodeId node, PropertyKey key,
+                              std::uint32_t subIndex = 0) const {
+        auto it = cells_.find(PropertyTableKey{node, key, subIndex});
+        return (it != cells_.end()) ? &it->second : nullptr;
     }
 
 private:
@@ -279,12 +293,25 @@ struct UIView::Impl {
     // inside `resolveStyles()`; they are no longer stored fields.
     StyleTable styleTable_ {};
 
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+    // snapshot of the previous Style phase's `styleTable_`. The
+    // transition-firing pass in `StyleResolver::applyTransitions`
+    // compares this snapshot to the freshly resolved `styleTable_`
+    // to detect cell-level changes that should fire a sheet-
+    // declared transition. The snapshot is refreshed by swapping
+    // (not copying) at the top of `UIView::resolveStyles` — the new
+    // empty `styleTable_` is then populated by the resolver and the
+    // inline-style writes that follow, and the swap leaves the
+    // previous frame's content here for comparison.
+    StyleTable previousStyleTable_ {};
+
     // Widget-View-Paint-Lifecycle-Plan Tier D / D6.5 (2026-06-03):
     // recorded transition / keyframe-animation bindings from the
     // sheet cascade. `StyleSheets::StyleResolver::apply()` clears
-    // and repopulates this every Style pass. D7 reads it to fire
-    // `scheduler.transition(...)` and `scheduler.animateProperty(...)`.
-    // Tier D / D6 only writes; nothing reads yet.
+    // and repopulates this every Style pass. D7.2 reads
+    // `sheetBindings_.transitions` to fire `scheduler.transition(...)`;
+    // D7.3 will read `animationBindings`. Tier D / D6 only writes;
+    // the transitions reader landed with D7.2 (2026-06-04).
     ResolvedSheetBindings sheetBindings_ {};
 
     // Tier B / B3: arranged layout (the Layout phase's output). `arrange()`

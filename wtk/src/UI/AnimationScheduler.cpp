@@ -159,6 +159,24 @@ void AnimationScheduler::setTableValue(const PropertyTableKey & key, AnimatedVal
     impl_->table[key] = std::move(value);
 }
 
+void AnimationScheduler::seedTableFromStyle(const PropertyTableKey & key, AnimatedValue value){
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
+    // friend-only seed used by `transition<T>` to install the prev
+    // value into the side table during Phase 2 (Style). The public
+    // `setTableValue` asserts Phase==Tick because Tick is the only
+    // legal writer in steady state; the prev-value seed is the one
+    // documented exception (Animation-Scheduler-Plan §3.7) — without
+    // it, the very first frame after a transition starts paints the
+    // post-transition target instead of the pre-transition value.
+    if(auto * fb = AppWindow::activeFrameBuilder(); fb != nullptr){
+        const auto phase = fb->currentPhase();
+        assert(phase == FramePhase::Style &&
+               "AnimationScheduler::seedTableFromStyle outside Style");
+        (void)phase;
+    }
+    impl_->table[key] = std::move(value);
+}
+
 const AnimatedValue * AnimationScheduler::lookup(const PropertyTableKey & key) const{
     auto it = impl_->table.find(key);
     return (it != impl_->table.end()) ? &it->second : nullptr;
