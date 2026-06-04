@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <unordered_set>
 #include <utility>
 
 namespace OmegaWTK {
@@ -127,6 +128,18 @@ struct View::Impl {
     /// `setEnabled()` flips Disabled. The resolver consults this via
     /// `View::pseudoClassBits()` during selector match.
     std::uint8_t pseudoClassBits_ = 0;
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+    /// `:state(name)` custom-state set. Sibling to `pseudoClassBits_`,
+    /// but string-keyed and open-ended: widget / app code names states
+    /// like `:state(loading)` or `:state(selected)` and flips them via
+    /// `View::setState(name, on)`. The resolver subset-matches selector
+    /// `customStates` against this set; specificity counts each entry
+    /// at one-class weight. Empty set = no custom states are active on
+    /// this view. Stored as `unordered_set<std::string>` because the
+    /// set is expected to be small (a handful of names) and the only
+    /// runtime queries are "is name X present" — O(1) hash lookup
+    /// without an order requirement.
+    std::unordered_set<OmegaCommon::String> customStates_ {};
     /// Widget-View-Paint-Lifecycle-Plan Tier A: deferred-paint dirty mask.
     /// Per-node bits (Style / Layout / Content / Paint) set by
     /// `markDirty(bits)` on the node that actually changed.

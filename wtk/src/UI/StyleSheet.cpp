@@ -9,8 +9,10 @@ namespace OmegaWTK::StyleSheets {
 // ---------------------------------------------------------------
 
 int Selector::specificity() const {
-    // CSS convention: id * 100 + (class + pseudo) * 10 + tag.
-    // Each pseudo-class bit weighs as one class.
+    // CSS convention: id * 100 + (class + pseudo + customState) * 10
+    // + tag. Each pseudo-class bit and each custom-state name weighs
+    // as one class (Widget-View-Paint-Lifecycle-Plan D7.4,
+    // 2026-06-04).
     int spec = 0;
     if(!id.empty()){
         spec += 100;
@@ -24,6 +26,7 @@ int Selector::specificity() const {
         pcBits >>= 1U;
     }
     spec += pcCount * 10;
+    spec += static_cast<int>(customStates.size()) * 10;
     if(!tag.empty()){
         spec += 1;
     }

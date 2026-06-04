@@ -59,13 +59,21 @@ inline bool contains(PseudoClass bits, PseudoClass mask){
 // ---------------------------------------------------------------
 
 /// Tier-1 single-compound selector: one optional tag + one optional
-/// id + zero-or-more class tokens + a pseudo-class subset. A node
-/// matches when every present constraint matches. Empty `tag` /
-/// empty `id` mean "no constraint on that axis"; an empty
-/// `classes` vector means "no class constraint." `pseudoClasses`
-/// requires every set bit to be set on the node (subset match), so
-/// `Hover|Pressed` requires BOTH bits — the conventional CSS combinator
-/// semantics.
+/// id + zero-or-more class tokens + a pseudo-class subset + zero-or-
+/// more custom-state names. A node matches when every present
+/// constraint matches. Empty `tag` / empty `id` mean "no constraint
+/// on that axis"; an empty `classes` vector means "no class
+/// constraint." `pseudoClasses` requires every set bit to be set on
+/// the node (subset match), so `Hover|Pressed` requires BOTH bits —
+/// the conventional CSS combinator semantics.
+///
+/// Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+/// `customStates` carries `:state(name)` tokens — the open-ended
+/// counterpart to the enumerated `pseudoClasses`. App / widget code
+/// flips named states on a view via `View::setState(name, on)`;
+/// the resolver subset-matches the names here against the view's
+/// state set (every name in this vector must be present on the
+/// view). Empty vector = no custom-state constraint.
 ///
 /// Tier 2+ (selector lists, descendants, combinators, `:not(...)`)
 /// lives in later tiers; D6 only ships single-compound.
@@ -74,9 +82,14 @@ struct OMEGAWTK_EXPORT Selector {
     OmegaCommon::String                       id  {};
     OmegaCommon::Vector<OmegaCommon::String>  classes {};
     PseudoClass                               pseudoClasses = PseudoClass::None;
+    /// D7.4: `:state(name)` tokens. Each name participates in the
+    /// subset match like a pseudo-class bit and weighs the same in
+    /// specificity (one class-worth per entry).
+    OmegaCommon::Vector<OmegaCommon::String>  customStates {};
 
-    /// CSS specificity convention: `id * 100 + (class + pseudo) * 10 + tag`.
-    /// A pseudo-class bit weighs the same as one class. Used by
+    /// CSS specificity convention: `id * 100 + (class + pseudo +
+    /// customStates) * 10 + tag`. Pseudo-class bits and custom-state
+    /// names each weigh the same as one class. Used by
     /// `StyleRule::beats` for cascade ordering.
     int specificity() const;
 };

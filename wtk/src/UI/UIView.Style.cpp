@@ -437,6 +437,16 @@ void UIView::resolveStyles(){
     // transition record snap to the new value — Paint reads the
     // current `styleTable_` cell unchanged.
     StyleSheets::StyleResolver::applyTransitions(*this);
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.3 (2026-06-04):
+    // After transitions, reconcile sheet-driven keyframe-animation
+    // bindings: start fresh `animateProperty<AnimatedValue>` runs
+    // for newly-active `animation: <name>` declarations, cancel
+    // bindings that have dropped or whose name changed, and leave
+    // same-name re-applications untouched (matches CSS animation
+    // semantics — same declaration does not restart a running
+    // animation).
+    StyleSheets::StyleResolver::applyKeyframeBindings(*this);
 }
 
 void UIView::setStyle(const StylePtr &style){

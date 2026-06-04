@@ -92,6 +92,16 @@ void AppWindow::requestFrame(){
     }
 }
 
+void AppWindow::refresh(){
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+    // public idle-context entrypoint. Thin wrapper over `requestFrame()`
+    // — the named-on-app-surface counterpart to the internal-leaning
+    // name `Widget::invalidate` uses. The native-window request itself
+    // coalesces, so multiple `refresh()` calls in a turn still collapse
+    // to one paint.
+    requestFrame();
+}
+
 void AppWindow::flushFrame(){
     // Tier A: one frame for all pending invalidations. Open a single
     // FrameBuilder ScopedFrame and repaint every dirty widget into it.

@@ -85,6 +85,18 @@ class AppWindowDelegate;
         /// via the native window; a burst of requests collapses to one
         /// frame. Called by the deferred Widget::invalidate path.
         void requestFrame();
+        /// Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+        /// the idle-context entrypoint. App code that mutates view state
+        /// from outside the input / animation / sheet-swap paths
+        /// (menu callbacks, timers, deferred async results, custom-state
+        /// flips via `View::setState`) calls `refresh()` after the batch
+        /// of mutations to schedule the next paint. Views just record
+        /// their dirty bits via `markDirty`; the window owns the run-
+        /// loop turn — multiple dirty views collapse into ONE frame
+        /// because the request itself coalesces. Functionally identical
+        /// to `requestFrame()`; `refresh()` is the discoverable name on
+        /// the app surface.
+        void refresh();
         /// Build one frame: opens a single FrameBuilder ScopedFrame and
         /// repaints all dirty widgets. Invoked by the native run-loop
         /// callback registered in setRootWidget().

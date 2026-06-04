@@ -68,6 +68,19 @@ struct ResolvedSheetBindings {
     }
 };
 
+/// Widget-View-Paint-Lifecycle-Plan Tier D / D7.3 (2026-06-04):
+/// per-node tracking of in-flight keyframe-animation bindings.
+/// `StyleResolver::applyKeyframeBindings` looks up an entry per
+/// (node, name) pair to decide whether to start, leave alone, or
+/// cancel-and-replace a sheet-driven `animation: <name>` binding.
+/// `handles` carries one `AnimationHandle` per property the named
+/// `KeyframeAnimation` declares — cancelled together when the
+/// binding stops matching or the name changes.
+struct ActiveKeyframeBinding {
+    OmegaCommon::String                              name {};
+    OmegaCommon::Vector<Composition::AnimationHandle> handles {};
+};
+
 /// Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
 /// per-property resolved-style table. Owns one cell per resolved
 /// property per node; written by `UIView::resolveStyles()` and read
@@ -310,9 +323,21 @@ struct UIView::Impl {
     // sheet cascade. `StyleSheets::StyleResolver::apply()` clears
     // and repopulates this every Style pass. D7.2 reads
     // `sheetBindings_.transitions` to fire `scheduler.transition(...)`;
-    // D7.3 will read `animationBindings`. Tier D / D6 only writes;
-    // the transitions reader landed with D7.2 (2026-06-04).
+    // D7.3 reads `animationBindings` to fire / cancel
+    // `scheduler.animateProperty<AnimatedValue>(...)` per property
+    // of the named animation. Tier D / D6 only writes; both
+    // readers landed in D7 (2026-06-04).
     ResolvedSheetBindings sheetBindings_ {};
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.3 (2026-06-04):
+    // in-flight keyframe bindings, keyed by node. Each entry tracks
+    // the binding's name + the per-property `AnimationHandle`s the
+    // resolver started. `StyleResolver::applyKeyframeBindings`
+    // reconciles this map against `sheetBindings_.animationBindings`
+    // every Style pass — cancels handles for removed / renamed
+    // bindings and starts handles for new ones. Same-name re-
+    // application is a no-op (the running animation is preserved).
+    std::unordered_map<NodeId, ActiveKeyframeBinding> activeKeyframeBindings_;
 
     // Tier B / B3: arranged layout (the Layout phase's output). `arrange()`
     // writes both; `paint()` reads them. Rebuilt every frame for now.

@@ -253,6 +253,24 @@ namespace OmegaWTK::Composition {
             }
         };
 
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D7.3 (2026-06-04):
+        // Point2D is one of the `AnimatedValue` variant alternatives;
+        // the AnimatedValue lerp specialization (in
+        // `wtk/src/UI/AnimationScheduler.h`) dispatches to this when
+        // both keyframe values hold a Point2D. Pre-D7.3, point-valued
+        // sheet-driven animations tripped the
+        // `is_arithmetic_v<Point2D>` static_assert. Two scalar lerps,
+        // no easing surprises.
+        template<>
+        struct KeyframeLerp<Composition::Point2D> {
+            static Composition::Point2D apply(const Composition::Point2D & lhs,
+                                              const Composition::Point2D & rhs,
+                                              float t){
+                return Composition::Point2D{lerp(lhs.x, rhs.x, t),
+                                            lerp(lhs.y, rhs.y, t)};
+            }
+        };
+
         // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
         // Color is the canonical transition target (CSS:
         // `transition: background-color 200ms`). Lerp the four

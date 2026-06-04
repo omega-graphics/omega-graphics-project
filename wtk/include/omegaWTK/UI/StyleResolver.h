@@ -51,6 +51,35 @@ public:
     /// (`Color`, `uint32_t`, `Brush` handle, `DropShadowParams`)
     /// trigger a transition — non-animatable types snap silently.
     static void applyTransitions(UIView & view);
+
+    /// Widget-View-Paint-Lifecycle-Plan Tier D / D7.3 (2026-06-04):
+    /// keyframe-animation binding pass. Runs alongside / after
+    /// `applyTransitions` during `UIView::resolveStyles()`. Walks
+    /// `sheetBindings_.animationBindings` (one record per node,
+    /// populated by the cascade in `apply()`) and reconciles against
+    /// `Impl::activeKeyframeBindings_`:
+    ///   * binding NEW on this node → look up the named
+    ///     `KeyframeAnimation` in the AppWindow's sheet stack
+    ///     (later sheets win on name collision), then call
+    ///     `scheduler.animateProperty<AnimatedValue>(node, key,
+    ///     track, timing)` once per property in the animation.
+    ///     Track the returned handles so they can be cancelled.
+    ///   * binding STILL ACTIVE with the same name → no-op
+    ///     (preserves the running animation, matching CSS
+    ///     `animation` semantics where the same declaration does
+    ///     not restart).
+    ///   * binding STILL ACTIVE but name changed → cancel the old
+    ///     handles, start the new animation fresh.
+    ///   * binding NO LONGER PRESENT → cancel the handles, remove
+    ///     the tracking entry.
+    /// Per-property animations use the scheduler's existing
+    /// `animateProperty<T>` template with `T = AnimatedValue` — the
+    /// `KeyframeTrack<AnimatedValue>` carries the type-erased
+    /// per-property values and the D7.3
+    /// `KeyframeLerp<AnimatedValue>` specialization (in
+    /// `wtk/src/UI/AnimationScheduler.h`) dispatches lerp per
+    /// variant alternative.
+    static void applyKeyframeBindings(UIView & view);
 };
 
 } // namespace StyleSheets

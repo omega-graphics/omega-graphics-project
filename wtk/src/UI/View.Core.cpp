@@ -237,6 +237,50 @@ void View::setPseudoClassBits(std::uint8_t mask, bool on){
     markDirty(View::Style);
 }
 
+// Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+// `:state(name)` custom-state surface. Mirrors the `setPseudoClassBits`
+// change-detection pattern so a re-application of the same state does
+// NOT dirty the cascade. The resolver's `selectorMatches` consults
+// `hasState(name)` per name in the selector's `customStates` vector
+// during cascade resolution.
+//
+// Layering note: `setState` / `clearState` ONLY record the bit. The
+// View does not unilaterally request a frame — multiple views may
+// flip state in the same idle batch, and the AppWindow owns the run-
+// loop turn (one paint per batch, not one per mutation). Idle-context
+// callers (menu callbacks, timers, deferred async results) finish
+// their batch and then call `AppWindow::refresh()` exactly once to
+// schedule the next paint. The native-window request coalesces, so
+// over-calling `refresh()` is harmless; under-calling leaves the
+// dirty bit parked until something else drives a frame.
+
+void View::setState(const OmegaCommon::String & name){
+    auto & set = impl_->customStates_;
+    if(set.insert(name).second){
+        markDirty(View::Style);
+    }
+}
+
+void View::clearState(const OmegaCommon::String & name){
+    auto & set = impl_->customStates_;
+    if(set.erase(name) > 0){
+        markDirty(View::Style);
+    }
+}
+
+void View::setState(const OmegaCommon::String & name, bool on){
+    if(on){
+        setState(name);
+    }
+    else {
+        clearState(name);
+    }
+}
+
+bool View::hasState(const OmegaCommon::String & name) const {
+    return impl_->customStates_.count(name) > 0;
+}
+
 void View::applyLayoutDelta(const LayoutDelta & delta,
                             const LayoutTransitionSpec & spec){
     // Phase 4.4 (Anim Tier B): the per-View layout tween. Pre-4.4 this

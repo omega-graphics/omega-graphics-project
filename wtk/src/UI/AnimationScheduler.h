@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <type_traits>
 #include <variant>
 
 namespace OmegaWTK {
@@ -235,6 +236,58 @@ private:
     }
 };
 
+// Widget-View-Paint-Lifecycle-Plan Tier D / D7.3 (2026-06-04):
+// `KeyframeLerp<AnimatedValue>` specialization for sheet-authored
+// keyframe tracks. `StyleSheets::KeyframeAnimationProperty::track`
+// is `KeyframeTrack<AnimatedValue>` (the type-erased variant) so the
+// resolver can declare keyframes without committing to a single T
+// up front. When the scheduler ticks the track, the variant
+// dispatches per-alternative: same alternative on both endpoints →
+// lerp the alternative's concrete type; different alternatives or
+// a non-lerpable type (`SharedPtr<Brush>`, `monostate`) → step
+// (lhs while t < 1, rhs at t == 1) so the animation still hits the
+// end value. Lives in this private header (not in
+// `Composition/Animation.h`) because `AnimatedValue` is a UI-tier
+// alias and Composition shouldn't reach across the layer.
+namespace Composition::detail {
+template<>
+struct KeyframeLerp<::OmegaWTK::AnimatedValue> {
+    static ::OmegaWTK::AnimatedValue apply(
+            const ::OmegaWTK::AnimatedValue & lhs,
+            const ::OmegaWTK::AnimatedValue & rhs,
+            float t){
+        return std::visit([t, &rhs](const auto & lv) -> ::OmegaWTK::AnimatedValue {
+            using T = std::decay_t<decltype(lv)>;
+            if(const T * rv = std::get_if<T>(&rhs)){
+                if constexpr (std::is_same_v<T, std::monostate>){
+                    (void)t; (void)rv;
+                    return ::OmegaWTK::AnimatedValue{lv};
+                }
+                else if constexpr (std::is_same_v<T,
+                                                  ::OmegaWTK::Core::SharedPtr<
+                                                      ::OmegaWTK::Composition::Brush>>){
+                    // Brush handles are identities — snap.
+                    return ::OmegaWTK::AnimatedValue{t >= 1.f ? *rv : lv};
+                }
+                else if constexpr (std::is_arithmetic_v<T>){
+                    // Same fallback path the default `KeyframeLerp<T>`
+                    // uses for arithmetic types.
+                    return ::OmegaWTK::AnimatedValue{
+                        static_cast<T>(::OmegaWTK::Composition::detail::lerp(
+                            static_cast<float>(lv),
+                            static_cast<float>(*rv), t))};
+                }
+                else {
+                    return ::OmegaWTK::AnimatedValue{KeyframeLerp<T>::apply(lv, *rv, t)};
+                }
+            }
+            // Mismatched alternatives — snap on the boundary.
+            return ::OmegaWTK::AnimatedValue{t >= 1.f ? rhs : ::OmegaWTK::AnimatedValue{lv}};
+        }, lhs);
+    }
+};
+} // namespace Composition::detail
+
 // ===== templated definitions =====
 
 template<typename T>
@@ -244,7 +297,17 @@ Composition::AnimationHandle AnimationScheduler::animateProperty(
         Composition::TimingOptions timing){
     const PropertyTableKey tableKey{node, key, 0};
     auto sample = [this, tableKey, track = std::move(track)](float t){
-        setTableValue(tableKey, AnimatedValue{track.sample(t)});
+        // D7.3 (2026-06-04): the `KeyframeTrack<AnimatedValue>` path
+        // (sheet-driven keyframe animations) samples to AnimatedValue
+        // directly; wrapping it again in `AnimatedValue{...}` would
+        // be ambiguous (no matching ctor — AnimatedValue is not one
+        // of its own alternatives). Branch on the track's value type.
+        if constexpr (std::is_same_v<T, AnimatedValue>){
+            setTableValue(tableKey, track.sample(t));
+        }
+        else {
+            setTableValue(tableKey, AnimatedValue{track.sample(t)});
+        }
     };
     return registerProperty(tableKey, std::move(sample), timing, isLayoutProperty(key));
 }

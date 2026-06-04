@@ -61,16 +61,26 @@ constexpr PropertyScope scopeOf(PropertyKey key){
     }
 }
 
-/// Tier-1 selector match: tag + pseudo-class. id / class matching
-/// is left to a follow-up tier (the View surface that carries id /
-/// class authoring is still pending). Pseudo-class match is a
-/// subset relation: every bit set in `sel.pseudoClasses` must be
-/// set in the view's current state. `Selector::pseudoClasses ==
-/// None` matches unconditionally — Tier-1 sheets that don't author
-/// state constraints still match every view.
+/// Tier-1 selector match: tag + pseudo-class + custom-state. id /
+/// class matching is left to a follow-up tier (the View surface that
+/// carries id / class authoring is still pending). Pseudo-class
+/// match is a subset relation: every bit set in `sel.pseudoClasses`
+/// must be set in the view's current state. `Selector::pseudoClasses
+/// == None` matches unconditionally — Tier-1 sheets that don't
+/// author state constraints still match every view.
+///
+/// Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+/// `customStates` is the string-keyed counterpart to
+/// `pseudoClasses` — every name listed on the selector must be
+/// present on the view's `:state(name)` set. An empty `customStates`
+/// vector matches unconditionally, paralleling the `None` shortcut
+/// above. The match is a subset check, not equality: a selector
+/// constrains `loading`; a view carrying `loading` + `error`
+/// matches.
 bool selectorMatches(const Selector & sel,
                      const OmegaCommon::String & candidateTag,
-                     std::uint8_t viewPseudoBits){
+                     std::uint8_t viewPseudoBits,
+                     const UIView & view){
     if(!sel.tag.empty() && sel.tag != candidateTag){
         return false;
     }
@@ -85,6 +95,12 @@ bool selectorMatches(const Selector & sel,
     const auto reqBits = static_cast<std::uint8_t>(sel.pseudoClasses);
     if((viewPseudoBits & reqBits) != reqBits){
         return false;
+    }
+    // D7.4: subset match against the view's custom-state set.
+    for(const auto & name : sel.customStates){
+        if(!view.hasState(name)){
+            return false;
+        }
     }
     return true;
 }
@@ -192,6 +208,31 @@ void StyleResolver::apply(UIView & view){
     std::unordered_map<PropertyTableKey, CellWinner,
                        PropertyTableKeyHash> winners;
 
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.3 (2026-06-04):
+    // separate per-node cascade for the rule-level `animation: <name>`
+    // declaration. Pre-D7.3, the animation-binding recording walked
+    // all "winning rules" (rules that won at least one cell) and
+    // pushed one record per (rule, node) — but the winning-rules
+    // iteration order was an unordered_set, so on a node where two
+    // rules with different `animation:` names won different cells,
+    // the recorded binding was nondeterministic. Cascade the
+    // `animation:` declaration through the same (specificity →
+    // sheetIndex → sourceOrder) ordering used for cell winners, but
+    // keyed by NodeId only (the binding is rule-level, not cell-
+    // level). After iteration, write one record per node.
+    struct AnimationWinner {
+        const StyleRule * rule       = nullptr;
+        std::size_t       sheetIndex = 0;
+    };
+    std::unordered_map<NodeId, AnimationWinner> animationWinners;
+
+    auto cascadeBeats = [](int aSpec, std::size_t aSheet, std::size_t aSource,
+                           int bSpec, std::size_t bSheet, std::size_t bSource) -> bool {
+        if(aSpec != bSpec) return aSpec > bSpec;
+        if(aSheet != bSheet) return aSheet > bSheet;
+        return aSource >= bSource;  // `>=` so a rule beats itself (stability)
+    };
+
     auto consider = [&](NodeId node, PropertyKey key,
                         const StyleValue & value,
                         const StyleRule & rule,
@@ -203,25 +244,28 @@ void StyleResolver::apply(UIView & view){
             return;
         }
         const auto & cur = it->second;
-        const auto a = rule.selector.specificity();
-        const auto b = cur.rule->selector.specificity();
-        bool wins;
-        if(a != b){
-            wins = a > b;
-        }
-        else if(sheetIndex != cur.sheetIndex){
-            wins = sheetIndex > cur.sheetIndex;
-        }
-        else {
-            // Same sheet, same specificity — fall back to the rule's
-            // local source order (the conventional last-rule-wins
-            // within a sheet). `>=` so a rule beats itself, preserving
-            // stability when the same rule is re-considered for a
-            // different element on the same node.
-            wins = rule.sourceOrder >= cur.rule->sourceOrder;
-        }
-        if(wins){
+        if(cascadeBeats(rule.selector.specificity(), sheetIndex, rule.sourceOrder,
+                        cur.rule->selector.specificity(), cur.sheetIndex,
+                        cur.rule->sourceOrder)){
             it->second = CellWinner{&rule, value, sheetIndex};
+        }
+    };
+
+    auto considerAnimation = [&](NodeId node, const StyleRule & rule,
+                                 std::size_t sheetIndex){
+        if(!rule.animationName){
+            return;
+        }
+        auto it = animationWinners.find(node);
+        if(it == animationWinners.end()){
+            animationWinners[node] = AnimationWinner{&rule, sheetIndex};
+            return;
+        }
+        const auto & cur = it->second;
+        if(cascadeBeats(rule.selector.specificity(), sheetIndex, rule.sourceOrder,
+                        cur.rule->selector.specificity(), cur.sheetIndex,
+                        cur.rule->sourceOrder)){
+            it->second = AnimationWinner{&rule, sheetIndex};
         }
     };
 
@@ -233,7 +277,7 @@ void StyleResolver::apply(UIView & view){
             continue;
         }
         for(const auto & rule : sheet->rules()){
-            const bool viewMatches  = selectorMatches(rule.selector, viewTag, pseudoBits);
+            const bool viewMatches  = selectorMatches(rule.selector, viewTag, pseudoBits, view);
 
             if(viewMatches){
                 forEachDeclaration(rule,
@@ -242,13 +286,20 @@ void StyleResolver::apply(UIView & view){
                         consider(viewNodeId, k, v, rule, sheetIndex);
                     }
                 });
+                // D7.3: view-level animation bindings cascade against
+                // the view's NodeId. View matches on the rule selector
+                // and the rule carries an animation name → competes.
+                considerAnimation(viewNodeId, rule, sheetIndex);
             }
 
             // Element matches: each UIElementTag is matched
             // independently. Element-scope properties land on the
             // element's NodeId (lazy-allocated via ensureElementNodeId).
+            // D7.4: the view's custom-state set is consulted at the
+            // element scope as well — element rules inherit view state
+            // for both pseudo-classes and `:state(name)`.
             for(const auto & spec : impl.currentLayoutV2_.elements()){
-                if(!selectorMatches(rule.selector, spec.tag, pseudoBits)){
+                if(!selectorMatches(rule.selector, spec.tag, pseudoBits, view)){
                     continue;
                 }
                 const auto elNode = impl.ensureElementNodeId(spec.tag);
@@ -258,6 +309,9 @@ void StyleResolver::apply(UIView & view){
                         consider(elNode, k, v, rule, sheetIndex);
                     }
                 });
+                // D7.3: element-level animation bindings cascade
+                // against the element's NodeId.
+                considerAnimation(elNode, rule, sheetIndex);
             }
         }
         ++sheetIndex;
@@ -304,11 +358,22 @@ void StyleResolver::apply(UIView & view){
                     impl.sheetBindings_.transitions.push_back(
                         ResolvedSheetBindings::TransitionRecord{node, spec});
                 }
-                if(rule->animationName){
-                    impl.sheetBindings_.animationBindings.push_back(
-                        ResolvedSheetBindings::AnimationBindingRecord{
-                            node, *rule->animationName});
-                }
+                // D7.3 (2026-06-04): animation-binding recording moved
+                // out of the per-winning-rule loop and into the
+                // `animationWinners` cascade map below — the per-rule
+                // walk produced nondeterministic records on nodes
+                // where multiple rules carried different
+                // `animationName`s (unordered_set iteration).
+            }
+        }
+        // D7.3: one binding record per node, picked by the cascade.
+        for(const auto & entry : animationWinners){
+            const auto node = entry.first;
+            const auto * rule = entry.second.rule;
+            if(rule != nullptr && rule->animationName){
+                impl.sheetBindings_.animationBindings.push_back(
+                    ResolvedSheetBindings::AnimationBindingRecord{
+                        node, *rule->animationName});
             }
         }
     }
@@ -466,6 +531,114 @@ void StyleResolver::applyTransitions(UIView & view){
                 }
             }
         }, *prevCell);
+    }
+}
+
+namespace {
+
+/// Widget-View-Paint-Lifecycle-Plan Tier D / D7.3 (2026-06-04):
+/// look up a `KeyframeAnimation` by name across the AppWindow's
+/// sheet stack. Walks the stack from TOP to BOTTOM (later sheets
+/// win on name collisions, paralleling the cascade's later-sheet-
+/// wins tie-break for property cells). Returns the first match, or
+/// `nullptr` if the name is unbound — in which case the caller
+/// skips firing the binding and the runtime stays consistent with
+/// "an `animation: <unknown>` declaration is a no-op."
+const StyleSheets::KeyframeAnimation * findKeyframeAnimation(
+        const OmegaCommon::Vector<SharedHandle<StyleSheets::StyleSheet>> & stack,
+        const OmegaCommon::String & name){
+    for(auto it = stack.rbegin(); it != stack.rend(); ++it){
+        const auto & sheet = *it;
+        if(sheet == nullptr){
+            continue;
+        }
+        const auto & keyframes = sheet->keyframeAnimations();
+        auto kit = keyframes.find(name);
+        if(kit != keyframes.end()){
+            return &kit->second;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+void StyleResolver::applyKeyframeBindings(UIView & view){
+    auto & impl = *view.impl_;
+    auto * fb = AppWindow::activeFrameBuilder();
+    if(fb == nullptr){
+        return;
+    }
+    auto * scheduler = fb->animationScheduler();
+    if(scheduler == nullptr){
+        return;
+    }
+
+    // Build a per-node snapshot of the bindings the cascade
+    // resolved this Style pass. Map (NodeId → name) so the
+    // reconciliation below is constant-time per lookup. The
+    // recording loop in `apply()` writes at most ONE record per
+    // node (cascade-deterministic from `animationWinners`), so the
+    // map dedup is defensive against an empty-stack edge case
+    // rather than picking arbitrary winners.
+    std::unordered_map<NodeId, OmegaCommon::String> current;
+    for(const auto & rec : impl.sheetBindings_.animationBindings){
+        current[rec.node] = rec.name;
+    }
+
+    // Pass 1: cancel handles for bindings that have dropped or
+    // whose name changed. Walk via iterator so we can erase in
+    // place without invalidating the loop.
+    for(auto it = impl.activeKeyframeBindings_.begin();
+        it != impl.activeKeyframeBindings_.end(); ){
+        auto curIt = current.find(it->first);
+        const bool stillBound = (curIt != current.end()) &&
+                                (curIt->second == it->second.name);
+        if(!stillBound){
+            for(auto & handle : it->second.handles){
+                handle.cancel();
+            }
+            it = impl.activeKeyframeBindings_.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+
+    // Pass 2: start any binding that is now in `current` but not
+    // tracked in `activeKeyframeBindings_`. A same-name re-application
+    // is a no-op — pass 1 left those entries intact, so the lookup
+    // here finds them and we skip.
+    const auto & stack = fb->window().styleSheets();
+    for(const auto & entry : current){
+        const auto node = entry.first;
+        const auto & name = entry.second;
+        if(impl.activeKeyframeBindings_.count(node) > 0){
+            continue;  // already running — preserve.
+        }
+        const auto * animation = findKeyframeAnimation(stack, name);
+        if(animation == nullptr){
+            // Name is unbound on this window's sheet stack — no-op,
+            // matching "an `animation: <unknown>` declaration does
+            // nothing."
+            continue;
+        }
+        ActiveKeyframeBinding active;
+        active.name = name;
+        // One scheduler.animateProperty<AnimatedValue> per property
+        // the named animation declares. The `KeyframeLerp<AnimatedValue>`
+        // specialization in `AnimationScheduler.h` dispatches lerp
+        // per variant alternative at tick time. Untyped scheduler
+        // entry — using the public `animateProperty<T>` (not the
+        // friend `transition<T>`) is the canonical path per the
+        // plan (§5 D7.3).
+        active.handles.reserve(animation->properties.size());
+        for(const auto & prop : animation->properties){
+            auto handle = scheduler->animateProperty<AnimatedValue>(
+                node, prop.key, prop.track, animation->defaultTiming);
+            active.handles.push_back(std::move(handle));
+        }
+        impl.activeKeyframeBindings_[node] = std::move(active);
     }
 }
 

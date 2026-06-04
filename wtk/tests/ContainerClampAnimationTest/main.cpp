@@ -9,6 +9,8 @@
 #include "omegaWTK/Composition/CanvasEffect.h"
 #include <omegaWTK/Main.h>
 
+#include <limits>
+
 // Scene: one blue rounded rect with a big drop shadow, centered in a
 // white container. The "Animate" menu's "Animate Shadow" item swaps
 // a "highlight" StyleSheet onto the window — the highlight sheet's
@@ -26,6 +28,18 @@
 // validated the scheduler but did NOT exercise the D7.2 cascade →
 // transition path. The sheet-swap version below is the canonical
 // D7.2 verification.
+//
+// Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+// the "Toggle Selected" menu item flips a `:state(selected)` custom
+// pseudo-class on the `blue_rect_view` UIView. The initial sheet
+// carries a higher-specificity rule
+// (`tag="blue_rect", customStates=["selected"]`) that overrides the
+// rect's fill to green when the state is on. This is the canonical
+// D7.4 verification path — set a string-keyed state, see a different
+// cascade outcome. The state set is independent of the
+// pseudo-class bitmask (Hover / Pressed / Focused / Disabled) and
+// is open-ended, so widget / app code names states freely without
+// growing the enum.
 
 namespace {
 
@@ -61,6 +75,10 @@ constexpr float kShadowOpacity       = 0.65f;
 // sheet rules uses this; the EaseInOut curve completes the visible
 // effect.
 constexpr float kShadowAnimDurationSec = 1.5f;
+
+// D7.3: the pulse keyframe animation runs one cycle in this many
+// milliseconds and ping-pongs forever via `Direction::Alternate`.
+constexpr std::uint32_t kPulseHalfCycleMs = 1500;
 
 }
 
@@ -136,6 +154,23 @@ protected:
 public:
     explicit BlueRectWidget(OmegaWTK::Composition::Rect rect):
             OmegaWTK::Widget(rect){}
+
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+    // flip the `:state(selected)` custom pseudo-class on the
+    // `blue_rect_view` UIView. The initial sheet carries a higher-
+    // specificity rule keyed on this state; the cascade re-resolves
+    // automatically because `View::setState` calls `markDirty(Style)`
+    // when the set actually changes.
+    void toggleSelected(){
+        if(uiView == nullptr){
+            return;
+        }
+        selected_ = !selected_;
+        uiView->setState("selected", selected_);
+    }
+
+private:
+    bool selected_ = false;
 };
 
 class WhiteRootContainer final : public OmegaWTK::Container {
@@ -226,6 +261,22 @@ SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildClampInitialSheet(){
     rectRule.transitions.push_back(shadowTransition);
     builder.addRule(std::move(rectRule));
 
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+    // higher-specificity override that only matches when the
+    // `blue_rect_view` UIView carries `:state(selected)`. Same `tag`
+    // as the base `blue_rect` rule, plus one custom-state token —
+    // specificity 11 vs the base rule's 1, so this wins the
+    // `FillBrush` cell when the state is on. The base rule still
+    // wins the `DropShadow` cell because this override doesn't
+    // declare it; only fill changes between state on/off.
+    OmegaWTK::StyleSheets::StyleRule rectSelectedRule;
+    rectSelectedRule.selector.tag = "blue_rect";
+    rectSelectedRule.selector.customStates.push_back("selected");
+    rectSelectedRule.setFillBrush(OmegaWTK::Composition::ColorBrush(
+        OmegaWTK::Composition::Color::create8Bit(
+            OmegaWTK::Composition::Color::Green8)));
+    builder.addRule(std::move(rectSelectedRule));
+
     return builder.build();
 }
 
@@ -266,14 +317,93 @@ SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildClampHighlightSheet(){
     return builder.build();
 }
 
+// Widget-View-Paint-Lifecycle-Plan Tier D / D7.3 (2026-06-04):
+// the `pulse` keyframe-animation sheet. The blue_rect rule binds
+// `animation: pulse`; the sheet also declares a `KeyframeAnimation`
+// named `pulse` with one property (DropShadow) animating between a
+// yellow shadow and a cyan shadow over `kPulseHalfCycleMs`. The
+// animation runs effectively forever (`iterations = infinity`)
+// and ping-pongs (`Direction::Alternate`) so the visible effect is
+// a continuous yellow ⇄ cyan glow under the rounded rect.
+//
+// Adding this sheet to the window stack while the highlight sheet
+// is OFF produces a pulse from yellow to cyan on the otherwise-
+// black drop shadow. Adding it while the highlight sheet is on
+// races the pulse against the transition for the same (node,
+// DropShadow) cell — the scheduler's `registerProperty` cancels
+// the prior animation on each new registration, so the pulse
+// wins (per CSS, animations dominate transitions). Removing the
+// pulse sheet cancels the keyframe binding (via
+// `applyKeyframeBindings`); Paint then falls back to whatever the
+// cascade resolves for the cell — black if only the initial
+// sheet is on, red if the highlight is on.
+SharedHandle<OmegaWTK::StyleSheets::StyleSheet> buildClampPulseSheet(){
+    using namespace OmegaWTK;
+    using namespace OmegaWTK::Composition;
+
+    StyleSheets::StyleSheet::Builder builder;
+
+    // Define the keyframe animation.
+    StyleSheets::KeyframeAnimation pulse;
+    pulse.name = "pulse";
+    pulse.defaultTiming.durationMs = kPulseHalfCycleMs;
+    pulse.defaultTiming.iterations = std::numeric_limits<float>::infinity();
+    pulse.defaultTiming.direction  = Direction::Alternate;
+
+    StyleSheets::KeyframeAnimationProperty shadowProp;
+    shadowProp.key = PropertyKey::DropShadow;
+
+    LayerEffect::DropShadowParams startShadow = makeShadow(0.f, kShadowOffsetY,
+                                                           kShadowGeometryRadius,
+                                                           kShadowBlur, kShadowOpacity);
+    startShadow.color = Color::create8Bit(Color::Yellow8);
+
+    LayerEffect::DropShadowParams endShadow = makeShadow(0.f, kShadowOffsetY,
+                                                         kShadowGeometryRadius,
+                                                         kShadowBlur, kShadowOpacity);
+    // Cyan: no named constant in `Composition::Color`; pack the RGB
+    // manually. 0x00FFFF = R=0, G=255, B=255.
+    endShadow.color = Color::create8Bit(0x00FFFFu);
+
+    OmegaCommon::Vector<KeyframeValue<AnimatedValue>> kfs;
+    kfs.push_back(KeyframeValue<AnimatedValue>{
+        0.f, AnimatedValue{startShadow}, AnimationCurve::EaseInOut()});
+    kfs.push_back(KeyframeValue<AnimatedValue>{
+        1.f, AnimatedValue{endShadow}, nullptr});
+    shadowProp.track = KeyframeTrack<AnimatedValue>::From(kfs);
+
+    pulse.properties.push_back(std::move(shadowProp));
+    builder.addKeyframeAnimation(std::move(pulse));
+
+    // Rule that binds the pulse to the blue_rect element.
+    StyleSheets::StyleRule rectRule;
+    rectRule.selector.tag = "blue_rect";
+    rectRule.animationName = "pulse";
+    builder.addRule(std::move(rectRule));
+
+    return builder.build();
+}
+
 class AnimMenuDelegate final : public OmegaWTK::MenuDelegate {
     OmegaWTK::AppWindow * window_;
     SharedHandle<OmegaWTK::StyleSheets::StyleSheet> highlightSheet_;
+    SharedHandle<OmegaWTK::StyleSheets::StyleSheet> pulseSheet_;
+    // D7.4: the widget that owns the UIView whose
+    // `:state(selected)` we flip. Raw pointer — the widget outlives
+    // the menu delegate (`make<>` holds a SharedHandle in the app
+    // root) and there's no ownership transfer here.
+    BlueRectWidget * rectWidget_;
     bool highlightOn_ = false;
+    bool pulseOn_ = false;
 public:
     AnimMenuDelegate(OmegaWTK::AppWindow * window,
-                     SharedHandle<OmegaWTK::StyleSheets::StyleSheet> highlight):
-        window_(window), highlightSheet_(std::move(highlight)) {}
+                     SharedHandle<OmegaWTK::StyleSheets::StyleSheet> highlight,
+                     SharedHandle<OmegaWTK::StyleSheets::StyleSheet> pulse,
+                     BlueRectWidget * rectWidget):
+        window_(window),
+        highlightSheet_(std::move(highlight)),
+        pulseSheet_(std::move(pulse)),
+        rectWidget_(rectWidget) {}
 
     void onSelectItem(unsigned itemIndex) override {
         switch(itemIndex){
@@ -295,7 +425,55 @@ public:
                 }
                 highlightOn_ = !highlightOn_;
                 break;
+            case 1:
+                // D7.3: Toggle the pulse sheet. Adding pushes a rule
+                // with `animation: pulse` onto the cascade — the next
+                // Style phase records the binding in
+                // `sheetBindings_.animationBindings`, and
+                // `applyKeyframeBindings` starts the keyframe
+                // animation (yellow ⇄ cyan ping-pong). Removing the
+                // sheet drops the binding from the cascade, the
+                // reconciliation pass cancels the handles, and the
+                // shadow snaps back to whatever the cascade still
+                // resolves (black or red, depending on highlight).
+                if(window_ == nullptr || pulseSheet_ == nullptr){
+                    return;
+                }
+                if(pulseOn_){
+                    window_->removeStyleSheet(pulseSheet_);
+                }
+                else {
+                    window_->addStyleSheet(pulseSheet_);
+                }
+                pulseOn_ = !pulseOn_;
+                break;
             case 2:
+                // D7.4: flip `:state(selected)` on the blue_rect_view
+                // UIView. The initial sheet's higher-specificity
+                // override (selector `tag="blue_rect",
+                // customStates=["selected"]`) wins the FillBrush cell
+                // when the state is on; the rect paints green. The
+                // base rule wins back the cell when the state is off
+                // and the rect goes back to blue. No transition is
+                // declared on the override, so the change is a snap
+                // (CSS-equivalent: no `transition` property on the
+                // `:state(selected)` rule = instant on switch).
+                //
+                // Layering note: `setState` only records the dirty
+                // bit on the view. As the idle-context caller, this
+                // menu handler is responsible for poking the run
+                // loop — `AppWindow::refresh()` schedules the next
+                // paint. Multiple state flips in the same callback
+                // collapse into ONE frame because the request
+                // coalesces.
+                if(rectWidget_ != nullptr){
+                    rectWidget_->toggleSelected();
+                }
+                if(window_ != nullptr){
+                    window_->refresh();
+                }
+                break;
+            case 4:
                 OmegaWTK::AppInst::terminate();
                 break;
             default:
@@ -323,6 +501,10 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
     // transition.
     window->addStyleSheet(buildClampInitialSheet());
     auto highlightSheet = buildClampHighlightSheet();
+    // D7.3: build the pulse sheet up front so it's stable for the
+    // lifetime of the app (the menu delegate captures it by
+    // SharedHandle and we re-use the same handle for add / remove).
+    auto pulseSheet = buildClampPulseSheet();
 
     auto container = make<WhiteRootContainer>(
             OmegaWTK::Composition::Rect{{0, 0}, kWindowW, kWindowH});
@@ -336,15 +518,25 @@ int omegaWTKMain(OmegaWTK::AppInst *app) {
 
     window->setRootWidget(container);
 
-    // Menu: "Animate" > "Animate Shadow" (item 0) | sep (1) | "Quit" (2).
-    // Delegate is `static` so it outlives this function — the menu
-    // captures it by raw pointer.
-    static AnimMenuDelegate animMenuDelegate(window.get(), highlightSheet);
+    // Menu: "Animate" > "Animate Shadow" (item 0) | "Toggle Pulse"
+    // (item 1) | "Toggle Selected" (item 2) | sep (3) | "Quit" (4).
+    // The delegate is `static` so it outlives this function — the
+    // menu captures it by raw pointer.
+    //
+    // D7.4 (2026-06-04): "Toggle Selected" is the new item — flips
+    // `:state(selected)` on the blue_rect_view UIView so the cascade
+    // re-resolves with the higher-specificity override active.
+    static AnimMenuDelegate animMenuDelegate(window.get(),
+                                             highlightSheet,
+                                             pulseSheet,
+                                             child.get());
     auto menu = make<OmegaWTK::Menu>(
         "MainMenu",
         std::initializer_list<SharedHandle<OmegaWTK::MenuItem>>{
             OmegaWTK::CategoricalMenu("Animate", {
                 OmegaWTK::ButtonMenuItem("Animate Shadow"),
+                OmegaWTK::ButtonMenuItem("Toggle Pulse"),
+                OmegaWTK::ButtonMenuItem("Toggle Selected"),
                 OmegaWTK::MenuItemSeperator(),
                 OmegaWTK::ButtonMenuItem("Quit")
             }, &animMenuDelegate)

@@ -1505,19 +1505,154 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
     during the bisect were removed in the same pass once the
     chain was confirmed.
 
-  - **D7.3 — Keyframe animations wired.** When a keyframe binding
-    becomes active on a node (a rule with `animation: <name>`
-    matches), the resolver looks up the named `KeyframeAnimation` on
-    the originating sheet and calls
-    `scheduler.animateProperty<T>(node, key, track, timing)` per
-    property. When the binding stops matching, the resolver cancels
-    the returned handle. Re-application with the same `(node, name)`
-    is a no-op (preserves running animation); a different `name` on
-    the same `(node, key)` replaces. This is the parallel to D7.2 for
-    explicitly authored animations.
+  - **D7.3 — Keyframe animations wired. [DONE 2026-06-04.]**
+    Build status: full-tree 81/81 green. The pipeline lights up
+    sheet-driven keyframe animations: a `StyleRule` with
+    `animation: <name>` cascades its name through a new per-node
+    `animationWinners` map in `StyleResolver::apply`
+    (specificity → sheetIndex → sourceOrder, same comparator as
+    cell winners) so each node ends up with at most one binding
+    record, deterministic regardless of which winning rule
+    iteration order falls out. A new
+    `StyleResolver::applyKeyframeBindings(view)` pass runs after
+    `applyTransitions` in `UIView::resolveStyles` and reconciles
+    `sheetBindings_.animationBindings` against a new per-impl
+    `activeKeyframeBindings_` map (`NodeId → {name, handles}`):
+      * binding NEW → look up the named `KeyframeAnimation` in
+        the AppWindow's sheet stack (later sheets win — same
+        cascade direction as `findKeyframeAnimation` walks the
+        stack in reverse), then call
+        `scheduler.animateProperty<AnimatedValue>(node, key,
+        track, timing)` once per property the animation declares.
+        Returned `AnimationHandle`s are tracked.
+      * binding STILL ACTIVE with SAME NAME → no-op, preserving
+        the running animation (CSS-style "same declaration
+        doesn't restart").
+      * binding STILL ACTIVE with DIFFERENT NAME → cancel all
+        handles, start fresh.
+      * binding NO LONGER PRESENT → cancel handles, drop the
+        tracking entry.
 
-  - **D7.4 — `:state(name)` custom pseudo-class.** Nodes carry a
-    `Set<String>` of custom states; set/clear dirties `Style`.
+    Type erasure is `KeyframeTrack<AnimatedValue>` end-to-end:
+    `KeyframeAnimationProperty.track` already carried the variant;
+    a new `KeyframeLerp<AnimatedValue>` specialization in
+    `wtk/src/UI/AnimationScheduler.h` dispatches via `std::visit`
+    on the previous endpoint's variant alternative (same
+    alternative on both → lerp the alternative's concrete type;
+    different alternatives or non-lerpable type like
+    `SharedPtr<Brush>` / `monostate` → step). The default
+    `animateProperty<T>` lambda gained an `if constexpr (T ==
+    AnimatedValue)` branch to avoid double-wrapping the
+    side-table write (the variant cannot be constructed from
+    itself). `KeyframeLerp<Composition::Point2D>` also added in
+    `Composition/Animation.h` for completeness — the
+    `AnimatedValue` dispatcher needed it as one of the variant
+    alternatives.
+
+    `ContainerClampAnimationTest` gains a `Toggle Pulse` menu
+    item (alongside the D7.2 `Animate Shadow`) that adds /
+    removes a `pulseSheet` carrying both a `KeyframeAnimation`
+    declaration named `pulse` (DropShadow: yellow ⇄ cyan over
+    `kPulseHalfCycleMs`, `Direction::Alternate`, infinite
+    iterations) AND a `blue_rect` rule with
+    `animation: pulse`. Clicking Toggle Pulse starts the infinite
+    ping-pong on the shadow; clicking again cancels the binding
+    and Paint snaps back to whichever cascade value still
+    resolves (black with only initial, red with highlight on).
+    Files: `wtk/include/omegaWTK/Composition/Animation.h`
+    (`KeyframeLerp<Point2D>`),
+    `wtk/include/omegaWTK/UI/StyleResolver.h`
+    (`applyKeyframeBindings` decl),
+    `wtk/src/UI/AnimationScheduler.h` (`KeyframeLerp<AnimatedValue>`,
+    `animateProperty<T==AnimatedValue>` branch, `<type_traits>`),
+    `wtk/src/UI/StyleResolver.cpp` (cascade for `animationName`,
+    `applyKeyframeBindings`, `findKeyframeAnimation` helper),
+    `wtk/src/UI/UIViewImpl.h` (`ActiveKeyframeBinding`,
+    `activeKeyframeBindings_`),
+    `wtk/src/UI/UIView.Style.cpp` (`applyKeyframeBindings` call),
+    `wtk/tests/ContainerClampAnimationTest/main.cpp`
+    (`buildClampPulseSheet`, menu item).
+
+  - **D7.4 — `:state(name)` custom pseudo-class. [DONE 2026-06-04.]**
+    Nodes carry a `Set<String>` of custom states alongside the
+    enumerated `pseudoClassBits_` from D6.4. The state set is the
+    open-ended string-keyed counterpart to the four-bit
+    `Hover/Pressed/Focused/Disabled` mask — widget / app code names
+    states freely (`loading`, `selected`, `expanded`, `error`, …)
+    without growing the enum.
+    Surfaces landed:
+      * `StyleSheets::Selector::customStates` (vector<String>) —
+        Tier-1 single-compound match grows a fifth axis next to
+        tag / id / classes / pseudoClasses. Subset match: every
+        name listed on the selector must be present on the view's
+        state set. Empty vector matches unconditionally (same shape
+        as the `PseudoClass::None` shortcut).
+      * `Selector::specificity()` — each custom-state name weighs
+        as one class, mirroring the per-bit weight already given
+        to pseudo-classes. CSS convention: `id*100 + (class + pseudo
+        + customState)*10 + tag`.
+      * `View::Impl::customStates_` (unordered_set<String>) —
+        sibling to `pseudoClassBits_`. Stored on the base `View`
+        (not just `UIView`) so the surface is uniform across the
+        whole view hierarchy.
+      * `View::setState(name)` / `View::clearState(name)` /
+        `View::setState(name, bool)` / `View::hasState(name)` —
+        public API on the base class. `markDirty(View::Style)`
+        only fires when the set actually changes (matching the
+        change-detection in `setPseudoClassBits`), so a no-op flip
+        does NOT re-resolve the cascade.
+      * `AppWindow::refresh()` — public idle-context entrypoint
+        that schedules the next paint. Layering: a View only
+        records its dirty bit; it does NOT unilaterally request a
+        frame because multiple views may flip state in the same
+        idle batch and the window owns the run-loop turn (one
+        paint per batch, not one per mutation). Idle-context
+        callers (menu callbacks, timers, deferred async results)
+        finish their batch of `setState` / `clearState` /
+        `setEnabled` calls and then call `refresh()` exactly once
+        to commit. Thin wrapper over the pre-existing
+        `requestFrame()`; the rename gives the named-on-app-
+        surface call a self-documenting name. The native-window
+        request itself coalesces, so over-calling is harmless.
+        The same architectural hole would exist for
+        `setPseudoClassBits` (D6.4) but goes unnoticed there
+        because its only callers are input dispatch's
+        hover / pressed transitions, which arrive on a path that
+        already drives a frame.
+      * `StyleSheets::StyleResolver::selectorMatches` — extended
+        to take the view reference and loop the selector's
+        `customStates` against `view.hasState(name)`. Element-
+        level rules inherit view state (per-element state surfaces
+        are deferred to a later tier).
+    Verification: `ContainerClampAnimationTest` carries a
+    higher-specificity override on the initial sheet
+    (`tag="blue_rect", customStates=["selected"]`) that swaps the
+    rect fill to green. The "Toggle Selected" menu item flips
+    `:state(selected)` on the `blue_rect_view` UIView; the cascade
+    re-resolves and Paint draws the rect green. Toggling again
+    snaps the rect back to blue. No transition is declared on the
+    override so the change is instant (CSS-equivalent: missing
+    `transition:` on the `:state(selected)` rule = snap).
+    Files: `wtk/include/omegaWTK/UI/StyleSheet.h` (`Selector`
+    `customStates` field, docstring), `wtk/src/UI/StyleSheet.cpp`
+    (`specificity()` weighs `customStates.size()`),
+    `wtk/include/omegaWTK/UI/View.h` (public
+    `setState`/`clearState`/`hasState` decls),
+    `wtk/src/UI/ViewImpl.h` (`customStates_` member,
+    `<unordered_set>` include), `wtk/src/UI/View.Core.cpp`
+    (method bodies), `wtk/src/UI/StyleResolver.cpp`
+    (`selectorMatches` signature + match check, both call sites
+    pass the view),
+    `wtk/include/omegaWTK/UI/AppWindow.h` /
+    `wtk/src/UI/AppWindow.cpp` (`AppWindow::refresh()` public
+    idle-context entrypoint, thin wrapper over `requestFrame()`),
+    `wtk/tests/ContainerClampAnimationTest/main.cpp`
+    (`:state(selected)` rule on the initial sheet,
+    `BlueRectWidget::toggleSelected`, menu wiring with new
+    "Toggle Selected" item between the existing pulse + quit
+    entries — bumped the quit item to switch case 4; menu
+    callback calls `window_->refresh()` after the toggle to
+    commit the cascade re-resolution).
 
   - **D7.5 — User-agent default stylesheet.** Built-in `StyleSheet`
     for `Button` / `Label` / `Icon` / `Image` / `Rectangle` /

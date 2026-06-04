@@ -320,6 +320,24 @@ namespace OmegaWTK {
         /// re-resolves through the cascade with the new state.
         void setPseudoClassBits(std::uint8_t mask, bool on);
 
+        /// Widget-View-Paint-Lifecycle-Plan Tier D / D7.4 (2026-06-04):
+        /// `:state(name)` custom pseudo-class API. The open-ended
+        /// counterpart to the enumerated `pseudoClassBits` surface:
+        /// widget / app code names states (`loading`, `selected`,
+        /// `error`, `expanded`, …) and flips them on a view. The
+        /// `StyleSheets::StyleResolver` matches selector `customStates`
+        /// entries against this set during cascade resolution. The
+        /// state set is independent of `pseudoClassBits`; a view can
+        /// carry both at once. `setState`/`clearState` call
+        /// `markDirty(Style)` only when the set actually changes — a
+        /// no-op flip (set when already on, clear when already off)
+        /// does not invalidate the cascade.
+        void setState(const OmegaCommon::String & name);
+        void clearState(const OmegaCommon::String & name);
+        /// Convenience: write either side of the flip in one call.
+        void setState(const OmegaCommon::String & name, bool on);
+        bool hasState(const OmegaCommon::String & name) const;
+
         /// Phase 4.7.0: the polymorphic Paint-pass hook. Per-node:
         /// emits THIS view's draw ops into `pc.displayList` and reads
         /// `pc.offset` for absolute window positioning. Does NOT recurse
