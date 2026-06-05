@@ -1,0 +1,62 @@
+/// §5.4 — screen-space derivatives. Exercises every new builtin on
+/// `float` and every `floatN`, all inside a fragment shader (the only
+/// stage where derivatives are valid).
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+vertex VertexRaster derivVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv  = float2(0.0, 0.0);
+    return r;
+}
+
+fragment float4 derivFrag(VertexRaster raster){
+    float  s  = raster.uv.x;
+    float2 v2 = raster.uv;
+    float3 v3 = float3(raster.uv, 0.5);
+    float4 v4 = float4(raster.uv, 0.25, 0.75);
+
+    /// Basic derivatives — all four arities.
+    float  a1 = ddx(s);
+    float2 a2 = ddx(v2);
+    float3 a3 = ddx(v3);
+    float4 a4 = ddx(v4);
+
+    float  b1 = ddy(s);
+    float2 b2 = ddy(v2);
+    float3 b3 = ddy(v3);
+    float4 b4 = ddy(v4);
+
+    float  c1 = fwidth(s);
+    float2 c2 = fwidth(v2);
+    float3 c3 = fwidth(v3);
+    float4 c4 = fwidth(v4);
+
+    /// Coarse variants.
+    float  d1 = ddx_coarse(s);
+    float3 d3 = ddx_coarse(v3);
+    float  e1 = ddy_coarse(s);
+    float2 e2 = ddy_coarse(v2);
+    float  f1 = fwidth_coarse(s);   // HLSL lowers to abs(ddx_coarse)+abs(ddy_coarse)
+    float4 f4 = fwidth_coarse(v4);
+
+    /// Fine variants.
+    float  g1 = ddx_fine(s);
+    float4 g4 = ddx_fine(v4);
+    float  h1 = ddy_fine(s);
+    float3 h3 = ddy_fine(v3);
+    float  i1 = fwidth_fine(s);
+    float2 i2 = fwidth_fine(v2);
+
+    /// Composition — the canonical font/SDF idiom uses fwidth on a
+    /// derived expression. This also stresses HLSL's single-eval
+    /// capture (the lowered fwidth_fine evaluates its arg once).
+    float  edge = fwidth_fine(s * 2.0 + 1.0);
+
+    float intensity = a1 + b1 + c1 + d1 + e1 + f1 + g1 + h1 + i1 + edge;
+    return float4(intensity, intensity, intensity, 1.0);
+}

@@ -1653,11 +1653,97 @@ HLSL/GLSL shader compiling under dxc / glslc. D3D12/Vulkan runtime binding
 is the only thing still pending CI (the generated source compiles on their
 real toolchains here).
 
-### 5.4 Derivatives — already on the "not implemented" list
+### 5.4 Derivatives [COMPLETED]
 
 `ddx`, `ddy`, `fwidth`, and the `_coarse` / `_fine` variants. Required for
 mip-level selection in non-sampled paths, normal-map reconstruction,
 anti-aliased lines/fonts.
+
+**Landed.** Nine new 1-arg builtins, all "same float type in, same type out"
+on `float` / `float2` / `float3` / `float4`, all **fragment-stage-only**:
+
+| Name | Op |
+|------|----|
+| `ddx(x)`, `ddy(x)` | screen-space derivative (default precision) |
+| `fwidth(x)` | `abs(ddx(x)) + abs(ddy(x))` |
+| `ddx_coarse(x)`, `ddy_coarse(x)` | coarse-quad derivative (2×2 once per quad) |
+| `ddx_fine(x)`, `ddy_fine(x)` | fine derivative (per-pixel) |
+| `fwidth_coarse(x)`, `fwidth_fine(x)` | matching width forms |
+
+Per-backend lowering:
+
+| OmegaSL | HLSL (SM 5.0+) | MSL | GLSL (4.50 core) |
+|---------|----------------|-----|------------------|
+| `ddx` | `ddx` | `dfdx` (rename) | `dFdx` (rename) |
+| `ddy` | `ddy` | `dfdy` | `dFdy` |
+| `fwidth` | `fwidth` | `fwidth` | `fwidth` |
+| `ddx_coarse` | `ddx_coarse` | `dfdx` (widen — MSL has no coarse/fine) | `dFdxCoarse` |
+| `ddx_fine` | `ddx_fine` | `dfdx` (widen) | `dFdxFine` |
+| `ddy_coarse` | `ddy_coarse` | `dfdy` (widen) | `dFdyCoarse` |
+| `ddy_fine` | `ddy_fine` | `dfdy` (widen) | `dFdyFine` |
+| `fwidth_coarse` | `abs(ddx_coarse(t)) + abs(ddy_coarse(t))` (HLSL has no name) | `fwidth` (widen) | `fwidthCoarse` |
+| `fwidth_fine` | `abs(ddx_fine(t)) + abs(ddy_fine(t))` | `fwidth` (widen) | `fwidthFine` |
+
+Notes:
+
+* **HLSL** has the four `ddx_coarse`/`ddx_fine`/`ddy_coarse`/`ddy_fine`
+  intrinsics (SM 5.0+) but **no** `fwidth_coarse`/`fwidth_fine`. Those two
+  lower inline via the existing statement-injection hook
+  (`queuePendingStatement`, shared with `frexp`/`inverse`/`getDimensions`):
+  capture the operand once into a temp, then emit
+  `(abs(ddx_coarse(_t)) + abs(ddy_coarse(_t)))`.
+* **MSL** has only `dfdx`/`dfdy`/`fwidth` — no coarse/fine variants. The
+  coarse/fine OmegaSL names silently widen to the unqualified op (a
+  hardware hint, not a hard contract — the unqualified form is whatever
+  the GPU picks).
+* **GLSL** has all nine in core 4.50 (was `GL_ARB_derivative_control` in
+  earlier revs). The preamble already targets `#version 450`, so no
+  extension line was needed.
+
+**Stage restriction.** All nine are fragment-stage-only. The Sema check
+mirrors §6.2 (`threadgroupBarrier`) / §2a (`setMeshOutputs`): an
+`InvalidAttribute` diagnostic when `funcContext->shaderType !=
+ast::ShaderDecl::Fragment`. No feature bit — derivatives are universal in
+fragment stage on every backend, and the HLSL `fwidth_coarse`/`fine`
+lowering keeps coverage uniform across backends without a `#requires`
+gate.
+
+(HLSL SM 6.6 added compute-shader `ddx_quads`/`QuadAny`/`QuadAll`;
+deliberately out of scope. The portable surface is fragment-only.)
+
+**Implementation.**
+
+* `AST.def` — nine `BUILTIN_DDX_*` / `BUILTIN_DDY_*` / `BUILTIN_FWIDTH_*`
+  macros under a `§5.4` comment block.
+* `AST.cpp` — `isReservedBuiltinName` gets all nine.
+* `Sema.cpp` — a new `isDerivative` bucket in `performSemForExpr`:
+  `expectedArgs = 1`, fragment-stage guard, operand must be
+  `float`/`float2`/`float3`/`float4` (rejected via `TypeError`
+  otherwise), return type = operand type. Stamps
+  `args[0]->resolvedType` so the HLSL `fwidth_coarse`/`fine` lowering
+  can spell the operand-typed temp.
+* `MSLTarget::renameBuiltin` — six renames (`ddx`/`ddx_coarse`/`ddx_fine`
+  → `dfdx`, three `ddy*` → `dfdy`, `fwidth_coarse`/`fwidth_fine` →
+  `fwidth`); `fwidth` itself passes through.
+* `GLSLTarget::renameBuiltin` — nine renames to the `dFdx`/`dFdy`/
+  `dFdxCoarse`/... spellings.
+* `HLSLTarget::renameBuiltin` — no-op (the seven HLSL-native names pass
+  through). `HLSLTarget::tryEmitBuiltinCall` adds a small
+  `hlslEmitFwidthVariant` helper for `fwidth_coarse`/`fwidth_fine`:
+  capture-into-temp via `queuePendingStatement`, then emit
+  `(abs(ddx_<v>(t)) + abs(ddy_<v>(t)))`.
+
+**Tests.** `derivatives.omegasl` (fragment shader with all nine builtins
+on `float` and every `floatN`), `invalid_derivatives.omegasl` (multi-error
+negative: `ddx` in a vertex shader / `ddy` of `int` / `fwidth` arg-count).
+
+**Out of scope (intentional follow-ups).**
+
+* **Compute-stage derivatives** (HLSL SM 6.6 `ddx_quads` / Metal quad simd
+  ops). Backend-asymmetric and rarely needed; revisit if a real shader
+  hits the wall.
+* **GLSL precision hints** (`mediump`/`highp` on derivative output).
+  Belongs with §11 precision modifiers.
 
 ### 5.5 Pack / unpack
 

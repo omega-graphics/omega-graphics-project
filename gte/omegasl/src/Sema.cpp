@@ -1470,6 +1470,27 @@ namespace omegasl {
                     }
                 }
 
+                /// §5.4 — screen-space derivatives: 1-arg, same float
+                /// scalar/vector in and out, fragment-stage-only. Mirrors
+                /// the barrier stage check above.
+                bool isDerivative = (fname == BUILTIN_DDX || fname == BUILTIN_DDY ||
+                                     fname == BUILTIN_FWIDTH ||
+                                     fname == BUILTIN_DDX_COARSE || fname == BUILTIN_DDX_FINE ||
+                                     fname == BUILTIN_DDY_COARSE || fname == BUILTIN_DDY_FINE ||
+                                     fname == BUILTIN_FWIDTH_COARSE || fname == BUILTIN_FWIDTH_FINE);
+                if(isDerivative){
+                    expectedArgs = 1;
+                    bool inFragment = funcContext && funcContext->type == SHADER_DECL
+                        && ((ast::ShaderDecl *)funcContext)->shaderType == ast::ShaderDecl::Fragment;
+                    if(!inFragment){
+                        auto e = std::make_unique<InvalidAttribute>(
+                            std::string("`") + std::string(fname) + "` is only valid inside a fragment shader");
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                }
+
                 /// §2a follow-up — `setMeshOutputs(uint nv, uint np)`. Mesh-
                 /// stage-only, void return, at-most-once per shader. The
                 /// stage check mirrors the barrier path above; the type and
@@ -1717,6 +1738,25 @@ namespace omegasl {
                     }
                     sdecl->meshHasUserSetMeshOutputsCall = true;
                     return ast::TypeExpr::Create(ast::builtins::void_type);
+                }
+
+                /// §5.4 — derivatives: operand must be a float scalar or
+                /// vector. Stamp the resolved arg type so each backend can
+                /// read the operand shape at the call site (HLSL's
+                /// fwidth_coarse/fine lowering needs the operand spelling
+                /// for its single-eval temp; the renamed-passthrough paths
+                /// ignore it). Return type = operand type.
+                if(isDerivative && firstArgType){
+                    auto a0 = resolveTypeWithExpr(firstArgType);
+                    if(a0 != ast::builtins::float_type &&
+                       a0 != ast::builtins::float2_type &&
+                       a0 != ast::builtins::float3_type &&
+                       a0 != ast::builtins::float4_type){
+                        reportBoolErr("`" + std::string(fname) + "` requires a float scalar or vector operand (float / float2 / float3 / float4).");
+                        return nullptr;
+                    }
+                    _expr->args[0]->resolvedType = firstArgType;
+                    return firstArgType;
                 }
 
                 if(returnsScalar && firstArgType){

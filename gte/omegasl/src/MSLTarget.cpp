@@ -897,6 +897,20 @@ using namespace metal;
         /// MSL — `clz`/`ctz` return zero-*counts*, not bit indices, and the
         /// normalized -1-on-zero result needs a conversion. Handled in
         /// `tryEmitBuiltinCall`.
+        /// §5.4 — derivatives. MSL stdlib spells the basic ops `dfdx` /
+        /// `dfdy` / `fwidth`. There are *no* coarse/fine variants in MSL,
+        /// so `ddx_coarse`/`ddx_fine` silently widen to `dfdx`,
+        /// `ddy_coarse`/`ddy_fine` to `dfdy`, and `fwidth_coarse`/
+        /// `fwidth_fine` to `fwidth`. Coarse/fine is a hardware hint, not
+        /// a hard contract — the unqualified form is whatever the GPU
+        /// picks (often fine on modern Apple silicon).
+        if (name == BUILTIN_DDX || name == BUILTIN_DDX_COARSE || name == BUILTIN_DDX_FINE)
+            return "dfdx";
+        if (name == BUILTIN_DDY || name == BUILTIN_DDY_COARSE || name == BUILTIN_DDY_FINE)
+            return "dfdy";
+        if (name == BUILTIN_FWIDTH_COARSE || name == BUILTIN_FWIDTH_FINE)
+            return "fwidth";
+        /// `fwidth` itself passes through unchanged on MSL.
         if (name == BUILTIN_MAKE_FLOAT2)   return "float2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "float3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "float4";

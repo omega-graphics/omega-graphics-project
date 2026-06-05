@@ -232,6 +232,37 @@ typedef int ASTType;
 #define BUILTIN_BITFIELD_EXTRACT "bitfieldExtract"
 #define BUILTIN_BITFIELD_INSERT "bitfieldInsert"
 
+/// §5.4 — fragment-stage screen-space derivatives. All nine are 1-arg,
+/// same-float-type-in / same-type-out (float / float2 / float3 / float4),
+/// and only valid inside a fragment shader. Per backend:
+///   ddx          → ddx (HLSL) / dfdx (MSL) / dFdx (GLSL)
+///   ddy          → ddy / dfdy / dFdy
+///   fwidth       → fwidth (every backend)
+///   ddx_coarse   → ddx_coarse (HLSL native SM5+) / dfdx (MSL has no
+///                  coarse variant — silently widens) / dFdxCoarse (GLSL
+///                  core 4.50 / GL_ARB_derivative_control)
+///   ddx_fine     → ddx_fine / dfdx (widen) / dFdxFine
+///   ddy_coarse   → ddy_coarse / dfdy (widen) / dFdyCoarse
+///   ddy_fine     → ddy_fine / dfdy (widen) / dFdyFine
+///   fwidth_coarse → abs(ddx_coarse(t)) + abs(ddy_coarse(t)) (HLSL has
+///                   no fwidth_coarse intrinsic — lowered inline via
+///                   statement-injection capture, see HLSLTarget) /
+///                   fwidth (MSL widens) / fwidthCoarse (GLSL)
+///   fwidth_fine  → abs(ddx_fine(t)) + abs(ddy_fine(t)) / fwidth /
+///                  fwidthFine
+/// No feature bit: derivatives are universal in fragment stage on every
+/// backend, and the HLSL fwidth_coarse/fine lowering keeps coverage
+/// uniform without a #requires gate.
+#define BUILTIN_DDX "ddx"
+#define BUILTIN_DDY "ddy"
+#define BUILTIN_FWIDTH "fwidth"
+#define BUILTIN_DDX_COARSE "ddx_coarse"
+#define BUILTIN_DDX_FINE "ddx_fine"
+#define BUILTIN_DDY_COARSE "ddy_coarse"
+#define BUILTIN_DDY_FINE "ddy_fine"
+#define BUILTIN_FWIDTH_COARSE "fwidth_coarse"
+#define BUILTIN_FWIDTH_FINE "fwidth_fine"
+
 /// §5.1.0 — `mod` / `mad` are accepted as aliases of the canonical
 /// `fmod` / `fma` spellings (see `ast::canonicalBuiltinAlias`). They
 /// carry no separate semantics: `mod` is truncation-modulus like `fmod`

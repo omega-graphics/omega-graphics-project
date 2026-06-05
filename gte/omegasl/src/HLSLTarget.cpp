@@ -649,12 +649,40 @@ namespace omegasl {
         return true;
     }
 
+    /// §5.4 — HLSL has `ddx_coarse`/`ddx_fine`/`ddy_coarse`/`ddy_fine`
+    /// (SM 5.0+) but NO `fwidth_coarse`/`fwidth_fine`. Lower each to the
+    /// canonical formula `abs(ddx_<v>(t)) + abs(ddy_<v>(t))`, capturing
+    /// the operand once via the statement-injection hook so a
+    /// side-effectful arg only evaluates once (shared machinery with
+    /// frexp / inverse / getDimensions / countbits).
+    static bool hlslEmitFwidthVariant(CodeGen &cg, ast::CallExpr *_expr,
+                                      const char *variant, std::ostream &out){
+        if(_expr->args.size() != 1) return false;
+        auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+        unsigned arity = omegaSLFloatVectorArity(ty);
+        if(arity == 0) return false; // defensive — Sema rejected non-float.
+        const char *fTy = hlslFloatTypeForArity(arity);
+        std::string argStr = cg.renderExprToString(_expr->args[0]);
+        unsigned id = cg.getDimensionsTempId++;
+        std::string t = "_fw" + std::to_string(id);
+        cg.queuePendingStatement(std::string(fTy) + " " + t + " = " + argStr + ";");
+        out << "(abs(ddx_" << variant << "(" << t << ")) + abs(ddy_"
+            << variant << "(" << t << ")))";
+        return true;
+    }
+
     bool HLSLTarget::tryEmitBuiltinCall(CodeGen &cg, ast::CallExpr *_expr,
                                         OmegaCommon::StrRef name, std::ostream &out) {
         /// §5.3 — HLSL's countbits / reversebits are scalar-uint only;
         /// lower signed-cast + vector component-expansion here.
         if (name == BUILTIN_COUNTBITS)   return hlslEmitIntUnary(cg, _expr, "countbits", out);
         if (name == BUILTIN_REVERSEBITS) return hlslEmitIntUnary(cg, _expr, "reversebits", out);
+        /// §5.4 — HLSL has no `fwidth_coarse`/`fwidth_fine` intrinsic
+        /// (only `fwidth`); lower inline to the canonical formula. The
+        /// other seven derivative names are HLSL-native and pass through
+        /// the shared `(args)` print path unchanged.
+        if (name == BUILTIN_FWIDTH_COARSE) return hlslEmitFwidthVariant(cg, _expr, "coarse", out);
+        if (name == BUILTIN_FWIDTH_FINE)   return hlslEmitFwidthVariant(cg, _expr, "fine", out);
         /// §5.3 Phase B — firstbithigh / firstbitlow. Unlike countbits,
         /// HLSL's `firstbithigh`/`firstbitlow` accept scalar, vector, AND
         /// signed operands (verified with dxc), so no component expansion is

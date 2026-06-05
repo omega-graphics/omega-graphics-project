@@ -99,6 +99,8 @@ add_omegasl_compile_test(omegasl_compile_math_phase5_2       math_phase5_2.omega
 add_omegasl_compile_test(omegasl_compile_bool_vector         bool_vector.omegasl)
 # §5.3 — integer / bitfield ops (Phase A: countbits / reversebits).
 add_omegasl_compile_test(omegasl_compile_bitfield_ops        bitfield_ops.omegasl)
+# §5.4 — fragment-stage screen-space derivatives (ddx/ddy/fwidth + coarse/fine).
+add_omegasl_compile_test(omegasl_compile_derivatives         derivatives.omegasl)
 # §5.1.0 — modf / frexp out-param intrinsics + mod / mad aliases.
 add_omegasl_compile_test(omegasl_compile_math_modf_frexp     math_modf_frexp.omegasl)
 # §4.1 / §4.2 — 16-bit and 64-bit numeric type families.
@@ -160,6 +162,8 @@ add_omegasl_fail_test(omegasl_invalid_math_phase5_2          invalid_math_phase5
 add_omegasl_fail_test(omegasl_invalid_bool_vector            invalid_bool_vector.omegasl)
 # §5.3 — bitfield-op diagnostics (float operand; arg count).
 add_omegasl_fail_test(omegasl_invalid_bitfield_ops           invalid_bitfield_ops.omegasl)
+# §5.4 — derivative diagnostics (stage, type, arg count).
+add_omegasl_fail_test(omegasl_invalid_derivatives            invalid_derivatives.omegasl)
 add_omegasl_fail_test(omegasl_invalid_switch                 invalid_switch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_matrix_column_write    invalid_matrix_column_write.omegasl)
 # Matrix index-type rule (column + two-level row index must be int/uint).

@@ -681,6 +681,11 @@ namespace omegasl::ast {
             BUILTIN_COUNTBITS, BUILTIN_REVERSEBITS,
             BUILTIN_FIRSTBITHIGH, BUILTIN_FIRSTBITLOW,
             BUILTIN_BITFIELD_EXTRACT, BUILTIN_BITFIELD_INSERT,
+            /// §5.4 fragment-stage derivatives.
+            BUILTIN_DDX, BUILTIN_DDY, BUILTIN_FWIDTH,
+            BUILTIN_DDX_COARSE, BUILTIN_DDX_FINE,
+            BUILTIN_DDY_COARSE, BUILTIN_DDY_FINE,
+            BUILTIN_FWIDTH_COARSE, BUILTIN_FWIDTH_FINE,
             /// Matrix intrinsics (string-matched in Sema).
             "transpose", "determinant",
             /// Compute barriers.

@@ -1267,6 +1267,19 @@ namespace omegasl {
         /// signedness, so it is handled in `tryEmitBuiltinCall` with a
         /// cast back to the operand type.
         if (name == BUILTIN_REVERSEBITS) return "bitfieldReverse";
+        /// §5.4 — derivatives. GLSL spells the basic ops `dFdx` / `dFdy` /
+        /// `fwidth`. The coarse/fine variants are core in GLSL 4.50
+        /// (originally `GL_ARB_derivative_control`). The preamble targets
+        /// `#version 450` already, so no extension line is needed.
+        if (name == BUILTIN_DDX)            return "dFdx";
+        if (name == BUILTIN_DDY)            return "dFdy";
+        if (name == BUILTIN_DDX_COARSE)     return "dFdxCoarse";
+        if (name == BUILTIN_DDX_FINE)       return "dFdxFine";
+        if (name == BUILTIN_DDY_COARSE)     return "dFdyCoarse";
+        if (name == BUILTIN_DDY_FINE)       return "dFdyFine";
+        if (name == BUILTIN_FWIDTH_COARSE)  return "fwidthCoarse";
+        if (name == BUILTIN_FWIDTH_FINE)    return "fwidthFine";
+        /// `fwidth` itself passes through unchanged on GLSL.
         /// §6.2 — compute barriers. `barrier()` is the execution +
         /// shared-memory control barrier; `memoryBarrier()` is the
         /// device-memory-only ordering barrier (no execution sync).
