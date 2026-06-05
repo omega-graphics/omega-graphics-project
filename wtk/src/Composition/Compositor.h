@@ -12,6 +12,9 @@
 #include <utility>
 
 #include "backend/RenderTarget.h"
+#include "omegaWTK/Native/NativeVisualTree.h"
+
+#include <unordered_map>
 
 #ifndef OMEGAWTK_COMPOSTION_COMPOSITOR_H
 #define OMEGAWTK_COMPOSTION_COMPOSITOR_H
@@ -50,8 +53,6 @@ namespace OmegaWTK::Composition {
 
         OmegaCommon::Vector<LayerTree *> targetLayerTrees;
 
-        RenderTargetStore renderTargetStore;
-
         std::mutex mutex;
         std::condition_variable queueCondition;
 
@@ -64,6 +65,26 @@ namespace OmegaWTK::Composition {
         /// render target stays alive for as long as the compositor knows
         /// about it (matches RenderTargetStore keying).
         OmegaCommon::Map<SharedHandle<CompositionRenderTarget>,SharedHandle<CompositorSurface>> windowSurfaces_;
+
+        /// §2.14 Pass 1 — per-window attached visual tree (Native side)
+        /// + its lazily-bound root render-target context.
+        ///
+        /// Replaces `PreCreatedResourceRegistry` for backends that have
+        /// migrated to `Native::VisualTree`. macOS and Win32 still use
+        /// the legacy path until their §2.14 migration lands; the
+        /// renderer checks this map first and falls back to the legacy
+        /// `PreCreatedResourceRegistry` lookup on miss.
+        ///
+        /// `rootContext` is built lazily on first frame: the binder
+        /// (`tryBindRootVisual`) returns nullptr until the platform
+        /// surface is realized (Linux X11 Window not yet live), at
+        /// which point the compositor retries on every frame. This
+        /// mirrors the pre-§2.14 `resolveDeferredNativeTarget` loop.
+        struct NativeAttachedTree {
+            SharedHandle<Native::VisualTree> tree;
+            std::unique_ptr<BackendRenderTargetContext> rootContext;
+        };
+        std::unordered_map<CompositionRenderTarget *, NativeAttachedTree> nativeAttachedTrees_;
 
         /// Frame trigger. Set by deposit callback, cleared at the top
         /// of each frame worker iteration before draining surfaces.
@@ -107,6 +128,25 @@ namespace OmegaWTK::Composition {
 
         void registerWindowSurface(SharedHandle<CompositionRenderTarget> target,
                                    SharedHandle<CompositorSurface> surface);
+
+        /// §2.14 Pass 1 — attach a per-window `Native::VisualTree` to
+        /// the compositor. AppWindow calls this from `setRootWidget`
+        /// after constructing the tree via `Native::make_native_visual_tree`.
+        /// The compositor stores the tree and lazily binds its root
+        /// visual to a `BackendRenderTargetContext` on first render
+        /// (via the per-backend `tryBindRootVisual`).
+        ///
+        /// Replaces `PreCreatedResourceRegistry::store` for migrated
+        /// backends. Single attach per render target; re-attaching
+        /// replaces.
+        void attachVisualTree(SharedHandle<Native::VisualTree> tree,
+                              SharedHandle<CompositionRenderTarget> target);
+
+        /// §2.14 Pass 1 — drop the attached tree + its RTC. Called
+        /// from `~AppWindow` before the tree handle drops so the
+        /// compositor releases its RTC (which holds GTE resources)
+        /// while GTE is still live.
+        void detachVisualTree(CompositionRenderTarget * target);
 
         /// Tear down the compositor's GE-holding state without
         /// destroying the object itself. Mirrors ~Compositor (stops

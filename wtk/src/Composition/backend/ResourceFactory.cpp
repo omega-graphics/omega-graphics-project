@@ -67,37 +67,14 @@ namespace OmegaWTK::Composition {
         return effectProcessor_;
     }
 
-    BackendResourceFactory::VisualTreeBundle
-    BackendResourceFactory::createVisualTreeForView(
-            SharedHandle<ViewRenderTarget> & renderTarget,
-            Composition::Rect & rect,
-            ViewPresentTarget & outPresentTarget)
-    {
-        VisualTreeBundle result {};
-
-        runOnMainThread([&]{
-            result.visualTree = BackendVisualTree::Create(renderTarget);
-            result.rootVisual = result.visualTree->makeRootVisual(rect, rect.pos, outPresentTarget);
-            // If the platform couldn't resolve a native present surface
-            // yet (e.g. GTK/Vulkan: the GdkWindow isn't realized until the
-            // toplevel is shown), discard the partial root visual. The
-            // BackendRenderTargetContext we just built holds a null
-            // GENativeRenderTarget — committing it would crash. Compositor
-            // ::renderCompositeFrame's first-frame fallback recreates the
-            // root visual via createRootVisual() once the surface is
-            // resolvable, by which point the window has been displayed.
-            if(outPresentTarget.nativeTarget == nullptr){
-                result.rootVisual.reset();
-                result.rootContext = nullptr;
-            }
-            else {
-                result.visualTree->setRootVisual(result.rootVisual);
-                result.rootContext = result.rootVisual->renderTarget.get();
-            }
-        });
-
-        return result;
-    }
+    // §2.14 Pass 1 retired `createVisualTreeForView`,
+    // `createChildVisual`, `createRootVisual`, and the matching
+    // `PreCreatedResourceRegistry`. Every backend now constructs its
+    // per-window `Native::VisualTree` in the AppWindow ctor via
+    // `Native::make_native_visual_tree`, and the compositor's
+    // `attachVisualTree` owns the per-Visual
+    // `BackendRenderTargetContext` through the per-backend
+    // `tryBindRootVisual` (see `backend/<plat>/<Plat>VisualBinder`).
 
     BackendResourceFactory::TextureTargetBundle
     BackendResourceFactory::createTextureTarget(
@@ -125,62 +102,6 @@ namespace OmegaWTK::Composition {
         return result;
     }
 
-    Core::SharedPtr<BackendVisualTree::Visual>
-    BackendResourceFactory::createChildVisual(
-            BackendVisualTree & tree,
-            Composition::Rect & rect)
-    {
-        Core::SharedPtr<BackendVisualTree::Visual> result;
-
-        runOnMainThread([&]{
-            result = tree.makeSurfaceVisual(rect, rect.pos);
-            tree.addVisual(result);
-        });
-
-        return result;
-    }
-
-    Core::SharedPtr<BackendVisualTree::Visual>
-    BackendResourceFactory::createRootVisual(
-            BackendVisualTree & tree,
-            Composition::Rect & rect,
-            ViewPresentTarget & outPresentTarget)
-    {
-        Core::SharedPtr<BackendVisualTree::Visual> result;
-
-        runOnMainThread([&]{
-            result = tree.makeRootVisual(rect, rect.pos, outPresentTarget);
-            tree.setRootVisual(result);
-        });
-
-        return result;
-    }
-
-    // --- PreCreatedResourceRegistry ---
-
-    std::mutex PreCreatedResourceRegistry::mutex_;
-    OmegaCommon::Map<CompositionRenderTarget *, PreCreatedVisualTreeData *>
-            PreCreatedResourceRegistry::registry_;
-
-    void PreCreatedResourceRegistry::store(CompositionRenderTarget *key,
-                                           PreCreatedVisualTreeData *data){
-        std::lock_guard<std::mutex> lock(mutex_);
-        registry_[key] = data;
-    }
-
-    PreCreatedVisualTreeData * PreCreatedResourceRegistry::lookup(
-            CompositionRenderTarget *key){
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = registry_.find(key);
-        if(it != registry_.end()){
-            return it->second;
-        }
-        return nullptr;
-    }
-
-    void PreCreatedResourceRegistry::remove(CompositionRenderTarget *key){
-        std::lock_guard<std::mutex> lock(mutex_);
-        registry_.erase(key);
-    }
+    // §2.14 Pass 1 — see the note above the TextureTargetBundle impl.
 
 };

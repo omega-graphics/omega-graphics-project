@@ -1139,9 +1139,32 @@ The interim primary-monitor anchoring described at the bottom of this section is
 
 ---
 
-### 2.14 NativeVisualTree — Per-window Compositor Tree, Owned by Native
+### 2.14 NativeVisualTree — Per-window Compositor Tree, Owned by Native — ✅ Pass 1 Done
 
-**Goal:** The per-window compositor visual tree (DirectComposition / CoreAnimation / X11 child-window stack) moves from the Composition layer into Native, where `FrameBuilder` can reconfigure it directly during layout — without queueing work onto the compositor thread or waiting for the compositor's next frame.
+**Status: Pass 1 shipped across all three backends.** Pass 2 (`Native::NativeContentNode` + `reconfigureContentNode`) is deferred until `NativeViewHost-Adoption-Plan.md` Phase V2 / G2 picks it up — that's the consumer that justifies the API, and shipping the abstraction without a caller would be dead code on every backend.
+
+| Item | Status |
+|------|--------|
+| `Native::Visual` / `Native::VisualTree` abstract API (`wtk/include/omegaWTK/Native/NativeVisualTree.h`) | ✅ Done — `Visual::resize` + `setOnResize` hook installed by the per-backend binder; `VisualTree::rootVisual` / `resize`; per-platform `make_native_visual_tree` factory decl |
+| Linux Native impl (`wtk/src/Native/gtk/VKVisualTree.cpp` + `private_include/NativePrivate/gtk/VKVisualTree.h`) | ✅ Done — `Native::GTK::VKVisual` exposes X11/Wayland handles off the wrapped GTKItem; X11SurfaceHost integration kept from §2.13 |
+| macOS Native impl (`wtk/src/Native/macos/MTLVisualTree.{h,mm}`) | ✅ Done (compile-unverified off-platform) — `Native::Cocoa::MTLVisual` owns the CAMetalLayer with retain/release; `MTLVisualTree` ctor sanitizes geometry + calls `CocoaItem::setRootLayer` |
+| Win32 Native impl (`wtk/src/Native/win/DCVisualTree.cpp` + `private_include/NativePrivate/win/DCVisualTree.h`) | ✅ Done (compile-unverified off-platform) — `Native::Win::DCVisual` owns the `IDCompositionVisual2`; `DCVisualTree` lazily inits the process-global `IDCompositionDesktopDevice`, builds the per-window `IDCompositionTarget`, holds the root visual; `bindSwapChain` runs the SetContent / SetOpacityMode / SetRoot / Commit sequence |
+| Composition binders — `tryBindRootVisual` (cross-platform decl in `backend/VisualBinder.h`) | ✅ Done — three implementations, each downcasts the abstract tree, builds the `GENativeRenderTarget`, constructs the `BackendRenderTargetContext`, installs the `onResize → setRenderTargetSize` hook. Linux verified; macOS/Win32 mirror it |
+| Compositor side map | ✅ Done — `nativeAttachedTrees_` (`std::unordered_map<CompositionRenderTarget*, NativeAttachedTree>`) replaces `PreCreatedResourceRegistry`; `attachVisualTree` / `detachVisualTree` public API; renderCompositeFrame is now single-path — checks the map, lazy-binds via `tryBindRootVisual`, retries on pre-realize, dispatches |
+| AppWindow ownership | ✅ Done — `Impl::visualTree_` constructed in `setRootWidget` via `make_native_visual_tree`, attached to compositor, resized via `visualTree_->resize` in `syncNativePresentLayer`, detached in `~AppWindow` so GTE resources release while GTE is still live. No `#ifdef` guards — single uniform path on every backend |
+| Legacy retirement | ✅ Done — deleted `backend/VisualTree.h` (`BackendVisualTree`), `backend/vk/VKLayerTree.{h,cpp}`, `backend/mtl/CALayerTree.{h,mm}`, `backend/dx/DCVisualTree.{h,cpp}`. Removed `BackendCompRenderTarget`, `RenderTargetStore`, `ViewPresentTarget`, `BackendNativeContentRegion`, `pendingNativeContent_`, the recording branch in `case PrimitiveOp::NativeContent`, `BackendResourceFactory::createVisualTreeForView` / `createChildVisual` / `createRootVisual` / `VisualTreeBundle`, `PreCreatedResourceRegistry` / `PreCreatedVisualTreeData`, the `applyNativeContentCarveouts` drain hook, and `windowVisualTreeData` from `AppWindowImpl` |
+| Pass 2 — `NativeContentNode` + `reconfigureContentNode` per backend | ⏳ Deferred — lands together with `NativeViewHost-Adoption-Plan.md` Phase V2 / G2 (the actual consumer). The Native::VisualTree surface is designed to absorb it as additions, not API churn |
+
+**Linux verification (build- + run-verified):** BasicAppTest renders cleanly through the new path — 362 drawPolygons per smoke-test run on the new code path, visually confirmed to match the pre-§2.14 output (shapes, text, button hover transitions, layout).
+
+**macOS / Win32 verification (compile-unverified off-platform):** the Native impls and binders are pattern-matched against the verified Linux split — same SharedHandle ownership shape, same `onResize` install site in the binder, same `BackendRenderTargetContext` ctor signature. The first thing to audit if the macOS or Windows build lands red is drift between the platforms.
+
+**Two landmines that surfaced during the migration** and are now captured in the agent's memory + the live build:
+
+1. `TARGET_LINUX` is a CMake variable but not a `-D` compile definition — wtk uses `TARGET_GTK` / `TARGET_VULKAN` on Linux. `#ifdef TARGET_LINUX` is silent dead code; the migration's first cut shipped with that wrong guard and was only caught when retiring `VKLayerTree.cpp` exposed an unresolved `BackendVisualTree::Create`.
+2. X11 `#define None 0L` collides with `enum class FillMode { None, ... }` in `Composition/Animation.h` (and the same shape elsewhere). Reshaping the §2.14 include chain shifted the order and exposed a path where `None` was redefined between `Core.h`'s undef and `Animation.h`'s enum, breaking `LayoutManager.cpp` / `View.Core.cpp`. Fixed by moving Core.h's `#undef None` to file scope and adding a defensive guard to Animation.h.
+
+**Goal (original):** The per-window compositor visual tree (DirectComposition / CoreAnimation / X11 child-window stack) moves from the Composition layer into Native, where `FrameBuilder` can reconfigure it directly during layout — without queueing work onto the compositor thread or waiting for the compositor's next frame.
 
 This is a platform-uniform structural change. It pairs with `NativeViewHost-Adoption-Plan.md` (which describes the consumer-facing API) and with §2.13 (which already commits the Linux side to direct X11 surface ownership).
 
@@ -1294,12 +1317,19 @@ All `Native::VisualTree` mutations happen on the main thread — the same rule t
 - `wtk/src/UI/AppWindow.{h,cpp}` — construct `Native::VisualTree` in ctor; expose `visualTree()` accessor; tear down in dtor after `X11SurfaceHost` (Linux) and before `NativeWindow`.
 - `wtk/include/omegaWTK/UI/NativeViewHost.h` — `attach` now takes `Native::NativeContentNodePtr` (was the earlier tentative `Composition::NativeContentNodePtr`). `onLayoutResolved` body calls `visualTree->reconfigureContentNode` directly.
 
-#### Risks / open questions
+#### Risks / open questions (Pass 1 resolutions)
 
-1. **Side-map lifetime sequencing.** The compositor's `Visual* → BackendRenderTargetContext` map must drain before `AppWindow` releases the tree (else dangling `Visual*` keys). The compositor's per-window teardown already has a deterministic shutdown order; adding a "clear render-context side map" step is mechanical, but worth a one-time audit for window tear-down races.
-2. **Composition consumers of `BackendVisualTree`.** Any code outside the moved files that names `BackendVisualTree`, `BackendVisualTree::Visual`, or the per-platform classes needs to be updated. The codedb search at the start of the work should produce the full list; it is small (the classes are mostly internal to the backend already), but worth confirming.
-3. **Compositor's first-frame fallback (Linux).** `VKLayerTree.cpp` today has a "deferred native target resolve" path for the case where the GdkWindow isn't realized at tree-construction time (`resolveDeferredNativeTarget`). After the move, the same mechanism lives in `VKVisualTree.cpp` and is wired through `X11SurfaceHost::runOnRealize` (already part of §2.13). This is a wiring change, not new functionality.
-4. **Verification.** Linux is the agent's native build target — both the move and the FrameBuilder hookup are compile- and run-verifiable in-house. macOS and Windows are unverified off-platform until those builds run; mark accordingly per the "mark unverified backends" rule.
+1. **Side-map lifetime sequencing.** ✅ Resolved. `Compositor::detachVisualTree` clears the visual's `onResize` hook (which captures the RTC by raw pointer) BEFORE dropping the RTC, then erases the side-map entry. `~AppWindow` calls `detachVisualTree` so the RTC releases GTE resources while GTE is still live; `Compositor::shutdown` also clears `nativeAttachedTrees_` as a backstop.
+2. **Composition consumers of `BackendVisualTree`.** ✅ Resolved. No external consumers remained — `BackendVisualTree`, `BackendCompRenderTarget`, `RenderTargetStore`, `ViewPresentTarget`, and the drain hook were all retired in one cleanup pass with no dangling references.
+3. **Compositor's first-frame fallback (Linux).** ✅ Resolved. The deferred-resolve loop lives in `Composition::tryBindRootVisual` in `backend/vk/VKVisualBinder.cpp` — returns null pre-realize; the compositor's `renderCompositeFrame` retries on every frame until the X11 Window becomes available. Same behavior as the pre-§2.14 `resolveDeferredNativeTarget` loop, just relocated to the binder.
+4. **Verification.** Linux build- + run-verified through BasicAppTest. macOS and Win32 ship compile-unverified off-platform — Pass 1 carries a `// COMPILE-UNVERIFIED off-platform` callout at the top of every moved file and is pattern-matched against the Linux split (same SharedHandle ownership, same `onResize` install site, same RTC ctor signature). The first thing to audit if those builds land red is drift between the platforms.
+
+#### Landmines captured during the migration
+
+Two project-wide gotchas surfaced during Pass 1; both are now in the agent's memory and reflected in the live code:
+
+1. **`TARGET_LINUX` is a CMake variable but not a `-D` define.** wtk's Linux preprocessor macros are `TARGET_GTK` / `TARGET_VULKAN`. `#ifdef TARGET_LINUX` is silent dead code on Linux builds; the migration's first cut shipped that wrong guard and was only caught when retiring `VKLayerTree.cpp` exposed an unresolved `BackendVisualTree::Create` at link time.
+2. **X11's `#define None 0L` macro pollutes enum identifiers.** `enum class FillMode { None, ... }` in `Composition/Animation.h` (and the same shape elsewhere) is silently mangled when an X11-pulling header lands between `Core.h`'s `#undef None` and the enum declaration. Reshaping the §2.14 include graph exposed this in `LayoutManager.cpp` / `View.Core.cpp`. Fixed by moving `Core.h`'s `#undef None` to file scope (out of the namespace block) and adding a defensive guard to `Animation.h`.
 
 #### Dependencies
 
@@ -1310,9 +1340,9 @@ All `Native::VisualTree` mutations happen on the main thread — the same rule t
 - **`NativeViewHost-Adoption-Plan.md` Shared prerequisite** — and therefore Parts 1 and 2 (V1–V4, G1–G4) in their entirety. `NativeViewHost::onLayoutResolved` calls `Native::VisualTree::reconfigureContentNode` directly; without §2.14 there is no tree to call.
 - **Any future native-surface widget** (web view, IME field, platform-specific media surfaces) — they all attach `NativeContentNode`s to the per-window `Native::VisualTree`.
 
-**Staging.** §2.14 can be split across two passes if helpful:
-1. *Cross-platform pass* — file moves + namespace shift + Visual/RTC decoupling + drain removal + Compositor side-map. Lands once, touches all three backends.
-2. *Per-platform pass* — `reconfigureContentNode` + content-node factories per platform. Can land per-OS as build verification clears each one. Linux is the gated one (waits on §2.13).
+**Staging — shipped split:**
+1. ✅ *Pass 1* — Cross-platform structural lift: file moves + namespace shift + Visual/RTC decoupling + drain removal + Compositor side-map + legacy factory retirement. Shipped across all three backends in one pass; Linux verified, macOS/Win32 unverified off-platform.
+2. ⏳ *Pass 2* — Deferred. `Native::NativeContentNode` + `reconfigureContentNode` + content-node factories per platform. Lands when `NativeViewHost-Adoption-Plan.md` Phase V2 / G2 picks it up (the actual consumer that justifies the API).
 
 §2.14 has no other dependencies in this proposal. It can land in parallel with §2.2, §2.3a, §2.4, §2.6, §2.7, §2.9, §2.10.
 
@@ -1334,7 +1364,7 @@ All `Native::VisualTree` mutations happen on the main thread — the same rule t
 | ~~P1~~ **Done** | 2.11 NativeNote / NotificationCenter | Implemented |
 | ~~P1~~ **Done** | 2.12 NativeMenu / Menu | Implemented |
 | **P1** | 2.13 Linux/X11 direct surface ownership (root + NativeViewHost) + `X11SurfaceHost` | Pairs with §2.2/§2.9 and `NativeViewHost-Adoption-Plan.md` — locks Linux to a single, canonical surface-ownership model before per-platform features and the NativeViewHost-based widgets (`VideoViewWidget`, `GTEViewWidget`) start landing |
-| **P1** | 2.14 NativeVisualTree (Composition → Native move, FrameBuilder direct path, drain removal, file moves + class renames) | Prerequisite for `NativeViewHost-Adoption-Plan.md` — without the move, native surfaces lag virtual layout by a compositor frame. Should land alongside §2.13 since both touch the same per-window structure |
+| ~~P1~~ **Pass 1 done (Linux verified; macOS/Win32 compile-unverified off-platform)** | 2.14 NativeVisualTree (Composition → Native move, drain removal, legacy factory retirement) | Pass 1 shipped on all three backends — `Native::VisualTree` owns the platform layer topology, the Composition binder owns the GTE / RTC pairing, AppWindow drives both directly. Pass 2 (`Native::NativeContentNode` + `reconfigureContentNode`) deferred until `NativeViewHost-Adoption-Plan.md` Phase V2/G2 picks it up. |
 | **P3** | 2.10 NativeAccessibility | Stub now, implement per-platform over time |
 
 ---

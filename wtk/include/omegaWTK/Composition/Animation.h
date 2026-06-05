@@ -17,6 +17,11 @@
 #ifndef OMEGAWTK_COMPOSITION_ANIMATION_H
 #define  OMEGAWTK_COMPOSITION_ANIMATION_H
 
+// X11 Pulls in this
+#ifdef None
+#undef None 
+#endif
+
 namespace OmegaWTK {
     class View;
     // UIView-Render-Redesign Tier 4 Phase 4.3: the per-window

@@ -8,7 +8,6 @@
 // other backend file reaches for it directly rather than carrying its own
 // statics.
 
-#include "VisualTree.h"
 #include "Effect.h"
 #include <memory>
 #include <mutex>
@@ -74,19 +73,19 @@ namespace OmegaWTK::Composition {
         /// when the backing implementation cannot be created.
         SharedHandle<BackendCanvasEffectProcessor> & effectProcessor();
 
-        struct VisualTreeBundle {
-            SharedHandle<BackendVisualTree> visualTree;
-            Core::SharedPtr<BackendVisualTree::Visual> rootVisual;
-            BackendRenderTargetContext *rootContext = nullptr;
-        };
-
-        /// Creates a BackendVisualTree for the given ViewRenderTarget,
-        /// with a root visual sized to `rect`.
-        /// The root visual's native present surface is stored in outPresentTarget.
-        /// All underlying GPU resources are created on the main thread.
-        VisualTreeBundle createVisualTreeForView(SharedHandle<ViewRenderTarget> & renderTarget,
-                                                  Composition::Rect & rect,
-                                                  ViewPresentTarget & outPresentTarget);
+        // §2.14 Pass 1 retired the visual-tree-creation surface here.
+        // `Native::make_native_visual_tree` (one factory per backend
+        // under `wtk/src/Native/<plat>/`) replaces `createVisualTreeForView`,
+        // `createChildVisual`, and `createRootVisual`. The
+        // `BackendRenderTargetContext` that was bundled into
+        // `VisualTreeBundle.rootContext` is now built by the per-
+        // backend `Composition::tryBindRootVisual` and owned by the
+        // compositor's `nativeAttachedTrees_` side map.
+        // `PreCreatedResourceRegistry` / `PreCreatedVisualTreeData`
+        // bridged View construction (main thread) to the compositor
+        // thread for the legacy pre-creation queue; the new path
+        // builds the tree once in the `AppWindow` ctor (also main
+        // thread) and looks it up via the compositor's attach map.
 
         /// Creates an offscreen texture + texture render target pair
         /// on the main thread.
@@ -96,38 +95,6 @@ namespace OmegaWTK::Composition {
         };
         TextureTargetBundle createTextureTarget(unsigned width, unsigned height,
                                                  OmegaGTE::TexturePixelFormat format);
-
-        /// Creates a texture-only child visual within an existing visual tree
-        /// on the main thread. No native present surface.
-        Core::SharedPtr<BackendVisualTree::Visual> createChildVisual(
-                BackendVisualTree & tree,
-                Composition::Rect & rect);
-
-        /// Creates a root visual with a native present surface within
-        /// an existing visual tree on the main thread.
-        Core::SharedPtr<BackendVisualTree::Visual> createRootVisual(
-                BackendVisualTree & tree,
-                Composition::Rect & rect,
-                ViewPresentTarget & outPresentTarget);
-    };
-
-    /// Holds pre-created visual tree resources for a View.
-    /// Populated during View construction on the main thread.
-    struct PreCreatedVisualTreeData {
-        BackendResourceFactory::VisualTreeBundle bundle;
-        ViewPresentTarget presentTarget;
-    };
-
-    /// Thread-safe registry mapping render targets to their pre-created
-    /// visual tree data. Populated by View constructors (main thread),
-    /// consumed by the compositor thread in ensureLayerSurfaceTarget.
-    class PreCreatedResourceRegistry {
-        static std::mutex mutex_;
-        static OmegaCommon::Map<CompositionRenderTarget *, PreCreatedVisualTreeData *> registry_;
-    public:
-        static void store(CompositionRenderTarget *key, PreCreatedVisualTreeData *data);
-        static PreCreatedVisualTreeData * lookup(CompositionRenderTarget *key);
-        static void remove(CompositionRenderTarget *key);
     };
 
 };

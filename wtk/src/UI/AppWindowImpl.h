@@ -4,6 +4,7 @@
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/StyleSheet.h"
 #include "omegaWTK/Native/NativeWindow.h"
+#include "omegaWTK/Native/NativeVisualTree.h"
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
 #include "omegaWTK/Composition/Layer.h"
@@ -25,7 +26,15 @@ struct AppWindow::Impl {
     Composition::Rect rect;
     SharedHandle<Menu> menu;
     SharedHandle<Composition::CompositorSurface> windowSurface;
-    Composition::PreCreatedVisualTreeData windowVisualTreeData;
+
+    /// §2.14 Pass 1: per-window `Native::VisualTree`. Built in
+    /// `setRootWidget` via `Native::make_native_visual_tree` and
+    /// handed to the compositor via `Compositor::attachVisualTree`.
+    /// `~AppWindow` detaches and drops it so the per-Visual
+    /// `BackendRenderTargetContext` releases GTE resources while GTE
+    /// is still live. Replaces the pre-§2.14
+    /// `PreCreatedResourceRegistry` + `windowVisualTreeData` bundle.
+    Native::NativeVisualTreePtr visualTree_;
 
     // Tier 3 Phase 3.0 / Tier 4 §4.2: window-scoped present-layer host.
     // Owned by the window for its full lifetime; resized in lockstep with

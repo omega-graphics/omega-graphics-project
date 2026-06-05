@@ -5,7 +5,7 @@
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "omegaWTK/UI/AppWindow.h"  // AppWindow::isNativeReady() — NativeWindow-Ready-Signal-Plan §3.5(A)
 #include "backend/ResourceFactory.h"
-#include "backend/VisualTree.h"
+#include "backend/VisualBinder.h"
 #include "omegaGTE/GE.h"  // OmegaGTE::isDebugLayerEnabled() — gates [WTK_RP] traces
 #include <cmath>
 #include <iostream>
@@ -57,7 +57,13 @@ void Compositor::unobserveLayerTree(LayerTree *tree){
 }
 
 void Compositor::hasDetached(LayerTree *tree){
-    renderTargetStore.cleanTreeTargets(tree);
+    // §2.14 Pass 1 retired the `BackendCompRenderTarget` /
+    // `RenderTargetStore` cache that pre-§2.14 needed cleaning here
+    // (those were the legacy per-Layer surface targets indexed by
+    // CompositionRenderTarget). Native::VisualTree carries its own
+    // teardown through `Compositor::detachVisualTree`, which is
+    // called from `~AppWindow`. All that remains is observer
+    // bookkeeping.
     unobserveLayerTree(tree);
 }
 
@@ -145,7 +151,9 @@ void Compositor::shutdown(){
     if(gte.graphicsEngine != nullptr){
         gte.graphicsEngine->waitForGPUIdle();
     }
-    renderTargetStore.store.clear();
+    // §2.14 Pass 1 retired RenderTargetStore (legacy per-Layer
+    // BackendRenderTargetContext cache). nativeAttachedTrees_ takes
+    // its place and is drained below.
     // windowSurfaces_ owns SharedHandle<CompositionRenderTarget> /
     // SharedHandle<CompositorSurface> entries that transitively
     // pin BackendRenderTargetContext-held vertex / param buffers
@@ -158,6 +166,9 @@ void Compositor::shutdown(){
     {
         std::lock_guard<std::mutex> lk(mutex);
         windowSurfaces_.clear();
+        // §2.14 Pass 1: drop attached visual trees + their RTCs while
+        // GTE is still alive. Same rationale as windowSurfaces_ above.
+        nativeAttachedTrees_.clear();
     }
 }
 
@@ -172,6 +183,45 @@ void Compositor::registerWindowSurface(SharedHandle<CompositionRenderTarget> tar
         windowSurfaces_[std::move(target)] = std::move(surface);
     }
     notifyFrameDirty();
+}
+
+void Compositor::attachVisualTree(SharedHandle<Native::VisualTree> tree,
+                                  SharedHandle<CompositionRenderTarget> target){
+    if(tree == nullptr || target == nullptr){
+        return;
+    }
+    std::lock_guard<std::mutex> lk(mutex);
+    auto & slot = nativeAttachedTrees_[target.get()];
+    slot.tree = std::move(tree);
+    // rootContext stays null until the first renderCompositeFrame
+    // succeeds in binding — `tryBindRootVisual` returns nullptr while
+    // the platform surface is unrealized (Linux X11 pre-show), and we
+    // retry every frame until it lands.
+    slot.rootContext.reset();
+}
+
+void Compositor::detachVisualTree(CompositionRenderTarget * target){
+    if(target == nullptr){
+        return;
+    }
+    std::lock_guard<std::mutex> lk(mutex);
+    auto it = nativeAttachedTrees_.find(target);
+    if(it == nativeAttachedTrees_.end()){
+        return;
+    }
+    // Tear-down order: clear the Visual's onResize hook BEFORE
+    // dropping the RTC, since the hook captures the RTC by raw
+    // pointer (installed in the per-backend binder). Then drop the
+    // RTC (releases GTE resources while GTE is still live), then
+    // erase the map entry (which releases the SharedHandle to the
+    // tree itself, last).
+    if(it->second.tree != nullptr){
+        if(auto *rootVisual = it->second.tree->rootVisual()){
+            rootVisual->setOnResize(nullptr);
+        }
+    }
+    it->second.rootContext.reset();
+    nativeAttachedTrees_.erase(it);
 }
 
 void Compositor::notifyFrameDirty(){
@@ -249,67 +299,41 @@ void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget
         return;
     }
 
-    BackendCompRenderTarget *backendTarget = nullptr;
-    auto found = renderTargetStore.store.find(target);
-    if(found == renderTargetStore.store.end()){
-        auto *preCreated = PreCreatedResourceRegistry::lookup(target.get());
-        if(preCreated == nullptr || preCreated->bundle.visualTree == nullptr){
+    // §2.14 Pass 1 — every backend uses the Native::VisualTree path.
+    // The per-Visual RTC is owned by
+    // `nativeAttachedTrees_[target].rootContext` and bound lazily by
+    // the per-backend `tryBindRootVisual` (defined in
+    // backend/<plat>/<Plat>VisualBinder). On Linux this can return
+    // nullptr until the X11 Window realizes; we retry every frame
+    // until the bind succeeds — the same loop the pre-§2.14
+    // `resolveDeferredNativeTarget` ran. macOS / Win32 binders
+    // succeed synchronously.
+    BackendRenderTargetContext *targetContext = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        auto nativeIt = nativeAttachedTrees_.find(target.get());
+        if(nativeIt == nativeAttachedTrees_.end()){
             if(OmegaGTE::isDebugLayerEnabled()){
-                std::cerr << "[WTK_RP] renderCompositeFrame: early-return (preCreated=" << (preCreated ? "ok" : "null")
-                          << " visualTree=" << (preCreated && preCreated->bundle.visualTree ? "ok" : "null") << ")" << std::endl;
+                std::cerr << "[WTK_RP] renderCompositeFrame: early-return (no Native::VisualTree attached for target)" << std::endl;
             }
             return;
         }
-        if(preCreated->presentTarget.nativeTarget == nullptr){
-            preCreated->bundle.visualTree->resolveDeferredNativeTarget(preCreated->presentTarget);
+        auto & attached = nativeIt->second;
+        if(attached.rootContext == nullptr && attached.tree != nullptr){
+            attached.rootContext = tryBindRootVisual(*attached.tree);
         }
-        BackendCompRenderTarget compRenderTarget {
-            preCreated->bundle.visualTree,
-            {},
-            preCreated->presentTarget};
-        backendTarget = &renderTargetStore.store.insert(
-                std::make_pair(target,compRenderTarget)).first->second;
-    } else {
-        backendTarget = &found->second;
-    }
-
-    if(backendTarget == nullptr || backendTarget->visualTree == nullptr){
-        if(OmegaGTE::isDebugLayerEnabled()){
-            std::cerr << "[WTK_RP] renderCompositeFrame: early-return (backendTarget="
-                      << (backendTarget ? "ok" : "null") << " visualTree="
-                      << (backendTarget && backendTarget->visualTree ? "ok" : "null") << ")" << std::endl;
+        if(attached.rootContext == nullptr){
+            if(OmegaGTE::isDebugLayerEnabled()){
+                std::cerr << "[WTK_RP] renderCompositeFrame: early-return (tryBindRootVisual returned null — surface not realized yet)" << std::endl;
+            }
+            return;
         }
-        return;
-    }
-
-    // Root-visual creation is now eager (see NativeWindow-Ready-Signal-Plan
-    // step 4): Metal / D3D12 build it synchronously inside
-    // BackendResourceFactory::createVisualTreeForView, and Vulkan builds it
-    // inside its visualTree's resolveDeferredNativeTarget the first time the
-    // native surface is resolvable — which is guaranteed by the
-    // isNativeReady() gate at drainWindowSurfaces. The old anchor-from-slice
-    // fallback that lived here was a chicken-and-egg workaround for slice
-    // routes that don't set slice.targetLayer (SVG/per-view canvas paths) —
-    // delete-on-sight now that the root-visual contract is contract-strong.
-    if(!backendTarget->visualTree->hasRootVisual()){
-        if(OmegaGTE::isDebugLayerEnabled()){
-            std::cerr << "[WTK_RP] renderCompositeFrame: early-return (hasRootVisual=false post-resolveDeferredNativeTarget — backend's eager creation path failed)" << std::endl;
-        }
-        return;
-    }
-
-    if(backendTarget->visualTree->root == nullptr){
-        if(OmegaGTE::isDebugLayerEnabled()){
-            std::cerr << "[WTK_RP] renderCompositeFrame: early-return (visualTree->root is null)" << std::endl;
-        }
-        return;
+        targetContext = attached.rootContext.get();
     }
 
     if(OmegaGTE::isDebugLayerEnabled()){
         std::cerr << "[WTK_RP] renderCompositeFrame: reached dispatch, slices=" << frame->slices.size() << std::endl;
     }
-
-    BackendRenderTargetContext *targetContext = backendTarget->visualTree->root->renderTarget.get();
 
     float clearR = 0.f;
     float clearG = 0.f;

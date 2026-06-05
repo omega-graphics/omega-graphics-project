@@ -298,7 +298,6 @@ void AppWindow::setRootWidget(WidgetPtr widget){
     // Build the window's single backend visual tree and register it so
     // the compositor can resolve the window render target during draining.
     {
-        Composition::BackendResourceFactory factory;
         Composition::Rect rootRect = impl_->rect;
         rootRect.pos = {0.f, 0.f};
         // Single source of truth for the window's logical->physical pixel
@@ -306,13 +305,23 @@ void AppWindow::setRootWidget(WidgetPtr widget){
         // the backend visual tree is built so every backend reads it via
         // ViewRenderTarget::getRenderScale() rather than recomputing it.
         impl_->rootViewRenderTarget->setRenderScale(impl_->nativeWindow->scaleFactor());
-        impl_->windowVisualTreeData.bundle = factory.createVisualTreeForView(
-            impl_->rootViewRenderTarget,
+
+        // §2.14 Pass 1 — every backend constructs the per-window
+        // Native::VisualTree and hands it to the compositor. The
+        // compositor lazily binds the root visual's RTC on first
+        // render (via the per-backend `tryBindRootVisual`), retrying
+        // every frame until the platform surface is realized
+        // (relevant only on Linux X11; macOS / Win32 succeed
+        // synchronously).
+        impl_->visualTree_ = Native::make_native_visual_tree(
+            impl_->nativeWindow->getRootView(),
             rootRect,
-            impl_->windowVisualTreeData.presentTarget);
-        Composition::PreCreatedResourceRegistry::store(
-            impl_->rootViewRenderTarget.get(),
-            &impl_->windowVisualTreeData);
+            impl_->nativeWindow->scaleFactor());
+        if(impl_->visualTree_ != nullptr && impl_->widgetTreeHost->compositor != nullptr){
+            impl_->widgetTreeHost->compositor->attachVisualTree(
+                impl_->visualTree_,
+                impl_->rootViewRenderTarget);
+        }
     }
     impl_->widgetTreeHost->setWindowRenderTarget(impl_->rootViewRenderTarget);
     // Phase 5: provide the root native item so NativeViewHost can
@@ -429,9 +438,18 @@ void AppWindow::moveToScreen(const Native::NativeScreenDesc & screen){
 
 AppWindow::~AppWindow(){
     std::cout << "Closing Window" << std::endl;
-    if(impl_->rootViewRenderTarget != nullptr){
-        Composition::PreCreatedResourceRegistry::remove(impl_->rootViewRenderTarget.get());
+    // §2.14 Pass 1 — tell the compositor to drop the per-Visual RTC
+    // (releases GTE resources) and clear the Visual's onResize hook
+    // BEFORE the tree handle drops. Without this the compositor's
+    // `nativeAttachedTrees_` map would keep the tree alive past
+    // AppWindow's destruction, deferring GTE release until the
+    // compositor's own shutdown.
+    if(impl_->widgetTreeHost != nullptr &&
+       impl_->widgetTreeHost->compositor != nullptr &&
+       impl_->rootViewRenderTarget != nullptr){
+        impl_->widgetTreeHost->compositor->detachVisualTree(impl_->rootViewRenderTarget.get());
     }
+    impl_->visualTree_.reset();
     close();
 };
 
@@ -517,11 +535,15 @@ void AppWindowDelegate::syncNativePresentLayer(const Composition::Rect & rect){
         rootItem->resizeNativeLayer(rect, scale);
     }
 
-    auto & rootVisual = window->impl_->windowVisualTreeData.bundle.rootVisual;
-    if(rootVisual != nullptr){
+    // §2.14 Pass 1 — every backend resizes through the
+    // Native::VisualTree path. The tree's resize propagates through
+    // `Visual::onResize_` to the RTC's `setRenderTargetSize`
+    // (installed by the per-backend binder), which recomputes backing
+    // dimensions for the next frame.
+    if(window->impl_->visualTree_ != nullptr){
         Composition::Rect mutableRect = rect;
         mutableRect.pos = {0.f, 0.f};
-        rootVisual->resize(mutableRect);
+        window->impl_->visualTree_->resize(mutableRect);
     }
 
     // Tier 3 Phase 3.0: keep the window-scoped LayerTree's root layer

@@ -19,14 +19,15 @@
 #else
 #define OMEGAWTK_NODISCARD 
 #endif
+// X11 Pulls in this
+#ifdef None
+#undef None 
+#endif
 
 /// @brief OmegaWTK
 /// A cross platform user interface api.
 namespace OmegaWTK {
 
-    #ifdef None
-    #undef None 
-    #endif
 
 
     

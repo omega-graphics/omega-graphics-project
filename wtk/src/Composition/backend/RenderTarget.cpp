@@ -1,7 +1,6 @@
 
 
 #include "RenderTarget.h"
-#include "VisualTree.h"
 #include "TexturePool.h"
 #include "BufferPool.h"
 #include "FencePool.h"
@@ -337,12 +336,9 @@ void BackendRenderTargetContext::waitForGPU() {
 
 void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float clearB, float clearA) {
     frameRenderPass_.begin(clearR, clearG, clearB, clearA);
-    // Tier 3 Phase 3.7: each frame starts with an empty carve-out
-    // list. The platform tree is expected to drain via
-    // `pendingNativeContent()` at flush time; we clear here too so a
-    // dropped frame (or a headless validator that elides the drain)
-    // cannot leak entries forward.
-    pendingNativeContent_.clear();
+    // §2.14 Pass 1 retired `pendingNativeContent_` — see the
+    // header's comment at the former
+    // `BackendNativeContentRegion` site.
 }
 
 void BackendRenderTargetContext::endFrame() {
@@ -1578,38 +1574,20 @@ void BackendRenderTargetContext::resetElementState() {
             // overloads (VisualCommand's pre-resolved clipRect vs. the
             // DrawOp backend clip stack) — see pushDrawOpClip/popDrawOpClip.
             case PrimitiveOp::NativeContent: {
-                // Tier 3 Phase 3.7: record the carve-out into the
-                // per-frame pending list for the platform tree to
-                // translate at flush time. The destRect is converted
-                // from canvas-local into backing pixel coords using
-                // the same viewport-override + renderScale path as
-                // `applySetClip`, so the platform tree can hand the
-                // rect straight to the native layer's geometry
-                // setter (CALayer.frame on macOS, IDCompositionVisual
-                // SetOffsetX/Y + transform on Windows,
-                // wl_subsurface_set_position on Wayland) without
-                // redoing the transform.
-                auto & _params = params->nativeContentParams;
-                const float scale = renderScale_;
-                const auto & vp = frameRenderPass_.viewportOverride();
-                const float baseX = vp.active ? vp.offsetX : 0.f;
-                const float baseY = vp.active ? vp.offsetY : 0.f;
-                BackendNativeContentRegion rec{};
-                rec.destRectPixels.pos.x = (_params.destRect.pos.x + baseX) * scale;
-                rec.destRectPixels.pos.y = (_params.destRect.pos.y + baseY) * scale;
-                rec.destRectPixels.w     = _params.destRect.w * scale;
-                rec.destRectPixels.h     = _params.destRect.h * scale;
-                rec.hostId      = _params.hostId;
-                rec.zOrderHint  = _params.zOrderHint;
-                pendingNativeContent_.push_back(rec);
-#ifdef OMEGAWTK_TRACE_RENDER
-                std::cout << "[WTK] NativeContent carve-out: hostId="
-                          << rec.hostId << " z=" << rec.zOrderHint
-                          << " px=(" << rec.destRectPixels.pos.x
-                          << "," << rec.destRectPixels.pos.y << " "
-                          << rec.destRectPixels.w << "x"
-                          << rec.destRectPixels.h << ")" << std::endl;
-#endif
+                // §2.14 Pass 1 retired the carve-out recording. The
+                // platform-tree side of the pre-§2.14 plan
+                // (CALayer / DComp visual / X11 child window
+                // ordering via `applyNativeContentCarveouts`) is
+                // replaced in §2.14 Pass 2 by
+                // `Native::NativeContentNode` +
+                // `Native::VisualTree::reconfigureContentNode`, which
+                // runs inside `NativeViewHost::onLayoutResolved`
+                // rather than from the per-frame drain. The
+                // alpha-clear + AABB-cull semantics around
+                // `DrawOp::NativeContent` are preserved upstream of
+                // this switch; the recording branch here was the
+                // only piece tied to the retired drain hook.
+                (void)params;
                 return;
             }
             case PrimitiveOp::TextRun: {
@@ -2081,51 +2059,12 @@ void BackendRenderTargetContext::resetElementState() {
         }
     }
 
-    void RenderTargetStore::cleanTargets(LayerTree *tree){
-        if(tree == nullptr)
-            return;
-        OmegaCommon::Vector<Layer *> liveLayers {};
-        tree->collectAllLayers(liveLayers);
-
-        for(auto & storeEntry : store){
-            auto & compTarget = storeEntry.second;
-            auto surfIt = compTarget.surfaceTargets.begin();
-            while(surfIt != compTarget.surfaceTargets.end()){
-                bool isLive = false;
-                for(auto *liveLayer : liveLayers){
-                    if(liveLayer == surfIt->first){
-                        isLive = true;
-                        break;
-                    }
-                }
-                if(!isLive){
-                    surfIt = compTarget.surfaceTargets.erase(surfIt);
-                }
-                else {
-                    ++surfIt;
-                }
-            }
-            // Drop per-layer blur scratches whose layers were removed.
-            if(compTarget.visualTree != nullptr && compTarget.visualTree->root != nullptr){
-                auto *rootCtx = compTarget.visualTree->root->renderTarget.get();
-                if(rootCtx != nullptr){
-                    rootCtx->purgeDeadLayerScratches(liveLayers);
-                }
-            }
-        }
-    }
-
-    void RenderTargetStore::cleanTreeTargets(LayerTree *tree){
-        if(tree == nullptr)
-            return;
-        cleanTargets(tree);
-    }
-
-    void RenderTargetStore::removeRenderTarget(const SharedHandle<CompositionRenderTarget> & target){
-        auto it = store.find(target);
-        if(it != store.end()){
-            store.erase(it);
-        }
-    }
+    // §2.14 Pass 1 retired RenderTargetStore — its cleanTargets /
+    // cleanTreeTargets / removeRenderTarget impls were the legacy
+    // per-Layer BackendRenderTargetContext cache. The per-Visual RTC
+    // is now owned by Compositor::nativeAttachedTrees_ and lives only
+    // for the AppWindow's lifetime; the dead-layer scratch purge that
+    // ran here was the only consumer of the per-LayerTree
+    // bookkeeping.
 
 }

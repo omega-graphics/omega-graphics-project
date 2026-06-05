@@ -52,11 +52,19 @@ namespace OmegaWTK::Composition {
     /// each embedded native item; the platform tree uses it to look
     /// up the CALayer / DComp visual / Wayland subsurface that owns
     /// the region. `zOrderHint` is ascending = later / on-top.
-    struct BackendNativeContentRegion {
-        Composition::Rect destRectPixels {};
-        std::uint64_t hostId = 0;
-        int zOrderHint = 0;
-    };
+    // §2.14 Pass 1 retired `BackendNativeContentRegion` and the
+    // sibling `BackendVisualTree::applyNativeContentCarveouts` drain
+    // hook. Pre-§2.14 the slice loop's `case PrimitiveOp::NativeContent`
+    // recorded a region into `BackendRenderTargetContext::
+    // pendingNativeContent_`; the compositor's frame worker drained it
+    // after present and the per-platform tree translated each record
+    // into a CALayer / DComp visual / X11 child window. The drain hook
+    // never had a consumer (NativeViewHost-Adoption-Plan Phase V2/G2
+    // would have populated the hostId → native-layer registry), so the
+    // recording was dead infrastructure on every backend; §2.14 Pass 2
+    // will use `Native::NativeContentNode` for the same purpose,
+    // routed through `Native::VisualTree` directly without a per-frame
+    // drain.
 
     enum class BackendSubmissionStatus : std::uint8_t {
         Completed,
@@ -193,16 +201,13 @@ namespace OmegaWTK::Composition {
         /// reinstates the natural scissor.
         void applySetClip(const Core::Optional<Composition::Rect> & clipRect);
 
-        /// Tier 3 Phase 3.7: pending native-content carve-outs for
-        /// the current frame. `renderToTarget`'s `NativeContent`
-        /// case pushes one record per op (pre-translated to backing
-        /// pixel coords); cleared at `beginFrame` so each frame
-        /// starts with an empty list. The platform tree drains it
-        /// at `endFrame` time via `pendingNativeContent()` /
-        /// `clearPendingNativeContent()` and turns each record into
-        /// the right native primitive (CALayer sublayer ordering,
-        /// DirectComposition visual insertion, Wayland subsurface).
-        OmegaCommon::Vector<BackendNativeContentRegion> pendingNativeContent_;
+        // §2.14 Pass 1 retired `pendingNativeContent_` and its
+        // recording branch in `renderToTarget` (`case PrimitiveOp::
+        // NativeContent` no longer feeds a per-frame queue here). The
+        // alpha-clear + AABB-cull semantics of `DrawOp::NativeContent`
+        // are preserved; only the carve-out producer is gone.
+        // `Native::VisualTree`'s reconfigureContentNode (Pass 2) will
+        // replace the role this queue would have played.
 
         /// Tier 4 §4.0: neutral primitive selector. Lets the per-primitive
         /// rasterization body be shared (as a template over the params
@@ -306,22 +311,10 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> & tessellationContext(){ return tessellationContext_; }
         void releaseDeferredBuffers();
 
-        /// Tier 3 Phase 3.7: read / drain the pending native-content
-        /// carve-outs recorded by `renderToTarget`'s `NativeContent`
-        /// case during the current frame. The platform tree calls
-        /// `pendingNativeContent()` at flush time (typically inside
-        /// its `commit` / `presentFrame` path), iterates the records,
-        /// and translates each into the right native primitive
-        /// (CALayer sublayer ordering on macOS, DirectComposition
-        /// visual insertion on Windows, Wayland subsurface or X11
-        /// child window on Linux). `clearPendingNativeContent()`
-        /// resets the list before the next frame; the platform tree
-        /// is responsible for the call (the context auto-clears at
-        /// `beginFrame` for the case where the platform tree elides
-        /// the drain — e.g. headless validators).
-        const OmegaCommon::Vector<BackendNativeContentRegion> &
-            pendingNativeContent() const { return pendingNativeContent_; }
-        void clearPendingNativeContent(){ pendingNativeContent_.clear(); }
+        // §2.14 Pass 1 retired the carve-out drain accessors —
+        // `pendingNativeContent()` / `clearPendingNativeContent()` —
+        // alongside `pendingNativeContent_` itself. See the comment
+        // at `BackendNativeContentRegion`'s former definition above.
 #ifdef _WIN32
         /// Resize swap chain after waiting for GPU; use instead of calling ResizeBuffers on the swap chain directly.
         void resizeSwapChain(unsigned int backingWidth, unsigned int backingHeight);
@@ -356,32 +349,15 @@ namespace OmegaWTK::Composition {
         BackendRenderTargetContext & operator=(BackendRenderTargetContext &&) = delete;
     };
 
-    class BackendVisualTree;
-
-    /// Construction-time output for the native render target created by
-    /// makeRootVisual().  With Phase A-1 the native target is also passed
-    /// into BackendRenderTargetContext, so this struct is retained only for
-    /// the visual tree creation API.  It will be removed with Phase B.
-    struct ViewPresentTarget {
-        SharedHandle<OmegaGTE::GENativeRenderTarget> nativeTarget;
-        unsigned backingWidth = 1;
-        unsigned backingHeight = 1;
-    };
-
-    struct BackendCompRenderTarget {
-        SharedHandle<BackendVisualTree> visualTree;
-        OmegaCommon::Map<Layer *,BackendRenderTargetContext *> surfaceTargets;
-        ViewPresentTarget viewPresentTarget;
-    };
-
-    struct RenderTargetStore {
-     private:
-        void cleanTargets(LayerTree *tree);
-    public:
-        void cleanTreeTargets(LayerTree *tree);
-        void removeRenderTarget(const SharedHandle<CompositionRenderTarget> & target);
-        OmegaCommon::Map<SharedHandle<CompositionRenderTarget>,BackendCompRenderTarget> store = {};
-    };
+    // §2.14 Pass 1 retired:
+    //   - `BackendVisualTree` (the legacy abstract tree; replaced by
+    //     `Native::VisualTree`)
+    //   - `ViewPresentTarget` (no consumer once `createVisualTreeForView`
+    //     went)
+    //   - `BackendCompRenderTarget` (replaced by
+    //     `Compositor::NativeAttachedTree` keyed by render target)
+    //   - `RenderTargetStore` / `cleanTreeTargets` (per-Layer surface
+    //     cache built by the same legacy fallback)
 
 };
 

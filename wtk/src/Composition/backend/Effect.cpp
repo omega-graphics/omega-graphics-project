@@ -1,5 +1,11 @@
 #include "Effect.h"
 
+// §2.14 Pass 1: Effect.cpp used to pick up the GTE headers
+// transitively through `ResourceFactory.h → VisualTree.h →
+// RenderTarget.h → omegaWTK/Core/GTEHandle.h`. With `VisualTree.h`
+// retired, the chain breaks; include RenderTarget.h directly so the
+// `GEComputePassDescriptor` / `GECommandQueue` types stay visible.
+#include "RenderTarget.h"
 #include "Pipeline.h"
 #include "ResourceFactory.h"
 
