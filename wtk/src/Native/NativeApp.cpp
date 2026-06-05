@@ -4,8 +4,33 @@
 namespace OmegaWTK::Native {
 
 NativeApp::NativeApp(){
-    
+
 };
+
+void NativeApp::setDelegate(NativeAppDelegate * delegate){
+    delegate_ = delegate;
+}
+
+const NativeAppLaunchArgs & NativeApp::launchArgs() const {
+    return launchArgs_;
+}
+
+OmegaCommon::Vector<OmegaCommon::String> NativeApp::commandLineArgs() const {
+    OmegaCommon::Vector<OmegaCommon::String> args;
+    if(launchArgs_.argv == nullptr || launchArgs_.argc <= 0){
+        return args;
+    }
+    args.reserve(static_cast<std::size_t>(launchArgs_.argc));
+    for(int i = 0; i < launchArgs_.argc; ++i){
+        const char * a = launchArgs_.argv[i];
+        args.emplace_back(a ? a : "");
+    }
+    return args;
+}
+
+void NativeApp::adoptLaunchArgs(const NativeAppLaunchArgs & args){
+    launchArgs_ = args;
+}
 
 
 };

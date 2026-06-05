@@ -35,10 +35,43 @@ here; we close them before broadphase:
 - `AQBodyDesc` has **no collision-shape handle** yet (Phase 1 §10 explicitly
   parked it). Phase 2 adds it.
 - `AQBodyDesc::inertiaPrincipalMoments` documents "Zero ⇒ derive from the body's
-  collision shape (Phase 2)" (`AQSpace.h`). Phase 2 wires that: a dynamic body
+  collision shape (Phase 2)" (`AQRigidBody.h`). Phase 2 wires that: a dynamic body
   with a shape and zero moments gets its inertia from the shape via the Phase 1
   helpers (`AQinertiaSolidBox` / `AQinertiaSolidSphere` / `AQinertiaCapsule`,
   `AQMath.h`) — which exist precisely so this is a one-line call, not new math.
+
+**What Phase 1.1 has already closed for us (audited 2026-06-04).** Phase 1.1
+shipped four pieces of Phase 2's substrate; the work below now consumes rather
+than defines them. **Do not re-add these; they are already in `include/aqua/`:**
+- **`AQAABB<Ty>` + oriented-box bound — DONE.** Phase 1.1 landed
+  `AQAABB<Ty>` in `AQMath.h` (the §7 draft below, plus the §6.1 rotation-correct
+  `AQaabbOfOrientedBox(center, halfExtents, q)` using `|R|·h`). The full surface
+  ships: `overlaps / merged / fattened / surfaceArea / center / extents /
+  contains` plus the `empty() / fromMinMax / fromCenterHalfExtents` factories.
+  `FAABB = AQAABB<float>` is the public alias. Phase 2 just *uses* these.
+- **The drainable debug-draw bus — DONE.** `AQDebug.h` carries `AQDebugLine`
+  and `AQDebugFlags`; `AQSpace::setDebugFlags / debugFlags / drainDebugLines`
+  is the per-space pull surface (§9 "metrics emitted as debug-draw" wires
+  through this). Phase 2 *extends* it with new flag bits (`AQDebugAABB`,
+  `AQDebugBroadphasePair`, `AQDebugBroadphaseGuard`) and appends into the
+  same buffer — the bus, the consumer contract, and the kREATE adapter on
+  the other side are all in place.
+- **Reserved center-of-mass offset — DONE in the model, OPEN for wiring.**
+  `AQBodyDesc::centerOfMass` and `AQBodyState::comOffset` were added by Phase
+  1.1 (Phase-1.1 §6.2 / §11.7) precisely so that Phase 2's shape local-
+  transforms add geometry rather than refactor body state. The field is
+  defaulted to zero and currently has no effect; Phase 2 wires the offset
+  into the torque arm of `applyForceAtPoint` and the world position used by
+  `angularMomentum` once shapes can produce non-zero offsets.
+- **Full-inertia-tensor path — DONE.** `AQBodyDesc::inertiaTensor`
+  (`AQMat3F`) + `AQdiagonalizeInertia` wiring + fold-into-orientation
+  shipped in Phase 1.1. Useful for Phase 2's convex-hull body whose cooked
+  inertia comes out non-diagonal — the consumer just hands `addBody` the
+  3×3 tensor and stops thinking about Jacobi.
+
+The phase's remaining work is therefore: shape POD + handle + space-owned
+table, the broadphase itself, and the inertia-from-shape wiring. The bounds
+and debug machinery are already shipped.
 
 **Out of scope here, by design:** contact-manifold generation and GJK/EPA (Phase
 3), the contact/constraint solve (Phase 3), continuous detection (Phase 4), the
@@ -178,11 +211,15 @@ Grounded in the actual post-Phase-1 surface (`AQMath.h`, `AQIntegrator.h`,
   with a documented "derive from shape (Phase 2)" hook. Phase 2 calls those
   helpers when a shape is attached and moments are left zero — no new numerics,
   and the `double`/`float` genericity carries over for the parity harness.
-- **One bounds type, generic where it must be.** `AQAABB` is a small AQUA-owned
-  value type (min/max `FVec<3>`) with merge / overlap / fatten / surface-area. The
-  overlap test is a branch-light min/max compare — exactly what a GPU thread
-  wants — and surface-area is there so a BVH path (if §11.1 chooses it) has its
-  SAH for free.
+- **One bounds type, generic where it must be — DONE in Phase 1.1.** `AQAABB<Ty>`
+  is a small AQUA-owned value type (min/max `AQVec3<Ty>`) with merge / overlap /
+  fatten / surface-area, now living in `AQMath.h`. The overlap test is a branch-
+  light min/max compare — exactly what a GPU thread wants — and surface-area is
+  there so a BVH path (if §11.1 chooses it) has its SAH for free. Phase 1.1 also
+  shipped the §6.1 oriented-box bound `AQaabbOfOrientedBox(c, h, q)`, so the
+  rotation-correct bound — the §2-point-3 failure-mode mitigator — already
+  exists at the math layer and just needs Phase 2 to call it from the per-shape
+  bound functions.
 - **We own the determinism stance (again).** Broadphase output is a *set* of
   pairs; a set has no canonical order, and unordered output is a determinism leak
   (Phase 5 / roadmap §7.4). We emit pairs in a **fixed sorted order** (`(minIndex,
@@ -261,18 +298,31 @@ CPU-reference simplicity baseline, not the production lead.
 ## 7. New types AQUA must add — `include/aqua/AQCollision.h` (draft)
 
 AQUA-owned, AQ-prefixed, no namespace (per `AGENTS.md`, as settled in Phase 1).
-`AQAABB` belongs with the math (`AQMath.h`); the shape and broadphase types get a
-new header `include/aqua/AQCollision.h`. The public surface consumes the `float`
-forms; AABB math stays `Ty`-generic so the `double` parity oracle still works.
+`AQAABB` already lives with the math in `AQMath.h` as of Phase 1.1; the shape
+and broadphase types get a new header `include/aqua/AQCollision.h`. The public
+surface consumes the `float` forms; AABB math stays `Ty`-generic so the `double`
+parity oracle still works.
+
+> **§7.1 `AQAABB` — already shipped in Phase 1.1.** The draft below is preserved
+> for historical context; the as-shipped surface in `AQMath.h` is broader. It
+> ships: `min`/`max` (`AQVec3<Ty>`, factory-initialized to zero so the type
+> default-constructs cleanly through GTE's `Matrix::Create()`); the static
+> factories `empty()` (min=+∞, max=−∞ for accumulation), `fromMinMax(lo, hi)`,
+> and `fromCenterHalfExtents(c, h)`; member queries `overlaps(o)`, `merged(o)`,
+> `fattened(margin)`, `center()`, `extents()`, `surfaceArea()`, `contains(p)`;
+> and the free function `AQaabbOfOrientedBox(centerW, halfExtents, q)` from
+> §6.1 using `|R|·h`. `FAABB = AQAABB<float>` is the public alias. Phase 2
+> *consumes* this — do not re-declare it in `AQCollision.h`.
 
 ```cpp
 #ifndef AQUA_AQCOLLISION_H
 #define AQUA_AQCOLLISION_H
 
-#include "AQMath.h"
+#include "AQMath.h"          // brings in AQAABB / FAABB / AQaabbOfOrientedBox
 #include <cstdint>
 
-// --- Axis-aligned bounding box (lives in AQMath.h alongside AQTransform). ---
+// --- Axis-aligned bounding box: HISTORICAL DRAFT — landed in Phase 1.1's
+// AQMath.h with the surface noted in §7.1 above. Kept for reference only. ---
 template<class Ty>
 struct AQAABB {
     AQVec3<Ty> min = AQvec3<Ty>( std::numeric_limits<Ty>::max(),
@@ -402,32 +452,57 @@ count vs. brute-force count, and a **loud guard** when the candidate count
 approaches O(n²) (a sign the cell size is mistuned for the scene — the broadphase
 analogue of Phase 1's fast-spin warning).
 
+**The debug bus already exists.** Phase 1.1 shipped the drainable `AQDebugLine`
+stream and the per-space `setDebugFlags / debugFlags / drainDebugLines` surface
+(`AQDebug.h`, `AQSpace.h`); Phase 2 extends the existing `AQDebugFlags` enum
+with new bits — `AQDebugAABB` (one merged-corners outline per body's fat AABB,
+12 line segments), `AQDebugBroadphasePair` (one segment from `center(a)` to
+`center(b)` per emitted candidate, color-coded by filter result), and
+`AQDebugBroadphaseGuard` (a single red line emitted once per step when the
+loud-guard fires) — and appends into the same buffer the kREATE adapter
+already drains. No new transport, no new boundary, no new consumer contract.
+
 ---
 
 ## 10. Public API additions
 
-Extends the existing surface (`AQBodyDesc`, `AQRigidBody`, `AQSpace` in
-`include/aqua/AQSpace.h`) without breaking the pimpl discipline. New members
-marked `// new`. No OmegaSL or backend types cross into `include/aqua/*`; only
-AQUA types, the `AQShape`/`AQAABB`/filter types from §7, and the borrowed
-`FVec`/`FQuaternion` appear.
+Extends the existing surface — split across `include/aqua/AQRigidBody.h`
+(`AQBodyDesc`, `AQRigidBody` — Phase 1.1 split them out of `AQSpace.h`) and
+`include/aqua/AQSpace.h` (`AQSpace`) — without breaking the pimpl discipline.
+New members marked `// new`; pre-existing-from-Phase-1.1 members that Phase 2
+*uses* are marked `// Phase 1.1, present`. No OmegaSL or backend types cross
+into `include/aqua/*`; only AQUA types, the `AQShape`/`AQAABB`/filter types
+from §7, and the borrowed `FVec`/`FQuaternion` appear.
 
-**`AQBodyDesc`:**
+**`AQBodyDesc` (in `AQRigidBody.h`):**
 ```cpp
 struct AQUA_EXPORT AQBodyDesc {
     // ... Phase 1 fields (pose, motion, mass, inertia, restitution, friction) ...
 
+    // Phase 1.1 already shipped (do not re-declare):
+    //   AQMat3F           inertiaTensor;     // optional full 3×3 (diagonalized)
+    //   OmegaGTE::FVec<3> centerOfMass;      // reserved COM offset — Phase 2 wires
+    //   float linearDamping, angularDamping, gravityScale, maxAngularSpeed;
+
     AQShapeHandle    shape;                          // new — geometry (see AQSpace::createShape)
     AQCollisionFilter filter;                        // new — layer / mask (§11.5)
     // inertiaPrincipalMoments left zero now *derives from `shape`* (Phase 1 hook closed).
+    // When the shape's cooked inertia is non-diagonal (convex hull), descriptors
+    // may instead fill `inertiaTensor` directly — the Phase 1.1 path. The
+    // shape-handle convenience exists so the simple sphere/box/capsule cases
+    // don't need to touch either.
 };
 ```
 
-**`AQRigidBody`:**
+**`AQRigidBody` (in `AQRigidBody.h`):**
 ```cpp
 class AQUA_EXPORT AQRigidBody {
 public:
     // ... Phase 1 linear/angular/mass/force API ...
+
+    // Phase 1.1 already shipped (do not re-declare):
+    //   worldInverseInertia() / linearMomentum() / angularMomentum() / kineticEnergy()
+    //   setLinearDamping/setAngularDamping/setGravityScale/setMaxAngularSpeed (+ getters)
 
     AQUA_NODISCARD AQShapeHandle shape() const;                 // new
     void setShape(const AQShapeHandle &s);                      // new (re-derives inertia if auto)
@@ -444,6 +519,10 @@ public:
 class AQUA_EXPORT AQSpace {
 public:
     // ... Phase 1 gravity / addBody / removeBody / bodyCount ...
+
+    // Phase 1.1 already shipped (do not re-declare):
+    //   setDebugFlags(std::uint32_t) / debugFlags() / drainDebugLines()
+    //   — Phase 2 only adds NEW BITS to AQDebugFlags (see §9), the surface stays.
 
     // Shape factory — shapes are owned/instanced by the space (§11.3) and
     // referenced by handle from descriptors. AQShape stays out of the call site;
@@ -464,10 +543,15 @@ public:
 > `addBody` (`AQSpace.cpp`) gains: store the shape handle on the body's `Impl`; if
 > the body is dynamic and `inertiaPrincipalMoments` is zero, fill it from the
 > shape via `AQshapeInertiaMoments` → the Phase 1 `AQinertia*` helpers (closing
-> the documented hook in `AQSpace.h`). `stepInternal` gains the world-AABB refresh
-> (§6.A) before/after the integrate, and the broadphase runs once per `advance`
-> tick (not per sub-step — pair *candidates* are stable within a frame's
-> sub-steps; revisit if CCD/fast bodies in Phase 4 need finer).
+> the documented hook in `AQRigidBody.h`). `stepInternal` gains the world-AABB
+> refresh (§6.A) before/after the integrate, and the broadphase runs once per
+> `advance` tick (not per sub-step — pair *candidates* are stable within a
+> frame's sub-steps; revisit if CCD/fast bodies in Phase 4 need finer).
+> `AQBodyState::comOffset` (reserved by Phase 1.1, currently zero) gets wired
+> in here: the torque arm in `applyForceAtPoint` uses `worldPoint − (position +
+> R · comOffset)`, and `angularMomentum`'s world position picks up the offset.
+> The existing Phase 1.1 accessor tests pin the zero-COM behaviour as a
+> regression guard — non-zero COM cases get their own Phase 2 tests.
 
 `AQShapeHandle` is a small opaque value (index + generation into the space's shape
 table), copyable and backend-free — it is **not** a pointer to a backend type, so
@@ -523,3 +607,14 @@ the pimpl boundary holds.
 (#1) — should be settled before the broadphase lands. This document is the Phase 2
 entry of the per-phase prior-art series roadmap §4 establishes, and follows the
 conventions set by `Phase-1-Dynamics-Math-Core.md`.*
+
+*Audit 2026-06-04 (post-Phase 1.1). Items now closed and removed from Phase 2's
+implementation scope: `AQAABB<Ty>` + `AQaabbOfOrientedBox` (in `AQMath.h`); the
+drainable `AQDebugLine` / `AQDebugFlags` / `AQSpace::drainDebugLines` bus (in
+`AQDebug.h` + `AQSpace.h`); the reserved `AQBodyDesc::centerOfMass` /
+`AQBodyState::comOffset` model fields (Phase 2 still owns the wiring); the
+full-tensor `AQBodyDesc::inertiaTensor` path with diagonalize-and-fold (useful
+for cooked convex hulls). The body-side header was split out of `AQSpace.h` to
+`AQRigidBody.h` — §10 paths updated accordingly. Phase 2's remaining scope is:
+shape POD + handle + space-owned table, the broadphase algorithm + tests,
+inertia-from-shape wiring, COM-offset wiring, and the new debug-flag bits.*
