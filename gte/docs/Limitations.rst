@@ -457,6 +457,133 @@ would create cross-platform bugs. The omission is the documentation.
 
 ----
 
+Resource Teardown and the Caller's Cleanup Obligation
+------------------------------------------------------
+
+OmegaGTE does not garbage-collect GPU resources, and ``OmegaGTE::Close``
+is not a "release everything you've ever created" call. It resets the
+three ``SharedHandle`` members of the ``GTE`` struct
+(``omegaSlCompiler``, ``triangulationEngine``, ``graphicsEngine``) and
+runs the graphics engine's destructor, which on D3D12 releases the
+``D3D12MA::Allocator`` and on Vulkan releases the VMA allocator. Anything
+still holding a ``SharedHandle<GEBuffer>``, ``SharedHandle<GETexture>``,
+``SharedHandle<GENativeRenderTarget>``, or ``SharedHandle<GECommandQueue>``
+when ``Close`` runs is reaching into a partially-destroyed engine.
+
+There are two distinct failure modes, both of which the underlying
+backends will surface aggressively.
+
+**Outstanding GPU memory allocations at allocator destruction.**
+Every ``GED3D12Buffer`` / ``GED3D12Texture`` (and its Vulkan equivalent)
+owns a backend allocation handle that it returns to the allocator in
+its destructor. If a ``SharedHandle`` outlives ``Close``, the allocation
+is still owned at the moment the allocator is destroyed, and the
+allocator's leak validator fires. On D3D12 with D3D12MA built in debug
+mode this surfaces as the assertion::
+
+    Assertion failed: m_pMetadata->IsEmpty() && "Some allocations were
+    not freed before destruction of this memory block!"
+
+at ``D3D12MemAlloc.cpp``, inside ``NormalBlock::~NormalBlock``. The
+Vulkan path produces an analogous VMA validation message. The
+allocator's destruction proceeds either way, but the surviving
+``SharedHandle`` now holds a reference into freed memory; when it
+later drops at static-destruction time, its destructor releases the
+allocation back to a dead allocator and corrupts the heap.
+
+**In-flight GPU work referencing released resources.**
+Releasing a ``SharedHandle<GEBuffer>`` or ``SharedHandle<GETexture>``
+while the GPU is still executing a command list that references the
+underlying resource is a separate bug. On D3D12 the debug layer reports
+it as::
+
+    D3D12 [ERROR id=921] ID3D12Resource::<final-release>: CORRUPTION:
+    An ID3D12Resource object is referenced by GPU operations in-flight
+    on Command Queue.
+
+Vulkan validation reports the same shape of error against
+``vkDestroyBuffer`` / ``vkDestroyImage``. Submitting work with
+``commitToGPU`` is fire-and-forget; it does not wait for completion.
+``commitToGPUAndWait`` does, and the per-engine ``waitForGPUIdle`` (now
+implemented on every backend) iterates every command queue the engine
+has handed out and signals + waits on each.
+
+**The recommended teardown order.** Application code that creates
+GTE resources directly should drain the GPU and release every handle
+before calling ``Close``:
+
+.. code-block:: cpp
+
+    // 1. Drain the GPU on every queue you've submitted work to. The
+    //    engine-level waitForGPUIdle iterates its liveCommandQueues
+    //    and is the simplest universal call; per-queue
+    //    commitToGPUAndWait is equivalent when you own the queue
+    //    locally.
+    gte.graphicsEngine->waitForGPUIdle();
+
+    // 2. Drop every SharedHandle to a GE-allocated resource. This
+    //    includes buffers, textures, render targets, command queues,
+    //    pipeline states, shader libraries, triangulation contexts,
+    //    and bufferWriters. Anything created through gte.graphicsEngine
+    //    or gte.triangulationEngine counts.
+    vertexBuffer.reset();
+    texture.reset();
+    renderTarget.reset();
+    renderPipelineState.reset();
+    commandQueue.reset();
+    // ... and so on for every GE handle the application holds.
+
+    // 3. Tear the engine down. With every suballocation returned and
+    //    the GPU drained, Close runs the engine destructor cleanly.
+    OmegaGTE::Close(gte);
+
+**File-scope ``SharedHandle`` statics are the common trap.** A
+declaration like::
+
+    static SharedHandle<GETexture> texture;
+
+initialised inside ``main`` survives until the C++ runtime destroys
+static-storage objects at process exit, which is **after** any
+``OmegaGTE::Close`` you placed inside ``main`` itself. Either reset
+the static explicitly before ``Close`` (the pattern above) or move
+the handle into a scope whose destructor runs before ``Close`` is
+called. The same applies to ``SharedHandle`` members of any static
+object — including singletons constructed via the Meyers idiom
+(``static T &instance() { static T t; return t; }``), whose
+destructor runs at atexit and so will release any GE handles it
+holds after the allocator is dead.
+
+**Singletons and hidden caches need an explicit shutdown hook.**
+When an engine, toolkit, or sub-library built on top of OmegaGTE
+caches GE resources in a process-wide singleton, the singleton's
+destructor will not run early enough to release those resources
+while the OmegaGTE allocator is still alive. A toolkit in this
+situation must expose a synchronous ``shutdown()`` entry point and
+call it from the application's normal teardown path, *before*
+``OmegaGTE::Close``. ``Close`` itself has no way to know about
+caches that are not in the ``GTE`` struct, and adding one is not
+on the roadmap — the engine does not own a list of every
+``SharedHandle`` it has ever issued and cannot retroactively walk
+them at shutdown.
+
+**Compositor / render-graph layers in particular.** Any layer that
+sits between the application and OmegaGTE and holds per-window
+render-target chains, per-frame parameter buffers, or pooled
+upload buffers must drain them on shutdown the same way the
+application would drain its own resources. The order is the same:
+wait for GPU idle, drop every ``SharedHandle``, then let
+``OmegaGTE::Close`` run.
+
+This is a property of every modern explicit GPU API and not specific
+to OmegaGTE. D3D12, Metal, and Vulkan all require the application to
+manage GPU resource lifetimes deterministically, and all three will
+report a debug-time error if the application releases a resource
+while it is in use or leaks an allocation past allocator destruction.
+OmegaGTE thinly wraps that contract through ``SharedHandle``-based
+lifetime; it does not relax it.
+
+----
+
 Where the Limits Will Move
 ---------------------------
 

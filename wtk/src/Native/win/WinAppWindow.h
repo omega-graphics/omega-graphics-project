@@ -45,6 +45,19 @@ namespace OmegaWTK::Native::Win {
         std::vector<std::function<void()>> firstRealizeSubscribers_;
         std::vector<std::function<void()>> realizeSubscribers_;
         bool firstRealizeFired_ = false;
+
+        // Coalescing flag for `requestFrameFlush` override. The base
+        // `NativeWindow::requestFrameFlush` fires the callback
+        // synchronously — which on Windows would re-enter
+        // `FrameBuilder::beginFrame` from the late auto-pump inside
+        // `endFrame` while an animation is active, towering up the call
+        // stack until `STATUS_STACK_OVERFLOW`. The Cocoa backend defers
+        // via `CFRunLoopPerformBlock`; this is the Win32 equivalent:
+        // dedup a burst of requests into a single
+        // `PostMessage(WM_OMEGAWTK_FLUSH_FRAME)` that the wndproc
+        // services on the next message-pump turn, breaking the
+        // synchronous re-entry.
+        std::atomic<bool> frameFlushQueued_ {false};
         public:
         NativeItemPtr getRootView() override;
 
@@ -88,6 +101,9 @@ namespace OmegaWTK::Native::Win {
 
         LRESULT ProcessWndMsg(UINT,WPARAM,LPARAM) override;
         BOOL ProcessWndMsgImpl(HWND, UINT, WPARAM, LPARAM, LRESULT *) override;
+
+        // Win32-side requestFrameFlush deferral. See `frameFlushQueued_`.
+        void requestFrameFlush() override;
 
         // NativeWindow-Ready-Signal-Plan step 5 overrides
         bool isNativeReady() const override;

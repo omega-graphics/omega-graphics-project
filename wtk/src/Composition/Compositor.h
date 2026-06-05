@@ -39,6 +39,13 @@ namespace OmegaWTK::Composition {
     /**
      OmegaWTK's Composition Engine Frontend Interface
      */
+    /// Shut down the process-wide Compositor (the Meyers singleton
+    /// returned by globalCompositor() inside WidgetTreeHost.cpp).
+    /// Calls Compositor::shutdown() — see the doc on that method for
+    /// the failure mode this prevents. Called from AppInst::doShutdown
+    /// between closeAllWindows() and CleanupEngine().
+    OMEGAWTK_EXPORT void shutdownGlobalCompositor();
+
     class Compositor : public LayerTreeObserver {
 
         OmegaCommon::Vector<LayerTree *> targetLayerTrees;
@@ -100,6 +107,22 @@ namespace OmegaWTK::Composition {
 
         void registerWindowSurface(SharedHandle<CompositionRenderTarget> target,
                                    SharedHandle<CompositorSurface> surface);
+
+        /// Tear down the compositor's GE-holding state without
+        /// destroying the object itself. Mirrors ~Compositor (stops
+        /// the frame worker, waits for GPU idle, drops observed
+        /// LayerTrees, clears renderTargetStore) AND empties
+        /// windowSurfaces_. Required by AppInst::doShutdown because
+        /// the compositor is a Meyers singleton (see
+        /// globalCompositor() in WidgetTreeHost.cpp) whose
+        /// destructor would otherwise run at atexit, AFTER
+        /// OmegaGTE::Close has nulled out gte.graphicsEngine — at
+        /// which point releasing the held SharedHandle<GEBuffer> /
+        /// SharedHandle<GETexture> entries would Release D3D12MA
+        /// allocations against a freed allocator and corrupt the
+        /// heap. Safe to call once; subsequent calls just see empty
+        /// state and no-op.
+        void shutdown();
 
         void hasDetached(LayerTree *tree) override;
         void layerHasResized(Layer *layer) override;

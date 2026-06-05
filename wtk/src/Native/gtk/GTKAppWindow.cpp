@@ -187,6 +187,19 @@ class GTKAppWindow : public NativeWindow {
     std::vector<std::function<void()>> realizeSubscribers_;
     bool firstRealizeFired_ = false;
 
+    // Coalescing state for the `requestFrameFlush` override. The base
+    // `NativeWindow::requestFrameFlush` fires the callback synchronously
+    // — that would let the `FrameBuilder` late auto-pump (which calls
+    // `requestFrame` while an animation is active) re-enter
+    // `beginFrame` and tower up the stack until the GLib main loop
+    // crashes. Mirror the Cocoa / Win32 backends: dedup via the atomic
+    // flag, defer the actual flush to the next main-loop iteration via
+    // `g_idle_add`. `frameFlushIdleSource_` holds the source ID so the
+    // dtor can remove an outstanding flush if the window is torn down
+    // before the idle fires.
+    std::atomic<bool> frameFlushQueued_ {false};
+    guint frameFlushIdleSource_ = 0;
+
     struct PrimaryMonitorPlacement {
         int x = 0;
         int y = 0;
@@ -664,6 +677,26 @@ class GTKAppWindow : public NativeWindow {
         return FALSE;
     }
 
+    // GLib idle callback for the deferred frame-flush dispatch (see
+    // `frameFlushQueued_` / `frameFlushIdleSource_`). Reset the source
+    // ID and coalescing flag BEFORE invoking the callback so any
+    // re-entrant `requestFrame` from inside `flushFrame` (e.g. the
+    // FrameBuilder late auto-pump while an animation is still active)
+    // schedules a fresh idle for the next main-loop iteration rather
+    // than dropping silently.
+    static gboolean onFrameFlushIdle(gpointer data){
+        auto *self = static_cast<GTKAppWindow *>(data);
+        if(self == nullptr){
+            return G_SOURCE_REMOVE;
+        }
+        self->frameFlushIdleSource_ = 0;
+        self->frameFlushQueued_.store(false, std::memory_order_release);
+        if(self->frameFlushCallback_){
+            self->frameFlushCallback_();
+        }
+        return G_SOURCE_REMOVE;
+    }
+
     // Menu bar `size-allocate` → cache the inset so the hover dispatcher
     // can subtract it from incoming event Ys. The menu lives inside
     // windowRootBox; its allocated height is the inset in GTK logical
@@ -845,6 +878,25 @@ G_GNUC_END_IGNORE_DEPRECATIONS
     void initialDisplay() override {
         if(window != nullptr){
             gtk_widget_show_all(GTK_WIDGET(window));
+        }
+    }
+
+    // GLib-side requestFrameFlush deferral. See `frameFlushQueued_`.
+    void requestFrameFlush() override {
+        bool expected = false;
+        if(!frameFlushQueued_.compare_exchange_strong(expected, true)){
+            return;
+        }
+        // `g_idle_add` runs the callback once at default priority on the
+        // next iteration of the default main context. That breaks the
+        // synchronous re-entry chain the base implementation would
+        // create: any `requestFrame` issued while the callback runs
+        // arms a fresh idle source for the iteration after.
+        frameFlushIdleSource_ = g_idle_add(&GTKAppWindow::onFrameFlushIdle, this);
+        if(frameFlushIdleSource_ == 0){
+            // Source attach failed (g_idle_add returned 0). Release the
+            // coalescing flag so the next request gets a real chance.
+            frameFlushQueued_.store(false, std::memory_order_release);
         }
     }
 
@@ -1134,6 +1186,12 @@ G_GNUC_END_IGNORE_DEPRECATIONS
         if(resizeFinishDebounceSource != 0){
             g_source_remove(resizeFinishDebounceSource);
             resizeFinishDebounceSource = 0;
+        }
+        if(frameFlushIdleSource_ != 0){
+            // Cancel any outstanding deferred flush so the idle
+            // callback does not fire against a destroyed window.
+            g_source_remove(frameFlushIdleSource_);
+            frameFlushIdleSource_ = 0;
         }
         if(xftDpiHandler_ != 0){
             GtkSettings *settings = gtk_settings_get_default();

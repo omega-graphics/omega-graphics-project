@@ -148,7 +148,25 @@ void LayerTree::removeObserver(LayerTreeObserver * observer){
 };
 
 LayerTree::~LayerTree(){
-
+    // Notify observers so they purge any raw LayerTree* they hold
+    // (Compositor::targetLayerTrees / renderTargetStore keys, etc.).
+    // Snapshot + clear `observers` before iterating: the observer's
+    // hasDetached() callback re-enters via
+    // Compositor::unobserveLayerTree → tree->removeObserver(this),
+    // which would otherwise iterate-while-erasing the same vector.
+    // Emptying it up front makes that inner removeObserver a no-op.
+    // Pre-fix, an empty dtor left the dangling pointer in
+    // Compositor::targetLayerTrees and the Compositor's own
+    // shutdown / dtor faulted reading freed memory (0xfeeefeee
+    // pattern) when it tried to call removeObserver on the
+    // destructed LayerTree.
+    OmegaCommon::Vector<LayerTreeObserver *> snapshot;
+    snapshot.swap(observers);
+    for(auto * observer : snapshot){
+        if(observer != nullptr){
+            observer->hasDetached(this);
+        }
+    }
 };
 
 } // namespace OmegaWTK::Composition

@@ -83,8 +83,30 @@ GTE InitWithDefaultDevice(GTEInitOptions opts){
 
 
 void Close(GTE &gte){
-    gte.graphicsEngine.reset();
+    // Wait for any in-flight GPU work BEFORE dropping engine handles.
+    // No-op on D3D12 (per-queue commitToGPUAndWait fires in the
+    // engine destructor) and Metal; the Vulkan backend overrides
+    // this with vkDeviceWaitIdle. Cheap insurance against caller
+    // code that races a final frame submission against teardown.
+    if(gte.graphicsEngine != nullptr){
+        gte.graphicsEngine->waitForGPUIdle();
+    }
+    // Reset order matters. omegaSlCompiler holds a SharedHandle<GTEDevice>
+    // (omegasl_runtime.cpp::OmegaSLCompilerImpl) — dropping it first
+    // releases the compiler's device ref. triangulationEngine next.
+    // graphicsEngine last so its destructor (which drains command
+    // queues, drains the retention queue, and releases the D3D12MA
+    // / VMA allocator) runs after everything else with a device ref
+    // has gone away.
+    //
+    // The previous version skipped omegaSlCompiler entirely, leaving
+    // the compiler — and through it, the GTEDevice — alive past
+    // Close(). Harmless on Metal (ARC handled the rest) but a real
+    // hazard on the D3D12 / Vulkan paths where the device's D3D12 /
+    // Vulkan handles linger past framework shutdown.
+    gte.omegaSlCompiler.reset();
     gte.triangulationEngine.reset();
+    gte.graphicsEngine.reset();
 };
 
 _NAMESPACE_END_

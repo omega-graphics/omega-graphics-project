@@ -25,6 +25,15 @@ namespace OmegaWTK {
             static Composition::Compositor compositor;
             return &compositor;
         }
+    }
+
+    namespace Composition {
+        void shutdownGlobalCompositor(){
+            globalCompositor()->shutdown();
+        }
+    }
+
+    namespace {
 
         struct ResizeTrackerTuning {
             float velocitySettlingEpsilon = 20.f;

@@ -32,7 +32,6 @@ class TestWindowDelegate final : public AppWindowDelegate {
 public:
     void windowWillClose(Native::NativeEventPtr event) override {
         (void)event;
-        AppInst::terminate();
     }
 };
 

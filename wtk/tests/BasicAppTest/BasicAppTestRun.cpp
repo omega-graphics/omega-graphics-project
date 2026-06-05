@@ -61,7 +61,11 @@ public:
 class TestWindowDelegate final : public AppWindowDelegate {
 public:
     void windowWillClose(Native::NativeEventPtr event) override {
-        AppInst::terminate();
+        // Window-close is per-window now: disposing of the window
+        // does not quit the app. macOS HIG; on Win/GTK the canonical
+        // exit path is the File > Quit menu item, which is wired to
+        // AppInst::terminate() in TestMenuDelegate::onSelectItem.
+        (void)event;
     }
 };
 

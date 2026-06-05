@@ -83,13 +83,29 @@ AppInst
     .. cpp:function:: static int start()
 
         Enters the platform run loop. Blocks until ``terminate()``
-        is called or the last window closes. Returns the
-        application exit code.
+        is called. Returns the application exit code as soon as
+        the native loop exits — it does **not** run framework
+        teardown itself. Teardown happens later, when the
+        ``AppInst`` object is destroyed (see ``~AppInst`` and the
+        *Platform shutdown semantics* note below).
 
     .. cpp:function:: static void terminate()
 
-        Requests orderly shutdown. Closes managed windows and
-        unblocks ``start()``.
+        Asks the native event loop to stop on its next turn.
+        Returns immediately — control flows back to whichever UI
+        callback called it, then out through the native loop, then
+        out of ``start()``. The actual framework teardown does not
+        happen here; it runs in ``~AppInst`` after the caller's
+        ``omegaWTKMain`` returns and every user-held AppWindow
+        ``SharedHandle`` has dropped. Calling ``terminate()`` more
+        than once is a no-op — the loop only needs the first
+        signal.
+
+        **Closing a window does not call ``terminate()`` for you.**
+        Wire ``terminate()`` to a Quit menu item (or the platform's
+        equivalent — Cmd+Q on macOS is automatically rerouted
+        through this entry point). See the *Platform shutdown
+        semantics* note below for the per-platform behaviour.
 
     .. cpp:function:: SharedHandle<ThemeVars> themeVars() const
 
@@ -120,7 +136,12 @@ AppInst
     class MyWindowDelegate : public AppWindowDelegate {
     public:
         void windowWillClose(Native::NativeEventPtr) override {
-            AppInst::terminate();
+            // Do not call AppInst::terminate() here. windowWillClose
+            // is a per-window event ("this window is going away");
+            // it is not a request to quit the application. Wire
+            // termination to the Quit menu item instead — Cmd+Q on
+            // macOS is rerouted through AppInst::terminate()
+            // automatically.
         }
     };
 
@@ -135,6 +156,77 @@ AppInst
         app->windowManager->displayRootWindow();
         return AppInst::start();
     }
+
+.. note::
+
+    **Platform shutdown semantics (post-2026-06).** WTK no longer
+    couples window-close to application termination at the
+    framework layer. The window-close lifecycle is now:
+
+    - **macOS.** Clicking the close traffic-light disposes of the
+      window but leaves the app running with its menu bar —
+      ``applicationShouldTerminateAfterLastWindowClosed:`` returns
+      ``NO`` per Apple HIG. The user exits with Cmd+Q, the Apple
+      menu's *Quit*, or an explicit Quit menu item.
+      ``-[NSApplication terminate:]`` is intercepted by WTK's
+      application delegate (``applicationShouldTerminate:``
+      returns ``NSTerminateCancel`` and reroutes through
+      ``AppInst::terminate()``) so that the post-loop
+      ``doShutdown`` always runs — Apple's path would otherwise
+      ``exit()`` directly and skip the GTE / Composition cleanup.
+      Internally, ``AppInst::terminate()`` on Cocoa uses
+      ``[NSApp stop:]`` plus a posted wake event rather than
+      ``[NSApp terminate:]`` so that ``[NSApp run]`` returns to
+      C++ where the shutdown code lives.
+    - **Windows and GTK.** ``terminate()`` issues
+      ``PostQuitMessage(0)`` / ``g_application_quit(...)``
+      respectively; ``runEventLoop`` returns and ``start()`` runs
+      the teardown. Closing the window via the X / titlebar
+      button raises ``AppWindowDelegate::windowWillClose`` but does
+      **not** quit the app on its own — application code is
+      responsible for calling ``AppInst::terminate()`` from a Quit
+      menu item or from inside ``windowWillClose`` if that
+      platform convention is desired.
+
+    The previous convention (every test calling
+    ``AppInst::terminate()`` from ``windowWillClose``) was
+    incorrect on macOS — closing the only window quit the entire
+    app — and contributed to the GTE-not-closing report by tearing
+    framework subsystems down while the native run loop was still
+    draining events.
+
+    **Teardown ordering.** Framework subsystems must outlive every
+    user-held window reference. Callers typically write::
+
+        int omegaWTKMain(AppInst * app) {
+            auto window = make<AppWindow>(...);   // local handle
+            app->windowManager->setRootWindow(window);
+            app->windowManager->displayRootWindow();
+            return AppInst::start();              // blocks; returns rc
+        }
+
+    When ``start()`` returns, ``window`` is still alive — its
+    ``SharedHandle`` only drops as ``omegaWTKMain`` itself returns.
+    For that reason WTK does **not** tear FontEngine, the
+    compositor pools, or GTE down inside ``start()``. Those
+    subsystems are released in ``~AppInst``, which runs after
+    ``omegaWTKMain`` (and therefore after every caller-held
+    ``AppWindow``) has gone out of scope. Doing it earlier closed
+    the GPU device under a still-live AppWindow and produced
+    D3D12MA validation errors on Windows; the Metal and Vulkan
+    paths exhibited the same race but failed more quietly.
+
+    Inside the destructor the order is fixed:
+    ``windowManager->closeAllWindows()`` (drops the manager's
+    rootWindow ref, which combined with the now-dropped caller
+    local actually destroys the AppWindow — its backend resources
+    are released back to the still-live device);
+    ``FontEngine::Destroy()``; ``Composition::CleanupEngine()``
+    (pools release their D3D12 / Metal / Vulkan handles);
+    ``OmegaGTE::Close(gte)`` (device released last). Application
+    code should not call any of these directly — invoke
+    ``AppInst::terminate()`` and let the lifecycle handle the
+    rest.
 
 ----
 
@@ -295,10 +387,26 @@ AppWindowDelegate
 
     .. cpp:function:: virtual void windowWillClose(Native::NativeEventPtr event)
 
-        Called when the OS is about to close the window (the user
+        Called when the OS is about to close the window — the user
         clicked the close button, or the application called
-        ``close()``). The typical response is
-        ``AppInst::terminate()``.
+        ``close()``. This is a per-window event ("this window is
+        going away"); it is **not** a request to quit the
+        application.
+
+        Do not call ``AppInst::terminate()`` from this handler.
+        Doing so terminates the entire app on close, which is
+        wrong on macOS (HIG: apps stay alive when the last window
+        closes) and forces a teardown ordering that races with
+        the still-draining native event loop. Wire termination to
+        a Quit menu item instead; on macOS Cmd+Q and the Apple
+        menu's *Quit* are rerouted through
+        ``AppInst::terminate()`` automatically. See *Platform
+        shutdown semantics* under :cpp:class:`OmegaWTK::AppInst`
+        for the per-platform behaviour.
+
+        Use this hook for per-window cleanup — releasing handles
+        held in the delegate, persisting state for that window,
+        flushing per-window caches.
 
     .. cpp:function:: virtual void windowWillResize(Composition::Rect & nRect)
 

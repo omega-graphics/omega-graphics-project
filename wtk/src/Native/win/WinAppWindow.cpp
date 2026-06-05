@@ -9,6 +9,22 @@
 #pragma comment(lib,"dwmapi.lib")
 
 namespace OmegaWTK::Native::Win {
+
+namespace {
+    // Per-process unique window message ID for the deferred frame-flush
+    // dispatch. RegisterWindowMessage returns the same UINT (in the
+    // 0xC000-0xFFFF range) for every call with the same name within the
+    // process, so a single lazily-initialised static is correct. Lives
+    // here rather than as a class static so RegisterWindowMessage runs
+    // the first time it is needed (after the Win32 user32 module is
+    // loaded), not at static-init time.
+    UINT customFlushFrameMessage(){
+        static const UINT id =
+            RegisterWindowMessageA("OmegaWTK.FrameBuilder.FlushFrame");
+        return id;
+    }
+}
+
     WinAppWindow::WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter):
         NativeWindow(rect, emitter),
         HWNDItem(rect),
@@ -122,6 +138,21 @@ namespace OmegaWTK::Native::Win {
 
     BOOL WinAppWindow::ProcessWndMsgImpl(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT *lr){
         *lr = 0;
+        // Dynamically-registered messages live in the 0xC000-0xFFFF range
+        // and cannot appear as `case` labels, so handle the
+        // FrameBuilder flush dispatch ahead of the standard switch.
+        // Reset the coalescing flag BEFORE invoking the callback so any
+        // re-entrant `requestFrame` from inside `flushFrame` (e.g. the
+        // FrameBuilder late auto-pump while an animation is still
+        // active) enqueues the next frame as a fresh PostMessage rather
+        // than dropping silently.
+        if(uMsg == customFlushFrameMessage()){
+            frameFlushQueued_.store(false, std::memory_order_release);
+            if(frameFlushCallback_){
+                frameFlushCallback_();
+            }
+            return TRUE;
+        }
         if(!DwmDefWindowProc(hwnd,uMsg,wParam,lParam,lr))
             // MessageBoxA(HWND_DESKTOP,"WinAppWindow Procedure","NOTE",MB_OK);
             switch (uMsg) {
@@ -297,8 +328,15 @@ namespace OmegaWTK::Native::Win {
                     return FALSE;
                 }
                 default:
-                    return FALSE;
-                    break;
+                    // On Windows the root NativeItem is the WinAppWindow
+                    // itself (see WinAppWindow::getRootView) — there's no
+                    // child HWND in front of it to receive mouse input.
+                    // Without this delegation, WM_LBUTTONDOWN / WM_LBUTTONUP
+                    // / WM_MOUSEMOVE etc. fall straight to DefWindowProc and
+                    // no NativeEvent is ever emitted, so widget hit-testing
+                    // never runs and Buttons can't be clicked. Chain the
+                    // inherited HWNDItem handler so its mouse cases fire.
+                    return HWNDItem::ProcessWndMsgImpl(hWnd, uMsg, wParam, lParam, lr);
                 }
         return TRUE;
     };
@@ -395,6 +433,25 @@ namespace OmegaWTK::Native::Win {
         }
         for(auto & cb : firstCallbacks){
             if(cb) cb();
+        }
+    }
+
+    void WinAppWindow::requestFrameFlush(){
+        // Dedup a burst of requests into one PostMessage. The wndproc
+        // (see `customFlushFrameMessage()` branch in ProcessWndMsgImpl)
+        // resets the flag before firing `frameFlushCallback_`, so a
+        // re-entrant `requestFrame` from inside the flush can enqueue
+        // the next frame.
+        bool expected = false;
+        if(!frameFlushQueued_.compare_exchange_strong(expected, true)){
+            return;
+        }
+        if(hwnd == nullptr ||
+           PostMessageA(hwnd, customFlushFrameMessage(), 0, 0) == FALSE){
+            // PostMessage failure (no hwnd, or message queue full /
+            // refusing) — release the flag so a later request can try
+            // again. Treat as a missed frame, not a hang.
+            frameFlushQueued_.store(false, std::memory_order_release);
         }
     }
 

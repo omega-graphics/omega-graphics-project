@@ -636,17 +636,30 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
 
     };
 
-    GED3D12Engine::~GED3D12Engine(){
-        // Block on every still-live command queue so any pending GPU work
-        // finishes before we drain the retention queue. D3D12 has no
-        // device-wide wait-idle; we Signal+Wait per queue. commitToGPUAndWait
-        // both flushes any queued command lists and blocks via the queue's
-        // binary fence, which is exactly what we need.
+    void GED3D12Engine::waitForGPUIdle(){
+        // Per-queue Signal+wait. liveCommandQueues holds weak refs to
+        // every command queue the engine has handed out; locking each
+        // and calling commitToGPUAndWait flushes any queued command
+        // lists and blocks on the queue's binary fence. Any queue
+        // whose owner has already dropped (lock returns null) has by
+        // definition already drained on its own destructor path, so
+        // there is nothing to wait on there. Safe to call repeatedly
+        // and from any callsite that needs a GPU drain before
+        // releasing GPU-referenced resources.
         for(auto & weakQ : liveCommandQueues){
             if(auto q = weakQ.lock()){
                 q->commitToGPUAndWait();
             }
         }
+    }
+
+    GED3D12Engine::~GED3D12Engine(){
+        // Block on every still-live command queue so any pending GPU
+        // work finishes before we drain the retention queue. Shared
+        // with the public waitForGPUIdle() override so callers that
+        // reach into Close()/Compositor teardown get the same GPU
+        // drain semantics the destructor relies on.
+        waitForGPUIdle();
         liveCommandQueues.clear();
 
         // GPU is provably idle now — every retention gate would report

@@ -297,11 +297,56 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
 
+    // Wait for the GPU to actually finish before releasing any
+    // GPU-referenced resource. The one commitToGPU() at the top of
+    // this function is fire-and-forget; nothing in this file ever
+    // signalled-and-waited on the queue's fence, so when we drop
+    // `texture` / `vertexBuffer` below, ID3D12Resource3::<final-
+    // release> sees pending GPU work and the D3D12 debug layer fires
+    // CORRUPTION 921. commitToGPUAndWait() flushes any queued
+    // command lists and blocks on the queue's binary fence — the
+    // only way to provably drain a D3D12 queue (D3D12 has no
+    // device-wide wait-idle; engine-level waitForGPUIdle iterates
+    // its liveCommandQueues, but Close() runs *after* the resets
+    // below, too late to save them).
+    commandQueue->commitToGPUAndWait();
+
+    // Drop every GE-owned SharedHandle BEFORE OmegaGTE::Close. The
+    // statics declared at file scope (texture, vertexBuffer,
+    // renderTarget, ...) otherwise stay alive until the C++ runtime
+    // destroys static-storage objects at process exit — long after
+    // Close() has run ~GED3D12Engine and released its D3D12MA
+    // allocator. Each surviving GED3D12Buffer / GED3D12Texture still
+    // owns a D3D12MA::Allocation*, so the allocator's block
+    // destructor sees non-empty metadata and trips the
+    // "Some allocations were not freed before destruction of this
+    // memory block!" assertion at D3D12MemAlloc.cpp:8037. Resetting
+    // here returns every allocation to the allocator first, then
+    // Close() can tear the device down with empty blocks.
+    bufferWriter.reset();
+    vertexBuffer.reset();
+    texture.reset();
+    renderPipelineState.reset();
+    tessContext.reset();
+    renderTarget.reset();
+    library.reset();
+
     OmegaGTE::Close(gte);
 
+    // Release WIC COM refs BEFORE CoUninitialize. The ComPtrs
+    // (imageFactory, decoder, converter) would otherwise live until
+    // WinMain returns and their destructors would call Release() on
+    // freed COM objects after the apartment is gone — access
+    // violation on ~ComPtr<IWICFormatConverter>::InternalRelease.
+    // `decoded` is a raw IWICBitmapFrameDecode* obtained via
+    // GetFrame(0, &decoded), so it gets a manual Release; the
+    // ComPtrs use Reset() so the destructor that runs at WinMain's
+    // return sees a null inner pointer and no-ops.
     decoded->Release();
-    decoder->Release();
-    imageFactory->Release();
+    decoded = nullptr;
+    converter.Reset();
+    decoder.Reset();
+    imageFactory.Reset();
 
     CoUninitialize();
 

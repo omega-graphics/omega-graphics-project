@@ -124,6 +124,12 @@ frameWorker(this){
 }
 
 Compositor::~Compositor(){
+    // Idempotent path — if AppInst::doShutdown already called
+    // shutdown(), this collapses to clearing already-empty state.
+    shutdown();
+}
+
+void Compositor::shutdown(){
     OmegaCommon::Vector<LayerTree *> observedTrees {};
     {
         std::lock_guard<std::mutex> lk(mutex);
@@ -140,6 +146,19 @@ Compositor::~Compositor(){
         gte.graphicsEngine->waitForGPUIdle();
     }
     renderTargetStore.store.clear();
+    // windowSurfaces_ owns SharedHandle<CompositionRenderTarget> /
+    // SharedHandle<CompositorSurface> entries that transitively
+    // pin BackendRenderTargetContext-held vertex / param buffers
+    // (D3D12MA-backed). The destructor used to leave this map
+    // populated, relying on the surrounding C++ runtime to
+    // destruct the std::map at atexit; with the singleton path
+    // that runs after the D3D12MA allocator is gone. Explicitly
+    // clear here so the SharedHandles drop while the allocator is
+    // still alive.
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        windowSurfaces_.clear();
+    }
 }
 
 void Compositor::registerWindowSurface(SharedHandle<CompositionRenderTarget> target,

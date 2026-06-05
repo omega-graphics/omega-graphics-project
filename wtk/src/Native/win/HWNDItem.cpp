@@ -126,13 +126,16 @@ namespace OmegaWTK::Native::Win {
                 TrackMouseEvent(&ev);
                 isTracking = true;
             };
+            pt.x = GET_X_LPARAM(lParam);
+            pt.y = GET_Y_LPARAM(lParam);
+            emitIfPossible(button_event_to_native_event(NativeEvent::CursorMove,&pt,hwnd, FLOAT(currentDpi)/96.f));
             break;
         }
         case WM_MOUSEHOVER : {
             isTracking = false;
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::CursorEnter,&pt,hwnd));
+            emitIfPossible(button_event_to_native_event(NativeEvent::CursorEnter,&pt,hwnd, FLOAT(currentDpi)/96.f));
             hovered = true;
             break;
         };
@@ -140,32 +143,32 @@ namespace OmegaWTK::Native::Win {
             isTracking = false;
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::CursorExit,&pt,hwnd));
+            emitIfPossible(button_event_to_native_event(NativeEvent::CursorExit,&pt,hwnd, FLOAT(currentDpi)/96.f));
             hovered = false;
             break;
         };
         case WM_LBUTTONDOWN : {
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::LMouseDown,&pt,hwnd));
+            emitIfPossible(button_event_to_native_event(NativeEvent::LMouseDown,&pt,hwnd, FLOAT(currentDpi)/96.f));
             break;
         };
         case WM_LBUTTONUP : {
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::LMouseUp,&pt,hwnd));
+            emitIfPossible(button_event_to_native_event(NativeEvent::LMouseUp,&pt,hwnd, FLOAT(currentDpi)/96.f));
             break;
         };
         case WM_RBUTTONDOWN : {
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::RMouseDown,&pt,hwnd));
+            emitIfPossible(button_event_to_native_event(NativeEvent::RMouseDown,&pt,hwnd, FLOAT(currentDpi)/96.f));
             break;
         };
         case WM_RBUTTONUP : {
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
-            emitIfPossible(button_event_to_native_event(NativeEvent::RMouseUp,&pt,hwnd));
+            emitIfPossible(button_event_to_native_event(NativeEvent::RMouseUp,&pt,hwnd, FLOAT(currentDpi)/96.f));
             break;
         };
         case WM_SIZE : {

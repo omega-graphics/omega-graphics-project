@@ -195,6 +195,15 @@ _NAMESPACE_BEGIN_
         void * underlyingNativeDevice() override {
             return d3d12_device.Get();
         }
+        // D3D12 has no device-wide wait-idle; iterate liveCommandQueues
+        // and Signal+wait on each one. Mirrors what ~GED3D12Engine
+        // does in its first stanza, but exposed publicly so callers
+        // (OmegaGTE::Close, Compositor::~Compositor) can force a
+        // GPU drain before they release resources held outside the
+        // engine. Without this override the base-class waitForGPUIdle
+        // is an empty {} and `<final-release>` of any GPU-referenced
+        // resource trips the D3D12 debug layer's CORRUPTION 921.
+        void waitForGPUIdle() override;
         // ComPtr<ID3D12DescriptorHeap> descriptorHeapForRes;
         static SharedHandle<OmegaGraphicsEngine> Create(SharedHandle<GTEDevice> & device);
         // SharedHandle<GEShaderLibrary> loadShaderLibrary(FS::Path path);

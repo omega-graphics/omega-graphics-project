@@ -11,19 +11,24 @@ static void fill_modifier_flags(ModifierFlags &m) {
     m.capsLock = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
 }
 
-NativeEventPtr button_event_to_native_event(NativeEvent::EventType event_type, LPPOINT pt, HWND hwnd) {
+NativeEventPtr button_event_to_native_event(NativeEvent::EventType event_type, LPPOINT pt, HWND hwnd, float dpiScale) {
     if (pt == nullptr) {
         return NativeEventPtr(new NativeEvent(event_type, nullptr));
     }
+    // pt is physical pixels; widget hit-test wants logical units.
+    // ClientToScreen still gets the unscaled POINT — Win32's screen
+    // space is also pixels — and the resulting screen coord is then
+    // scaled to logical units too so callers see a consistent space.
+    const float invScale = dpiScale > 0.f ? (1.f / dpiScale) : 1.f;
     Composition::Point2D clientPos;
-    clientPos.x = static_cast<float>(pt->x);
-    clientPos.y = static_cast<float>(pt->y);
+    clientPos.x = static_cast<float>(pt->x) * invScale;
+    clientPos.y = static_cast<float>(pt->y) * invScale;
     Composition::Point2D screenPos = clientPos;
     if (hwnd != nullptr) {
         POINT screenPt = *pt;
         if (ClientToScreen(hwnd, &screenPt)) {
-            screenPos.x = static_cast<float>(screenPt.x);
-            screenPos.y = static_cast<float>(screenPt.y);
+            screenPos.x = static_cast<float>(screenPt.x) * invScale;
+            screenPos.y = static_cast<float>(screenPt.y) * invScale;
         }
     }
 
@@ -38,6 +43,14 @@ NativeEventPtr button_event_to_native_event(NativeEvent::EventType event_type, L
         case NativeEvent::CursorExit: {
             auto *p = new CursorExitParams();
             p->position = clientPos;
+            params = p;
+            break;
+        }
+        case NativeEvent::CursorMove: {
+            auto *p = new CursorMoveParams();
+            p->position = clientPos;
+            p->screenPosition = screenPos;
+            fill_modifier_flags(p->modifiers);
             params = p;
             break;
         }

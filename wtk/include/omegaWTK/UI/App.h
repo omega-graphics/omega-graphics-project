@@ -26,6 +26,19 @@ class OMEGAWTK_EXPORT AppInst {
     // a null theme makes every `Var` resolve to "unbound" and the
     // resolver skips the cell (the inline-`Style` path still runs).
     SharedHandle<ThemeVars> themeVars_;
+    // Guards against a future caller invoking doShutdown() more than
+    // once (the destructor is currently the sole call site, but the
+    // idempotency keeps the contract safe to expand).
+    bool shutdownDone_ = false;
+    /// Synchronous teardown of windowManager, FontEngine, Composition,
+    /// and GTE. Called only from ~AppInst so that every user-held
+    /// AppWindow SharedHandle has already dropped — the windowManager
+    /// is the last owner and dropping it releases each AppWindow's
+    /// backend resources back to the still-live GTE device. Doing the
+    /// teardown earlier (inside start() right after runEventLoop
+    /// returns) closes the device under any still-live caller-held
+    /// window and surfaces as D3D12MA errors on Windows.
+    void doShutdown();
 public:
     OMEGACOMMON_CLASS("OmegaWTK.AppInst")
 

@@ -277,7 +277,6 @@ class MyWindowDelegate final : public OmegaWTK::AppWindowDelegate {
 public:
     void windowWillClose(OmegaWTK::Native::NativeEventPtr event) override {
         (void)event;
-        OmegaWTK::AppInst::terminate();
     }
 };
 

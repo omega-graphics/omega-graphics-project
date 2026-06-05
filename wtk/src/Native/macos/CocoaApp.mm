@@ -42,7 +42,24 @@ public:
         if(delegate_ != nullptr){
             delegate_->onAppWillTerminate();
         }
-        [NSApp performSelector:@selector(terminate:) withObject:nil afterDelay:0];
+        // [NSApp terminate:] calls exit() — [NSApp run] never
+        // returns, so the post-loop doShutdown() in AppInst::start()
+        // would be skipped (the old GTE-not-closing path). [NSApp
+        // stop:] only flips a flag the runloop checks between
+        // events; a posted no-op event guarantees the loop wakes to
+        // observe it, then [NSApp run] returns to C++ and
+        // AppInst::start() can finish shutdown cleanly.
+        [NSApp stop:nil];
+        NSEvent *wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                           location:NSZeroPoint
+                                      modifierFlags:0
+                                          timestamp:0
+                                       windowNumber:0
+                                            context:nil
+                                            subtype:0
+                                              data1:0
+                                              data2:0];
+        [NSApp postEvent:wake atStart:YES];
     };
     int runEventLoop() override {
         [NSApp finishLaunching];
@@ -102,6 +119,30 @@ public:
     if(delegate != nullptr){
         delegate->onAppWillTerminate();
     }
+}
+
+// macOS HIG: the app stays running with its menu bar even after the
+// last window closes. Returning NO here makes NSApp respect that
+// convention; previously the default (YES) made closing the only
+// window quit the app entirely. The user-facing exit path is now
+// Cmd+Q / a Quit menu item / explicit AppInst::terminate() — the
+// traffic-light close just disposes of the window.
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
+    (void)sender;
+    return NO;
+}
+
+// Reroute Cmd+Q / Apple-menu Quit through AppInst::terminate() so
+// the post-loop doShutdown() runs. NSApplication's own terminate:
+// path calls exit() once applicationWillTerminate: returns —
+// [NSApp run] never comes back to C++, so the GTE / Composition /
+// FontEngine cleanup would be skipped. NSTerminateCancel tells
+// Cocoa "I'll handle it"; AppInst::terminate() then [NSApp stop:]s
+// the loop and the C++ side drains cleanly.
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    (void)sender;
+    OmegaWTK::AppInst::terminate();
+    return NSTerminateCancel;
 }
 
 - (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
