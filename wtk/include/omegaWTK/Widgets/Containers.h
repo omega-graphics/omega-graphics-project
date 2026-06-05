@@ -71,7 +71,6 @@ class OMEGAWTK_EXPORT StackWidget : public Container {
 
 protected:
     void onMount() override;
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
     StackWidget(StackAxis axis,Composition::Rect rect,const StackOptions & options = {});

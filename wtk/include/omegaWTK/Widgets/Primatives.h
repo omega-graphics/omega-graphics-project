@@ -27,7 +27,6 @@ protected:
     // at model-change time (onMount / setProps / resize), never during
     // paint. onPaint is read-only and only triggers update().
     void rebuildContent();
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
     explicit Rectangle(Composition::Rect rect, const RectangleProps & props = {});
@@ -53,7 +52,6 @@ protected:
     // at model-change time (onMount / setProps / resize), never during
     // paint. onPaint is read-only and only triggers update().
     void rebuildContent();
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
     explicit RoundedRectangle(Composition::Rect rect, const RoundedRectangleProps & props = {});
@@ -75,7 +73,6 @@ protected:
     // at model-change time (onMount / setProps / resize), never during
     // paint. onPaint is read-only and only triggers update().
     void rebuildContent();
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
     explicit Ellipse(Composition::Rect rect, const EllipseProps & props = {});
@@ -99,7 +96,6 @@ protected:
     // at model-change time (onMount / setProps / resize), never during
     // paint. onPaint is read-only and only triggers update().
     void rebuildContent();
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
     explicit Path(Composition::Rect rect, const PathProps & props);
@@ -122,7 +118,6 @@ protected:
     // at model-change time (onMount / setProps / resize), never during
     // paint. onPaint is read-only and only triggers update().
     void rebuildContent();
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
     explicit Separator(Composition::Rect rect, const SeparatorProps & props = {});
@@ -151,7 +146,6 @@ protected:
     // at model-change time (onMount / setProps / resize), never during
     // paint. onPaint is read-only and only triggers update().
     void rebuildContent();
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
     MeasureResult measureSelf(const LayoutContext & ctx) override;
 public:
@@ -177,7 +171,6 @@ protected:
     // at model-change time (onMount / setProps / resize), never during
     // paint. onPaint is read-only and only triggers update().
     void rebuildContent();
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
     explicit Icon(Composition::Rect rect, const IconProps & props = {});
@@ -205,7 +198,6 @@ protected:
     // Tier B / B4: (re)build the element list from props_ at model-change
     // time; onPaint is read-only. See the other primitives.
     void rebuildContent();
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 public:
     explicit Image(Composition::Rect rect, const ImageProps & props = {});

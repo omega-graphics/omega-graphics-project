@@ -195,6 +195,55 @@ _NAMESPACE_BEGIN_
     typedef Vector3D_Base<float,float> FVector3D;
 
 
+    /// Generic dense matrix over arithmetic type `Ty`, sized at compile time.
+    ///
+    /// **Template parameter order: `(Ty, column, row)`.** The COLUMN COUNT
+    /// comes BEFORE the row count — `Matrix<float, 3, 4>` has 3 columns and
+    /// 4 rows, not the other way around. The public aliases follow the same
+    /// order: `FMatrix<c, r> = Matrix<float, c, r>` and
+    /// `FVec<n> = FMatrix<n, 1> = Matrix<float, n, 1>` (n columns, 1 row).
+    ///
+    /// **Storage is column-major.** The underlying buffer is
+    /// `std::array<std::array<Ty, row>, column>` — consecutive memory holds
+    /// one whole column, then the next column. This matches the convention
+    /// of OpenGL, Metal, GLSL, MSL, and HLSL `column_major` (the GTE shader
+    /// codegen targets), so a matrix uploaded into a GPU buffer crosses the
+    /// boundary without a transpose.
+    ///
+    /// **Indexing is `m[col][row]`** — the OUTER subscript is the COLUMN
+    /// index, the inner is the row index. To translate from standard
+    /// mathematical notation `M(row, col)` (row first), use:
+    /// ```
+    ///   M(row=j, col=i)  ==  m_GTE[col=i][row=j]  ==  m[i][j]
+    /// ```
+    /// So `m[i][j]` is the entry at row `j`, column `i`. Code that assumes
+    /// row-major (the more familiar `m[row][col]` C convention) will silently
+    /// produce the TRANSPOSE of the intended matrix — a class of bug that
+    /// passes any eigenvalue-only test (eigenvalues are invariant under
+    /// transpose) and only surfaces when the matrix is composed with a frame
+    /// transform or fed to `Quaternion::fromMatrix`. See
+    /// `AQdiagonalizeInertia` in `aqua/include/aqua/AQMath.h` and the
+    /// research note in `aqua/.plans/Phase-1-Dynamics-Math-Core.md §12.2`
+    /// for a documented case that exposed it.
+    ///
+    /// **Vectors are `Matrix<Ty, n, 1>`** — n columns × 1 row, with the i-th
+    /// component at `v[i][0]`. This is how AQUA's `AQVec3 = Matrix<Ty, 3, 1>`
+    /// is indexed throughout `aqua/include/aqua/AQMath.h`.
+    ///
+    /// **Construction.** The default constructor is PRIVATE; use the
+    /// factory statics `Matrix::Create()` (zero-initialized) or
+    /// `Matrix::Identity()` (only valid for square matrices). Component
+    /// values are then assigned per-entry — there is no brace-init
+    /// component constructor. Members of value types that embed Matrix
+    /// or `FVec<n>` must therefore default-initialize them with `Create()`
+    /// (the pattern `AQBodyState` and `AQDebugLine` use in AQUA).
+    ///
+    /// **Quaternion bridge.** `Quaternion::toMatrix()` and
+    /// `Quaternion::fromMatrix()` honor this convention internally: the
+    /// 4×4 they produce / consume has its standard-math entry at
+    /// `(row=j, col=i)` stored in `m[i][j]`, so quaternion-rotation
+    /// matrices line up with the conventional textbook formulas without
+    /// an implicit transpose.
     template<class Ty,unsigned column,unsigned row>
    class Matrix {
    public:

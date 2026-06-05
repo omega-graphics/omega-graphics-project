@@ -149,4 +149,58 @@ SharedHandle<StyleSheet> StyleSheet::Builder::build() const {
     return sheet;
 }
 
+// ---------------------------------------------------------------
+// User-agent default stylesheet (D7.5, 2026-06-04)
+// ---------------------------------------------------------------
+//
+// Seed defaults for the conventional text-element tags. Why only these
+// two rules today:
+//   * `Rectangle` / `RoundedRectangle` / `Ellipse` / `Path` /
+//     `Separator` / `Image` already only author their inline `Style`
+//     when the caller passed a non-null brush / image. The "default"
+//     for an unauthored fill is "no cell written" — paint then skips
+//     the fill draw entirely, which is the correct render today. A UA
+//     rule that wrote a default fill would change that behavior; a UA
+//     rule that wrote nothing is identical to the rule's absence.
+//   * `Label` / `Icon` / `Button` author `textColor` (and a handful of
+//     other text cells) unconditionally from the prop struct's
+//     default-initialized `Color {0,0,0,1}`. The widget-strip
+//     follow-up (deferred) will switch those props to optional cells
+//     so an unset color falls through to the UA default. Until then
+//     the rules below cover any APP-AUTHORED `UIView` that lays out a
+//     text element without writing `textColor` inline — a real use
+//     case today (custom widgets that share the conventional `label`
+//     / `icon` element tags).
+//
+// Tier-1 selector machinery (D6.1) is single-compound — no descendant
+// combinator — so the rules cannot be scoped to "a particular widget's
+// element"; they match every element carrying the tag. That's fine
+// here because the only readers of `textColor` in tree are text
+// elements and the default is universally sensible.
+SharedHandle<StyleSheet> BuildUserAgentStyleSheet(){
+    StyleSheet::Builder builder;
+
+    // Conventional `label` element default: black text.
+    {
+        StyleRule rule;
+        rule.selector.tag = "label";
+        rule.setTextColor(Composition::Color::create8Bit(
+            Composition::Color::Black8));
+        builder.addRule(std::move(rule));
+    }
+
+    // Conventional `icon` element default: black tint. The Icon widget
+    // and Button's icon sub-element both render the token glyph via the
+    // text path, so `TextColor` is the right cell.
+    {
+        StyleRule rule;
+        rule.selector.tag = "icon";
+        rule.setTextColor(Composition::Color::create8Bit(
+            Composition::Color::Black8));
+        builder.addRule(std::move(rule));
+    }
+
+    return builder.build();
+}
+
 } // namespace OmegaWTK::Style

@@ -19,6 +19,7 @@
 
 #include <omegaGTE/GTEMath.h>
 #include <cmath>
+#include <limits>
 
 // --- Convenience aliases. A "Vec3" in this engine *is* a GTE column vector. ---
 // Templated, so they cannot collapse to a single non-template `Vec3` alias —
@@ -26,6 +27,7 @@
 // bare `Vec3` (see the folded-in Phase 0 fix, Phase-1 doc §10).
 template<class Ty> using AQVec3 = OmegaGTE::Matrix<Ty,3,1>;
 template<class Ty> using AQMat3 = OmegaGTE::Matrix<Ty,3,3>;
+using AQMat3F = AQMat3<float>;     // public-API mass-property tensor form
 
 // --- Ergonomic construction. GTE's Matrix has a *private* default ctor and no
 // component constructor (named-ctor idiom — Create()/Identity()), so `{x,y,z}`
@@ -199,11 +201,18 @@ inline void AQdiagonalizeInertia(const AQMat3<Ty>& I, AQVec3<Ty>& outMoments,
 
     outMoments = AQvec3<Ty>(a[0][0], a[1][1], a[2][2]);
 
-    // V's columns are the principal axes. Build the rotation matrix (4x4 so we
-    // can reuse GTE's stable Shepperd extraction) and read back a quaternion.
+    // V's COLUMNS are the principal-axis eigenvectors (math convention,
+    // row-major: v[row][col]). Build the GTE 4×4 rotation matrix so its
+    // standard-math entry at (row, col) is V(row, col) — i.e., the quaternion
+    // we extract rotates +e_k to the k-th column of V. GTE stores entries as
+    // `m[col][row]`, so m_std(row, col) == m_GTE[col][row]: writing
+    // `m[i][j] = v[j][i]` puts m_std(row=j, col=i) == V(j, i). (The original
+    // Phase 1 `m[i][j] = v[i][j]` accidentally stored Vᵀ — undetected because
+    // the Phase 1 math test validates only eigenvalues, not the eigenvector
+    // quaternion. Phase 1.1's full-tensor `addBody` is what exposed it.)
     auto m = OmegaGTE::Matrix<Ty,4,4>::Create();
     for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j) m[i][j] = v[i][j];
+        for (int j = 0; j < 3; ++j) m[i][j] = v[j][i];
     m[3][3] = Ty(1);
     outAxis = OmegaGTE::Quaternion<Ty>::fromMatrix(m).normalized();
 }
@@ -267,5 +276,92 @@ struct AQTransform {
         return AQrotate(q, v);
     }
 };
+
+// ====================================================================
+// Axis-aligned bounding volume (Phase 1.1 §6.1; Phase 2 §7 drafted it,
+// Phase 1.1 lands it here as foundational math so Phase 2's collision
+// header consumes rather than redefines it). Empty-AABB convention is
+// min=+inf, max=-inf so the first `merged()` is always correct.
+// ====================================================================
+
+template<class Ty>
+struct AQAABB {
+    // Default-initialize the GTE vectors via their Create() factory — the
+    // Matrix default constructor is private (the same factory-only idiom
+    // AQBodyState / AQDebugLine work around). A default-constructed AQAABB is
+    // a zero-volume box at the origin; for accumulation use empty().
+    AQVec3<Ty> min = AQVec3<Ty>::Create();
+    AQVec3<Ty> max = AQVec3<Ty>::Create();
+
+    static AQAABB empty() {
+        const Ty hi = std::numeric_limits<Ty>::max();
+        AQAABB b;
+        b.min = AQvec3<Ty>( hi,  hi,  hi);
+        b.max = AQvec3<Ty>(-hi, -hi, -hi);
+        return b;
+    }
+    static AQAABB fromMinMax(const AQVec3<Ty>& lo, const AQVec3<Ty>& hi) {
+        AQAABB b; b.min = lo; b.max = hi; return b;
+    }
+    static AQAABB fromCenterHalfExtents(const AQVec3<Ty>& c, const AQVec3<Ty>& h) {
+        return fromMinMax(c - h, c + h);
+    }
+
+    bool overlaps(const AQAABB& o) const {
+        return !(max[0][0] < o.min[0][0] || min[0][0] > o.max[0][0] ||
+                 max[1][0] < o.min[1][0] || min[1][0] > o.max[1][0] ||
+                 max[2][0] < o.min[2][0] || min[2][0] > o.max[2][0]);
+    }
+    AQAABB merged(const AQAABB& o) const {
+        AQAABB r;
+        r.min = AQvec3<Ty>(std::min(min[0][0], o.min[0][0]),
+                           std::min(min[1][0], o.min[1][0]),
+                           std::min(min[2][0], o.min[2][0]));
+        r.max = AQvec3<Ty>(std::max(max[0][0], o.max[0][0]),
+                           std::max(max[1][0], o.max[1][0]),
+                           std::max(max[2][0], o.max[2][0]));
+        return r;
+    }
+    AQAABB fattened(Ty margin) const {
+        const auto m = AQvec3<Ty>(margin, margin, margin);
+        AQAABB r; r.min = min - m; r.max = max + m; return r;
+    }
+    AQVec3<Ty> center() const {
+        return (min + max) * Ty(0.5);
+    }
+    AQVec3<Ty> extents() const {                // full width along each axis
+        return max - min;
+    }
+    Ty surfaceArea() const {
+        const auto e = extents();
+        const Ty x = e[0][0], y = e[1][0], z = e[2][0];
+        return Ty(2) * (x * y + y * z + z * x);
+    }
+    bool contains(const AQVec3<Ty>& p) const {
+        return p[0][0] >= min[0][0] && p[0][0] <= max[0][0] &&
+               p[1][0] >= min[1][0] && p[1][0] <= max[1][0] &&
+               p[2][0] >= min[2][0] && p[2][0] <= max[2][0];
+    }
+};
+using FAABB = AQAABB<float>;
+
+// |R|·h oriented-box world bound (Phase 2 §6.1). For a box with half-extents h
+// rotated by q about `center`, the world-axis-aligned half-extent along axis i
+// is Σ_j |R_ij| · h_j — the matrix of absolute values of the rotation times h.
+// Cheap, correct under rotation, and always contains the box's 8 corners.
+template<class Ty>
+inline AQAABB<Ty> AQaabbOfOrientedBox(const AQVec3<Ty>& centerW,
+                                      const AQVec3<Ty>& halfExtents,
+                                      const OmegaGTE::Quaternion<Ty>& q) {
+    const AQVec3<Ty> rx = AQrotate(q, AQvec3<Ty>(Ty(1), Ty(0), Ty(0)));
+    const AQVec3<Ty> ry = AQrotate(q, AQvec3<Ty>(Ty(0), Ty(1), Ty(0)));
+    const AQVec3<Ty> rz = AQrotate(q, AQvec3<Ty>(Ty(0), Ty(0), Ty(1)));
+    const Ty hx = halfExtents[0][0], hy = halfExtents[1][0], hz = halfExtents[2][0];
+    const auto h = AQvec3<Ty>(
+        std::abs(rx[0][0]) * hx + std::abs(ry[0][0]) * hy + std::abs(rz[0][0]) * hz,
+        std::abs(rx[1][0]) * hx + std::abs(ry[1][0]) * hy + std::abs(rz[1][0]) * hz,
+        std::abs(rx[2][0]) * hx + std::abs(ry[2][0]) * hy + std::abs(rz[2][0]) * hz);
+    return AQAABB<Ty>::fromCenterHalfExtents(centerW, h);
+}
 
 #endif // AQUA_AQMATH_H

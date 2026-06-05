@@ -512,6 +512,16 @@ UIViewLayout & UIView::layout(){
 void UIView::setLayout(const UIViewLayout &layout){
     impl_->currentLayout = layout;
     impl_->convertLegacyLayoutToV2();
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // model-mutators dirty the cascade themselves. Pre-D8 callers
+    // had to remember an explicit `update()` after `setLayout` to
+    // make the FrameBuilder walkers visit this view; coupling the
+    // dirty flip to the mutator is the right model and removes the
+    // rediscover-every-time bug class. Style is included because a
+    // layout change reshuffles element tags (which the cascade
+    // matches on) and Paint follows naturally once the cells
+    // re-resolve.
+    markDirty(View::Style | View::Layout | View::Paint);
 }
 
 StylePtr UIView::getStyle() const{
@@ -522,9 +532,11 @@ const UIView::UpdateDiagnostics & UIView::getLastUpdateDiagnostics() const{
     return impl_->lastUpdateDiagnostics;
 }
 
-const UIView::AnimationDiagnostics & UIView::getLastAnimationDiagnostics() const{
-    return impl_->lastAnimationDiagnostics;
-}
+// Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+// `UIView::getLastAnimationDiagnostics()` deleted alongside the
+// `AnimationDiagnostics` struct + `Impl::lastAnimationDiagnostics`
+// field. See `UIView.h` for the deletion note;
+// `AnimationScheduler::stats()` is the live diagnostics surface.
 
 UIViewLayoutV2 & UIView::layoutV2(){
     impl_->layoutDirty = true;
@@ -537,6 +549,11 @@ void UIView::setLayoutV2(const UIViewLayoutV2 & layout){
     impl_->layoutDirty = true;
     impl_->markAllElementsDirty();
     impl_->firstFrameCoherentSubmit = true;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // mirror `setLayout`'s self-dirtying — see that comment for the
+    // rationale. The element tags this layout publishes drive
+    // cascade matching, so Style is the lead bit.
+    markDirty(View::Style | View::Layout | View::Paint);
 }
 
 void UIView::setDiagnosticSink(LayoutDiagnosticSink * sink){

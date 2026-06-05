@@ -58,10 +58,15 @@ protected:
         svgView().setSourceString(svg);
     }
 
-    void onPaint(OmegaWTK::PaintReason reason) override {
-        (void)reason;
-        svgView().paint();
-    }
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // pre-D8 this widget overrode `onPaint` to call the no-arg
+    // `SVGView::paint()` legacy stub, which just `markDirty(Paint)`
+    // for a future central walker pass. With `Widget::onPaint`
+    // retired in D8 the override is gone — `FrameBuilder::buildFrame`
+    // already drives `SVGView::paint(PaintContext&)` once per dirty
+    // node, so the self-pump is unnecessary. `onMount` (above) seeds
+    // the source string; the central walker handles every subsequent
+    // re-render.
 
     bool isLayoutResizable() const override { return false; }
 

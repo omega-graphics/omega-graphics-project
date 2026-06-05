@@ -124,37 +124,26 @@ LayoutSize AbsoluteLayout::measure(View & /*node*/, const Composition::Rect & av
     return {avail.w, avail.h};
 }
 
-void AbsoluteLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
+void AbsoluteLayout::arrange(View & node, const Composition::Rect & nodeLocalRect){
     // Default semantic: each child keeps its own rect, optionally
     // clamped to the parent's content area via FitContent semantics
     // (the pre-migration default `ChildResizeSpec`).
     //
-    // Widget-View-Paint-Lifecycle-Plan Tier D follow-up (2026-06-03):
-    // `finalRectLocal.pos` carries the node's position in its OWN
-    // parent's space (the caller in `FrameBuilder::layoutSubtree`
-    // recurses with `child->getRect()` whose pos != 0 once a parent
-    // layout positioned the node). Children, however, are addressed
-    // in this node's LOCAL space (origin 0). Passing the
-    // parent-space rect straight to `clampRectToParent` would force
-    // every child's `pos` UP to `finalRectLocal.pos`, doubling the
-    // accumulated `paintOffset` once for the parent and once for the
-    // child — visible as widgets drifting off-screen on Retina
-    // builds of the multi-view tests (`EllipsePathCompositorTest`,
-    // `ContainerClampAnimationTest`). Build the clamp box at origin
-    // 0 to keep the reference frame consistent.
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // `nodeLocalRect` is guaranteed origin-(0,0) by the walker
+    // (`FrameBuilder::layoutSubtree` derives it from
+    // `nodeRectInParent`'s dimensions before dispatch). Pre-D8 this
+    // manager carried a workaround that built its own local-origin
+    // clamp box — that workaround retired with D8.6's walker-level
+    // hardening, so the incoming rect can be used directly.
     ChildResizeSpec spec {};
     spec.policy = ChildResizePolicy::FitContent;
-    const Composition::Rect localBox{
-        Composition::Point2D{0.f, 0.f},
-        finalRectLocal.w,
-        finalRectLocal.h
-    };
     for(auto * child : node.subviews()){
         if(child == nullptr){
             continue;
         }
         auto requested = child->getRect();
-        auto clamped   = clampRectToParent(requested, localBox, spec);
+        auto clamped   = clampRectToParent(requested, nodeLocalRect, spec);
         if(!ViewInternal::sameRect(child->getRect(), clamped)){
             child->resize(clamped);
         }
@@ -169,17 +158,16 @@ LayoutSize FillLayout::measure(View & /*node*/, const Composition::Rect & avail)
     return {avail.w, avail.h};
 }
 
-void FillLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
-    // Widget-View-Paint-Lifecycle-Plan Tier D follow-up (2026-06-03):
-    // children are addressed in this node's LOCAL space — pos
-    // starts at 0, NOT at `finalRectLocal.pos`. See the matching
-    // note on `AbsoluteLayout::arrange` for the full story; the bug
-    // shape is identical (parent-space pos leaking into child-space
-    // clamp).
+void FillLayout::arrange(View & node, const Composition::Rect & nodeLocalRect){
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // walker hands us a local-origin rect (`nodeLocalRect.pos ==
+    // {0,0}`). Pre-D8 we rebuilt one with a `max(1, dim)` guard for
+    // empty parents; the guard moves inline here on the dimension
+    // axis.
     const Composition::Rect childRect {
-        Composition::Point2D{0.f, 0.f},
-        std::max(1.f, finalRectLocal.w),
-        std::max(1.f, finalRectLocal.h)
+        nodeLocalRect.pos,
+        std::max(1.f, nodeLocalRect.w),
+        std::max(1.f, nodeLocalRect.h)
     };
     for(auto * child : node.subviews()){
         if(child == nullptr){
@@ -203,7 +191,13 @@ LayoutSize StackLayout::measure(View & /*node*/, const Composition::Rect & avail
     return {avail.w, avail.h};
 }
 
-void StackLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
+void StackLayout::arrange(View & node, const Composition::Rect & nodeLocalRect){
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // `nodeLocalRect.pos == {0,0}` post-D8.6 (walker guarantees a
+    // local-origin rect). Pre-D8 this manager seeded the sequential
+    // cursor from `finalRectLocal.pos.x/y` directly — when that was
+    // parent-space, the first child landed at the parent's offset
+    // and downstream layouts double-counted.
     const auto subs = node.subviews();
     if(subs.size() == 0){
         return;
@@ -213,7 +207,7 @@ void StackLayout::arrange(View & node, const Composition::Rect & finalRectLocal)
     spec.policy = ChildResizePolicy::FitContent;
 
     float cursor = (axis_ == LayoutAxis::Horizontal)
-        ? finalRectLocal.pos.x : finalRectLocal.pos.y;
+        ? nodeLocalRect.pos.x : nodeLocalRect.pos.y;
 
     for(auto * child : subs){
         if(child == nullptr){
@@ -223,13 +217,13 @@ void StackLayout::arrange(View & node, const Composition::Rect & finalRectLocal)
         Composition::Rect target = current;
         if(axis_ == LayoutAxis::Horizontal){
             target.pos.x = cursor;
-            target.pos.y = finalRectLocal.pos.y;
+            target.pos.y = nodeLocalRect.pos.y;
         }
         else {
-            target.pos.x = finalRectLocal.pos.x;
+            target.pos.x = nodeLocalRect.pos.x;
             target.pos.y = cursor;
         }
-        target = clampRectToParent(target, finalRectLocal, spec);
+        target = clampRectToParent(target, nodeLocalRect, spec);
         if(!ViewInternal::sameRect(child->getRect(), target)){
             child->resize(target);
         }

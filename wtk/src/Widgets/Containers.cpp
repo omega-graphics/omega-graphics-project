@@ -93,15 +93,6 @@ void StackWidget::onMount(){
     relayout();
 }
 
-void StackWidget::onPaint(PaintReason reason){
-    // Tier B / B4: layout-only; no layout during paint. relayout()
-    // drives the FlexLayout arrange at model-change time; transient
-    // suspicious-frame retries are owned by FlexLayout itself
-    // (its `hasLastStableFrame_` state replaces the field that used
-    // to live here pre-4.6).
-    (void)reason;
-}
-
 void StackWidget::resize(Composition::Rect & newRect){
     (void)newRect;
     relayout();

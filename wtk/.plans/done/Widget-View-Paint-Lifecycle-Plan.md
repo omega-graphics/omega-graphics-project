@@ -1654,14 +1654,62 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
     callback calls `window_->refresh()` after the toggle to
     commit the cascade re-resolution).
 
-  - **D7.5 — User-agent default stylesheet.** Built-in `StyleSheet`
-    for `Button` / `Label` / `Icon` / `Image` / `Rectangle` /
-    `RoundedRectangle` / `Ellipse` / `Path` / `Separator` etc., sat
-    at the bottom of every `AppWindow`'s stack. Widget subclasses
-    stop authoring inline visual defaults in `rebuildContent()` —
-    they author only model-state-dependent overrides.
+  - **D7.5 — User-agent default stylesheet. [DONE 2026-06-04 —
+    UA-sheet + auto-install scope; widget-strip is a follow-up.]**
+    Built-in `StyleSheet` sat at the bottom of every `AppWindow`'s
+    cascade stack so app-added sheets and widget inline `Style`
+    writes can override it via the conventional source-order
+    tiebreak.
+    Surfaces landed:
+      * `StyleSheets::BuildUserAgentStyleSheet()` (new free function
+        in `StyleSheet.{h,cpp}`) returns an immutable
+        `SharedHandle<StyleSheet>`. Two seed rules: `label` element
+        textColor = black, `icon` element textColor = black —
+        sensible defaults for app-authored `UIView`s that lay out
+        text without inline `textColor` writes. Tier-1 selectors
+        (D6.1) are single-compound, so the rules match any element
+        carrying the conventional tag; this is fine here because
+        the affected cell (`TextColor`, element scope) is
+        universally sensible.
+      * `AppWindow` ctor pushes the UA sheet at index 0 of
+        `styleSheets_` BEFORE the app sees the window. Cached in a
+        function-local static so every window shares the same
+        immutable handle. Push goes directly into the vector (not
+        via `addStyleSheet`) because there's no widget tree to
+        invalidate during ctor — the first cascade pass at
+        `displayRootWindow` picks up the UA sheet naturally.
+    Scope deferred to a D7.5 follow-up
+    (`wtk/.plans/Widget-Inline-Default-Strip-Plan.md`):
+      * Stripping inline visual defaults from each widget's
+        `rebuildContent()`. Most primitives (`Rectangle`,
+        `RoundedRectangle`, `Ellipse`, `Path`, `Separator`, `Image`)
+        are already conditional on the prop pointer being non-null
+        — nothing to strip. `Label` / `Icon` unconditionally write
+        `textColor` from a `Color` prop default; stripping needs
+        the prop type to become `Core::Optional<Color>` (or a
+        sentinel) so "unset" is distinguishable from "set to
+        default-constructed black." Breaking API change for every
+        construction site; deferred until there's a real driver for
+        it. `Button::rebuildStyle` authors a richly state-dependent
+        table across Idle / Hovered / Pressed / Focused / Disabled
+        — with D6.4 pseudo-classes shipped, this could be expressed
+        as cascade rules (`button { ... } button:hover { ... }` etc.)
+        — also deferred (Button has its own `InteractiveState` →
+        color table that would need to retire into selector rules).
+    Verification: `ContainerClampAnimationTest` rebuilt + run; the
+    blue rounded rect renders identically before and after auto-
+    install. The UA sheet sits at the bottom of the cascade but the
+    test does not lay out text elements, so its rules are inert
+    here. The "no regression" check is the meaningful one — the
+    auto-install does not perturb existing widget rendering.
+    Files: `wtk/include/omegaWTK/UI/StyleSheet.h`
+    (`BuildUserAgentStyleSheet` decl + docstring),
+    `wtk/src/UI/StyleSheet.cpp` (implementation + seed rules),
+    `wtk/src/UI/AppWindow.cpp` (ctor pushes UA sheet to
+    `styleSheets_` index 0 via a function-local static cache).
 
-- **D8 — Final cleanup (Anim Tier E + residuals).** Audit
+- **D8 — Final cleanup (Anim Tier E + residuals). [DONE
+  2026-06-04 — every sub-item landed in this pass.]** Audit
   `Composition/Animation.h` for residual `LayerAnimator` /
   `ViewAnimator` / `LayerClip` / `ViewClip` /
   `AnimationRuntimeRegistry` forward decls or `friend` declarations
@@ -1674,6 +1722,148 @@ Nine sub-phases, each independently shippable. Dependencies in §5.D9.
   `ViewAnimator` sections with one `AnimationScheduler` section, fix
   the §1025 / §1035 cross-references, add a `StyleSheet` /
   `StyleResolver` / `ThemeVars` section.
+
+  **What landed in this D8 pass (2026-06-04):**
+
+  * **D8.1 — `Composition/Animation.h` residual decls.** Deleted
+    the `class AnimationRuntimeRegistry;` forward decl in
+    `namespace OmegaWTK::Composition::detail` (line 29) plus the
+    three friend declarations on `AnimationHandle` —
+    `friend class LayerAnimator;`,
+    `friend class ViewAnimator;`,
+    `friend class detail::AnimationRuntimeRegistry;` (lines
+    184-186). Kept the historical comment block (lines 395-405)
+    that documents the Phase 4.8 deletion of the underlying
+    runtimes — useful archaeology for future debugging.
+  * **D8.2 — UIView dead diagnostic plumbing.** Deleted
+    `AnimationDiagnostics` struct (`UIView.h:286-306`),
+    `getLastAnimationDiagnostics()` accessor (decl + def),
+    `Impl::lastAnimationDiagnostics` field. Re-confirmed that
+    `lastObservedDroppedPacketCount` / `hasObservedLaneDiagnostics`
+    were already gone (only mentioned in plan-doc + done-folder
+    archaeology). `AnimationScheduler::stats()` is the live
+    diagnostics surface; the old field collected per-lane packet
+    counters from the retired `ViewAnimator` runtime.
+  * **D8.3 — `Widget::flushPendingPaint`.** Verified already
+    deleted by D1 (2026-06-03); only mentioned in plan-doc
+    archaeology + historical code comments. No-op for this pass.
+  * **D8.5 — `Widget::onPaint(PaintReason)` retirement.** Deleted
+    the `[[deprecated]]` base virtual on `Widget.h`. Deleted
+    every in-tree override: `Rectangle`, `RoundedRectangle`,
+    `Ellipse`, `Path`, `Separator`, `Label`, `Icon`, `Image`
+    (`Primatives.cpp` + `Primatives.h`); `Container`
+    (`BasicWidgets.{h,cpp}`); `StackWidget` (`Containers.{h,cpp}`).
+    All ten widget overrides were vestigial — the bodies called
+    `viewAs<UIView>().update()` (`Primatives.cpp`) or
+    `(void)reason;` (`BasicWidgets.cpp`, `Containers.cpp`), all
+    unreachable since Phase 4.7.4 stopped dispatching the hook
+    and D1 deleted `Widget::executePaint`. Test sweep migrated
+    three remaining test overrides:
+      * `SVGViewRenderTest::SVGWidget::onPaint` — deleted; the
+        body called `SVGView::paint()` (a self-pump that just
+        `markDirty(Paint)`), no longer needed since the central
+        walker drives `SVGView::paint(PaintContext&)` directly.
+      * `VideoViewPlaybackTest::VideoWidget::onPaint` — body
+        (black backdrop setup) folded into `onMount`. The widget
+        is non-resizable so one-shot at mount covers the
+        lifetime.
+      * `RootWidget::Phase21Widget::onPaint` — the substantive
+        five-element scene setup moved into a private
+        `rebuildContent()` helper called from `onMount()` and
+        `resize()`. Same canonical migration pattern recorded in
+        `Widget.h`'s deletion-note comment.
+    External code that still overrides `onPaint` now hits a hard
+    compile error rather than a silent no-op; the diagnostic
+    points the author at the `onMount` + `resize` replacement.
+  * **D8.6 — Harden `layoutSubtree` contract.** Renamed
+    `FrameBuilder::layoutSubtree`'s param from `finalRect` to
+    `nodeRectInParent` and lifted the local-origin derivation to
+    the walker: BEFORE dispatching to `mgr->measure` /
+    `mgr->arrange`, the walker builds
+    `nodeLocalRect = {{0,0}, nodeRectInParent.w,
+    nodeRectInParent.h}`. Reverted the 2026-06-03 per-manager
+    workarounds in `AbsoluteLayout::arrange`,
+    `FillLayout::arrange`, `StackLayout::arrange` — they used to
+    rebuild the local-origin box themselves; now they take the
+    walker-provided rect directly. Any future manager subclass
+    inherits the local-origin guarantee at the contract level
+    rather than per-implementation. `ContainerLayout` and
+    `FlexLayout` were already locally-origin-correct
+    (`FlexLayout` builds its own `contentBoundsRect` with
+    `pos = padding`) so no change needed there.
+    Verification: `ContainerClampAnimationTest` rebuilds clean +
+    renders identically to the pre-D8.6 snapshot.
+  * **D8.7 — sub-UIView `markDirty` propagation.** Picked option
+    (3) per the plan recommendation. (a) `View::addSubView`
+    inherits the parent's current `dirtyBits_` onto the new
+    child via `view->markDirty(impl_->dirtyBits_)` — handles the
+    "child created after parent already dirty" case. (b)
+    `UIView::setLayout` and `UIView::setLayoutV2` call
+    `markDirty(View::Style | View::Layout | View::Paint)` on
+    themselves — handles the "model mutated after dirty bits
+    were cleared" case. Combined, these remove the need for app
+    code to ever call `update()` explicitly after `makeSubView` +
+    `setLayout`. Pre-D8 every widget that hosted a sub-UIView
+    (`EllipsePathCompositorTest`,
+    `ContainerClampAnimationTest::BlueRectWidget`,
+    `RootWidgetTest::Phase32Widget`) had to paper over this with
+    an explicit `update()` call — a rediscover-every-time bug
+    class. Verification: `ContainerClampAnimationTest` rebuilds
+    clean + renders identically; the existing explicit
+    `update()` calls in widget code remain (cheap no-op given
+    the new self-dirtying) and can be deleted in a follow-up
+    sweep.
+
+  * **D8.4 — Public API docs rewrite. [DONE 2026-06-04.]** The
+    monolithic `wtk/docs/API.rst` is gone, replaced with three
+    thematic files matching the header layout:
+      * `wtk/docs/Composition.rst` — drawing primitives, shapes,
+        brushes, layer effects, animation timing
+        (`AnimationCurve` / `TimingOptions` / `AnimationHandle` /
+        `KeyframeTrack` / `KeyframeValue`), fonts. The retired
+        `LayerAnimator` / `ViewAnimator` / `LayerClip` /
+        `ViewClip` sections are gone; the new Animation prose
+        explains that the cascade is the application-facing
+        path and that the per-window `AnimationScheduler` is
+        an internal symbol the cascade threads through.
+      * `wtk/docs/UI.rst` — application shell, `AppInst`,
+        `AppWindow` (including the D7.4 `refresh()` entrypoint
+        and the cascade-stack API
+        `addStyleSheet`/`removeStyleSheet`/`styleSheets`),
+        `AppWindowManager`, `AppWindowDelegate`, the view
+        family, the Style cascade
+        (`Selector`/`TransitionSpec`/`KeyframeAnimation`/
+        `StyleRule`/`StyleSheet`/`StyleResolver`/
+        `BuildUserAgentStyleSheet`), the D7.4 pseudo-class +
+        custom-state surface on `View`, `ThemeVars`, menus,
+        dialogs, notifications, media.
+      * `wtk/docs/Widgets.rst` — the `Widget` lifecycle
+        (with the canonical `onMount` + `resize` +
+        `rebuildContent` pattern recorded — no more `onPaint`),
+        `WidgetObserver`, `WidgetState` /
+        `WidgetStateObserver`, the layout vocabulary
+        (`LayoutLength` / `LayoutEdges` / `LayoutStyle` /
+        `LayoutTransitionSpec`), the layout-manager catalogue
+        (`AbsoluteLayout` / `FillLayout` / `StackLayout` /
+        `FlexLayout` / `ContainerLayout`), containers
+        (`Container` / `StackWidget` / `HStack` / `VStack`),
+        and the primitive widget catalogue
+        (`Rectangle` / `RoundedRectangle` / `Ellipse` /
+        `Path` / `Separator` / `Label` / `Icon` / `Image`).
+    The §1025 / §1035 cross-references were tied to the
+    deleted composition-session and ViewAnimator passages;
+    they retire alongside those sections.
+    `wtk/docs/index.rst` updated to thread the three new files
+    into the toctree; the build is clean (`sphinx -b html .
+    _build` succeeds with one pre-existing About.rst warning
+    that predates this pass).
+    Authoring style follows AGENTS.md — long-form prose around
+    each API entry, every code sample verified against the
+    actual signatures in the headers (the new `AppWindow`,
+    `View`, `UIView`, `StyleSheet`, `ThemeVars`,
+    `BuildUserAgentStyleSheet` surfaces all grounded against
+    `wtk/include/omegaWTK/...` and the D6-D7 implementation
+    files in `wtk/src/UI/...`).
 
   **D8 also retires `Widget::onPaint(PaintReason)`.** Added to D8
   scope 2026-06-03 (observation from external review of D6 test

@@ -25,9 +25,14 @@ namespace OmegaWTK {
     class AnimationScheduler;
 }
 namespace OmegaWTK::Composition {
-    namespace detail {
-        class AnimationRuntimeRegistry;
-    }
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // the `detail::AnimationRuntimeRegistry` forward decl that used to
+    // live here is gone. The class was the shared backing store for
+    // the pre-scheduler `LayerAnimator` / `ViewAnimator` runtime (both
+    // deleted in Phase 4.8) — no in-tree symbol references it any
+    // more, so the forward decl is a residual. The historical comment
+    // block further down in this file (the §4.8 deletion notes)
+    // remains for archaeology.
 
     /// @brief Traverse any 2D scalar.
     class OMEGAWTK_EXPORT ScalarTraverse {
@@ -181,9 +186,13 @@ namespace OmegaWTK::Composition {
         struct StateBlock;
         SharedHandle<StateBlock> stateBlock;
         explicit AnimationHandle(const SharedHandle<StateBlock> & stateBlock);
-        friend class LayerAnimator;
-        friend class ViewAnimator;
-        friend class detail::AnimationRuntimeRegistry;
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+        // `friend class LayerAnimator;` / `friend class ViewAnimator;`
+        // / `friend class detail::AnimationRuntimeRegistry;` deleted
+        // alongside the residual forward decl above. Those three
+        // friends were the only handles into `AnimationHandle`'s
+        // internal mutators before Phase 4.8 retired the legacy
+        // runtimes; today `AnimationScheduler` is the sole writer.
         friend class ::OmegaWTK::AnimationScheduler;
         void setStateInternal(AnimationState state);
         void setProgressInternal(float normalized);

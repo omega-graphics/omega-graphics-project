@@ -55,11 +55,6 @@ void Rectangle::rebuildContent() {
         makeShapeStyle(props_.fill, props_.stroke, props_.strokeWidth));
 }
 
-void Rectangle::onPaint(PaintReason reason) {
-    (void)reason;
-    viewAs<UIView>().update();
-}
-
 void Rectangle::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     rebuildContent();
@@ -105,11 +100,6 @@ void RoundedRectangle::rebuildContent() {
         makeShapeStyle(props_.fill, props_.stroke, props_.strokeWidth));
 }
 
-void RoundedRectangle::onPaint(PaintReason reason) {
-    (void)reason;
-    viewAs<UIView>().update();
-}
-
 void RoundedRectangle::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     rebuildContent();
@@ -152,11 +142,6 @@ void Ellipse::rebuildContent() {
         makeShapeStyle(props_.fill, props_.stroke, props_.strokeWidth));
 }
 
-void Ellipse::onPaint(PaintReason reason) {
-    (void)reason;
-    viewAs<UIView>().update();
-}
-
 void Ellipse::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     rebuildContent();
@@ -192,11 +177,6 @@ void Path::rebuildContent() {
     viewAs<UIView>().setStyle(
         makeShapeStyle(props_.fill, props_.stroke,
                             static_cast<float>(props_.strokeWidth)));
-}
-
-void Path::onPaint(PaintReason reason) {
-    (void)reason;
-    viewAs<UIView>().update();
 }
 
 void Path::resize(Composition::Rect & newRect) {
@@ -250,11 +230,6 @@ void Separator::rebuildContent() {
     viewAs<UIView>().setStyle(ss);
 }
 
-void Separator::onPaint(PaintReason reason) {
-    (void)reason;
-    viewAs<UIView>().update();
-}
-
 void Separator::resize(Composition::Rect & newRect) {
     viewAs<UIView>().resize(newRect);
     rebuildContent();
@@ -299,11 +274,6 @@ void Label::rebuildContent() {
         ss->textLineLimit("label", props_.lineLimit);
     }
     viewAs<UIView>().setStyle(ss);
-}
-
-void Label::onPaint(PaintReason reason) {
-    (void)reason;
-    viewAs<UIView>().update();
 }
 
 void Label::resize(Composition::Rect & newRect) {
@@ -372,11 +342,6 @@ void Icon::rebuildContent() {
     auto ss = Style::Create();
     ss->textColor("icon", props_.tintColor);
     viewAs<UIView>().setStyle(ss);
-}
-
-void Icon::onPaint(PaintReason reason) {
-    (void)reason;
-    viewAs<UIView>().update();
 }
 
 void Icon::resize(Composition::Rect & newRect) {
@@ -460,11 +425,6 @@ void Image::rebuildContent() {
         spec.imageRect = dest;
         lv2.element(spec);
     }
-}
-
-void Image::onPaint(PaintReason reason) {
-    (void)reason;
-    viewAs<UIView>().update();
 }
 
 void Image::resize(Composition::Rect & newRect) {

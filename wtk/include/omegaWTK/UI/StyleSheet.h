@@ -208,6 +208,23 @@ private:
     OmegaCommon::Map<OmegaCommon::String, KeyframeAnimation>      keyframes_ {};
 };
 
+/// Widget-View-Paint-Lifecycle-Plan Tier D / D7.5 (2026-06-04):
+/// the built-in user-agent default stylesheet. `AppWindow` installs
+/// the returned sheet at the BOTTOM of its style-sheet stack on
+/// construction so the cascade's last-position tiebreak lets every
+/// app-added sheet (and every widget's inline `Style`) override
+/// these defaults without effort. Currently seeded with default
+/// text color for the conventional `label` and `icon` element tags
+/// — used by both the `Label` / `Icon` widgets and `Button`'s text /
+/// icon sub-elements — so an app-authored `UIView` that lays out a
+/// text element without authoring `textColor` inline still gets a
+/// readable default. The sheet grows as widget subclasses are
+/// stripped of their inline visual defaults (D7.5 follow-up — see
+/// the plan doc); today the rules are a safety net for app-authored
+/// views, since the in-tree widgets continue to author every cell
+/// inline and inline still wins the cascade.
+OMEGAWTK_EXPORT SharedHandle<StyleSheet> BuildUserAgentStyleSheet();
+
 } // namespace StyleSheets
 
 // Widget-View-Paint-Lifecycle-Plan Tier D / D6.1 (2026-06-03):

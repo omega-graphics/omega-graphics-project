@@ -283,27 +283,16 @@ public:
         std::uint64_t revision = 0;
     };
 
-    struct AnimationDiagnostics {
-        std::uint64_t syncLaneId = 0;
-        std::uint64_t tickCount = 0;
-        std::uint64_t staleStepsSkipped = 0;
-        std::uint64_t monotonicProgressClamps = 0;
-        std::uint64_t activeTrackCount = 0;
-        std::uint64_t completedTrackCount = 0;
-        std::uint64_t cancelledTrackCount = 0;
-        std::uint64_t failedTrackCount = 0;
-        std::uint64_t queuedPacketCount = 0;
-        std::uint64_t submittedPacketCount = 0;
-        std::uint64_t presentedPacketCount = 0;
-        std::uint64_t droppedPacketCount = 0;
-        std::uint64_t failedPacketCount = 0;
-        std::uint64_t lastSubmittedPacketId = 0;
-        std::uint64_t lastPresentedPacketId = 0;
-        unsigned inFlight = 0;
-        bool staleSkipMode = false;
-        bool laneUnderPressure = false;
-        bool resizeBudgetActive = false;
-    };
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // `AnimationDiagnostics` struct + `getLastAnimationDiagnostics()`
+    // / `Impl::lastAnimationDiagnostics` deleted. The struct collected
+    // per-lane tick / packet counters from the pre-scheduler
+    // `ViewAnimator` runtime (retired in Phase 4.8). Nothing wrote
+    // the field after the scheduler took over; nothing in tree reads
+    // the accessor. `AnimationScheduler::stats()` is the live
+    // diagnostics surface — see `AnimationScheduler.h`. The
+    // `UpdateDiagnostics` struct below survives because the layout-
+    // diagnostic surface still routes through it.
 
     struct EffectState {
         Core::Optional<Composition::LayerEffect::DropShadowParams> dropShadow {};
@@ -331,7 +320,6 @@ public:
     StylePtr getStyleSheet() const { return getStyle(); }
 
     const UpdateDiagnostics & getLastUpdateDiagnostics() const;
-    const AnimationDiagnostics & getLastAnimationDiagnostics() const;
 
     UIViewLayoutV2 & layoutV2();
     void setLayoutV2(const UIViewLayoutV2 & layout);

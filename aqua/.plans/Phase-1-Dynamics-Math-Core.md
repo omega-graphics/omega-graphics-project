@@ -542,6 +542,63 @@ borrowed `FVec`/`FQuaternion` appear, per the roadmap's boundary rule.
 
 ---
 
+## 12. Research notes — post-implementation findings
+
+### 12.1 Catto multi-iteration vs splitting error (Phase 1.1, 2026-06-04)
+
+Phase 1.1's §4 mitigation — adaptive Catto-style multi-iteration of the implicit-
+gyroscopic Newton step — was scoped on the belief that the secular drift §11.1
+measured would shrink as the per-step Newton residual shrank. The implementation
+A/B'd Phase 1 (one Newton iteration) against Phase 1.1's adaptive 4-iteration
+cap at the targeted regime (`‖ω‖·dt ≈ 0.08 rad`, just past the §5 fast-spin
+warning) on the same torque-free asymmetric scene. The per-step Catto residual
+`‖Ib·(ω' − ω₀) + dt·ω' × Ib·ω'‖` collapsed from ≈5×10⁻¹⁰ to ≈7×10⁻¹⁶ — machine
+precision — exactly as Newton's quadratic convergence predicts. **Cumulative
+‖L‖ and energy drift over 4 s of sim time were unchanged**: ≈4.85% L drift,
+≈8.64% energy drift, with the adaptive and single-iteration paths within 1‰
+of each other.
+
+The finding: this scheme's cumulative drift is dominated by **splitting error**
+between the implicit-gyroscopic step and the orientation / position updates,
+not by the Newton residual once Newton has converged. A single iteration
+already converges Newton to within ~10⁻¹⁰ at any per-step angle where the
+integrator itself is usable; multi-iteration buys nothing additional for
+cumulative metrics. Adaptive iteration is still load-bearing as a *robustness
+margin* — it keeps the Newton residual buried in roundoff as `‖ω‖·dt` climbs
+toward the §5 / Phase 1.1 §4 warning band (0.01–0.05 rad), where a single
+iteration would start leaving a residual large enough to be visible. Phase
+1.1's §9 "adaptive drift measurably below single-iter" claim was reframed in
+the shipped test as "adaptive drives the per-step Catto residual ≥3 orders
+below single-iter at the same dt and ω, while cumulative drift is bounded and
+matches single-iter to working precision" (`aqua_rigid_body_test`).
+
+Operationally this means §11.5 still holds — the sub-step size remains a
+*correctness* knob for fast rotational bodies, and the Phase 1 finding that
+drift is "O(dt) and secular" describes the *splitting*, not the Newton
+residual. The Phase 1.1 §5 fast-spin warning is what catches the dt the
+user must shrink; adaptive iteration is the silent safety margin between
+"single iteration is enough" and "the warning fires". Closing the underlying
+O(dt) splitting drift would require a higher-order integrator (e.g., a Lie-
+symplectic Strang split, or the momentum form §11.1 weighed and rejected on
+balance grounds) — out of scope for Phase 1.1, flagged here for future work.
+
+### 12.2 GTE Matrix storage convention — a latent bug discovered (Phase 1.1, 2026-06-04)
+
+`AQdiagonalizeInertia` (Phase 1, §7) carried a transposition bug from Phase 1
+that the Phase 1 math test could not detect: the Jacobi loop accumulates the
+eigenvector matrix `v` in row-major math convention (`v[row][col]`), but the
+output 4×4 was filled with `m[i][j] = v[i][j]`, which under GTE's column-major
+`m[col][row]` storage convention stores `Vᵀ` rather than `V`. The recovered
+eigenvalues are correct under transpose, so the math test passed; only Phase
+1.1's `addBody` full-tensor path — which composes the diagonalize quaternion
+with `desc.orientation` and inspects the resulting world inertia tensor —
+surfaced it. Fix landed as `m[i][j] = v[j][i]` with a comment block; a
+column-major storage note was added on `OmegaGTE::Matrix` itself (`gte/include/
+omegaGTE/GTEMath.h`) so future code interfacing GTE matrices via raw indexing
+doesn't repeat the assumption.
+
+---
+
 *Brief status: proposal. Decisions in §11 should be settled before the integrator
 lands. This document is the Phase 1 entry of the per-phase prior-art series §4 of
 `Physics-Roadmap.md` establishes.*

@@ -70,12 +70,14 @@ protected:
         (void)desc;
     }
 
-    void onMount() override {
-        ensureUIView(rect());
-    }
-
-    void onPaint(PaintReason reason) override {
-        (void)reason;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // pre-D8 the entire layout + style authoring lived in `onPaint`.
+    // With `Widget::onPaint` retired, the rebuild moved into a helper
+    // called from `onMount` (first attach) and `resize` (window
+    // dimension change). The central FrameBuilder walker handles
+    // every subsequent paint — no per-frame `update()` self-pump is
+    // needed.
+    void rebuildContent(){
         const auto bounds = localBounds(rect());
         ensureUIView(bounds);
         ensureFont();
@@ -135,7 +137,15 @@ protected:
             Composition::Color::create8Bit(Composition::Color::Black8));
 
         uiView_->setStyle(style);
-        uiView_->update();
+    }
+
+    void onMount() override {
+        rebuildContent();
+    }
+
+    void resize(Composition::Rect & newRect) override {
+        (void)newRect;
+        rebuildContent();
     }
 };
 

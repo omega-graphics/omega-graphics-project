@@ -345,9 +345,13 @@ struct UIView::Impl {
     Composition::Rect arrangedLocalBounds_ {};
     LayoutDiagnosticSink * diagnosticSink_ = nullptr;
     UpdateDiagnostics lastUpdateDiagnostics {};
-    AnimationDiagnostics lastAnimationDiagnostics {};
-    std::uint64_t lastObservedDroppedPacketCount = 0;
-    bool hasObservedLaneDiagnostics = false;
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // `AnimationDiagnostics lastAnimationDiagnostics`,
+    // `lastObservedDroppedPacketCount`, `hasObservedLaneDiagnostics`
+    // deleted — all three carried per-lane packet bookkeeping for
+    // the pre-scheduler `ViewAnimator` runtime that retired in
+    // Phase 4.8. No writer survived the cutover, and no reader
+    // survived the diagnostic-API retirement above.
 
     void markAllElementsDirty();
     void markElementDirty(const UIElementTag & tag,

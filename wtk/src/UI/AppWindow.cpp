@@ -47,6 +47,27 @@ static inline bool resizeRectChanged(const Composition::Rect &lhs,const Composit
         // nothing reads the scheduler's side table until 4.4. FrameBuilder
         // ticks it once per frame (see beginFrame).
         impl_->animationScheduler_ = std::make_unique<AnimationScheduler>(*this);
+        // Widget-View-Paint-Lifecycle-Plan Tier D / D7.5 (2026-06-04):
+        // seat the user-agent default stylesheet at the bottom of the
+        // cascade stack BEFORE the app sees the window. The cascade
+        // walks `styleSheets_` front-to-back with later sheets winning
+        // specificity ties (see `StyleResolver::apply`'s
+        // `cascadeBeats` and the `sheetIndex` tiebreak), so installing
+        // the UA sheet at index 0 makes it the lowest-priority sheet —
+        // every app-added sheet and every widget's inline `Style`
+        // overrides it. Pushed directly into `styleSheets_` rather
+        // than via `addStyleSheet` because the latter calls
+        // `applyCascadeChange()` which is wasted work during ctor
+        // (no widget tree yet) — the first `setRootWidget` /
+        // `displayRootWindow` runs the first cascade pass and picks
+        // up the UA sheet naturally. Cached in a function-local
+        // static so every AppWindow in the process shares the same
+        // immutable handle (the sheet is read-only after build()).
+        static const SharedHandle<StyleSheets::StyleSheet> kUserAgentSheet =
+            StyleSheets::BuildUserAgentStyleSheet();
+        if(kUserAgentSheet != nullptr){
+            impl_->styleSheets_.push_back(kUserAgentSheet);
+        }
     };
 
 FrameBuilder * AppWindow::frameBuilder() const {

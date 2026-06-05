@@ -127,14 +127,6 @@ void Container::onMount(){
     relayout();
 }
 
-void Container::onPaint(PaintReason reason){
-    // Tier B / B4: Container is layout-only — it draws nothing and does
-    // no layout during paint. Phase 4.5: layout runs via the
-    // `ContainerLayout::arrange` path triggered by `relayout()` (or by
-    // a future centralized FrameBuilder Measure/Arrange pass — 4.7).
-    (void)reason;
-}
-
 void Container::resize(Composition::Rect & newRect){
     (void)newRect;
     relayout();

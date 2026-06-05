@@ -52,7 +52,6 @@ protected:
     virtual void layoutChildren() {}
 
     void onMount() override;
-    void onPaint(PaintReason reason) override;
     void resize(Composition::Rect & newRect) override;
 
     // Phase 4.5: `clampChildRect` / `onChildRectCommitted` route through

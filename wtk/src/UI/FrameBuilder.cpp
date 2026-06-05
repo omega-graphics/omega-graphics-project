@@ -251,10 +251,10 @@ void styleSubtree(View & node){
 // Layout-pass walker — pre-order, dirty-bit gated. Phase 4.7.2 / 4.7.3.
 //
 // At each gated node (self.dirtyBits & Layout):
-//   1. `node.layoutManager()->measure(node, finalRect)` — the manager
+//   1. `node.layoutManager()->measure(node, nodeLocalRect)` — the manager
 //      reads each child's preferred / cached size (FlexLayout has its
 //      own per-child cache; the other 4.5 managers stub measure).
-//   2. `node.layoutManager()->arrange(node, finalRect)` — writes each
+//   2. `node.layoutManager()->arrange(node, nodeLocalRect)` — writes each
 //      child's final rect via `child->resize(...)`.
 //   3. `node.arrangeContent()` — intra-node element layout (UIView
 //      overrides to resolve element rects from `UIViewLayoutV2`).
@@ -269,13 +269,30 @@ void styleSubtree(View & node){
 // explicit bottom-up walk does not add information. A future manager
 // that needs parent-uses-child-measured-size will reintroduce the
 // split.
-void layoutSubtree(View & node, const Composition::Rect & finalRect){
+//
+// Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+// the parameter is `nodeRectInParent` — the node's rect expressed in
+// its parent's coordinate space. Recursion passes `child->getRect()`
+// which is also in this node's space. BEFORE dispatching to the
+// manager, we derive `nodeLocalRect = {{0,0}, w, h}` so child
+// placement happens in the node's LOCAL coordinate space (origin 0).
+// Pre-D8 this derivation lived inside each manager
+// (`AbsoluteLayout` / `FillLayout` / `StackLayout` all had a
+// per-manager workaround); promoting it to the walker removes the
+// trap from any future manager subclass and lets the per-manager
+// workarounds collapse to direct use of the incoming rect.
+void layoutSubtree(View & node, const Composition::Rect & nodeRectInParent){
     const uint8_t self = node.dirtyBits();
     const uint8_t desc = node.descendantDirty();
     if((self & View::Layout) != 0){
         if(auto * mgr = node.layoutManager()){
-            mgr->measure(node, finalRect);
-            mgr->arrange(node, finalRect);
+            const Composition::Rect nodeLocalRect{
+                Composition::Point2D{0.f, 0.f},
+                nodeRectInParent.w,
+                nodeRectInParent.h
+            };
+            mgr->measure(node, nodeLocalRect);
+            mgr->arrange(node, nodeLocalRect);
         }
         node.arrangeContent();
     }

@@ -2,8 +2,12 @@
 #define AQUA_AQSPACE_H
 
 #include "AQBase.h"
+#include "AQDebug.h"
+#include "AQMath.h"
 #include <omegaGTE/GTEMath.h>
+#include <cstdint>
 #include <memory>
+#include <vector>
 
 /// How a body participates in the simulation.
 enum class AQBodyType {
@@ -27,6 +31,22 @@ struct AQUA_EXPORT AQBodyDesc {
     /// body's collision shape (Phase 2); until shapes exist, fill via the
     /// AQMath.h helpers (e.g. AQinertiaSolidBox).
     OmegaGTE::FVec<3> inertiaPrincipalMoments = OmegaGTE::FVec<3>::Create();
+    /// Optional FULL 3×3 inertia tensor (body frame). If any entry is non-zero,
+    /// `addBody` diagonalizes it (`AQdiagonalizeInertia`) and folds the
+    /// principal-axis rotation into the body orientation, PhysX/Chaos-style.
+    /// When zero (the default), `inertiaPrincipalMoments` is used unchanged —
+    /// the Phase 1 fast path. (Phase-1.1 §6.2.)
+    AQMat3F           inertiaTensor = AQMat3F::Create();
+    /// Reserved center-of-mass offset (Phase-1.1 §6.2, §11.7). The field enters
+    /// the model now so Phase 2 shape local-transforms add geometry rather than
+    /// refactor body state; the offset has no effect until Phase 2 wires it.
+    OmegaGTE::FVec<3> centerOfMass = OmegaGTE::FVec<3>::Create();
+
+    // --- robustness controls (Phase 1.1 §6.4) ---
+    float linearDamping   = 0.f;   ///< Exponential per-sub-step: v ← v / (1 + c·dt).
+    float angularDamping  = 0.f;   ///< Same shape on body-frame angular velocity.
+    float gravityScale    = 1.f;   ///< Per-body multiplier on the space gravity.
+    float maxAngularSpeed = 0.f;   ///< 0 ⇒ unlimited; opt-in safety clamp.
 
     // --- material (consumed in Phase 3; reserved now to avoid descriptor churn) ---
     float restitution = 0.f;
@@ -55,6 +75,25 @@ public:
     // --- mass properties ---
     AQUA_NODISCARD float mass() const;                          ///< 0 ⇒ static
     AQUA_NODISCARD OmegaGTE::FVec<3> inertiaPrincipalMoments() const;
+    /// World-space inverse inertia tensor: R · diag(invMomentsBody) · Rᵀ. Phase 3
+    /// contact solvers and the conserved-quantity accessors below share this.
+    AQUA_NODISCARD OmegaGTE::FMatrix<3,3> worldInverseInertia() const;
+
+    // --- conserved-quantity accessors (Phase 1.1 §6.3) ---
+    // Make tests + gameplay assert against the engine's own numbers rather than
+    // re-deriving L / E by hand.
+    AQUA_NODISCARD OmegaGTE::FVec<3> linearMomentum()  const;   ///< m · v (world)
+    AQUA_NODISCARD OmegaGTE::FVec<3> angularMomentum() const;   ///< R · Ib · ω_b (world)
+    AQUA_NODISCARD float             kineticEnergy()   const;   ///< ½m‖v‖² + ½ω_b·Ib·ω_b
+
+    // --- robustness controls (Phase 1.1 §6.4) ---
+    void  setLinearDamping(float c);   AQUA_NODISCARD float linearDamping()   const;
+    void  setAngularDamping(float c);  AQUA_NODISCARD float angularDamping()  const;
+    void  setGravityScale(float s);    AQUA_NODISCARD float gravityScale()    const;
+    /// 0 ⇒ unlimited (default). Opt-in safety valve for fast spinners; changes
+    /// the physics, so off by default — the adaptive gyroscopic iteration is
+    /// the silent default stability path.
+    void  setMaxAngularSpeed(float s); AQUA_NODISCARD float maxAngularSpeed() const;
 
     // --- force / torque / impulse API ---
     // Forces/torques accumulate in world space and are consumed at the start of
@@ -101,6 +140,18 @@ public:
 
     /// Number of bodies currently in the space.
     AQUA_NODISCARD std::size_t bodyCount() const;
+
+    // --- drainable debug surface (Phase 1.1 §6.5) ---
+    // AQUA emits structured `AQDebugLine` records each step according to the
+    // current flag set; the consumer (kREATE adapter, a test) drains the buffer
+    // and the space clears it. Pull model — matches the kREATE debug-draw plan
+    // §7 adapter, deterministic, and ports to a GPU append-buffer later. Off
+    // by default (AQDebugNone), so the surface is zero-cost when unused.
+    /// Sets which debug primitives the space emits each step. OR of `AQDebugFlags`.
+    void setDebugFlags(std::uint32_t flags);
+    AQUA_NODISCARD std::uint32_t debugFlags() const;
+    /// Moves the accumulated debug lines out of the space and clears its buffer.
+    AQUA_NODISCARD std::vector<AQDebugLine> drainDebugLines();
 
 private:
     AQSpace();

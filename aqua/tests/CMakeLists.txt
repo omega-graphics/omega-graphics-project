@@ -24,3 +24,18 @@ target_link_libraries(aqua_dynamics_test PRIVATE AQUA OmegaCommon)
 add_dependencies(aqua_dynamics_test AQUA)
 set_target_properties(aqua_dynamics_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 add_test(NAME aqua_dynamics COMMAND aqua_dynamics_test)
+
+# Phase 1.1 rigid-body completion validation: AABB math + oriented-box bound,
+# full-tensor parity, conserved-quantity accessors, adaptive-iteration drift
+# reduction, damping/clamp behaviour + Phase 1 regression guard, debug stream
+# round-trip. Goes through the public AQContext/AQSpace/AQRigidBody surface to
+# cover the runnable-deliverable bar in Phase-1.1 §1.
+add_executable(aqua_rigid_body_test aqua_rigid_body_test.cpp)
+target_include_directories(aqua_rigid_body_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../gte/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../common/include")
+target_link_libraries(aqua_rigid_body_test PRIVATE AQUA OmegaCommon)
+add_dependencies(aqua_rigid_body_test AQUA)
+set_target_properties(aqua_rigid_body_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME aqua_rigid_body COMMAND aqua_rigid_body_test)

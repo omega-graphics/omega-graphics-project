@@ -156,6 +156,25 @@ void View::addSubView(View * view){
     // Newly created subviews must inherit compositor wiring immediately.
     view->setFrontendRecurse(compositorProxy().getFrontendPtr());
     view->setSyncLaneRecurse(compositorProxy().getSyncLaneId());
+    // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
+    // inherit the parent's current dirty bits onto the new child.
+    // Without this, a sub-UIView created via `Widget::makeSubView`
+    // after `Widget::init()` already marked the parent's own view
+    // dirty starts with `dirtyBits_ = 0`. The pre-order
+    // Style / Layout / Paint walkers in `FrameBuilder::buildFrame`
+    // gate descent on `(self|desc) & passBit`, so the new child
+    // would be skipped entirely on the first frame — its sheet
+    // cells never get written, its layout never resolves, and
+    // Paint reads back the UA defaults until the next mutation
+    // dirties it again. Inheriting the parent's bits makes the
+    // child immediately participate in whatever passes the parent
+    // is dirty for, removing the need for app code to call
+    // `uiView->update()` after `makeSubView`. Pre-D8 every widget
+    // that hosted a sub-UIView papered over this with an explicit
+    // `update()` call — a rediscover-every-time bug class.
+    if(impl_->dirtyBits_ != 0){
+        view->markDirty(impl_->dirtyBits_);
+    }
 }
 
 void View::removeSubView(View *view){
