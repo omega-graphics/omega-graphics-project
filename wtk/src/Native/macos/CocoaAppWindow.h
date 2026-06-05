@@ -70,7 +70,9 @@ public:
     bool isVisible() const override;
     Composition::Rect getRect() const override;
     void setRect(const Composition::Rect & r) override;
-    float scaleFactor() const override;
+    // §2.9: scaleFactor() is now a base-class forwarder to
+    // currentScreen().scaleFactor. The backing-scale-change emit path
+    // (-windowDidChangeBackingProperties:) stays here unchanged.
     void setMinSize(float w, float h) override;
     void setMaxSize(float w, float h) override;
     void setResizable(bool resizable) override;
@@ -89,7 +91,7 @@ public:
     void applyCursor();
 
     __strong NSWindow *getWindow();
-    CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter);
+    CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter,const NativeScreenDesc *screen);
 };
 };
 

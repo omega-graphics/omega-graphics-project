@@ -11,8 +11,6 @@ namespace OmegaWTK::Native::GTK {
     namespace {
         GtkApplication *gActiveApp = nullptr;
 
-        class GTKApp;
-
         void on_app_activate(GtkApplication *app,gpointer userData);
         void on_app_shutdown(GApplication *app,gpointer userData);
         void on_app_open(GApplication *app,GFile **files,gint nFiles,

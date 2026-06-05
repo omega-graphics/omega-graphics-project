@@ -58,6 +58,9 @@ NativeEvent::~NativeEvent() {
         case WindowWillResize:
             delete reinterpret_cast<struct WindowWillResize *>(params);
             break;
+        case WindowScaleFactorChanged:
+            delete reinterpret_cast<WindowScaleFactorChangedParams *>(params);
+            break;
         case HasLoaded:
         case FocusGained:
         case FocusLost:

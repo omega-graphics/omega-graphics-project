@@ -87,7 +87,10 @@ namespace OmegaWTK::Native::Win {
         bool isVisible() const override;
         Composition::Rect getRect() const override;
         void setRect(const Composition::Rect & r) override;
-        float scaleFactor() const override;
+        // §2.9: scaleFactor() now lives at the base class as a forwarder
+        // to currentScreen().scaleFactor. The per-monitor cache
+        // currentDpi is still maintained for WM_DPICHANGED ↔ logical-
+        // coordinate math inside the wndproc.
         void setMinSize(float w, float h) override;
         void setMaxSize(float w, float h) override;
         void setResizable(bool resizable) override;
@@ -119,7 +122,7 @@ namespace OmegaWTK::Native::Win {
         void handleFirstRealize();
         void handleReRealize();
 
-        WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter);
+        WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter,const NativeScreenDesc *screen);
         ~WinAppWindow();
     };
 };

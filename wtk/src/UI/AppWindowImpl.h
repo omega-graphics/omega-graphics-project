@@ -53,8 +53,19 @@ struct AppWindow::Impl {
     // `SharedHandle`; the stack itself is per-window.
     OmegaCommon::Vector<SharedHandle<StyleSheets::StyleSheet>> styleSheets_;
 
-    Impl(AppWindow & owner,Composition::Rect rectValue,AppWindowDelegate * delegateValue):
-        nativeWindow(Native::make_native_window(rectValue,&owner)),
+    /// `screen` is the chosen target screen (§2.9). nullptr falls
+    /// through to the backend's "primary monitor" default — the
+    /// pre-§2.9 behavior — which is what the legacy `(rect, delegate)`
+    /// ctor uses if `AppInst::inst()` isn't around to resolve the
+    /// manager's default screen. The AppWindow ctor pre-translates
+    /// `rectValue.pos` to virtual-screen absolute coordinates before
+    /// reaching this constructor, so the rect handed to the native
+    /// factory is uniform across backends.
+    Impl(AppWindow & owner,
+         Composition::Rect rectValue,
+         AppWindowDelegate * delegateValue,
+         const Native::NativeScreenDesc * screen):
+        nativeWindow(Native::make_native_window(rectValue,&owner,screen)),
         rootNativeItem(nativeWindow->getRootView()),
         rootViewRenderTarget(new Composition::ViewRenderTarget(rootNativeItem)),
         proxy(rootViewRenderTarget),
@@ -71,6 +82,16 @@ struct AppWindow::Impl {
         // view are routed through AppWindowDelegate → WidgetTreeHost hit
         // testing (Phase 2, Native View Architecture Plan).
         rootNativeItem->event_emitter = &owner;
+        // §2.9: seed the logical→physical scale at construction so the
+        // first frame renders at the right density. Pre-§2.9 this was
+        // first set in `setRootWidget` from `nativeWindow->scaleFactor()`
+        // — correct value but one frame late on mixed-DPI multi-monitor
+        // setups. The setRootWidget seed is now a defensive re-set; with
+        // the screen carried in here we know the scale before the visual
+        // tree is built.
+        if(screen != nullptr && rootViewRenderTarget != nullptr){
+            rootViewRenderTarget->setRenderScale(screen->scaleFactor);
+        }
     }
 };
 

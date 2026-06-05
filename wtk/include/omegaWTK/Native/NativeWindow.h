@@ -2,6 +2,7 @@
 #include "NativeEvent.h"
 #include "NativeItem.h"
 #include "NativeMenu.h"
+#include "NativeScreen.h"
 
 #include <functional>
 
@@ -156,7 +157,30 @@ namespace OmegaWTK::Native {
 
         /// DPI / backing scale. Changes at runtime emit
         /// NativeEvent::WindowScaleFactorChanged through eventEmitter().
-        virtual float scaleFactor() const = 0;
+        ///
+        /// Since §2.9 NativeScreen landed this is a forwarder to
+        /// `currentScreen().scaleFactor` — the canonical source. The
+        /// previous per-backend overrides (each re-querying its native
+        /// DPI API) duplicated work; routing through `currentScreen()`
+        /// means one path everyone reads. Backends keep their
+        /// `WindowScaleFactorChanged` *emit* machinery untouched (the
+        /// listener that detects scale changes is platform-specific);
+        /// only the getter is unified.
+        virtual float scaleFactor() const;
+
+        /// Resolve the screen the window currently lives on. Used by
+        /// `scaleFactor()` as the canonical scale source and by
+        /// `AppWindow::currentScreen()` / Phase H's `FramePacer` (which
+        /// rebinds its display link when this changes).
+        ///
+        /// Base implementation intersects `getRect()`'s center with the
+        /// enumeration from `Native::enumerateScreens()`, falling back to
+        /// `primaryScreen()` if no screen contains the point (off-screen
+        /// edge case). Backends are free to override with a faster
+        /// native API (`[NSWindow screen]`, `MonitorFromWindow`,
+        /// `gdk_display_get_monitor_at_window`); the default impl is
+        /// correct on all three platforms today.
+        virtual NativeScreenDesc currentScreen() const;
 
         virtual void setMinSize(float w, float h) = 0;
         virtual void setMaxSize(float w, float h) = 0;
@@ -185,7 +209,18 @@ namespace OmegaWTK::Native {
         virtual ~NativeWindow() = default;
     };
     typedef SharedHandle<NativeWindow> NWH;
-    NWH make_native_window(Composition::Rect & rect,NativeEventEmitter *emitter);
+    /// `screen`: the screen this window should open on. nullptr is
+    /// "use the OS-designated primary" — matches the pre-§2.9
+    /// behavior so existing callers stay source-compatible. When
+    /// non-null the backend uses it to seed scale-dependent state
+    /// (`integerScale_` on GTK, `currentDpi` on Win32, the initial
+    /// `backingScaleFactor` on macOS) at construction time. `rect` is
+    /// expected to be in absolute virtual-screen coordinates — the
+    /// AppWindow ctor pre-translates the screen-local form it
+    /// receives, so backends see one uniform coordinate space.
+    NWH make_native_window(Composition::Rect & rect,
+                           NativeEventEmitter *emitter,
+                           const NativeScreenDesc *screen = nullptr);
 };
 
 #endif

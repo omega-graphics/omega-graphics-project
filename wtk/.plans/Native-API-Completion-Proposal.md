@@ -82,10 +82,10 @@ Implemented. See `NativeEvent.h`: `ModifierFlags`, `MouseEventParams`, `CursorMo
 | **macOS** `CocoaAppWindow` — all methods + scale-change emit on `-windowDidChangeBackingProperties:`       | ✅ Done — `wtk/src/Native/macos/CocoaAppWindow.mm:179–284` |
 | **Win32** `WinAppWindow` — all methods + scale-change emit on `WM_DPICHANGED` with `suggestedRect`         | ✅ Done — `wtk/src/Native/win/WinAppWindow.cpp:266–544` |
 | **GTK** `GTKAppWindow` — all methods + scale-change emit on `notify::scale-factor`                          | ✅ Done — `wtk/src/Native/gtk/GTKAppWindow.cpp:268–1127`. Wayland `wp_fractional_scale_v1::preferred_scale` + X11 `Xft.dpi` listeners are still future work (integer scale covers the common case). |
-| `AppWindow` consumer — subscribe to `WindowScaleFactorChanged`, run the three-step coupling, force a full-tree repaint that re-rasterizes **every** element (not just text) | ❌ **Not done.** `wtk/src/UI/AppWindow.cpp:178` only seeds `renderScale` once at construction. There is no subscription anywhere in `AppWindow.cpp`. The native side emits the event; nobody listens. Ownership re-homed to [UIView-Render-Redesign-Plan Phase F](UIView-Render-Redesign-Plan.md#phase-f-follow-up--window-resize-always-relayouts--repaints-no-resize-opt-in): the consumer shares its implementation with the resize handler (same `dispatchResize*ToHosts` `ScopedFrame`, same step ordering, same "every element re-rasterizes" semantic). |
-| `ViewRenderTarget::scaleChanged()` rebuild trigger                                                          | ❌ **Not done.** Cross-plan item owned by `DPI-Aware-Text-Plan.md` "Per-monitor DPI updates"; not in this proposal's scope to implement but the AppWindow handler can't fully ship without it. Phase F's handler is the caller. |
+| `AppWindow` consumer — subscribe to `WindowScaleFactorChanged`, run the three-step coupling, force a full-tree repaint that re-rasterizes **every** element (not just text) | ✅ **Done (front-side).** `AppWindowDelegate::onRecieveEvent` handles `WindowScaleFactorChanged` in `wtk/src/UI/AppWindow.cpp` — applies `params.suggestedRect` (Win32), pushes `params.newScale` into `rootViewRenderTarget->setRenderScale`, then routes through `dispatchResizeToHosts(currentRect)` so the same `FrameBuilder::ScopedFrame` that brackets resize drives the full-tree repaint. Final coupling to the backend (`ViewRenderTarget::scaleChanged()`, next row) is the remaining piece. |
+| `ViewRenderTarget::scaleChanged()` rebuild trigger                                                          | ❌ **Not done.** Cross-plan item owned by `DPI-Aware-Text-Plan.md` "Per-monitor DPI updates". The §2.2 AppWindow consumer above pushes the new scale onto `ViewRenderTarget` and dispatches the resize ScopedFrame, but until this method exists each `BackendRenderTargetContext::renderScale_` stays pinned to its construction-time value, so the backing texture and tessellation tolerance do not actually rebuild on a scale change. Out of this proposal's scope; Phase F's handler is the caller. |
 
-**Net:** the platform surface is wired and emits the right events; the cross-platform consumer that turns those events into crisp glyphs on the new monitor is the one piece left. An app today can call any of the §2.2 APIs (`minimize`/`maximize`/`setOpacity`/`setCursorShape`/etc.) and they work; an app that's moved between monitors will get the event fired but no automatic re-render at the new scale until the AppWindow handler lands.
+**Net:** the platform surface is wired and emits the right events; the AppWindow consumer subscribes, propagates the new scale to `ViewRenderTarget`, and drives a full-tree repaint through the shared resize ScopedFrame. The remaining piece — `ViewRenderTarget::scaleChanged()` (DPI-Aware-Text-Plan) — is what closes the loop end-to-end by re-running `BackendRenderTargetContext::recomputeBackingDimensions` so the backing texture itself rebuilds at the new pixel density. Until that lands, an app today can call any of the §2.2 APIs (`minimize`/`maximize`/`setOpacity`/`setCursorShape`/etc.) and they work; an app moved between monitors gets the event fired, the front-side scale updates, and the resize repaint walks — but per-monitor crispness needs the backend rebuild trigger.
 
 ---
 
@@ -155,7 +155,7 @@ enum class CursorShape : int {
 
 `AppWindow` exposes thin pass-throughs (`setOpacity`, `isKeyWindow`, `becomeKeyWindow`) for app-level code; cursor is *not* exposed on `AppWindow` directly because the dispatcher should be the only writer.
 
-> **Once [§2.9 NativeScreen](#29-nativescreen-new--prerequisite-for-22s-dpi-consumer-phase-f-and-phase-h) lands, `scaleFactor()` becomes a forwarder.** It returns `currentScreen().scaleFactor` — the canonical source. Today the per-backend implementations query their native DPI APIs directly (already shipped, see the §2.2 status block), which is correct but duplicates work. After §2.9 each backend keeps its emit machinery (`WindowScaleFactorChanged` fires on the same native trigger) but `scaleFactor()` resolves through `NativeScreen` so there is one source of truth. Same for refresh rate: code paths that need the current refresh rate query `currentScreen().refreshHz` (Phase H's `FramePacer` does exactly this).
+> **[§2.9 NativeScreen](#29-nativescreen-new--prerequisite-for-22s-dpi-consumer-phase-f-and-phase-h) has landed and `scaleFactor()` is now a forwarder.** It returns `currentScreen().scaleFactor` — the canonical source. The per-backend overrides (each re-querying its native DPI API) were retired in the same change set: Cocoa / Win32 / GTK all inherit the base impl. Backends keep their *emit* machinery untouched (`WindowScaleFactorChanged` fires on `notify::scale-factor` / `WM_DPICHANGED` / `-windowDidChangeBackingProperties:` as before), but the getter is unified. Same pattern for refresh rate: code paths that need the current refresh rate query `currentScreen().refreshHz` (Phase H's `FramePacer` does exactly this).
 
 #### DPI scale change handling
 
@@ -503,7 +503,7 @@ The customization surface is **tooltip-specific**. For every other overlay tier 
 
 ---
 
-### 2.4 NativeApp — Lifecycle, Arguments, Timers
+### 2.4 NativeApp — Lifecycle, Arguments, Timers [DONE]
 
 **Goal:** Expose command-line arguments, open-file/URL delegate, and run-loop timers.
 
@@ -691,7 +691,24 @@ struct Descriptor {
 
 ---
 
-### 2.9 NativeScreen (New) — **prerequisite for §2.2's DPI consumer, Phase F, and Phase H**
+### 2.9 NativeScreen (New) — ✅ Done — **prerequisite for §2.2's DPI consumer, Phase F, and Phase H**
+
+**Status: shipped end-to-end.**
+
+| Item | Status |
+|------|--------|
+| `NativeScreen.h` header (`NativeScreenDesc`, `enumerateScreens`, `primaryScreen`, `screenById`, `NativeDisplayLink`, `displayLinkForScreen`) | ✅ Done — `wtk/include/omegaWTK/Native/NativeScreen.h` |
+| macOS / Win32 / GTK enumeration + display-link impls | ✅ Done — `CocoaScreen.mm` (CADisplayLink + ProMotion VRR), `WinScreen.cpp` (`IDXGIOutput::WaitForVBlank` pacer + Shcore DPI), `GTKScreen.cpp` (GLib timer + `gdk_monitor_get_refresh_rate`) |
+| `AppWindowManager::defaultScreen` / `setDefaultScreen` | ✅ Done — lazy-init to `primaryScreen()` on first read; `wtk/src/UI/AppWindow.cpp` |
+| `AppWindow(rect, screen, delegate)` opt-in screen ctor | ✅ Done — `wtk/include/omegaWTK/UI/AppWindow.h` + impl |
+| Existing `AppWindow(rect, delegate)` resolves through `AppInst::inst()->windowManager->defaultScreen()` | ✅ Done — delegating ctor; primary fallback if no AppInst |
+| Screen-local `rect.pos` → virtual-screen absolute translation at construction | ✅ Done — `translateRectToScreen` helper applied uniformly |
+| Initial scale seeded from `screen.scaleFactor` at construction | ✅ Done — `Impl::Impl` seeds `rootViewRenderTarget->setRenderScale` before the backend visual tree is built; kills the "first frame at 1×, then jump" sequence |
+| `AppWindow::currentScreen` / `moveToScreen` | ✅ Done |
+| `NativeWindow::scaleFactor()` forwarder to `currentScreen().scaleFactor` | ✅ Done — base impl in `wtk/src/Native/NativeWindow.cpp`; per-backend overrides retired on Cocoa / Win32 / GTK |
+| `NativeWindow::currentScreen()` | ✅ Done — base impl: rect-center intersection against `enumerateScreens()`, `primaryScreen()` fallback; backends may override for a native fast-path |
+| `make_native_window` signature: optional `const NativeScreenDesc *` | ✅ Done — third parameter, default `nullptr` for source-compat |
+| GTK retired hardcoded `queryPrimaryMonitor()` anchoring | ✅ Done — GTK ctor seeds `integerScale_` from the passed screen, `gtk_window_move` uses the pre-translated absolute coords |
 
 **Goal:** **The cross-platform API for everything that is fundamentally a property of a *display*, not a window.** Enumerate connected screens, query their geometry, DPI, refresh rate / vsync source, color/HDR capabilities (future), and resolve the screen any given `AppWindow` currently lives on. Pick which screen a new `AppWindow` opens on.
 
@@ -818,11 +835,9 @@ Behavior contract:
 - **Win32** — `EnumDisplayMonitors` + `GetMonitorInfo`. Primary is the monitor with `MONITORINFOF_PRIMARY`. `scaleFactor` from `GetDpiForMonitor(...) / 96.0`. `visibleFrame` from `rcWork`. `refreshHz` from `EnumDisplaySettings(..., ENUM_CURRENT_SETTINGS).dmDisplayFrequency`; VRR detection via `IDXGIOutput6::CheckHardwareCompositionSupport` (`DXGI_HARDWARE_COMPOSITION_SUPPORT_FLAG_FULLSCREEN_VIDEO` + variable-refresh capability flag). `displayLinkForScreen` wraps an `IDXGIOutput::WaitForVBlank` pacer thread bound to the `IDXGIOutput` matching the screen's `HMONITOR`, or `DCompositionWaitForCompositorClock` where available (Windows 10+ desktop composition). AppWindow construction passes the screen-translated rect to `CreateWindowEx` / `SetWindowPos`.
 - **GTK / Linux** — `gdk_display_get_monitors` (or `gdk_display_get_n_monitors` + `gdk_display_get_monitor` in GTK3). Primary is `gdk_display_get_primary_monitor`. `frame`/`visibleFrame` from `gdk_monitor_get_geometry` / `gdk_monitor_get_workarea`. `scaleFactor` is the **combined** product `gdk_screen_get_resolution()/96 × gdk_monitor_get_scale_factor()` to match `GTKAppWindow::scaleFactor()` (see `DPI-Aware-Text-Plan.md`). `refreshHz` from `gdk_monitor_get_refresh_rate()` (returns millihertz; divide by 1000). VRR not exposed by GDK directly; treat as `variableRefreshRate = false` until a backend opts in. `displayLinkForScreen` under Wayland wraps `wl_surface.frame` callbacks combined with `wp_presentation_feedback` for predicted presentation times — the pacer subscribes per surface but the underlying signal is the compositor's display refresh (per-screen at the compositor level). Under X11 it wraps `GLX_INTEL_swap_event` where available, falling back to a frame timer derived from the monitor's `XRRGetScreenInfo` rate and `EGL_KHR_fence_sync` for swap completion. AppWindow construction translates `rect.pos` by the monitor's `geometry.{x,y}`.
 
-#### Status — interim primary-monitor anchoring on GTK
+#### Status — primary-monitor anchoring retired on GTK
 
-`GTKAppWindow` currently anchors construction-time placement to `gdk_display_get_primary_monitor()` directly: query the primary monitor, add its geometry origin to the constructor's `rect.pos`, and seed `integerScale_` from the primary monitor (rather than from the unrealized `gtk_widget_get_scale_factor`, which returns 1 before `show`). This is a stop-gap to keep mixed-DPI Linux setups usable until §2.9 lands.
-
-When `NativeScreen` and the `AppWindow` screen-targeting constructor arrive, the GTK ctor's hardcoded `queryPrimaryMonitor()` call is replaced by the screen passed through (or `AppWindowManager::defaultScreen()` if unspecified), and the same logic applies uniformly to macOS and Win32.
+`GTKAppWindow` previously anchored construction-time placement to `gdk_display_get_primary_monitor()` directly as a stop-gap. With §2.9 landed, the GTK ctor takes the chosen `NativeScreenDesc` through `make_native_window`, seeds `integerScale_` by recovering it from `screen.scaleFactor / dpiScale_` (rather than the stale `gtk_widget_get_scale_factor` on an unrealized window), and calls `gtk_window_move(rect.pos.x, rect.pos.y)` directly because the AppWindow ctor has already translated `rect.pos` to virtual-screen absolute DIPs. The same plumbing applies to Cocoa / Win32 — both accept the screen param for source-symmetry, and Win32 also uses it to pre-seed `currentDpi` so DPI-aware coordinate math is correct before the first `WM_DPICHANGED`.
 
 ---
 

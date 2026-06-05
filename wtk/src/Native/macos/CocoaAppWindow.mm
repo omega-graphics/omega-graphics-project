@@ -38,7 +38,14 @@ static inline bool traceResizeFlowEnabled(){
 }
 
 
-CocoaAppWindow::CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter):NativeWindow(rect, emitter), currentNSCursor(nil){
+CocoaAppWindow::CocoaAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter,const NativeScreenDesc *screen):NativeWindow(rect, emitter), currentNSCursor(nil){
+    // §2.9 NativeScreen: `screen` carries the chosen target screen for
+    // this window. AppKit already picks the right backing scale from
+    // the absolute rect we pass to `initWithRect:` (NSWindow looks up
+    // its NSScreen from the frame), so there is no per-state seeding
+    // to do on macOS — the parameter is accepted for source-symmetry
+    // with GTK / Win32 and for any future macOS-specific seeding work.
+    (void)screen;
 
     windowDelegate = [[OmegaWTKNativeCocoaAppWindowDelegate alloc] init];
     windowController = [[OmegaWTKNativeCocoaAppWindowController alloc] initWithRect:core_rect_to_cg_rect(rect) delegate:windowDelegate];
@@ -223,9 +230,10 @@ void CocoaAppWindow::setRect(const Composition::Rect & r){
     [windowController.window setFrame:frame display:YES];
     rect = r;
 }
-float CocoaAppWindow::scaleFactor() const {
-    return (float)[windowController.window backingScaleFactor];
-}
+// §2.9: scaleFactor() now lives at NativeWindow as a base forwarder to
+// currentScreen().scaleFactor. The NSWindow's backingScaleFactor still
+// drives the WindowScaleFactorChanged emit (see
+// -windowDidChangeBackingProperties:) but the getter is unified.
 void CocoaAppWindow::setMinSize(float w, float h){
     [windowController.window setContentMinSize:NSMakeSize(w,h)];
 }
@@ -637,7 +645,7 @@ void CocoaAppWindow::handleReRealize(){
 @end
 
 namespace OmegaWTK::Native {
-    NWH make_native_window(Composition::Rect & rect,NativeEventEmitter *emitter){
-        return (NWH)new Cocoa::CocoaAppWindow(rect,emitter);
+    NWH make_native_window(Composition::Rect & rect,NativeEventEmitter *emitter,const NativeScreenDesc *screen){
+        return (NWH)new Cocoa::CocoaAppWindow(rect,emitter,screen);
     };
 }

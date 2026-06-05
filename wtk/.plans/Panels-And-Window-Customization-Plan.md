@@ -374,8 +374,16 @@ Replaced by:
 ## Open Questions
 
 1. **`NativeSurface` extraction vs. `NativePanel : NativeWindow`.** Recommended: extract `NativeSurface` (uniformity + single hosting implementation). Cheaper alternative: inherit `NativeWindow` and no-op the window-only methods. Which do we commit to before A1?
+
+NativeSurface 
 2. **Panel registry.** Do panels live in `AppWindowManager` alongside windows, or in a separate `AppPanelManager`? Lifetime is tied to a parent window in the common case but standalone panels (no parent) also need an owner for the run loop.
+
+Make an AppPanelManager.
+
 3. **`NativeScreen` dependency.** Absolute/multi-monitor panel placement (A2) really wants `NativeScreen` (§2.9, not started). Do we land panels with parent-screen-only placement first and layer multi-monitor on later, or pull `NativeScreen` forward as a prerequisite?
+
+
+
 4. **Wayland anchored popups.** `xdg-popup` has strict anchoring/grab semantics (a popup must be anchored to a parent surface and is dismissed by the compositor). Does the GTK panel backend expose enough control, or do popups need a distinct "anchored" code path from free-floating palettes?
 5. ~~**macOS menu strategy (`NativeMenu` removal scope).**~~ **Resolved:** option (b) — `MacAppMenu` stand-alone helper. macOS retains `NSApp.mainMenu` via a thin Objective-C++ glue file (`src/Native/macos/MacAppMenu.{h,mm}`) that consumes `UI/Menu.h` directly and sits outside the `Native::*` interface hierarchy. `Native::NativeMenu` and its three impls are all deleted. macOS apps use either `MacAppMenu` (top-of-screen) or the `MenuBar` widget (in-window), not both. See B3.
 6. **Caption hit-testing source of truth.** Should `setClientDecorationRegions` be a push API (app recomputes on relayout) or a pull callback (`std::function<HitResult(Point)>` the native layer invokes per `WM_NCHITTEST`)? Push is simpler and avoids cross-thread virtual-tree access from the native message pump; pull is more precise for irregular regions.

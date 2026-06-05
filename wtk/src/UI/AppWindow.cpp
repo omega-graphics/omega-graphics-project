@@ -2,6 +2,7 @@
 #include "../Composition/Compositor.h"
 #include "../Composition/backend/ResourceFactory.h"
 #include "omegaWTK/UI/Widget.h"
+#include "omegaWTK/UI/App.h"
 #include "omegaWTK/Native/NativeWindow.h"
 #include "omegaWTK/Native/NativeDialog.h"
 #include "WidgetTreeHost.h"
@@ -27,8 +28,44 @@ static inline bool resizeRectChanged(const Composition::Rect &lhs,const Composit
 }
 #endif
 
+namespace {
+
+// §2.9 NativeScreen: the no-screen ctor delegates to the manager's
+// configured default; AppInst is the canonical owner of the
+// AppWindowManager. Every visual test wires through AppInst, so this
+// is the live path. The null-AppInst branch is a defensive fallback
+// for any future caller that constructs an AppWindow without setting
+// up an AppInst — falls through to primaryScreen() so the window
+// still lands on a valid display.
+Native::NativeScreenDesc resolveDefaultScreen(){
+    AppInst *app = AppInst::inst();
+    if(app != nullptr && app->windowManager != nullptr){
+        return app->windowManager->defaultScreen();
+    }
+    return Native::primaryScreen();
+}
+
+// §2.9: AppWindow ctors interpret `rect.pos` as screen-local DIPs and
+// translate to virtual-screen absolute coordinates before reaching
+// the backend. Applied uniformly to both ctors so the native factory
+// sees one coordinate space regardless of how the AppWindow was
+// constructed.
+Composition::Rect translateRectToScreen(Composition::Rect rect,
+                                        const Native::NativeScreenDesc & screen){
+    rect.pos.x += screen.frame.pos.x;
+    rect.pos.y += screen.frame.pos.y;
+    return rect;
+}
+
+}
+
     AppWindow::AppWindow(Composition::Rect rect,AppWindowDelegate *delegate):
-    impl_(std::make_unique<Impl>(*this,rect,delegate)){
+    AppWindow(rect, resolveDefaultScreen(), delegate){}
+
+    AppWindow::AppWindow(Composition::Rect rect,
+                         const Native::NativeScreenDesc & screen,
+                         AppWindowDelegate *delegate):
+    impl_(std::make_unique<Impl>(*this,translateRectToScreen(rect, screen),delegate,&screen)){
         // MessageBoxA(HWND_DESKTOP,"Create Window Layer!","NOTE",MB_OK);
         if(impl_->delegate != nullptr) {
             setReciever(impl_->delegate.get());
@@ -372,6 +409,24 @@ float AppWindow::getOpacity() const { return impl_->nativeWindow->getOpacity(); 
 bool AppWindow::isKeyWindow() const { return impl_->nativeWindow->isKeyWindow(); }
 void AppWindow::becomeKeyWindow(){ impl_->nativeWindow->becomeKeyWindow(); }
 
+Native::NativeScreenDesc AppWindow::currentScreen() const {
+    return impl_->nativeWindow->currentScreen();
+}
+
+void AppWindow::moveToScreen(const Native::NativeScreenDesc & screen){
+    // Preserve the window's logical offset within the source screen
+    // on the destination screen. `nativeWindow->getRect()` is in
+    // virtual-screen absolute coordinates; subtracting the source
+    // screen's origin recovers the source-local position, which is
+    // then re-anchored to the destination.
+    const Composition::Rect curRect = impl_->nativeWindow->getRect();
+    const Native::NativeScreenDesc src = impl_->nativeWindow->currentScreen();
+    Composition::Rect dest = curRect;
+    dest.pos.x = screen.frame.pos.x + (curRect.pos.x - src.frame.pos.x);
+    dest.pos.y = screen.frame.pos.y + (curRect.pos.y - src.frame.pos.y);
+    impl_->nativeWindow->setRect(dest);
+}
+
 AppWindow::~AppWindow(){
     std::cout << "Closing Window" << std::endl;
     if(impl_->rootViewRenderTarget != nullptr){
@@ -393,6 +448,24 @@ void AppWindowManager::onThemeSet(Native::ThemeDesc & desc){
 AppWindowPtr AppWindowManager::getRootWindow(){
     return rootWindow;
 };
+
+Native::NativeScreenDesc AppWindowManager::defaultScreen() const {
+    // Lazy first-read: `Native::primaryScreen()` requires the platform
+    // display layer to be live, which is not guaranteed at
+    // AppWindowManager construction time on every backend (GTK needs
+    // `gtk_init` to have run first). Deferring the resolution until
+    // first read keeps the manager's ctor cheap and synchronous.
+    if(!defaultScreenInitialized_){
+        defaultScreen_ = Native::primaryScreen();
+        defaultScreenInitialized_ = true;
+    }
+    return defaultScreen_;
+}
+
+void AppWindowManager::setDefaultScreen(const Native::NativeScreenDesc & screen){
+    defaultScreen_ = screen;
+    defaultScreenInitialized_ = true;
+}
 
 void AppWindowManager::displayRootWindow(){
     rootWindow->impl_->nativeWindow->initialDisplay();
@@ -556,6 +629,71 @@ void AppWindowDelegate::onRecieveEvent(Native::NativeEventPtr event){
 #else
             dispatchResizeToHosts(params->rect);
 #endif
+            break;
+        }
+        case Native::NativeEvent::WindowScaleFactorChanged: {
+            // Native-API-Completion-Proposal §2.2 consumer. The native side
+            // (CocoaAppWindow / WinAppWindow / GTKAppWindow) emits this
+            // when the window's combined logical→physical scale changes —
+            // Win32 WM_DPICHANGED, macOS -windowDidChangeBackingProperties:,
+            // GTK notify::scale-factor. The handler runs the three-step
+            // coupling specified by UIView-Render-Redesign-Plan Phase F so
+            // every DrawOp re-rasterizes at the new pixel density on the
+            // next frame: (1) match the OS-suggested rect on Win32, (2)
+            // propagate the new scale to the Compositor's
+            // ViewRenderTarget, (3) reuse the resize ScopedFrame to force
+            // a full-tree repaint.
+            auto *params = static_cast<Native::WindowScaleFactorChangedParams *>(event->params);
+            if(params == nullptr || window == nullptr || window->impl_ == nullptr){
+                break;
+            }
+            // (1) Win32 WM_DPICHANGED carries a physical-size-preserving
+            // rect; macOS / GTK leave this empty. The Win32 wndproc has
+            // typically already issued SetWindowPos by the time we see
+            // the event, but applying it through the NativeWindow API
+            // here keeps the consumer portable and self-contained — any
+            // backend that surfaces a suggested rect without applying
+            // it gets the same behavior.
+            if(params->suggestedRect.has_value() && window->impl_->nativeWindow != nullptr){
+                window->impl_->nativeWindow->setRect(*params->suggestedRect);
+            }
+            // (2) Compositor scale propagation. ViewRenderTarget is the
+            // single source of truth for "what scale is this window
+            // rendering at"; every backend visual tree
+            // (CALayerTree / DCVisualTree / VKVisualTree) reads
+            // getRenderScale() at allocation time. Updating it before
+            // dispatchResizeToHosts means syncNativePresentLayer's
+            // resizeNativeLayer call below carries the new scale into
+            // the native present layer in the same pass.
+            //
+            // Cross-plan: a follow-up ViewRenderTarget::scaleChanged()
+            // (owned by DPI-Aware-Text-Plan.md "Per-monitor DPI
+            // updates") is what re-runs
+            // BackendRenderTargetContext::recomputeBackingDimensions
+            // so the backing texture itself rebuilds at the new
+            // pixel density. Until it lands the front-side scale is
+            // updated correctly here but the backend may still
+            // rasterize at the old backing extent — that final
+            // coupling is the Phase F follow-up the §2.2 status block
+            // calls out, not in this proposal's scope.
+            if(window->impl_->rootViewRenderTarget != nullptr){
+                window->impl_->rootViewRenderTarget->setRenderScale(params->newScale);
+            }
+            // (3) Force the full-tree repaint by routing through the
+            // shared resize machinery — same dispatchResizeToHosts
+            // ScopedFrame the resize handler opens, so the contract
+            // ("every element re-rasterizes against fresh
+            // renderScale_") is identical for resize and scale-change.
+            // The rect is unchanged on a scale-only event (macOS /
+            // GTK); on Win32 the suggestedRect application above has
+            // already updated window->impl_->rect through the native
+            // resize path. Re-read getRect() to pick up whatever the
+            // platform settled on.
+            const Composition::Rect currentRect =
+                window->impl_->nativeWindow != nullptr
+                    ? window->impl_->nativeWindow->getRect()
+                    : window->impl_->rect;
+            dispatchResizeToHosts(currentRect);
             break;
         }
         case Native::NativeEvent::WindowHasFinishedResize: {

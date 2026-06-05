@@ -332,9 +332,19 @@ O1–O3 land independently of FocusManager and unblock most of Phase 6. O4–O5 
 ## 11. Open questions
 
 1. **Animated present / dismiss.** Should `OverlayHost::present` accept an `AnimationCurve` for fade-in / slide-in? Most production toolkits do; the trade-off is two extra frames of latency on first paint. Lean toward yes, opt-in via `OverlayPresentOptions::transition`.
+
+Yes
+
 2. **Pointer events on a moving anchor.** If a Popover's anchor Widget animates its rect, should the Popover follow? Default-dismiss-on-anchor-move matches dropdown semantics; default-follow matches inspector-panel semantics. Likely per-overlay — surface a `OverlayDismissPolicy::dismissOnAnchorMove` flag.
+
+Yes. 
+
 3. **Z-fighting across multiple windows.** If one `AppWindow`'s Modal needs to block another `AppWindow`'s input (app-modal vs. window-modal), the in-window overlay can't express that. App-modal is a Panels-Plan concern (parent window opacity + child Modal panel), not this plan's.
+
+Yes.
+
 4. **Cursor shape on overlay edges.** A Sheet resize handle wants a north-south cursor; a Popover arrow does not. `View::setCursorShape` already handles this — overlays just call it on their root view at `present` time.
+
 
 ---
 

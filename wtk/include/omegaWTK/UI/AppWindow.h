@@ -5,6 +5,7 @@
 #include "omegaWTK/Native/NativeDialog.h"
 #include "omegaWTK/Native/NativeTheme.h"
 #include "omegaWTK/Native/NativeWindow.h"
+#include "omegaWTK/Native/NativeScreen.h"
 
 #ifndef OMEGAWTK_UI_APPWINDOW_H
 #define OMEGAWTK_UI_APPWINDOW_H
@@ -187,7 +188,38 @@ class AppWindowDelegate;
         /// `Style | Layout | Paint`.
         void applyCascadeChange();
 
+        /// Construct an AppWindow on the manager's default screen
+        /// (see `AppWindowManager::defaultScreen`, which defaults to
+        /// `Native::primaryScreen()`). `rect` is interpreted as
+        /// screen-local DIPs and translated to virtual-screen
+        /// absolute coordinates internally.
         explicit AppWindow(Composition::Rect rect,AppWindowDelegate * delegate = nullptr);
+
+        /// Construct an AppWindow on an explicitly chosen screen
+        /// (§2.9). `rect` is interpreted as screen-local DIPs —
+        /// `screen.frame.pos` is added to `rect.pos` before the
+        /// platform window is created. Initial scale comes from
+        /// `screen.scaleFactor`, eliminating the "first frame at 1×,
+        /// then jump" sequence on mixed-DPI multi-monitor setups.
+        ///
+        /// `setRect` / `getRect` continue to use virtual-screen
+        /// absolute coordinates — the screen-local interpretation is
+        /// a one-shot at construction.
+        AppWindow(Composition::Rect rect,
+                  const Native::NativeScreenDesc & screen,
+                  AppWindowDelegate * delegate = nullptr);
+
+        /// The screen this window currently lives on. Re-resolves
+        /// from the native window's position on every call so
+        /// cross-screen moves are observed without an explicit event.
+        Native::NativeScreenDesc currentScreen() const;
+
+        /// Move the window to `screen`, preserving its logical
+        /// offset within the source screen. Convenience wrapper over
+        /// `setRect` — apps that need pixel-exact destination
+        /// placement can compose it themselves.
+        void moveToScreen(const Native::NativeScreenDesc & screen);
+
         ~AppWindow() override;
     };
 /**
@@ -199,6 +231,14 @@ class OMEGAWTK_EXPORT  AppWindowManager : public Native::NativeThemeObserver {
         AppWindowPtr rootWindow;
 
         OmegaCommon::Vector<AppWindowPtr> windows;
+
+        /// Default screen used by `AppWindow(rect, delegate)` (the
+        /// no-screen ctor). `valid_` tracks first-read seeding: until
+        /// app code calls `setDefaultScreen` the first `defaultScreen`
+        /// query lazy-fills from `Native::primaryScreen()`. Reading on
+        /// the UI thread only — no synchronization.
+        mutable Native::NativeScreenDesc defaultScreen_ {};
+        mutable bool defaultScreenInitialized_ = false;
 
         void closeAllWindows();
 
@@ -230,6 +270,15 @@ class OMEGAWTK_EXPORT  AppWindowManager : public Native::NativeThemeObserver {
         void setRootWindow(AppWindowPtr handle);
 
         AppWindowPtr getRootWindow();
+
+        /// Default screen for newly-created AppWindows. Defaults to
+        /// `Native::primaryScreen()` on first read; replaceable via
+        /// `setDefaultScreen`. The `AppWindow(rect, delegate)` ctor
+        /// resolves through this so an app can place every default
+        /// window on a non-primary monitor without rewriting call
+        /// sites.
+        Native::NativeScreenDesc defaultScreen() const;
+        void setDefaultScreen(const Native::NativeScreenDesc & screen);
 
         void displayRootWindow();
         ~AppWindowManager() override = default;

@@ -2,6 +2,7 @@
 #include "HWNDFactory.h"
 #include "WinMenu.h"
 
+#include <cmath>
 #include <dwmapi.h>
 #include <memory>
 #include <windowsx.h>
@@ -25,7 +26,7 @@ namespace {
     }
 }
 
-    WinAppWindow::WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter):
+    WinAppWindow::WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter,const NativeScreenDesc *screen):
         NativeWindow(rect, emitter),
         HWNDItem(rect),
         isReady(false){
@@ -39,7 +40,20 @@ namespace {
         if(hwnd == NULL){
             MessageBoxA(HWND_DESKTOP,"Failed to Create Desktop Window",NULL,MB_OK);
         }
-        currentDpi = GetDpiForWindow(hwnd);
+        // §2.9: seed currentDpi from the chosen screen's scale so DPI-
+        // aware coordinate math (WM_GETMINMAXINFO, the wndproc's
+        // logical-pixel divisions) is correct before the first
+        // WM_DPICHANGED. AppWindow already pre-translated rect to
+        // absolute virtual-screen coords, so GetDpiForWindow would also
+        // return the right value here — but reading the screen-provided
+        // value first avoids one Win32 round-trip and keeps the
+        // initialization deterministic across "the wndproc was already
+        // delivered a WM_DPICHANGED during CreateWindow" race orderings.
+        if(screen != nullptr && screen->scaleFactor > 0.f){
+            currentDpi = (UINT)std::lround(screen->scaleFactor * 96.0f);
+        } else {
+            currentDpi = GetDpiForWindow(hwnd);
+        }
         isTracking = false;
         hovered = false;
         // WS_EX_LAYERED is set, but a layered window with no attributes is
@@ -539,9 +553,8 @@ namespace {
         wndrect = r;
         rect = r;
     }
-    float WinAppWindow::scaleFactor() const {
-        return float(currentDpi) / 96.f;
-    }
+    // §2.9: scaleFactor() now lives at NativeWindow and forwards to
+    // currentScreen().scaleFactor — no per-backend override.
     void WinAppWindow::setMinSize(float w, float h){
         minSize_ = Composition::Point2D{w, h};
     }
@@ -605,8 +618,8 @@ namespace {
 };
 
 namespace OmegaWTK::Native {
-    NWH make_native_window(Composition::Rect &rect, NativeEventEmitter *emitter){
-        return (NWH)new Win::WinAppWindow(rect,emitter);
+    NWH make_native_window(Composition::Rect &rect, NativeEventEmitter *emitter, const NativeScreenDesc *screen){
+        return (NWH)new Win::WinAppWindow(rect,emitter,screen);
     }
     
 }

@@ -200,36 +200,6 @@ class GTKAppWindow : public NativeWindow {
     std::atomic<bool> frameFlushQueued_ {false};
     guint frameFlushIdleSource_ = 0;
 
-    struct PrimaryMonitorPlacement {
-        int x = 0;
-        int y = 0;
-        int integerScale = 1;
-        bool valid = false;
-    };
-
-    static PrimaryMonitorPlacement queryPrimaryMonitor(){
-        PrimaryMonitorPlacement out;
-        GdkDisplay *display = gdk_display_get_default();
-        if(display == nullptr){
-            return out;
-        }
-        GdkMonitor *monitor = gdk_display_get_primary_monitor(display);
-        if(monitor == nullptr){
-            monitor = gdk_display_get_monitor(display, 0);
-        }
-        if(monitor == nullptr){
-            return out;
-        }
-        GdkRectangle geom{};
-        gdk_monitor_get_geometry(monitor, &geom);
-        out.x = geom.x;
-        out.y = geom.y;
-        gint s = gdk_monitor_get_scale_factor(monitor);
-        out.integerScale = (s < 1) ? 1 : (int)s;
-        out.valid = true;
-        return out;
-    }
-
     static float computeDpiScale(){
         GdkDisplay *display = gdk_display_get_default();
         if(display == nullptr){
@@ -711,7 +681,7 @@ class GTKAppWindow : public NativeWindow {
     }
 
 public:
-    GTKAppWindow(Composition::Rect &rectArg,NativeEventEmitter *emitter):
+    GTKAppWindow(Composition::Rect &rectArg,NativeEventEmitter *emitter,const NativeScreenDesc *screen):
     NativeWindow(sanitizeRect(rectArg,Composition::Rect{Composition::Point2D{0.f,0.f},1.f,1.f}), emitter){
         if(gdk_display_get_default() == nullptr){
             std::cerr << "[OmegaWTK][GTK] No active GDK display. Skipping native window creation." << std::endl;
@@ -748,23 +718,32 @@ public:
             }
 #endif
 
-            // Anchor initial placement to the primary monitor so a default
-            // rect at {0,0} doesn't land on whichever monitor the WM picks
-            // (often the secondary, which on a mixed-DPI setup carries the
-            // wrong scale at construction time). Pull the integer scale from
-            // that same monitor — gtk_widget_get_scale_factor on an
-            // unrealized window returns 1, and we'd otherwise cache a stale
-            // value until the first notify::scale-factor fires.
-            PrimaryMonitorPlacement primary = queryPrimaryMonitor();
+            // §2.9 NativeScreen: placement and scale come from the
+            // chosen screen passed through by AppWindow. The AppWindow
+            // ctor has already translated `rect.pos` to virtual-screen
+            // absolute DIPs, so a `gtk_window_move` to the converted
+            // logical position lands on the right monitor without any
+            // local "+ primary.x" offset. integerScale_ is recovered
+            // from the screen's combined scale (which §2.9's GTKScreen
+            // builds as `dpiScale × gdkScale`), avoiding the stale
+            // `gtk_widget_get_scale_factor`-returns-1 problem on an
+            // unrealized window. Null `screen` falls back to
+            // `Native::primaryScreen()` — kept defensive in case a
+            // future caller hits `make_native_window` without going
+            // through AppWindow.
+            const NativeScreenDesc resolvedScreen =
+                screen != nullptr ? *screen : Native::primaryScreen();
             dpiScale_ = computeDpiScale();
-            integerScale_ = primary.valid ? primary.integerScale : computeIntegerScale();
+            float dpiDivisor = dpiScale_ > 0.f ? dpiScale_ : 1.f;
+            int recovered = (int)std::lround(resolvedScreen.scaleFactor / dpiDivisor);
+            integerScale_ = recovered >= 1 ? recovered : 1;
             currentScale_ = dpiScale_ * (float)integerScale_;
             gtk_window_set_default_size(GTK_WINDOW(window),
                 (gint)toGtkLogical(this->rect.w),
                 (gint)toGtkLogical(this->rect.h));
             gtk_window_move(GTK_WINDOW(window),
-                primary.x + (gint)toGtkLogical(this->rect.pos.x),
-                primary.y + (gint)toGtkLogical(this->rect.pos.y));
+                (gint)toGtkLogical(this->rect.pos.x),
+                (gint)toGtkLogical(this->rect.pos.y));
 
             // §2.13: turn off GTK painting on the toplevel so the
             // engine can render directly into its X11 Window without
@@ -1081,14 +1060,6 @@ G_GNUC_END_IGNORE_DEPRECATIONS
             std::max(1,(gint)toGtkLogical(r.w)),
             std::max(1,(gint)toGtkLogical(r.h)));
     }
-    float scaleFactor() const override {
-        // Combined scale: dpiScale (Xft.dpi / 96, the part GTK does not
-        // auto-apply) × integerScale (gtk_widget_get_scale_factor, the part
-        // GTK does auto-apply to surface allocation). Mirrors the
-        // logical→physical ratio that Win32 GetDpiForWindow/96 and macOS
-        // backingScaleFactor return on their respective platforms.
-        return currentScale_;
-    }
     void setMinSize(float w, float h) override {
         minW_ = w; minH_ = h;
         if(window == nullptr){
@@ -1239,8 +1210,8 @@ float gtk_menu_bar_inset_from_native(const NWH & window){
 
 namespace OmegaWTK::Native {
 
-NWH make_native_window(Composition::Rect &rect,NativeEventEmitter *emitter){
-    return (NWH)new GTK::GTKAppWindow(rect,emitter);
+NWH make_native_window(Composition::Rect &rect,NativeEventEmitter *emitter,const NativeScreenDesc *screen){
+    return (NWH)new GTK::GTKAppWindow(rect,emitter,screen);
 }
 
 }
