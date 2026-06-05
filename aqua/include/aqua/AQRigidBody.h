@@ -9,6 +9,7 @@
 // AQRigidBody read-only — can include just this header.
 
 #include "AQBase.h"
+#include "AQCollision.h"
 #include "AQMath.h"
 #include <omegaGTE/GTEMath.h>
 #include <memory>
@@ -55,6 +56,18 @@ struct AQUA_EXPORT AQBodyDesc {
     // --- material (consumed in Phase 3; reserved now to avoid descriptor churn) ---
     float restitution = 0.f;
     float friction    = 0.5f;
+
+    // --- Phase 2 additions (collision shapes + broadphase) ---
+    /// Optional collision geometry. Obtain a handle from
+    /// `AQSpace::createSphereShape`/etc.; an invalid handle (the default)
+    /// means the body has no shape and is not seen by the broadphase. When
+    /// the body is dynamic, the shape is valid, and both `inertiaTensor` and
+    /// `inertiaPrincipalMoments` are zero, `addBody` derives the diagonal
+    /// moments from the shape (closes the Phase 1 hook in `AQRigidBody.h`).
+    AQShapeHandle     shape;
+    /// Collision-filter layer/mask. Defaults: layer 1, mask = all — every
+    /// body collides with every other body. Phase 2 brief §11.5 lean.
+    AQCollisionFilter filter;
 };
 
 /// Handle to a body living inside an AQSpace. Owned by the AQSpace; obtained from
@@ -98,6 +111,24 @@ public:
     /// the physics, so off by default — the adaptive gyroscopic iteration is
     /// the silent default stability path.
     void  setMaxAngularSpeed(float s); AQUA_NODISCARD float maxAngularSpeed() const;
+
+    // --- collision geometry & filter (Phase 2) ---
+    /// Current shape handle. Invalid handle ⇒ no shape (broadphase-invisible).
+    AQUA_NODISCARD AQShapeHandle shape() const;
+    /// Sets the shape handle. Does NOT re-derive inertia automatically — the
+    /// auto-derive runs in `addBody` only. Callers that want the moments
+    /// recomputed should set them to zero and re-add the body, or set the
+    /// principal moments explicitly via the descriptor.
+    void setShape(const AQShapeHandle &s);
+
+    /// World-space fattened AABB of the body's shape (per Phase 2 §6.A). Both
+    /// components are zero if the body has no shape. Useful for debug overlays
+    /// and gameplay queries.
+    AQUA_NODISCARD OmegaGTE::FVec<3> aabbMin() const;
+    AQUA_NODISCARD OmegaGTE::FVec<3> aabbMax() const;
+
+    AQUA_NODISCARD AQCollisionFilter collisionFilter() const;
+    void setCollisionFilter(const AQCollisionFilter &f);
 
     // --- force / torque / impulse API ---
     // Forces/torques accumulate in world space and are consumed at the start of

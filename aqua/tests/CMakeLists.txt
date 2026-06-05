@@ -39,3 +39,18 @@ target_link_libraries(aqua_rigid_body_test PRIVATE AQUA OmegaCommon)
 add_dependencies(aqua_rigid_body_test AQUA)
 set_target_properties(aqua_rigid_body_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 add_test(NAME aqua_rigid_body COMMAND aqua_rigid_body_test)
+
+# Phase 2 collision-shapes + broadphase validation: shape factories +
+# inertia-from-shape closure, brute-force oracle parity (static + moving),
+# rotation-correct AABB on a spinning box, determinism, layer/mask filter,
+# COM-offset torque-arm wiring, and a scaling log. Drives the public AQUA
+# surface end-to-end, matching the Phase-2 brief §1 runnable-deliverable bar.
+add_executable(aqua_broadphase_test aqua_broadphase_test.cpp)
+target_include_directories(aqua_broadphase_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../gte/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../common/include")
+target_link_libraries(aqua_broadphase_test PRIVATE AQUA OmegaCommon)
+add_dependencies(aqua_broadphase_test AQUA)
+set_target_properties(aqua_broadphase_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME aqua_broadphase COMMAND aqua_broadphase_test)

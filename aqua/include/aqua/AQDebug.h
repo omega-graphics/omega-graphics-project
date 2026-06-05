@@ -30,11 +30,15 @@ struct AQDebugLine {
 /// buffer stays empty and `drainDebugLines` returns nothing, so the surface
 /// is zero-cost when off.
 enum AQDebugFlags : std::uint32_t {
-    AQDebugNone        = 0,
-    AQDebugBodyAxes    = 1U << 0,   ///< RGB principal axes at the COM (3 lines/body)
-    AQDebugVelocity    = 1U << 1,   ///< Linear velocity vector
-    AQDebugAngularVel  = 1U << 2,   ///< Angular velocity vector (world frame)
-    AQDebugMomentum    = 1U << 3,   ///< World angular-momentum L vector
+    AQDebugNone             = 0,
+    AQDebugBodyAxes         = 1U << 0,   ///< RGB principal axes at the COM (3 lines/body)
+    AQDebugVelocity         = 1U << 1,   ///< Linear velocity vector
+    AQDebugAngularVel       = 1U << 2,   ///< Angular velocity vector (world frame)
+    AQDebugMomentum         = 1U << 3,   ///< World angular-momentum L vector
+    // --- Phase 2 additions (broadphase + collision shapes, see Phase-2 brief §9) ---
+    AQDebugAABB             = 1U << 4,   ///< Per-body fattened world AABB (12 line segments)
+    AQDebugBroadphasePair   = 1U << 5,   ///< One line per emitted candidate, COM(a)→COM(b)
+    AQDebugBroadphaseGuard  = 1U << 6,   ///< Single red line when candidate/brute(n²) > 0.5
 };
 
 #endif // AQUA_AQDEBUG_H

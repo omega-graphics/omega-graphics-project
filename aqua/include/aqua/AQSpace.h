@@ -9,9 +9,11 @@
 // same names they always did.
 
 #include "AQBase.h"
+#include "AQCollision.h"
 #include "AQDebug.h"
 #include "AQRigidBody.h"
 #include <omegaGTE/GTEMath.h>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -53,6 +55,22 @@ public:
     /// Moves the accumulated debug lines out of the space and clears its buffer.
     AQUA_NODISCARD std::vector<AQDebugLine> drainDebugLines();
 
+    // --- shape factories (Phase 2) ---
+    // Shapes are owned and instanced by the space (§11.3) and referenced by
+    // handle from descriptors. AQShape stays out of the call site; these
+    // mirror GTE's named-ctor idiom. Returning an invalid handle (generation
+    // 0) signals a malformed shape (e.g. zero radius, empty hull).
+    AQShapeHandle createSphereShape(float radius);
+    AQShapeHandle createBoxShape(const OmegaGTE::FVec<3> &halfExtents);
+    AQShapeHandle createCapsuleShape(float radius, float halfHeight);
+    AQShapeHandle createPlaneShape(const OmegaGTE::FVec<3> &normal, float offset);
+    AQShapeHandle createConvexHullShape(const OmegaGTE::FVec<3> *pts, std::size_t n);
+
+    /// Current ordered, de-duplicated broadphase candidate pairs (Phase 2 §10).
+    /// Indices are stable for the lifetime of the space (the body's slot in
+    /// the space's body-SoA array). Updated once per `AQContext::advance`.
+    AQUA_NODISCARD std::vector<AQBroadphasePair> candidatePairs() const;
+
 private:
     AQSpace();
 
@@ -64,6 +82,13 @@ private:
     /// Re-arms the per-body debug fast-spin warning. Called by AQContext when
     /// the fixed sub-step changes; a no-op effect in release builds.
     void resetStepWarnings();
+
+    /// Refreshes per-body fattened world AABBs and runs the sort-based-grid
+    /// broadphase (Phase 2 §6.B), once per `AQContext::advance` tick. `frameDt`
+    /// is the real frame time the context received — used by the velocity-
+    /// proportional fattening (§11.4). Drives the new AQDebugAABB /
+    /// AQDebugBroadphasePair / AQDebugBroadphaseGuard emissions.
+    void runBroadphase(float frameDt);
 
     friend class AQContext;
 

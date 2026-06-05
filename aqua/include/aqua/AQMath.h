@@ -349,6 +349,17 @@ using FAABB = AQAABB<float>;
 // rotated by q about `center`, the world-axis-aligned half-extent along axis i
 // is Σ_j |R_ij| · h_j — the matrix of absolute values of the rotation times h.
 // Cheap, correct under rotation, and always contains the box's 8 corners.
+//
+// Numerical hardening: the formula above is mathematically exact, but the
+// path that computes a *single corner* (`center + R · ±h`) accumulates a
+// different set of float multiply-add roundings than this per-axis sum, so
+// in float a corner can land a couple of ULP outside the computed bound.
+// The Phase 2 broadphase relies on the "always contains" invariant — a
+// missed corner means a missed pair, the §2-point-2 catastrophe. Pad the
+// half-extents by a small scale-aware ε absorbing up to ~8 ULP of float
+// drift across either computation path; the pad is sub-micron at human
+// scale and invisible to broadphase fattening, but it makes the
+// contains-all-corners guarantee robust under float roundoff.
 template<class Ty>
 inline AQAABB<Ty> AQaabbOfOrientedBox(const AQVec3<Ty>& centerW,
                                       const AQVec3<Ty>& halfExtents,
@@ -357,10 +368,15 @@ inline AQAABB<Ty> AQaabbOfOrientedBox(const AQVec3<Ty>& centerW,
     const AQVec3<Ty> ry = AQrotate(q, AQvec3<Ty>(Ty(0), Ty(1), Ty(0)));
     const AQVec3<Ty> rz = AQrotate(q, AQvec3<Ty>(Ty(0), Ty(0), Ty(1)));
     const Ty hx = halfExtents[0][0], hy = halfExtents[1][0], hz = halfExtents[2][0];
+
+    const Ty pad = Ty(8) * std::numeric_limits<Ty>::epsilon() *
+                   (std::abs(centerW[0][0]) + std::abs(centerW[1][0]) + std::abs(centerW[2][0]) +
+                    hx + hy + hz);
+
     const auto h = AQvec3<Ty>(
-        std::abs(rx[0][0]) * hx + std::abs(ry[0][0]) * hy + std::abs(rz[0][0]) * hz,
-        std::abs(rx[1][0]) * hx + std::abs(ry[1][0]) * hy + std::abs(rz[1][0]) * hz,
-        std::abs(rx[2][0]) * hx + std::abs(ry[2][0]) * hy + std::abs(rz[2][0]) * hz);
+        std::abs(rx[0][0]) * hx + std::abs(ry[0][0]) * hy + std::abs(rz[0][0]) * hz + pad,
+        std::abs(rx[1][0]) * hx + std::abs(ry[1][0]) * hy + std::abs(rz[1][0]) * hz + pad,
+        std::abs(rx[2][0]) * hx + std::abs(ry[2][0]) * hy + std::abs(rz[2][0]) * hz + pad);
     return AQAABB<Ty>::fromCenterHalfExtents(centerW, h);
 }
 

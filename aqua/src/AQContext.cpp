@@ -36,6 +36,13 @@ void AQContext::advance(float realDt) {
         accumulator -= fixedDt;
         elapsedTime += fixedDt;
     }
+
+    // Phase 2 broadphase runs once per `advance` tick (Phase-2 brief §10), not
+    // per sub-step — pair candidates are stable within a frame's sub-steps,
+    // and the fat-AABB margin includes a `v · realDt` dilation that covers
+    // the body's whole-frame motion. CCD/fast-moving bodies will revisit this
+    // cadence in Phase 4 if needed.
+    for (auto &space : spaces) space->runBroadphase(realDt);
 }
 
 float AQContext::fixedTimestep() const { return fixedDt; }
