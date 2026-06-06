@@ -14,9 +14,13 @@ namespace OmegaWTK::Native::Win {
     class WinAppWindow : public NativeWindow,
                          public HWNDItem,
                          public std::enable_shared_from_this<WinAppWindow> {
-        // `isReady` is the pre-existing event-emit gate (set to true in
-        // attachWidgets, consumed by WM_DESTROY / WM_SIZE handlers). It
-        // is NOT the same as the NativeWindow-Ready-Signal-Plan
+        // `isReady` is the WM_DESTROY / WM_SIZE event-emit gate. It
+        // flips true at the end of `initialDisplay()` — after the
+        // HWND is shown and the AppWindow has its widget tree wired up
+        // — so an early `WM_SIZE` during HWND construction or the
+        // first `ShowWindow` does not fire a `WindowWillResize` while
+        // the AppWindowDelegate side is still half-constructed. It is
+        // NOT the same as the NativeWindow-Ready-Signal-Plan
         // isNativeReady() predicate, which has its own atomic
         // (nativeReady_) below — keeping them distinct so the
         // event-emit gate doesn't accidentally gate render dispatch
@@ -64,8 +68,6 @@ namespace OmegaWTK::Native::Win {
         void enable() override;
 
         void disable() override;
-
-        void attachWidgets();
 
         void initialDisplay() override;
 

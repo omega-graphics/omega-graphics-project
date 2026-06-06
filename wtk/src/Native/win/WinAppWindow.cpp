@@ -355,15 +355,6 @@ namespace {
         return TRUE;
     };
 
-    void WinAppWindow::attachWidgets(){
-       if(menu) {
-           auto hmenu = (HMENU)menu->getNativeBinding();
-            if(SetMenu(hwnd,hmenu) == FALSE){
-                OMEGAWTK_DEBUG("Failed to Attach Menu to AppWindow");
-            };
-       };
-       isReady = true;
-    };
     void WinAppWindow::enable(){
         if(!IsWindowVisible(hwnd)){
             ShowWindow(hwnd,SW_SHOW);
@@ -397,6 +388,18 @@ namespace {
         // doesn't matter — whichever fires first wins; subsequent
         // calls are idempotent no-ops.
         handleFirstRealize();
+        // Open the WM_SIZE / WM_DESTROY event-emit gate. AppWindow's
+        // setRootWidget (which wires impl_->widgetTreeHost) always runs
+        // before AppWindowManager::displayRootWindow → initialDisplay,
+        // so the widget tree is in place by the time this flips. The
+        // initial WM_SIZE that ShowWindow above fires is intentionally
+        // still gated — initWidgetTree (called immediately after this
+        // returns, via displayRootWindow) sizes the tree once, so a
+        // second resize-driven walk would be redundant. UIView-Render-
+        // Redesign-Plan Phase F's `forceFullRepaint` then drives every
+        // subsequent user-driven resize through WindowWillResize →
+        // AppWindowDelegate::dispatchResize*ToHosts.
+        isReady = true;
     };
 
     // ---- NativeWindow-Ready-Signal-Plan step 5 overrides ----

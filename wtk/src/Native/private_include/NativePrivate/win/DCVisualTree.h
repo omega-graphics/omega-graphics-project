@@ -84,7 +84,7 @@ namespace OmegaWTK::Native::Win {
         /// Per-window hwnd target — the Composition binder needs it
         /// to forward into `DCVisual::bindSwapChain`. Owned by the
         /// tree; lifetime tied to it.
-        IDCompositionTarget * hwndTarget() const { return hwndTarget_.comPtr; }
+        IDCompositionTarget * hwndTarget() const { return hwndTarget_.comPtr.Get(); }
 
         /// Process-global desktop device. Same lifetime / Commit
         /// channel for every tree in the process.

@@ -30,6 +30,7 @@
 #include "BlurScratch.h"
 #include "RenderPass.h"
 #include "Effect.h"
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -102,6 +103,28 @@ namespace OmegaWTK::Composition {
         unsigned backingWidth_  = 1;
         unsigned backingHeight_ = 1;
         SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessellationContext_;
+
+#ifdef _WIN32
+        // Win32 swap-chain resize is GPU-side work that must run on the
+        // same thread as frame recording / commit / present, because
+        // `IDXGISwapChain3::ResizeBuffers` releases the back-buffer
+        // ID3D12Resources whose raw pointers the compositor worker's
+        // command lists bake in at record time. Calling it from the GUI
+        // thread (where `setRenderTargetSize` arrives via WM_SIZE →
+        // syncNativePresentLayer) frees buffers the worker is mid-
+        // recording against, which D3D12 catches as error 924
+        // ("render target resource has been freed") and the nvidia
+        // driver eventually segfaults on. The GUI thread stashes the
+        // requested backing dims here; the worker thread drains them at
+        // the top of `beginFrame` (single-owner of frame lifecycle, and
+        // `resizeSwapChain`'s internal `commitToGPUAndWait` safely
+        // drains the previous frame's submissions before releasing
+        // back-buffers).
+        std::atomic<bool>     pendingSwapChainResize_ {false};
+        std::atomic<unsigned> pendingSwapChainW_      {0};
+        std::atomic<unsigned> pendingSwapChainH_      {0};
+        void applyPendingSwapChainResize();
+#endif
 
         FrameRenderPass frameRenderPass_;
         SharedHandle<BackendCanvasEffectProcessor> imageProcessor;

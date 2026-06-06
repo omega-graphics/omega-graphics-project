@@ -2809,10 +2809,26 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         descHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         descHeapDesc.NodeMask = d3d12_device->GetNodeCount();
         descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        ID3D12DescriptorHeap *descHeap;
+        // Initialize to nullptr explicitly: on failure the COM contract
+        // says the callee may leave the output untouched, so without
+        // this an uninitialized stack slot leaks through to the SRV /
+        // UAV creation below.
+        ID3D12DescriptorHeap *descHeap = nullptr;
         hr = d3d12_device->CreateDescriptorHeap(&descHeapDesc,IID_PPV_ARGS(&descHeap));
-        if(FAILED(hr)){
-
+        if(FAILED(hr) || descHeap == nullptr){
+            // Under churn — for example a fast WTK window resize that
+            // rebuilds the buffer pool every frame — CreateDescriptorHeap
+            // can transiently fail. Previously the empty handler fell
+            // straight through to `descHeap->GetCPUDescriptorHandleForHeapStart()`
+            // and AV'd reading the null vtable. Release the already-
+            // created D3D12 buffer + allocation, log, and bubble the
+            // failure up. Callers (e.g. `BufferPool::acquire` →
+            // `emitTextSubRun`) already treat a null GEBuffer as "skip
+            // this subrun for the frame."
+            DEBUG_STREAM("Failed to Create D3D12 Descriptor Heap for Buffer");
+            if (buffer)     buffer->Release();
+            if (allocation) allocation->Release();
+            return nullptr;
         };
 
         if(desc.role == BufferDescriptor::Uniform){

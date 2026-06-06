@@ -239,8 +239,44 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         const unsigned newH = toBackingDimension(renderTargetSize_.h, renderScale_);
         if(oldW != newW || oldH != newH){
             rebuildBackingTarget();
+#ifdef _WIN32
+            // D3D12 + DComp: rebuildBackingTarget only updates
+            // backing-dim bookkeeping and invalidates the tessellation
+            // cache — the DXGI swap-chain back-buffers themselves stay
+            // at their original size until ResizeBuffers is called.
+            // ResizeBuffers releases the existing back-buffer
+            // ID3D12Resources, but the compositor worker thread is
+            // concurrently recording command lists that bake those raw
+            // pointers in as render targets. Calling resizeSwapChain
+            // here (on the GUI thread, since setRenderTargetSize
+            // arrives via WM_SIZE → syncNativePresentLayer) would race
+            // and freed-resource D3D12 errors / driver AVs would
+            // follow. Stash the requested backing dims instead and let
+            // the worker thread drain them at the top of beginFrame
+            // (see `applyPendingSwapChainResize`), where it is the
+            // sole owner of the frame lifecycle.
+            pendingSwapChainW_.store(newW, std::memory_order_relaxed);
+            pendingSwapChainH_.store(newH, std::memory_order_relaxed);
+            pendingSwapChainResize_.store(true, std::memory_order_release);
+#endif
         }
     }
+
+#ifdef _WIN32
+    void BackendRenderTargetContext::applyPendingSwapChainResize(){
+        // Acquire-load pairs with the release-store in setRenderTargetSize
+        // so the new W/H reads below see the values the GUI thread wrote
+        // before flipping the flag. `exchange` clears the pending bit
+        // so a concurrent setRenderTargetSize that fires *after* this
+        // load can re-arm a fresh request for the next frame.
+        if(!pendingSwapChainResize_.exchange(false, std::memory_order_acq_rel)){
+            return;
+        }
+        const unsigned w = pendingSwapChainW_.load(std::memory_order_relaxed);
+        const unsigned h = pendingSwapChainH_.load(std::memory_order_relaxed);
+        resizeSwapChain(w, h);
+    }
+#endif
 
     void BackendRenderTargetContext::applySetClip(const Core::Optional<Composition::Rect> & clipRect){
         // Tier 3 Phase 3.5: translate the resolved canvas-local clip
@@ -335,6 +371,16 @@ void BackendRenderTargetContext::waitForGPU() {
 #endif
 
 void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float clearB, float clearA) {
+#ifdef _WIN32
+    // Drain any pending DXGI ResizeBuffers request queued by
+    // `setRenderTargetSize` on the GUI thread. We are on the
+    // compositor worker thread here, sole owner of this context's
+    // frame lifecycle, and the previous frame's submissions are
+    // either retired or about to be drained by resizeSwapChain's
+    // internal `commitToGPUAndWait` — so releasing the old
+    // back-buffers cannot race with an in-recording command list.
+    applyPendingSwapChainResize();
+#endif
     frameRenderPass_.begin(clearR, clearG, clearB, clearA);
     // §2.14 Pass 1 retired `pendingNativeContent_` — see the
     // header's comment at the former
