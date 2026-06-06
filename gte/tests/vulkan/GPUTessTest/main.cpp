@@ -39,7 +39,9 @@ static void activate(GtkApplication *app, gpointer user_data){
     OmegaGTE::NativeRenderTargetDescriptor rtDesc{};
     rtDesc.x_display = x_display;
     rtDesc.x_window = x_window;
-    auto commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+    commandQueueDesc.maxBufferCount = 64;
+    auto commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
     auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc, commandQueue);
 
     auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);

@@ -2087,6 +2087,17 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             return nullptr;
         }
 
+        // Phase 2 of the CommandQueue-Typed-Pool plan: a Transfer (COPY)
+        // queue can never drive presentation — D3D12 swap chains require
+        // DIRECT, and trying to bind a COPY queue here would fail later in
+        // IDXGIFactory::CreateSwapChainForHwnd/CompositionTarget with an
+        // E_INVALIDARG that doesn't surface the actual cause. Reject up
+        // front so the descriptor parse fails loudly.
+        if(presentQueue->type() == GECommandQueueDesc::Type::Transfer){
+            DEBUG_STREAM("makeNativeRenderTarget: presentQueue is a Transfer queue; D3D12 swap chains require DIRECT");
+            return nullptr;
+        }
+
         HRESULT hr;
         constexpr UINT kBackBufferCount = 2;
 
@@ -2254,11 +2265,18 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         return SharedHandle<GETextureRenderTarget>(new GED3D12TextureRenderTarget(std::dynamic_pointer_cast<GED3D12Texture>(texture)));
     };
 
-    SharedHandle<GECommandQueue> GED3D12Engine::makeCommandQueue(unsigned int maxBufferCount){
-        SharedHandle<GECommandQueue> q(new GED3D12CommandQueue(this,maxBufferCount));
+    /// Phase-2 typed-pool path. Builds the queue against the full descriptor
+    /// — `desc.type` selects the `D3D12_COMMAND_LIST_TYPE`, `desc.priority`
+    /// selects the queue priority (with silent realtime → high fallback when
+    /// the entitlement is missing), and `desc.label` is plumbed through
+    /// `ID3D12Object::SetName`. D3D12 always satisfies the request (every
+    /// device exposes DIRECT / COMPUTE / COPY families) so `isDedicated()`
+    /// is always true here regardless of `desc.requireDedicated`.
+    SharedHandle<GECommandQueue> GED3D12Engine::makeCommandQueue(const GECommandQueueDesc & desc){
+        SharedHandle<GECommandQueue> q(new GED3D12CommandQueue(this, desc));
         liveCommandQueues.push_back(q);
         return q;
-    };
+    }
 
     SharedHandle<GETexture> GED3D12Engine::makeTexture(const TextureDescriptor &desc){
          DEBUG_STREAM("Making D3D12Texture");

@@ -42,17 +42,25 @@ Command queues
 
 .. cpp:class:: OmegaGTE::GECommandQueue
 
-    A fixed-size pool of command buffers, plus a GPU execution slot. Built
-    with ``OmegaGraphicsEngine::makeCommandQueue(maxBufferCount)``.
-    The buffer count caps how many command buffers can be alive at the
-    same time on the queue.
+    A growable pool of command buffers, plus a GPU execution slot. Built
+    with ``OmegaGraphicsEngine::makeCommandQueue(maxBufferCount)`` (or
+    the typed-pool overload ``makeCommandQueue(const GECommandQueueDesc &)``).
+    The buffer count you pass is the **initial pool size hint**, not a
+    hard cap — the queue allocates more on demand if every slot is still
+    in flight, up to a backend-defined ceiling of 256.
 
     .. cpp:function:: SharedHandle<GECommandBuffer> getAvailableBuffer()
 
-        Return the next unused command buffer in the pool. After
-        submitting a buffer and the GPU consuming it, call
-        :cpp:func:`reset` on the buffer before asking the queue for it
-        again (or just let the pool round-robin).
+        Return a command buffer that the GPU is no longer using. The
+        queue tracks each slot's last submission via its retention
+        fence / timeline semaphore: it recycles a slot once the GPU
+        has caught up. If every slot is still in flight, the pool grows
+        by one (up to the 256 ceiling); the queue logs a one-shot warning
+        the first time the pool exceeds 4× the initial hint, so a
+        consistently under-sized hint surfaces in the build log but
+        never floods it. At the ceiling the call returns ``nullptr`` —
+        check for that if you are pushing thousands of buffers without
+        committing.
 
     .. cpp:function:: unsigned getSize()
 
@@ -96,10 +104,71 @@ Command queues
         CPU-side wait — block until ``fence`` reaches at least ``value``.
         Use to coordinate CPU work that needs to read GPU results.
 
+Queue creation: ``GECommandQueueDesc``
+--------------------------------------
+
+Every queue is built from a ``GECommandQueueDesc``. The descriptor names
+what the queue is for — its logical type, its execution priority, the
+initial buffer-pool size, and an optional debug label — so the engine
+can pick the right Vulkan queue family / D3D12 command-list type at
+creation time instead of collapsing every queue onto the universal
+family.
+
+.. cpp:enum-class:: GECommandQueueDesc::Type
+
+    * ``Universal`` — render + compute + copy. The default; corresponds
+      to a D3D12 DIRECT queue, a Vulkan family that exposes graphics +
+      compute + transfer, and the lone ``MTLCommandQueue`` family on
+      Metal.
+    * ``Graphics`` — render + compute. Same family as ``Universal`` on
+      most devices; on Vulkan picks a graphics-capable family
+      (preferring one that also has compute) so the queue can compute-
+      prepass without crossing a family boundary.
+    * ``Compute`` — async compute. Vulkan picks a compute-only family
+      when the device exposes one (typical on NVIDIA Pascal+, AMD GCN,
+      Intel Xe-HPG), falling back to the graphics family otherwise.
+      D3D12 always returns a COMPUTE queue. Metal records the type for
+      introspection only.
+    * ``Transfer`` — DMA / dedicated-copy. Vulkan picks a
+      transfer-only family when the device exposes one (the discrete
+      PCIe copy engine on most discrete GPUs), falling back to compute
+      and then to graphics. D3D12 always returns a COPY queue. A
+      Transfer queue cannot be used as the present queue for
+      ``makeNativeRenderTarget`` — that call fails at descriptor parse
+      time.
+
+.. cpp:enum-class:: GECommandQueueDesc::Priority
+
+    * ``Low`` / ``Normal`` / ``High`` / ``Realtime`` — Vulkan honors the
+      first three via relative-float ``pQueuePriorities[]`` and chains
+      ``VK_KHR_global_priority MEDIUM`` per opened family when the
+      extension is available; HIGH/LOW/NORMAL Universal requests on a
+      desktop GPU resolve to distinct ``VkQueue`` handles. ``Realtime``
+      falls back to ``High`` because the global-priority entitlement
+      (``CAP_SYS_NICE`` on Linux, the GPU-priority entitlement on
+      Windows) is commonly denied. D3D12 maps to
+      ``D3D12_COMMAND_QUEUE_PRIORITY_*`` and silently downgrades
+      Realtime to High when the entitlement is missing. Metal has no
+      public priority API; the value is recorded for introspection only.
+
+The remaining fields:
+
+* ``maxBufferCount`` — initial pool-size hint (see
+  ``getAvailableBuffer`` above for the growable-pool semantics).
+* ``requireDedicated`` — if true, the engine refuses to fall back to a
+  more-general queue family. Use in tests that assert a dedicated async
+  compute or transfer family is actually present.
+* ``label`` — optional debug name. Plumbed to
+  ``ID3D12Object::SetName`` (D3D12), ``VK_EXT_debug_utils``
+  (Vulkan), and ``[MTLCommandQueue setLabel:]`` (Metal).
+
 .. code-block:: cpp
 
-    // Pool of three command buffers — enough for double-buffering plus a spare.
-    auto queue = gte.graphicsEngine->makeCommandQueue(3);
+    // Pool of three command buffers — enough for double-buffering plus
+    // a spare. Default type is Universal, default priority is Normal.
+    OmegaGTE::GECommandQueueDesc desc{};
+    desc.maxBufferCount = 3;
+    auto queue = gte.graphicsEngine->makeCommandQueue(desc);
 
     auto cmd = queue->getAvailableBuffer();
     cmd->setName("Frame");
@@ -107,6 +176,14 @@ Command queues
     queue->submitCommandBuffer(cmd);
     queue->commitToGPUAndWait();
     cmd->reset();
+
+    // A high-priority graphics queue specifically for the swap chain.
+    OmegaGTE::GECommandQueueDesc presentDesc{};
+    presentDesc.type = OmegaGTE::GECommandQueueDesc::Type::Graphics;
+    presentDesc.priority = OmegaGTE::GECommandQueueDesc::Priority::High;
+    presentDesc.maxBufferCount = 8;
+    presentDesc.label = "Present";
+    auto presentQueue = gte.graphicsEngine->makeCommandQueue(presentDesc);
 
 The command buffer surface
 ==========================

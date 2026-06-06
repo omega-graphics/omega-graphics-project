@@ -175,6 +175,28 @@ The discipline, run once per subsystem **before** its solver is written:
    must drape as plausibly. Hold our variant to that bar on the phase's runnable
    deliverable, and to the CPU/GPU parity test (§6).
 
+**Recency principle (standing — applies to every phase).** The default
+answer to any subsystem question is **the newest viable algorithm from the
+literature**, not the incumbents'. Incumbent solutions are the *baseline to
+beat*, not the destination. Before any solver lands, the prior-art brief
+must explicitly survey the last ~5 years of research on the subsystem
+(SIGGRAPH, Eurographics, CGF, TOG, SCA, plus the physics-based-animation
+literature index) and identify the most recent paper that does *better* on
+AQUA's substrate — faster, more stable, more numerically robust, more
+parallel-friendly, or substrate-aware in a way the incumbent isn't. **Only
+when no substantively-newer alternative offers a real improvement** — i.e.
+the incumbent's algorithm remains the best available for AQUA's compute-
+first, small-step, GPU-targeted substrate — does the phase adopt the
+incumbent's solution, and the brief must state explicitly that the audit
+ran and produced nothing better. "We did the incumbent because it's what
+PhysX does" is never an acceptable rationale by itself; "we did the
+incumbent because the 2024 audit found no improvement that fits our
+substrate" is. This is a stronger reading of point 3 above and supersedes
+any prior phase whose brief did not carry an explicit recency audit — those
+phases must add a research-note addendum (see §5 Phase 3 and Phase 4 for
+the current entries). Re-audit any phase whose brief is more than two years
+old before re-implementing or extending it.
+
 Two boundaries on this work:
 
 - **Clean-room, by derivation.** We study published descriptions and read source
@@ -237,6 +259,22 @@ impulse, integrating orientation correctly with no collision yet.
 
 **Depends on:** Phase 0.
 
+**Research note (recency audit, 2026-06-06).** One substantive newer
+alternative — **Lie-group variational integrators on SO(3) / SE(3)**
+(Lee, Leok, McClamroch 2007+; dual-quaternion variant Xu & Halse 2017) —
+provably symplectic + momentum-preserving + energy-bounded for
+exponentially long simulations, strictly better than Euler + Newton-
+gyroscopic on long-running asymmetric tumblers. **Not adopted now:**
+variational integrators want to own the whole step with no mid-step
+interrupt, which collides with the Phase 3 PGS-between-half-steps split
+that already shipped. Defer to a long-horizon-determinism revisit
+(roadmap §6). Müller-Macklin 2020 XPBD-for-rigid is the same §7.2 fork
+recorded for Phase 3 / 4 — same defer. Macklin 2019 small-steps already
+captured in the Phase 1 doc §11.5. Quaternion exponential map / Jacobi
+diagonalization / high-order symplectic splittings: no substantive
+divergence at game-physics dt. Full detail:
+`aqua/.plans/Phase-1-Dynamics-Math-Core.md` §13.
+
 ---
 
 ### Phase 2 — Collision shapes & broadphase — [shared]
@@ -261,6 +299,22 @@ large particle counts of Phase 6; a BVH handles widely varying object sizes
 better. This choice is shared across all three pillars, so make it before
 building broadphase.
 
+**Research note (recency audit, 2026-06-06).** No algorithmic divergence
+to adopt now for the sort-based uniform grid lead — Green 2010 + Karras
+2012 + fattened analytic AABBs remain the right answer for AQUA's
+compute-first, all-three-backends, particle-coexistent substrate. One
+**citation update**: the §11.1 LBVH alternative is recharacterized as
+**PLOC++ / PRBVH (Meister & Bittner 2018a/b, 2022)** so the future BVH
+path skips a generation past Karras 2012. Two future-work items
+recorded: **(a) hardware RT-core broadphase** (Wang et al. arXiv
+2409.09918, 2024; Mochi arXiv 2402.14801, 2024) as a Phase 5.x
+acceleration path gated on `GTEDEVICE_FEATURE_RAYTRACING` (vendor-
+specific today — NVIDIA RTX, with AMD and Apple closing the gap;
+AQUA's three-backends-required posture blocks an unconditional lead);
+**(b) compact hashing** (Teschner 2003, Ihmsen 2011) as a Phase 6
+particle-pillar memory layout swap on top of the same sort-based grid.
+Full detail: `aqua/.plans/Phase-2-Collision-Shapes-Broadphase.md` §12.
+
 ---
 
 ### Phase 3 — Narrowphase & contact solving — [Newtonian]
@@ -284,6 +338,81 @@ stays settled, with friction holding a box on an incline.
 of specialized per-pair functions.** General is less code and extends to convex
 hulls; specialized is faster and more numerically robust for the common shapes.
 A hybrid (specialized fast paths + GJK/EPA fallback) is the likely answer.
+
+**Research note (post-implementation literature audit, 2026-06-06; addendum
+under the §4 recency principle).** Phase 3's brief predates the recency
+principle as a standing rule; the audit ran retroactively and produced one
+actionable improvement, plus two flagged-for-later findings and one
+non-applicable.
+
+- **Narrowphase — Montaut, Le Lidec, Petrik, Sivic, Carpentier,
+  "Collision Detection Accelerated: An Optimization Perspective" (RSS 2024;
+  the **Nesterov / Polyak-accelerated GJK** line, shipped in the Coal
+  library, formerly HPP-FCL). Genuine drop-in improvement.** Recasts GJK as
+  a Frank-Wolfe step in convex optimization and applies Nesterov
+  acceleration to the iteration; the paper reports up to ~2× speedup on
+  typical convex pairs and as much as 5–15× on the hard cases, with
+  identical correctness guarantees (no false negatives) and the **same
+  support-function interface** as classical GJK. AQUA's `AQshapeSupport`
+  (Phase 2 §7) is exactly that interface, so the adoption is mechanical:
+  swap the iteration in `src/AQGJK.cpp` for the accelerated variant; the
+  EPA fallback is unchanged. This is a clear "newer-and-better-for-our-
+  substrate" finding under the recency principle — **adopt now**, as a
+  Phase 3.x maintenance follow-up. The Phase 3 brief's GJK citations stay
+  (Gilbert-Johnson-Keerthi 1988 for the algorithm shape, van den Bergen
+  2001 for EPA), with Montaut 2024 added for the iteration.
+- **Contact solver — Müller, Macklin, Chentanez, Jeschke, "Detailed Rigid
+  Body Simulation with Extended Position Based Dynamics" (CGF 2020).
+  Substantive divergence; deferred because it is the §7.2 fork.** The same
+  paper that drives the Phase 4 joint note (above) also recasts *contact*
+  response as XPBD position projection rather than Catto-style velocity-
+  impulse PGS, with the same `n` substeps × 1 iteration posture. Adopting
+  it for Phase 3 contacts would be making the §7.2 unified-XPBD decision
+  early — the architectural fork the roadmap defers to Phase 7. The
+  Phase 3 lean stays Catto-style PGS + split-impulse (already shipped),
+  with the row schema's `compliance` field (added in the Phase 4 plan's
+  groundwork) carrying enough of XPBD's parameter surface that a Phase-7
+  recast reuses the row layout. Müller 2020 is cited for the field; the
+  algorithm using it is still PGS.
+- **Friction — Ly, Casati, Bertails-Descoubes, Béthune, Cohen-Steiner,
+  "Primal-Dual Non-Smooth Friction for Rigid Body Animation" (SIGGRAPH
+  2024). Flagged, not adopted.** Converts the Coulomb cone's non-smooth
+  static-friction problem into an unconstrained smooth problem via
+  logarithmic barriers, getting stable static friction *and* fast
+  convergence (the two qualities incumbent solvers historically trade off).
+  Substantively newer than the iterative cone-clipping in Catto's PGS, but
+  heavier per-iteration and aimed at the robotics-fidelity regime
+  (high-stack stability under coarse `dt`). At AQUA's small-step posture
+  (1/120 s default, smaller for fast rotators) the cone-clipping is
+  already in its sweet spot; the Phase 3 incline-friction deliverable
+  closes on the analytic answer without this. **Revisit only if profiles
+  show static-friction artifacts in large stacks at production dt** —
+  noted in the Phase 3 brief §11.6 (anisotropic friction) as the future-
+  work neighbour. Not the lead under the recency principle because the
+  bar is "real improvement *for AQUA's substrate*," and the substrate
+  doesn't surface the failure mode the paper targets.
+- **Mesh-barrier contact — Huang, Paik, Ferguson, Panozzo, Zorin,
+  "Geometric Contact Potential" (TOG 2024); Li, Kaufman, Jiang et al.
+  IPC (2020). Not applicable.** Barrier-potential contact models (the IPC
+  line, now refined by Geometric Contact Potential) are the most-active
+  newer thread in the contact-simulation literature, but they target
+  **triangle-mesh / FEM contact** on deforming surfaces; their failure
+  mode (intersection during deformation) does not exist in AQUA's
+  analytic-shape rigid-body world. Same conclusion as the Phase 4 CCD
+  audit on Tight Inclusion (Wang et al. 2021): mesh-targeted, not for
+  analytic shapes. Revisit if/when the soft-body pillar grows a
+  deforming-mesh collider.
+- **TGS (PhysX 5's Temporal Gauss-Seidel) — already documented.** The
+  Phase 3 brief §6 "Alternative considered — TGS" notes the choice; at
+  AQUA's already-small `dt` the TGS win narrows. Revisit in Phase 4 if
+  joint stacks need it; the audit reaffirms.
+
+**Net conclusion for Phase 3:** the recency audit returns **one
+adopt-now finding (accelerated GJK)** plus three flagged-or-deferred
+items. The `src/AQGJK.cpp` follow-up is a clean Phase 3.x maintenance
+patch — same interface, same correctness, faster. See
+`aqua/.plans/Phase-3-Narrowphase-Contact-Solver.md` §4 (literature) for
+where this note gets cross-referenced when the patch lands.
 
 ---
 
@@ -310,6 +439,64 @@ integration is unblocked.
 **Key decision:** **CCD scope** — which bodies get continuous detection
 (everything is expensive; nothing risks tunneling). Typically opt-in per body
 plus automatic for high-velocity dynamics.
+
+**Research note (post-Phase-3 literature audit, 2026-06-06).** The §4
+methodology asks: is there a *newer* paper that improves on what PhysX/Chaos
+ship for Phase 4's four subsystems? Audit done; the answer is "for one of the
+four, yes — but it's the §7.2 fork applied early; for the other three the
+incumbents' answers are still the right answer for AQUA's substrate."
+
+- **Joints — Müller, Macklin, Chentanez, Jeschke, "Detailed Rigid Body
+  Simulation with Extended Position Based Dynamics" (CGF 2020) is the
+  substantive divergence.** It applies XPBD's compliance-form constraint
+  projection (Macklin et al. MIG 2016) directly to *rigid* bodies — distance,
+  ball-socket, hinge, slider, fixed — with `n` substeps × 1 iteration
+  instead of 1 substep × `n` PGS iterations, claims unconditional stability
+  at any stiffness (compliance = 0 ⇒ infinitely stiff with no Baumgarte-style
+  energy injection), and removes joint warm-starting. The 2023 survey
+  (Fei et al., "Survey of Rigid Body Simulation with XPBD," arXiv 2311.09327)
+  confirms it as the modern alternative to Catto-2011 PGS for joints, and
+  Mercier-Aubin's "Multi-layer Solver for XPBD" (CGF 2024) refines it
+  further. **But adopting it for Phase 4 joints would be making the §7.2
+  unified-XPBD decision early** — the architectural fork the roadmap
+  explicitly defers to Phase 7. The Phase 4 lean therefore stays
+  *Catto-2011 soft constraints on the PGS row buffer*, with the
+  `AQConstraintRow::compliance` field carrying enough of XPBD's parameter
+  surface that a Phase-7 unified-XPBD recast reuses the row layout without
+  rewriting it. Müller 2020 is the citation for that compliance field, even
+  while the algorithm using it is the PGS one.
+- **CCD — no divergence.** Wang, Ferguson, Schneider, Panozzo et al.,
+  "A Large-Scale Benchmark and an Inclusion-Based Algorithm for CCD" (TOG
+  2021; the "Tight Inclusion" line, used by IPC: Li, Kaufman, Jiang et al.
+  2020) is the most-cited new CCD work since Mirtich 1997, and it is
+  provably-correct (no false negatives, no false positives) — but it
+  targets **triangle-mesh vertex-face / edge-edge pairs in deforming
+  simulations** (FEM cloth, soft bodies), not rigid bodies with analytic
+  support functions. For AQUA's analytic shape vocabulary (sphere / box /
+  capsule / plane / convex hull), conservative-advancement on
+  `AQshapeSupport` (Mirtich 1997) is the right answer; Tight Inclusion's
+  guarantees buy nothing because GJK on convex shapes does not suffer the
+  near-zero false-negative regime that motivates inclusion-based CCD. The
+  incumbents' speculative + conservative-advancement two-tier is what
+  Phase 4 ships. (Revisit if/when AQUA grows a deforming-mesh collider
+  type in the soft-body pillar.)
+- **Islands & sleeping — no divergence.** Union-find with path compression
+  + union-by-rank (Tarjan 1975) is still the answer; recent parallel
+  union-find work (Patwary et al. PPoPP 2012; Jaiganesh & Burtscher 2018)
+  is the Phase 5 GPU port. There is no newer algorithm shifting the
+  connected-component / sleep-state shape of the problem.
+- **Queries — no divergence.** 3D-DDA grid traversal (Amanatides & Woo
+  1987) over the Phase 2 sort-based grid is still the right answer;
+  modern alternatives (neural-BVH ray traversal, locality-sensitive
+  hashing) target wholly different cost regimes. No opening.
+
+**Net conclusion:** the §4 research loop returns one phase-defining finding
+(Müller 2020 *is* the newer, divergent path for joints — and is the §7.2
+fork). The Phase 4 plan's `AQConstraintRow::compliance` field is the
+specific design move that captures the finding *without* prejudging §7.2.
+See `aqua/.plans/Phase-4-Joints-Queries-Sleeping.md` §4 (literature) and
+§11.2 (open decision on the parameterization) for the implementation
+consequences.
 
 ---
 

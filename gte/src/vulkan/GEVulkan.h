@@ -64,6 +64,15 @@ _NAMESPACE_BEGIN_
         /// records "we asked the driver to turn it on".
         bool hasMeshShaderExt = false;
 
+        /// CommandQueue-Typed-Pool follow-up — `VK_KHR_global_priority` is
+        /// enabled on the device. Drives whether the device-create loop
+        /// chained `VkDeviceQueueGlobalPriorityCreateInfoKHR` per
+        /// `VkDeviceQueueCreateInfo` and whether `openedQueuePriorities`
+        /// has meaningful contents. False on drivers that don't expose the
+        /// extension; queues fall back to a single MEDIUM VkQueue per
+        /// family.
+        bool hasGlobalPriorityExt = false;
+
         PFN_vkCmdPushDescriptorSetKHR vkCmdPushDescriptorSetKhr;
         PFN_vkCmdSetPrimitiveTopologyEXT vkCmdSetPrimitiveTopologyExt;
         PFN_vkCmdPipelineBarrier2KHR vkCmdPipelineBarrier2Khr;
@@ -98,11 +107,55 @@ _NAMESPACE_BEGIN_
 
         OmegaCommon::Vector<OmegaCommon::Vector<std::pair<VkSemaphore,VkQueue>>> deviceQueuefamilies;
 
+        /// CommandQueue-Typed-Pool follow-up — global-priority lookup table.
+        /// `openedQueuePriorities[i][j]` is the `VkQueueGlobalPriorityKHR`
+        /// that `deviceQueuefamilies[i][j]` was created with. When
+        /// `hasGlobalPriorityExt` is false this stays empty and every
+        /// priority lookup falls through to the single MEDIUM queue at
+        /// `deviceQueuefamilies[i][0]`. Storage type uses `int32_t` to
+        /// keep the header free of the global-priority enum (it lives in
+        /// `vulkan_core.h`, already included by every consumer of this
+        /// header but kept opaque here so the type stays self-describing).
+        OmegaCommon::Vector<OmegaCommon::Vector<std::int32_t>> openedQueuePriorities;
+
         VkSurfaceCapabilitiesKHR capabilitiesKhr;
 
         OmegaCommon::Vector<VkQueueFamilyProperties> queueFamilyProps;
 
         OmegaCommon::Vector<std::uint32_t> queueFamilyIndices;
+
+        /// CommandQueue-Typed-Pool follow-up — find the VkQueue on
+        /// `familyIndex` whose creation global priority best matches
+        /// `wantedKhrPriority` (a `VkQueueGlobalPriorityKHR` cast to
+        /// `int32_t` so the helper can stay declared in the header). The
+        /// fallback ladder is REALTIME→HIGH→MEDIUM→LOW for ascending
+        /// requests and the symmetric descending ladder for LOW (since LOW
+        /// without an opened LOW queue should not silently promote). When
+        /// `hasGlobalPriorityExt` is false, returns the single MEDIUM
+        /// queue at `deviceQueuefamilies[slot][0]`. Returns
+        /// `VK_NULL_HANDLE` if the family was not opened at all.
+        VkQueue lookupQueueOnFamily(std::uint32_t familyIndex,
+                                    std::int32_t wantedKhrPriority) const;
+
+        /// CommandQueue-Typed-Pool Phase 2 — resolve a raw Vulkan
+        /// queue-family index to the corresponding slot inside
+        /// `deviceQueuefamilies` (and parallel index inside
+        /// `queueFamilyIndices`). Returns `(VK_NULL_HANDLE, 0)` when the
+        /// family was not opened at device-create time, which lets the
+        /// caller treat the resolution as a soft miss instead of crashing.
+        /// The first element is `deviceQueuefamilies[slot].front().second`
+        /// — the VkQueue itself — for convenience.
+        std::pair<VkQueue, std::uint32_t> queueForFamily(std::uint32_t familyIndex) const {
+            for (std::uint32_t i = 0; i < queueFamilyIndices.size(); ++i) {
+                if (queueFamilyIndices[i] == familyIndex) {
+                    if (i < deviceQueuefamilies.size() && !deviceQueuefamilies[i].empty()) {
+                        return {deviceQueuefamilies[i].front().second, i};
+                    }
+                    return {VK_NULL_HANDLE, i};
+                }
+            }
+            return {VK_NULL_HANDLE, 0};
+        }
 
         // Vulkan-Texture-Memory-Plan Phase 1. Persistent command pool +
         // fence used by GEVulkanTexture::copyBytes / getBytes to drive
@@ -170,7 +223,7 @@ _NAMESPACE_BEGIN_
 
         void * underlyingNativeDevice() override;
 
-        SharedHandle<GECommandQueue> makeCommandQueue(unsigned int maxBufferCount) override;
+        SharedHandle<GECommandQueue> makeCommandQueue(const GECommandQueueDesc & desc) override;
 
         SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override;
 

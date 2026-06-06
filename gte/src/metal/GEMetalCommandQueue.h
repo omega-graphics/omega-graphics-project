@@ -181,7 +181,16 @@ _NAMESPACE_BEGIN_
         }
 
         SharedHandle<GECommandBuffer> getAvailableBuffer() override;
-        GEMetalCommandQueue(NSSmartPtr & commandQueue,unsigned size);
+        /// Records `desc` on the queue and applies `desc.label` via
+        /// `[MTLCommandQueue setLabel:]`. Metal has no native split
+        /// between queue families and no public priority API, so
+        /// `desc.type` / `desc.priority` are introspection only — they
+        /// drive only the auto-generated debug label when `desc.label`
+        /// is empty. This is the only ctor after the Phase 4
+        /// legacy-overload retirement; build a default-initialized
+        /// `GECommandQueueDesc` for the historical "universal queue with
+        /// N pool slots" use case.
+        GEMetalCommandQueue(NSSmartPtr & commandQueue, const GECommandQueueDesc & desc);
         ~GEMetalCommandQueue() override;
         void notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &waitFence) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer) override;

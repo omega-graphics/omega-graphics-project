@@ -763,3 +763,90 @@ prior-art series roadmap §4 establishes, and follows the conventions set by
 `Phase-1-Dynamics-Math-Core.md` and `Phase-2-Collision-Shapes-Broadphase.md`.
 The unified-XPBD recast (roadmap §7.2) is explicitly out of scope here — the
 data layout chosen in §8 keeps that fork open without prejudging it.*
+
+---
+
+## 12. Recency-principle audit (addendum, 2026-06-06)
+
+Roadmap §4 was strengthened post-Phase-3 to make "newest viable algorithm
+from the literature" the standing default for every phase, with incumbents
+adopted only when no substantively-newer alternative offers a real
+improvement for AQUA's substrate (`Physics-Roadmap.md` §4 — "Recency
+principle"). The Phase 3 brief predates the explicit rule; the audit ran
+retroactively against narrowphase, contact-solver, and friction choices.
+Findings recorded here, mirroring `Physics-Roadmap.md` §5 Phase 3.
+
+The Phase 3 picks (hybrid narrowphase: specialized branch table + GJK/EPA
+fallback per Gilbert-Johnson-Keerthi 1988 / van den Bergen 2001; PGS solver
+per Catto 2005; Coumans box/box face-clipping 2014; split-impulse position
+correction per Catto 2009; Coulomb cone-clipping friction; warm-starting
+via persistent feature-keyed manifolds) date to a 1988–2014 line. What does
+2020-onwards add?
+
+- **Narrowphase — Montaut, Le Lidec, Petrik, Sivic, Carpentier, "Collision
+  Detection Accelerated: An Optimization Perspective" (RSS 2024;
+  Nesterov / Polyak-accelerated GJK, shipped in the Coal library, formerly
+  HPP-FCL). Genuine drop-in improvement — adopt now.** Recasts GJK as a
+  Frank-Wolfe step in convex optimization and applies Nesterov
+  acceleration; the paper reports up to ~2× speedup on typical convex
+  pairs and as much as 5–15× on the hard cases, with identical correctness
+  guarantees (no false negatives) and the **same support-function
+  interface** as classical GJK. The Phase 2 `AQshapeSupport` is exactly
+  that interface, so the adoption is mechanical: replace the iteration
+  in `src/AQGJK.cpp` with the accelerated variant; EPA fallback
+  unchanged. This is the one substantive newer-and-better finding the
+  audit produced. The Phase 3 §4 citations stay (GJK 1988 for algorithm
+  shape, van den Bergen 2001 for EPA); **Montaut 2024 is added for the
+  iteration kernel** and the §3.x maintenance patch.
+- **Contact solver — Müller, Macklin, Chentanez, Jeschke, "Detailed Rigid
+  Body Simulation with Extended Position Based Dynamics" (CGF 2020).
+  Substantive divergence; deferred because it is the §7.2 fork.** Recasts
+  *contact* response as XPBD position projection rather than Catto-style
+  velocity-impulse PGS, with `n` substeps × 1 iteration. Adopting it for
+  Phase 3 alone makes no architectural sense — the §7.2 unified-XPBD
+  decision is the place to settle the integrator + joint + contact
+  recast together. The Phase 3 row schema's `compliance` field (added in
+  the Phase 4 plan's groundwork, deliberately compatible) makes a Phase 7
+  recast a layout port rather than a rewrite. Müller 2020 citation
+  forwarded; no Phase 3 change.
+- **Friction — Ly, Casati, Bertails-Descoubes, Béthune, Cohen-Steiner,
+  "Primal-Dual Non-Smooth Friction for Rigid Body Animation" (SIGGRAPH
+  2024). Flagged, not adopted.** Converts the Coulomb cone's non-smooth
+  static-friction problem into an unconstrained smooth problem via
+  logarithmic barriers, getting stable static friction *and* fast
+  convergence (the two qualities incumbent solvers historically trade
+  off). Substantively newer than Catto's cone-clipping, but heavier per
+  iteration and aimed at the robotics-fidelity regime (high-stack
+  stability under coarse `dt`). At AQUA's small-step posture (1/120 s
+  default) the cone-clipping is already in its sweet spot; the Phase 3
+  incline-friction deliverable closes on the analytic answer without
+  this. **Revisit only if profiles show static-friction artifacts in
+  large stacks at production dt** — noted as the future-work neighbour
+  of §11.6 (anisotropic friction). Not the lead because the recency
+  principle's bar is "real improvement *for AQUA's substrate*," and the
+  substrate doesn't surface the failure mode this paper targets.
+- **Mesh-barrier contact — Huang, Paik, Ferguson, Panozzo, Zorin,
+  "Geometric Contact Potential" (TOG 2024); Li, Kaufman, Jiang et al.
+  IPC (2020). Not applicable.** Barrier-potential contact models (the
+  IPC line, refined by Geometric Contact Potential) target **triangle-
+  mesh / FEM contact** on deforming surfaces; their failure mode
+  (intersection during deformation) does not exist in AQUA's analytic-
+  shape rigid-body world. Same conclusion as the Phase 4 audit on
+  Tight Inclusion (Wang et al. 2021): mesh-targeted, not for analytic
+  shapes. Revisit if/when the soft-body pillar grows a deforming-mesh
+  collider.
+- **TGS (PhysX 5 Temporal Gauss-Seidel) — already documented.** §6
+  "Alternative considered — TGS" notes the choice; at AQUA's already-
+  small `dt` the TGS win narrows. Revisit in Phase 4 if joint stacks
+  need it; the audit reaffirms.
+
+**Net for Phase 3:** the audit returns **one adopt-now finding
+(accelerated GJK, Montaut 2024)** plus three flagged-or-deferred items
+(Müller 2020 XPBD-recast — §7.2 fork; Ly 2024 primal-dual friction —
+substrate-mismatch; IPC / GCP — mesh-targeted). The accelerated-GJK
+adoption is a clean Phase 3.x maintenance patch in `src/AQGJK.cpp`:
+same support interface, same correctness, faster — exactly the shape
+the recency principle is meant to surface.
+
+Re-audit due: 2028-06-06 (roadmap §4 two-year freshness rule) or sooner
+if the §7.2 fork lands in Phase 7.

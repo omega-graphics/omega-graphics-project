@@ -179,7 +179,9 @@ static void render(id<MTLDevice> dev){
         OmegaGTE::NativeRenderTargetDescriptor desc{};
         desc.metalLayer = metalLayer;
 
-        commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+        OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+        commandQueueDesc.maxBufferCount = 64;
+        commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
         nativeRenderTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, commandQueue);
 
         tessContext = gte.triangulationEngine->createTEContextFromNativeRenderTarget(nativeRenderTarget);

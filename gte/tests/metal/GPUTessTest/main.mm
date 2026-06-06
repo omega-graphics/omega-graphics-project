@@ -30,7 +30,9 @@ int main(int argc, const char * argv[]) {
 
         OmegaGTE::NativeRenderTargetDescriptor rtDesc;
         rtDesc.metalLayer = layer;
-        auto commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+        OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+        commandQueueDesc.maxBufferCount = 64;
+        auto commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
         auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc, commandQueue);
 
         auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);

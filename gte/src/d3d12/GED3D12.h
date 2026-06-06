@@ -217,7 +217,7 @@ _NAMESPACE_BEGIN_
         SharedHandle<GESamplerState> makeSamplerState(const SamplerDescriptor &desc) override;
         SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc)  override;
         SharedHandle<GEHeap> makeHeap(const HeapDescriptor &desc)  override;
-        SharedHandle<GECommandQueue> makeCommandQueue(unsigned int maxBufferCount)  override;
+        SharedHandle<GECommandQueue> makeCommandQueue(const GECommandQueueDesc & desc) override;
         SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc)  override;
         SharedHandle<GERenderPipelineState> makeRenderPipelineState(RenderPipelineDescriptor &desc)  override;
         SharedHandle<GEComputePipelineState> makeComputePipelineState(ComputePipelineDescriptor &desc)  override;

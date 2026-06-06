@@ -18,6 +18,14 @@ _NAMESPACE_BEGIN_
         GEVulkanCommandQueue *parentQueue;
         VkCommandBuffer & commandBuffer;
         std::uint64_t traceResourceId = 0;
+        /// CommandQueue-Typed-Pool Phase 3 — index of the pool slot this
+        /// buffer was checked out from. The queue uses this to map a
+        /// submitted buffer back to the slot in `commandBuffers[]` /
+        /// `commandBufferSubmissionIndex[]` so the slot's last-submitted
+        /// counter can be stamped at vkQueueSubmit time. UINT32_MAX
+        /// (default) means "not from a tracked pool slot" — defensive,
+        /// shouldn't fire in normal use.
+        std::uint32_t poolSlot = UINT32_MAX;
 
         GEVulkanRenderPipelineState *renderPipelineState = nullptr;
         GEVulkanComputePipelineState *computePipelineState = nullptr;
@@ -247,6 +255,18 @@ _NAMESPACE_BEGIN_
         std::uint64_t traceResourceId = 0;
         bool nativeReleased_ = false;
 
+        // CommandQueue-Typed-Pool Phase 2 — the (familyIndex, VkQueue) pair
+        // this queue is bound to. Resolved at construction by
+        // `VulkanQueueFamilies::Pick` and the engine's family lookup; used
+        // by every submit path instead of grabbing
+        // `engine->deviceQueuefamilies.front().front()` so multi-queue
+        // designs (graphics + async-compute + DMA) actually hit different
+        // VkQueues. `nativeQueue == VK_NULL_HANDLE` means construction
+        // failed and the submit paths early-return without touching the
+        // queue.
+        std::uint32_t boundFamilyIndex = 0;
+        VkQueue       nativeQueue      = VK_NULL_HANDLE;
+
         VkFence submitFence;
 
         // Per-queue timeline semaphore signaled with a monotonic value at every
@@ -258,8 +278,34 @@ _NAMESPACE_BEGIN_
         std::uint64_t nextSubmitValue   = 0;
 
         OmegaCommon::Vector<VkCommandBuffer> commandBuffers;
+        /// CommandQueue-Typed-Pool Phase 3 — last submission counter at
+        /// which `commandBuffers[i]` was handed to `vkQueueSubmit`.
+        /// `getAvailableBuffer()` recycles a slot once
+        /// `vkGetSemaphoreCounterValue(retentionTimeline)` reaches this
+        /// value. Zero means "never submitted" — that slot is free for
+        /// the first cycle without any GPU wait. Sized in lockstep with
+        /// `commandBuffers` by every grow / shrink.
+        OmegaCommon::Vector<std::uint64_t> commandBufferSubmissionIndex;
+        /// CommandQueue-Typed-Pool Phase 3 — initial pool size hint from
+        /// `desc.maxBufferCount`. Sticky once construction completes so
+        /// the soft-warn threshold (4× hint) and the per-call pool growth
+        /// can refer to the same baseline even after the pool has grown.
+        std::uint32_t initialBufferHint = 0;
+        /// CommandQueue-Typed-Pool Phase 3 — sticky flag so the
+        /// "pool grew past 4× the hint" warning fires exactly once per
+        /// queue. Without this the soft warning would spam the log
+        /// every time `getAvailableBuffer()` allocates a fresh slot.
+        bool poolGrowthWarned = false;
 
         OmegaCommon::Vector<VkCommandBuffer> commandQueue;
+        /// CommandQueue-Typed-Pool Phase 3 — pool-slot indices parallel
+        /// to `commandQueue`. When `commitToGPU` calls vkQueueSubmit, the
+        /// new submission counter value is stamped onto
+        /// `commandBufferSubmissionIndex[pendingSlots[i]]` for every i.
+        /// UINT32_MAX entries correspond to buffers that weren't checked
+        /// out via `getAvailableBuffer()` (defensive — shouldn't happen
+        /// in normal use).
+        OmegaCommon::Vector<std::uint32_t> pendingSlots;
         // SharedHandles to the GEVulkanCommandBuffers queued by
         // submitCommandBuffer. At vkQueueSubmit each is moved into
         // engine->retentionQueue under the submit's gate, along with any
@@ -267,6 +313,15 @@ _NAMESPACE_BEGIN_
         OmegaCommon::Vector<SharedHandle<GECommandBuffer>> pendingRetainedBuffers;
         OmegaCommon::Vector<std::uint64_t> submittedTraceCommandBufferIds;
         unsigned currentBufferIndex;
+
+        /// CommandQueue-Typed-Pool Phase 3 — after a successful
+        /// vkQueueSubmit + nextSubmitValue bump, write `signalValue` into
+        /// `commandBufferSubmissionIndex[slot]` for every entry of
+        /// `pendingSlots`, then clear `pendingSlots`. UINT32_MAX entries
+        /// (defensive — buffer not from getAvailableBuffer) are skipped.
+        /// MUST be called inside any commit path that successfully
+        /// submitted, paired with the corresponding `commandQueue.clear()`.
+        void stampPendingSlots(std::uint64_t signalValue);
 
         Retention::FenceGate gateForNextSubmit();
         // Build a VkTimelineSemaphoreSubmitInfo signaling ++nextSubmitValue,
@@ -318,7 +373,23 @@ _NAMESPACE_BEGIN_
             submittedTraceCommandBufferIds.clear();
         }
         GEVulkanEngine *getEngine() const { return engine; }
-        GEVulkanCommandQueue(GEVulkanEngine *engine,unsigned size);
+        /// Consults `VulkanQueueFamilies::Pick` to resolve `desc.type`
+        /// (with the documented fallback ladder) into the VkQueue / family
+        /// this queue will submit on. `desc.label` is plumbed through
+        /// `VK_EXT_debug_utils` when the extension is available. Returns
+        /// a queue with `nativeQueue == VK_NULL_HANDLE` if the engine has
+        /// no families that satisfy the request and `desc.requireDedicated`
+        /// is set — callers see this as a `nullptr` from
+        /// `OmegaGraphicsEngine::makeCommandQueue`. This is the only ctor
+        /// after the Phase 4 legacy-overload retirement; build a
+        /// default-initialized `GECommandQueueDesc` for the historical
+        /// "universal queue with N pool slots" use case.
+        GEVulkanCommandQueue(GEVulkanEngine *engine, const GECommandQueueDesc & desc);
+        /// The VkQueue this queue is bound to. May be `VK_NULL_HANDLE` if
+        /// construction failed (caller should treat as nullptr).
+        VkQueue getNativeQueue() const { return nativeQueue; }
+        /// The Vulkan queue family index this queue is bound to.
+        std::uint32_t getBoundFamilyIndex() const { return boundFamilyIndex; }
         void releaseNative();
         ~GEVulkanCommandQueue() override;
     };

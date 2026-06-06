@@ -366,7 +366,9 @@ GTE_TEST_ENTRY_POINT {
 
     auto compiled = gte.omegaSlCompiler->compile({OmegaSLCompiler::Source::fromString(kShaders)});
     auto lib = gte.graphicsEngine->loadShaderLibraryRuntime(compiled);
-    auto queue = gte.graphicsEngine->makeCommandQueue(8);
+    OmegaGTE::GECommandQueueDesc queueDesc{};
+    queueDesc.maxBufferCount = 8;
+    auto queue = gte.graphicsEngine->makeCommandQueue(queueDesc);
     auto writer = GEBufferWriter::Create();
 
     int rc = 0;

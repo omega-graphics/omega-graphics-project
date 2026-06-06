@@ -1,4 +1,5 @@
 #include "omegaGTE/GE.h"
+#include "omegaGTE/GECommandQueue.h"
 #include "omegaGTE/GTEShader.h"
 
 

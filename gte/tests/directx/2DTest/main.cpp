@@ -245,7 +245,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     renderPipelineState = gte.graphicsEngine->makeRenderPipelineState(pipelineDesc);
        
-    auto commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+    commandQueueDesc.maxBufferCount = 64;
+    auto commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
     renderTarget = gte.graphicsEngine->makeNativeRenderTarget(renderTargetDesc, commandQueue);
 
     tessContext = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);

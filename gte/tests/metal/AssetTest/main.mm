@@ -133,7 +133,9 @@ int main(int /*argc*/, const char * /*argv*/[]) {
     auto rt = gte.graphicsEngine->makeTextureRenderTarget(rtDesc);
     EXPECT(rt != nullptr, "texture render target created");
 
-    auto tessQueue = gte.graphicsEngine->makeCommandQueue(64);
+    OmegaGTE::GECommandQueueDesc tessQueueDesc{};
+    tessQueueDesc.maxBufferCount = 64;
+    auto tessQueue = gte.graphicsEngine->makeCommandQueue(tessQueueDesc);
     auto tessContext = gte.triangulationEngine->createTEContextFromTextureRenderTarget(rt, tessQueue);
     EXPECT(tessContext != nullptr, "triangulation context created");
     auto result = tessContext->triangulateSync(params);

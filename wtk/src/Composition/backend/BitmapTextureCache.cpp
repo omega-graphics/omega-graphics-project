@@ -32,7 +32,11 @@ namespace OmegaWTK::Composition {
         /// at `Canvas::drawImage` recording time, not in the per-frame draw
         /// loop. Returns false on submission failure.
         bool runGenerateMipmaps(SharedHandle<OmegaGTE::GETexture> & texture){
-            auto queue = gte.graphicsEngine->makeCommandQueue(1);
+            OmegaGTE::GECommandQueueDesc queueDesc{};
+            queueDesc.type = OmegaGTE::GECommandQueueDesc::Type::Transfer;
+            queueDesc.maxBufferCount = 1;
+            queueDesc.label = "WTK::BitmapTextureCache xfer";
+            auto queue = gte.graphicsEngine->makeCommandQueue(queueDesc);
             if(queue == nullptr) return false;
             auto cb = queue->getAvailableBuffer();
             if(cb == nullptr) return false;

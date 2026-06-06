@@ -18,6 +18,29 @@ target_include_directories("AQUA" PUBLIC
     $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 target_compile_definitions(AQUA PRIVATE AQUA__BUILD__)
 
+# AQUA-only optimization floor (Phase 3.x build-config fix). The project's
+# default `cmake -S . -B build` leaves `CMAKE_BUILD_TYPE` empty, which means
+# every TU compiles -O0 with `assert()`s live. That is catastrophic for the
+# physics hot path — `aqua_contact_test`'s settling stack runs ~50× slower
+# than under -O2 because GTE's matrix/vector operators don't inline, the PGS
+# row sweep isn't vectorised, and the `#ifndef NDEBUG` finite-checks in
+# `AQStepBodyPosition` fire on every body every sub-step. The cost was
+# misdiagnosed as a hang during the Phase 3.x Nesterov-GJK landing;
+# diagnosing it surfaced the broader issue that the project's tests stress
+# code paths the default config can't honestly profile.
+#
+# We force `-O2 -DNDEBUG` on AQUA only — narrowly, so this fix doesn't
+# perturb the build of OmegaCommon / OmegaGTE / WTK / kREATE. The guard
+# `$<NOT:$<CONFIG:Debug>>` means an explicit `-DCMAKE_BUILD_TYPE=Debug`
+# still gets the debugger-friendly unoptimized build. Empty config (the
+# project default) is *not* Debug, so it picks up the optimizer here — the
+# only change visible to a stock checkout. Release / RelWithDebInfo append
+# this on top of the preset's own `-O3`/`-O2`; clang takes the last `-O`
+# wins, which means Release sees `-O2` instead of `-O3`. The ~5% delta vs.
+# `-O3` is dwarfed by the ~50× recovery vs. `-O0`; if a future profile
+# needs `-O3` specifically, tighten the condition then.
+target_compile_options(AQUA PRIVATE $<$<NOT:$<CONFIG:Debug>>:-O2 -DNDEBUG>)
+
 # NOTE: No third-party physics SDK is currently vendored. Whether AQUA grows its
 # own solver or integrates an external SDK is an open decision — if it integrates
 # one, add the dependency here and the clone entry to AUTOMDEPS, and keep the

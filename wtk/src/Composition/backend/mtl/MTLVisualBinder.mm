@@ -68,7 +68,12 @@ namespace OmegaWTK::Composition {
         // pixelFormat (set in Native MTLVisualTree's
         // buildMetalLayer) and is the universally-supported
         // drawable format.
-        auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
+        OmegaGTE::GECommandQueueDesc presentQueueDesc{};
+        presentQueueDesc.type = OmegaGTE::GECommandQueueDesc::Type::Graphics;
+        presentQueueDesc.priority = OmegaGTE::GECommandQueueDesc::Priority::High;
+        presentQueueDesc.maxBufferCount = 64;
+        presentQueueDesc.label = "WTK::MTLVisualBinder presentQueue";
+        auto presentQueue = gte.graphicsEngine->makeCommandQueue(presentQueueDesc);
         OmegaGTE::NativeRenderTargetDescriptor desc{};
         desc.allowDepthStencilTesting = false;
         desc.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;

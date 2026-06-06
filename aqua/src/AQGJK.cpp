@@ -6,11 +6,25 @@
 // partner). Plane half-spaces never reach here — they have no bounded
 // support and route to the specialized plane paths in AQNarrowphase.cpp.
 //
-// Implementation notes (Phase-3 brief §4):
+// Implementation notes (Phase-3 brief §4, Phase-3 §12 recency addendum):
 //   * Distance phase (GJK): iterative-closest-point on the Minkowski-
 //     difference simplex (Christer Ericson §9.5 / van den Bergen Algorithm
 //     5). Each iteration adds the support point in the direction of origin
-//     and reduces the simplex to the closest sub-feature.
+//     and reduces the simplex to the closest sub-feature. The iteration
+//     kernel uses the Nesterov-accelerated variant (Montaut, Le Lidec,
+//     Petrik, Sivic, Carpentier, "Collision Detection Accelerated: An
+//     Optimization Perspective," RSS 2024 — the Phase 3.x recency-audit
+//     adopt-now finding, mirrored in `aqua/.plans/
+//     Phase-3-Narrowphase-Contact-Solver.md` §12): the search direction
+//     carries a momentum term that empirically halves iteration counts on
+//     typical pairs and gives larger wins at the worst-case cliff GJK has
+//     historically lived on. Correctness is preserved by the Frank-Wolfe
+//     duality-gap fallback — when the accelerated direction stops making
+//     progress toward the optimum, the loop reverts to classical GJK for
+//     the remaining iterations. Same support-function interface
+//     (`AQshapeSupport`), same termination contract (a separating
+//     direction proves no contact; an origin-enclosing tetrahedron hands
+//     EPA a seed); the EPA polytope expansion below is unchanged.
 //   * Penetration phase (EPA): expand polytope by adding the support in the
 //     current closest face's outward normal until the support direction stops
 //     producing new vertices (van den Bergen 2001). The polytope is
@@ -196,6 +210,25 @@ bool simplexClosest(SupportPt *s, int &n, FVec<3> &closest) {
 // stops finding new vertices that pass origin (returns false; the bodies
 // are separated). Bounded at 64 iterations as a structural safety cap —
 // converges within a handful of iterations for normal inputs.
+//
+// Iteration kernel uses Nesterov-accelerated GJK (Montaut et al. RSS 2024).
+// Classical GJK is exactly Frank-Wolfe over the Minkowski-difference
+// constraint set minimising ‖x‖²; the gradient at the current closest
+// point `s_k` is `2·s_k`, so the support call `mdSupport(-s_k)` is the
+// FW linear-minimisation oracle. The acceleration carries a momentum
+// vector across iterations:
+//   μ_k = (k + 1) / (k + 3)                     // standard Nesterov decay
+//   y_k = μ_k · s_k + (1 − μ_k) · w_{k−1}        // lookahead blend
+//   d_k = μ_k · d_{k−1} + (1 − μ_k) · (−y_k)     // momentum-blended search dir
+// and recovers correctness via the Frank-Wolfe duality gap
+//   g_k = 2 · ⟨s_{k−1}, s_{k−1} − w_k⟩
+// computed against the previous-iteration closest point. When g_k drops
+// below the gap tolerance the accelerated direction is no longer making
+// progress toward the optimum; the loop reverts to classical GJK
+// (d = −s) for the remainder. The simplex closest-point reduction
+// (`simplexClosest`) is unchanged from classical GJK; the separating-
+// direction termination test (`dot(w, dir) < 0`) is unchanged; the
+// origin-enclosing case still hands EPA the tetrahedron it expects.
 bool gjk(const AQShape &A, const AQShape &B,
          const AQTransform<float> &xfA, const AQTransform<float> &xfB,
          const FVec<3> *hullVerts, std::size_t hullVertCount,
@@ -221,9 +254,42 @@ bool gjk(const AQShape &A, const AQShape &B,
         return true;
     }
 
+    // Nesterov-accelerated GJK state. `prevDir` is d_{k−1} (last
+    // iteration's accelerated search direction). `prevClosest` is s_{k−1}
+    // (last iteration's closest point on the simplex). Both initialise to
+    // the iter-0 single-vertex case where the closest point IS the support
+    // and the direction is the negated support — i.e. iter 0 with μ_0 = 1/3
+    // collapses to classical GJK, and acceleration kicks in from iter 1
+    // once an actual support history exists. `useNesterov` is the
+    // reversion flag flipped by the FW-gap fallback.
+    constexpr float kFWGapTolerance = 1e-6f;
+    FVec<3> prevDir     = dir;
+    FVec<3> prevClosest = simplex[0].p;
+    bool    useNesterov = true;
+
     for (int iter = 0; iter < 64; ++iter) {
         if (simplexN >= 4) break;
         SupportPt sp = mdSupport(A, B, xfA, xfB, hullVerts, hullVertCount, dir);
+
+        // Frank-Wolfe duality-gap fallback (Nesterov-GJK §3.2 in Montaut
+        // 2024). Skip on iter 0 — there's no s_{k−1} to measure against
+        // yet, and the iter-0 direction is the classical one by
+        // construction (see prevDir initialisation above). The check
+        // is on the OLD closest vs the NEW support; if accelerated `dir`
+        // didn't move us further from origin, abandon the momentum and
+        // retry this iteration with the classical direction. The
+        // discarded `sp` is intentional — using a stale support here
+        // would corrupt the simplex.
+        if (useNesterov && iter > 0) {
+            const float fwGap = 2.f * OmegaGTE::dot(prevClosest, prevClosest - sp.p);
+            if (fwGap <= kFWGapTolerance) {
+                useNesterov = false;
+                dir         = prevClosest * -1.f;
+                prevDir     = dir;
+                continue;
+            }
+        }
+
         if (OmegaGTE::dot(sp.p, dir) < 0.f) return false;     // can't cross origin
         simplex[simplexN++] = sp;
         FVec<3> closest = AQvec3(0.f, 0.f, 0.f);
@@ -240,7 +306,22 @@ bool gjk(const AQShape &A, const AQShape &B,
             }
             return true;
         }
-        dir = closest * -1.f;
+
+        // Compute next iteration's search direction. Classical mode after
+        // a fallback: dir = −closest. Nesterov mode: blend the previous
+        // direction with a lookahead point that mixes the new closest and
+        // the new support; the standard (k+1)/(k+3) coefficient schedule
+        // damps the momentum across the iteration count.
+        const FVec<3> classicalDir = closest * -1.f;
+        if (useNesterov) {
+            const float    mu = static_cast<float>(iter + 1) / static_cast<float>(iter + 3);
+            const FVec<3>  y  = closest * mu + sp.p * (1.f - mu);
+            dir = prevDir * mu + (y * -1.f) * (1.f - mu);
+        } else {
+            dir = classicalDir;
+        }
+        prevDir     = dir;
+        prevClosest = closest;
     }
     return false;
 }

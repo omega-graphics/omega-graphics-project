@@ -89,6 +89,7 @@ _NAMESPACE_BEGIN_
     class GENativeRenderTarget;
     class GETextureRenderTarget;
     class GECommandQueue;
+    struct GECommandQueueDesc;
 
     struct TextureDescriptor;
     struct TextureRenderTargetDescriptor;
@@ -475,11 +476,24 @@ _NAMESPACE_BEGIN_
         virtual SharedHandle<GETextureRenderTarget> makeTextureRenderTarget(const TextureRenderTargetDescriptor & desc) = 0;
 
         /**
-          @brief Creates a GECommmandQueue with a maximum number of usable command buffers.
-          @param[in] maxBufferCount The command buffers to allocate.
+          @brief Creates a `GECommandQueue` from a full descriptor.
+          @param[in] desc The descriptor. See @ref GECommandQueueDesc for the
+                          per-field semantics.
           @returns SharedHandle<GECommandQueue>
+          @paragraph Backends pick a queue family / D3D12 list type from
+          `desc.type`, honor `desc.priority` where the platform exposes
+          per-queue priority (Vulkan via relative-float `pQueuePriorities[]`
+          + `VK_KHR_global_priority`, D3D12 via `D3D12_COMMAND_QUEUE_PRIORITY`
+          with silent realtime→high downgrade if the entitlement is missing,
+          Metal records for introspection only), and forward `desc.label`
+          to the platform debug-name surface (`VK_EXT_debug_utils`,
+          `ID3D12Object::SetName`, `[MTLCommandQueue setLabel:]`). The
+          legacy `makeCommandQueue(unsigned)` overload was retired in
+          Phase 4 of the CommandQueue-Typed-Pool plan; every call site
+          now constructs a `GECommandQueueDesc` (default-initialized for
+          the historical "universal queue with N pool slots" use case).
          */
-        virtual SharedHandle<GECommandQueue> makeCommandQueue(unsigned maxBufferCount) = 0;
+        virtual SharedHandle<GECommandQueue> makeCommandQueue(const GECommandQueueDesc & desc) = 0;
         /// TODO:
         /// Cleaner API for GE.h
         virtual void waitForGPUIdle() {}

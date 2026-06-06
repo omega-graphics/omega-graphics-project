@@ -98,7 +98,9 @@ static bool runMatrixRoundtrip(OmegaGTE::GTE &gte,
     writer->sendToBuffer();
     writer->flush();
 
-    auto queue = gte.graphicsEngine->makeCommandQueue(1);
+    OmegaGTE::GECommandQueueDesc queueDesc{};
+    queueDesc.maxBufferCount = 1;
+    auto queue = gte.graphicsEngine->makeCommandQueue(queueDesc);
     auto cmd = queue->getAvailableBuffer();
     GEComputePassDescriptor pass;
     cmd->startComputePass(pass);
@@ -188,7 +190,9 @@ int main(int argc, char *argv[]){
     writer->flush();
     std::cout << "Input buffer written" << std::endl;
 
-    auto commandQueue = gte.graphicsEngine->makeCommandQueue(1);
+    OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+    commandQueueDesc.maxBufferCount = 1;
+    auto commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
     auto cmdBuf = commandQueue->getAvailableBuffer();
 
     OmegaGTE::GEComputePassDescriptor compDesc;

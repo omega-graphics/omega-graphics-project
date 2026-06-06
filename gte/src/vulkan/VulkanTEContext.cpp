@@ -328,7 +328,16 @@ std::future<TETriangulationResult> vulkanGpuDispatch(
 
     VkQueue gpuQueue = VK_NULL_HANDLE;
     if (!e->deviceQueuefamilies.empty() && !e->deviceQueuefamilies[0].empty()) {
-        gpuQueue = e->deviceQueuefamilies[0][0].second;
+        // CommandQueue-Typed-Pool follow-up — pick the MEDIUM queue on
+        // family 0 explicitly. Post-global-priority opt-in, `[0][0]` is the
+        // HIGH-float queue when 3+ queues opened, which would over-promote
+        // TE context warm-up over user frame work. lookupQueueOnFamily
+        // collapses to the legacy `[0][0]` when no priority table exists.
+        gpuQueue = e->lookupQueueOnFamily(e->queueFamilyIndices.empty() ? 0u : e->queueFamilyIndices[0],
+                                          static_cast<std::int32_t>(VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR));
+        if (gpuQueue == VK_NULL_HANDLE) {
+            gpuQueue = e->deviceQueuefamilies[0][0].second;
+        }
     }
     if (gpuQueue == VK_NULL_HANDLE) {
         vkFreeCommandBuffers(e->device, pip.cmdPool, 1, &cmdBuf);

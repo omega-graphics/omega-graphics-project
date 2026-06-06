@@ -602,3 +602,86 @@ doesn't repeat the assumption.
 *Brief status: proposal. Decisions in §11 should be settled before the integrator
 lands. This document is the Phase 1 entry of the per-phase prior-art series §4 of
 `Physics-Roadmap.md` establishes.*
+
+---
+
+## 13. Recency-principle audit (addendum, 2026-06-06)
+
+Roadmap §4 was strengthened post-Phase-3 to make "newest viable algorithm
+from the literature" the standing default, with incumbents adopted only
+when no substantively-newer alternative offers a real improvement for
+AQUA's substrate (`Physics-Roadmap.md` §4 — "Recency principle"). Phase 1's
+brief predates that explicit rule; the audit ran retroactively against the
+integrator and math choices. Findings recorded here, mirrored as a one-line
+entry in `Physics-Roadmap.md` §5 Phase 1.
+
+The Phase 1 picks (symplectic Euler at the velocity level + body-frame
+implicit Newton-gyroscopic + exponential-map quaternion update +
+adaptive-iteration cap on `‖ω‖·dt`) date to a 2005–2019 line (Catto
+sequential-impulse + PhysX `eENABLE_GYROSCOPIC_FORCES` + Macklin small
+steps). What does 2020-onwards add?
+
+- **Lie-group variational integrators on SO(3) — substantively newer,
+  flagged-for-later, not adopted for Phase 1.** Lee, Leok & McClamroch's
+  Lie-group variational integrator line (extended by Xu & Halse 2017 to
+  dual quaternions and the joint SE(3) state of full rigid-body kinematics)
+  is *symplectic, momentum-preserving, and energy-bounded for exponentially
+  long simulations* — provably better than our Euler + Newton-gyroscopic on
+  long-running asymmetric tumblers and the Dzhanibekov scene the §1
+  deliverable closes on. The catch for AQUA's substrate: variational
+  integrators want to be the **whole step**, with no mid-step interrupt
+  point for an external contact solver. Phase 3's PGS sweep depends on the
+  `AQStepBodyVelocity` / `AQStepBodyPosition` split (Phase 3 brief §6 step
+  F) — slotting a Lie-group variational integrator into that split is not
+  mechanical; it forces a rethink of where the solver runs in the
+  half-step. **Defer to a Phase 1.x or later (post-Phase-5) revisit**: the
+  current integrator passes the Phase 1 Dzhanibekov + precession +
+  energy-drift bounds (audit confirmed), the variational integrator's win
+  is at *much* longer time horizons than kREATE's gameplay needs, and the
+  architectural cost is real. Record the citation (Lee, Leok, McClamroch
+  2007; Xu, Halse 2017 dual-quaternion variant) so when the long-horizon
+  determinism / lockstep-netcode case (roadmap §6 cross-cutting concern)
+  forces a revisit we know which paper drives it.
+- **Müller-Macklin-Chentanez-Jeschke 2020 (XPBD-for-rigid) — same §7.2
+  fork as the Phase 3 / Phase 4 audits.** XPBD's position-projection
+  recasts the *integrator* alongside the joints and contacts; adopting it
+  for Phase 1 alone makes no sense (you'd need the contact + joint
+  side too) and adopting it for all of Phase 1–4 makes the §7.2 unified-
+  XPBD decision early. The Phase 1 row-state (`AQBodyState` in
+  `AQIntegrator.h`) is **deliberately compatible** with an XPBD recast
+  because position-projection consumes the same `position` /
+  `orientation` / `velocity` / `angularVelBody` fields; the recast would
+  swap the half-steps, not the data. Müller 2020 citation forwarded; no
+  Phase 1 change.
+- **Macklin "Small Steps in Physics Simulation" (2019) — already adopted
+  in spirit.** The Phase 1 doc §11.5 "small steps" posture (1/120 s
+  default, smaller for fast rotators) IS the small-steps lean; the audit
+  reaffirms it. No change.
+- **Quaternion exponential map orientation update — no divergence.** The
+  on-manifold integration `q' = exp(½·ω·dt) · q` is the canonical answer
+  (Munthe-Kaas RKMK and descendants); recent surveys (Ayvali 2020+
+  integration-of-angular-velocity notes) confirm the exponential-map
+  update is still the recommended approach. The Phase 1 `AQintegrate`
+  helper uses exactly this form. No change.
+- **High-order symplectic / Forest-Ruth / Yoshida splitting — overkill
+  for game-physics dt.** 4th-order symplectic splittings exist (Forest &
+  Ruth 1990; Yoshida 1990 with later refinements) but the per-step cost
+  multiplier (3–7 force evaluations per substep) is not justified at the
+  sub-millisecond `dt` Phase 1 already runs. No change.
+- **Jacobi diagonalization — no substantive divergence.** The
+  `AQdiagonalizeInertia` Jacobi loop (§7) is numerically robust for the
+  symmetric 3×3 case the inertia tensor always presents; modern Jacobi
+  variants (Hari-Begović hybrid 2018) improve large-matrix cases AQUA
+  does not have. No change.
+
+**Net for Phase 1:** the recency audit finds **one substantively-newer
+alternative (Lie-group variational integrators)** worth recording, but
+not adopting now — the architectural cost (whole-step ownership) blocks
+the Phase 3 solver interrupt, and the current integrator passes the
+Phase 1 deliverables on its bounds. The Müller-2020 forwarding is the
+same §7.2 fork as Phase 3/4. No Phase 1.1 / Phase 1.2 production code
+changes from the audit. The audit will be re-run when the long-horizon
+determinism case (roadmap §6) forces a revisit.
+
+Re-audit due: 2028-06-06 (roadmap §4 two-year freshness rule) or sooner
+if the §7.2 fork lands in Phase 7.

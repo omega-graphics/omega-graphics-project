@@ -247,7 +247,9 @@ GTE_TEST_ENTRY_POINT {
     writer->flush();
 
     // Dispatch.
-    auto queue = gte.graphicsEngine->makeCommandQueue(1);
+    OmegaGTE::GECommandQueueDesc queueDesc{};
+    queueDesc.maxBufferCount = 1;
+    auto queue = gte.graphicsEngine->makeCommandQueue(queueDesc);
     auto cmd = queue->getAvailableBuffer();
     GEComputePassDescriptor pass{};
     cmd->startComputePass(pass);

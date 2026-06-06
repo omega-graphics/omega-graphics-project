@@ -96,7 +96,9 @@ GTE_TEST_ENTRY_POINT {
     params.scale[0] = 1; params.scale[1] = 2; params.scale[2] = 3; params.scale[3] = 4;
     params.bias[0] = 10; params.bias[1] = 20; params.bias[2] = 30; params.bias[3] = 40;
 
-    auto queue = gte.graphicsEngine->makeCommandQueue(1);
+    OmegaGTE::GECommandQueueDesc queueDesc{};
+    queueDesc.maxBufferCount = 1;
+    auto queue = gte.graphicsEngine->makeCommandQueue(queueDesc);
     auto cmd = queue->getAvailableBuffer();
     GEComputePassDescriptor pass{};
     cmd->startComputePass(pass);

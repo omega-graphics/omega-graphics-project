@@ -349,7 +349,9 @@ GTE_TEST_ENTRY_POINT {
         return 1;
     }
 
-    auto queue = gte.graphicsEngine->makeCommandQueue(8);
+    OmegaGTE::GECommandQueueDesc queueDesc{};
+    queueDesc.maxBufferCount = 8;
+    auto queue = gte.graphicsEngine->makeCommandQueue(queueDesc);
     auto writer = GEBufferWriter::Create();
 
     const bool a = runPhaseA(gte, lib, queue);

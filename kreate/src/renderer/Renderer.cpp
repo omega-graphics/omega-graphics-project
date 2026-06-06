@@ -12,7 +12,9 @@ std::unique_ptr<Renderer> Renderer::create(Window &window) {
     OmegaGTE::NativeRenderTargetDescriptor rtDesc{};
     window.fillNativeRenderTargetDesc(rtDesc);
 
-    auto queue = gte.graphicsEngine->makeCommandQueue(64);
+    OmegaGTE::GECommandQueueDesc queueDesc{};
+    queueDesc.maxBufferCount = 64;
+    auto queue = gte.graphicsEngine->makeCommandQueue(queueDesc);
     auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc, queue);
 
     return std::unique_ptr<Renderer>(

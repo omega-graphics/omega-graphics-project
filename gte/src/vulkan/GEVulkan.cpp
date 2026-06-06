@@ -15,6 +15,8 @@
 #include <initializer_list>
 #include <iostream>
 #include <memory>
+#include <deque>
+#include <limits>
 #include <vector>
 #include <unordered_set>
 #include <cstring>
@@ -1123,6 +1125,15 @@ _NAMESPACE_BEGIN_
         hasMeshShaderExt = enableDeviceExtension(VK_EXT_MESH_SHADER_EXTENSION_NAME,false);
     #endif
 
+        /// CommandQueue-Typed-Pool follow-up — opt into VK_KHR_global_priority
+        /// so we can chain VkDeviceQueueGlobalPriorityCreateInfoKHR on
+        /// each opened VkDeviceQueueCreateInfo and actually run high /
+        /// low / medium-priority work on distinct VkQueues. Optional —
+        /// devices without the extension still load, but every queue
+        /// then shares a single MEDIUM (default) VkQueue per family and
+        /// `desc.priority` becomes introspection-only.
+        hasGlobalPriorityExt = enableDeviceExtension(VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME, false);
+
         count = 0;
 
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice,&count,nullptr);
@@ -1131,26 +1142,112 @@ _NAMESPACE_BEGIN_
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice,&count,queueFamilyProps.data());
 
         OmegaCommon::Vector<VkDeviceQueueCreateInfo> deviceQueues;
-        const float queuePriority = 1.f;
-        unsigned id = 0;
-        for(auto & q : queueFamilyProps){
-            if(q.queueFlags & VK_QUEUE_GRAPHICS_BIT || q.queueFlags & VK_QUEUE_COMPUTE_BIT){
-                queueFamilyIndices.push_back(id);
-                VkDeviceQueueCreateInfo queueInfo {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-                queueInfo.pNext = nullptr;
-                queueInfo.queueFamilyIndex = id;
-                queueInfo.queueCount = 1;
-                queueInfo.pQueuePriorities = &queuePriority;
-                queueInfo.flags = 0;
-                deviceQueues.push_back(queueInfo);
-            }
-            else {
+        // One global-priority chain per family — Vulkan VUID-02802 forbids
+        // multiple VkDeviceQueueCreateInfo entries with the same
+        // queueFamilyIndex, so we get ONE outer priority per family even
+        // with the extension enabled. Storage is `std::deque` so growth
+        // doesn't invalidate the pointers we hand to deviceQueues[i].pNext.
+        std::deque<VkDeviceQueueGlobalPriorityCreateInfoKHR> queuePriorityChains;
+        // Per-family float priority arrays, also kept stable via deque.
+        // Each VkDeviceQueueCreateInfo points its pQueuePriorities at the
+        // back of the relevant entry here. Values [1.0, 0.5, 0.0] map to
+        // High / Normal / Low at lookup time; the values index into
+        // `relativePriorityKinds` 1:1 so we can reconstruct which queue
+        // got which logical priority after vkCreateDevice.
+        std::deque<std::vector<float>> queueFloatPriorities;
+        // Per-family table of the logical priorities we asked for at each
+        // queueIndex. Populated in lockstep with queueFloatPriorities. After
+        // vkCreateDevice succeeds, these get copied into
+        // `openedQueuePriorities` so `lookupQueueOnFamily` can map
+        // (family, KHR-priority) -> VkQueue.
+        OmegaCommon::Vector<OmegaCommon::Vector<VkQueueGlobalPriorityKHR>> perFamilyKinds;
+
+        // CommandQueue-Typed-Pool Phase 2 — open every family that exposes
+        // any of the three capability bits we care about (GRAPHICS, COMPUTE,
+        // TRANSFER) so the queue-family picker has a dedicated transfer
+        // family available on hardware that exposes one. Skipping a family
+        // here means `VulkanQueueFamilies::Pick` cannot return its index
+        // and Transfer requests silently downgrade to the graphics family.
+        //
+        // The previous version of this loop only opened graphics/compute
+        // families AND had an `else { continue; } ++id;` shape that skipped
+        // the family-index increment on every non-matching family, which
+        // meant any opened family after a skipped one got the wrong index.
+        // The rewrite uses an indexed loop so the index is unconditional.
+        //
+        // CommandQueue-Typed-Pool follow-up — for each opened family, request
+        // up to 3 VkQueues with relative float priorities [1.0, 0.5, 0.0]
+        // so HIGH / NORMAL / LOW requests land on distinct queues that the
+        // family-scheduler can rank. Falls back to fewer queues when the
+        // family's queueCount can't support 3, and to a single MEDIUM queue
+        // (queueCount=1) on families that only expose one queue (most
+        // dedicated transfer families on integrated GPUs). The VK_KHR_global
+        // priority chain — when the extension is enabled — additionally
+        // tags the WHOLE family with a single outer priority (MEDIUM here,
+        // since per-queue global priority isn't a thing in standard Vulkan
+        // and chaining HIGH risks VK_ERROR_NOT_PERMITTED_KHR on hosts
+        // without CAP_SYS_NICE / the GPU-priority entitlement).
+        for(std::uint32_t id = 0; id < queueFamilyProps.size(); ++id){
+            const auto & q = queueFamilyProps[id];
+            const VkQueueFlags wanted =
+                VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+            if((q.queueFlags & wanted) == 0){
                 continue;
             }
-             ++id;
+            queueFamilyIndices.push_back(id);
+
+            const std::uint32_t maxQueues = q.queueCount > 0 ? q.queueCount : 1;
+            const std::uint32_t openCount = std::min<std::uint32_t>(3, maxQueues);
+            queueFloatPriorities.emplace_back();
+            auto & floats = queueFloatPriorities.back();
+            OmegaCommon::Vector<VkQueueGlobalPriorityKHR> kinds;
+            // Float-priority ladder: 1.0 / 0.5 / 0.0 → HIGH / NORMAL / LOW.
+            // openCount==1 picks NORMAL only (default semantics preserved);
+            // openCount==2 picks HIGH + NORMAL (most useful pair when the
+            // family can't host three queues); openCount==3 picks the full
+            // ladder.
+            constexpr float ladderFloats[3] = {1.0f, 0.5f, 0.0f};
+            constexpr VkQueueGlobalPriorityKHR ladderKinds[3] = {
+                VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR,
+                VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR,
+                VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR,
+            };
+            if (openCount >= 3) {
+                floats = {ladderFloats[0], ladderFloats[1], ladderFloats[2]};
+                kinds  = {ladderKinds[0],  ladderKinds[1],  ladderKinds[2]};
+            } else if (openCount == 2) {
+                floats = {ladderFloats[0], ladderFloats[1]};
+                kinds  = {ladderKinds[0],  ladderKinds[1]};
+            } else {
+                floats = {ladderFloats[1]};
+                kinds  = {ladderKinds[1]};
+            }
+            perFamilyKinds.push_back(kinds);
+
+            VkDeviceQueueCreateInfo queueInfo {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+            queueInfo.pNext = nullptr;
+            queueInfo.queueFamilyIndex = id;
+            queueInfo.queueCount = openCount;
+            queueInfo.pQueuePriorities = floats.data();
+            queueInfo.flags = 0;
+            if (hasGlobalPriorityExt) {
+                // Chain MEDIUM as the per-family outer priority. The
+                // per-queue differentiation lives in pQueuePriorities; the
+                // chain is the "we know the extension exists, no surprises"
+                // signal to the driver. Asking for HIGH here would risk
+                // VK_ERROR_NOT_PERMITTED_KHR on dev hosts without the
+                // privilege; the runtime retry below catches that anyway.
+                VkDeviceQueueGlobalPriorityCreateInfoKHR chain {
+                    VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR};
+                chain.pNext = nullptr;
+                chain.globalPriority = VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR;
+                queuePriorityChains.push_back(chain);
+                queueInfo.pNext = &queuePriorityChains.back();
+            }
+            deviceQueues.push_back(queueInfo);
         }
         if(deviceQueues.empty()){
-            std::cerr << "No Vulkan queue families support graphics/compute." << std::endl;
+            std::cerr << "No Vulkan queue families support graphics/compute/transfer." << std::endl;
             std::exit(1);
         }
 
@@ -1248,14 +1345,41 @@ _NAMESPACE_BEGIN_
         info.pNext = &features2;
         info.pEnabledFeatures = nullptr;
 
-        auto deviceRes = vkCreateDevice(physicalDevice,&info,nullptr,&this->device);
+        // CommandQueue-Typed-Pool follow-up — vkCreateDevice retry block.
+        // The global-priority chain (MEDIUM) is normally granted to every
+        // process, but some drivers / sandboxes still return
+        // VK_ERROR_NOT_PERMITTED_KHR. When that fires, strip the chain
+        // entirely and retry — the per-queue float priorities still give
+        // the user HIGH/NORMAL/LOW differentiation within each family,
+        // we just lose the (relatively minor) outer extension-tagged
+        // priority on top of it.
+        auto stripGlobalPriorityChain = [&]() {
+            for (auto & dq : deviceQueues) {
+                dq.pNext = nullptr;
+            }
+            hasGlobalPriorityExt = false;
+        };
+
+        VkResult deviceRes = vkCreateDevice(physicalDevice,&info,nullptr,&this->device);
+        if (deviceRes == VK_ERROR_NOT_PERMITTED_KHR && hasGlobalPriorityExt) {
+            DEBUG_STREAM("vkCreateDevice denied MEDIUM global-priority chain; retrying without the chain");
+            stripGlobalPriorityChain();
+            deviceRes = vkCreateDevice(physicalDevice,&info,nullptr,&this->device);
+        }
         if(deviceRes != VK_SUCCESS || this->device == VK_NULL_HANDLE){
             std::cerr << "Failed to create Vulkan logical device (" << deviceRes << ")" << std::endl;
             std::exit(1);
         }
 
-        for(auto & dq : deviceQueues){
+        // Walk deviceQueues in lockstep with perFamilyKinds — one
+        // VkDeviceQueueCreateInfo per opened family, queueCount queues per
+        // family, each queueIndex paired with perFamilyKinds[slot][i] so the
+        // resulting openedQueuePriorities table tells lookupQueueOnFamily
+        // which VkQueue corresponds to HIGH / NORMAL / LOW.
+        for (std::size_t slot = 0; slot < deviceQueues.size(); ++slot) {
+            auto & dq = deviceQueues[slot];
             std::vector<std::pair<VkSemaphore,VkQueue>> queues;
+            OmegaCommon::Vector<std::int32_t> priorities;
             for(unsigned i = 0;i < dq.queueCount;i++){
                 VkSemaphore sem = VK_NULL_HANDLE;
                 VkQueue queue = VK_NULL_HANDLE;
@@ -1280,9 +1404,19 @@ _NAMESPACE_BEGIN_
                 }
 
                 queues.emplace_back(std::make_pair(sem,queue));
+                // Defensive bounds-check — perFamilyKinds[slot] was sized
+                // to dq.queueCount in the build loop; only diverges if a
+                // vkGetDeviceQueue2 call silently dropped one above (in
+                // which case the bigger queueCount above won't match the
+                // smaller priorities count here and lookupQueueOnFamily
+                // notices via the `prios.size() == queues.size()` gate).
+                if (slot < perFamilyKinds.size() && i < perFamilyKinds[slot].size()) {
+                    priorities.push_back(static_cast<std::int32_t>(perFamilyKinds[slot][i]));
+                }
             }
             if(!queues.empty()){
                 deviceQueuefamilies.push_back(queues);
+                openedQueuePriorities.push_back(priorities);
             }
         }
         if(deviceQueuefamilies.empty()){
@@ -1361,7 +1495,19 @@ _NAMESPACE_BEGIN_
         if(!queueFamilyIndices.empty() && !deviceQueuefamilies.empty()
            && !deviceQueuefamilies[0].empty()){
             uploadQueueFamily = queueFamilyIndices[0];
-            uploadQueue       = deviceQueuefamilies[0][0].second;
+            // CommandQueue-Typed-Pool follow-up — pick the MEDIUM-priority
+            // queue on family 0 explicitly. The naive `[0][0].second` would
+            // now be the HIGH-float queue (since we open
+            // pQueuePriorities=[1.0,0.5,0.0] in that order), and texture
+            // staging shouldn't take priority over user-submitted frame
+            // work. lookupQueueOnFamily falls through to the first opened
+            // queue when openedQueuePriorities is empty (extension off /
+            // single-queue family), so this stays correct in every config.
+            uploadQueue       = lookupQueueOnFamily(uploadQueueFamily,
+                                                    static_cast<std::int32_t>(VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR));
+            if (uploadQueue == VK_NULL_HANDLE) {
+                uploadQueue = deviceQueuefamilies[0][0].second;
+            }
 
             VkCommandPoolCreateInfo poolInfo {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
             poolInfo.queueFamilyIndex = uploadQueueFamily;
@@ -1404,11 +1550,95 @@ _NAMESPACE_BEGIN_
         return engine;
     };
 
-    SharedHandle<GECommandQueue> GEVulkanEngine::makeCommandQueue(unsigned int maxBufferCount){
-        auto result = std::make_shared<GEVulkanCommandQueue>(this,maxBufferCount);
+    VkQueue GEVulkanEngine::lookupQueueOnFamily(std::uint32_t familyIndex,
+                                                std::int32_t wantedKhrPriority) const {
+        // Locate the family slot. queueFamilyIndices is parallel to
+        // deviceQueuefamilies / openedQueuePriorities; not present means the
+        // family was never opened (e.g. requireDedicated landed us on a
+        // family that wasn't qualifying at device-create).
+        std::uint32_t slot = std::numeric_limits<std::uint32_t>::max();
+        for (std::uint32_t i = 0; i < queueFamilyIndices.size(); ++i) {
+            if (queueFamilyIndices[i] == familyIndex) { slot = i; break; }
+        }
+        if (slot == std::numeric_limits<std::uint32_t>::max() ||
+            slot >= deviceQueuefamilies.size() || deviceQueuefamilies[slot].empty()) {
+            return VK_NULL_HANDLE;
+        }
+
+        const auto & queues   = deviceQueuefamilies[slot];
+        // When the extension was off, openedQueuePriorities stays empty.
+        // Treat every entry as MEDIUM in that case and fall through to the
+        // default-priority queue at index 0.
+        const bool hasPriorities = slot < openedQueuePriorities.size()
+                                && openedQueuePriorities[slot].size() == queues.size();
+        if (!hasPriorities) {
+            return queues.front().second;
+        }
+        const auto & prios = openedQueuePriorities[slot];
+
+        // 1. Exact match.
+        for (std::size_t i = 0; i < prios.size(); ++i) {
+            if (prios[i] == wantedKhrPriority) {
+                return queues[i].second;
+            }
+        }
+        // 2. Fallback ladder. For REALTIME / HIGH requests we walk DOWN
+        // (HIGH → MEDIUM → LOW) since elevation is the point of asking;
+        // for LOW we walk UP (MEDIUM → HIGH) since dropping below LOW
+        // doesn't make sense. MEDIUM at the centre is always present.
+        const std::int32_t kRT     = static_cast<std::int32_t>(VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR);
+        const std::int32_t kHigh   = static_cast<std::int32_t>(VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR);
+        const std::int32_t kMedium = static_cast<std::int32_t>(VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR);
+        const std::int32_t kLow    = static_cast<std::int32_t>(VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR);
+
+        std::int32_t ladder[3] = {kMedium, kMedium, kMedium};
+        if (wantedKhrPriority == kRT) {
+            ladder[0] = kHigh;   ladder[1] = kMedium; ladder[2] = kLow;
+        } else if (wantedKhrPriority == kHigh) {
+            ladder[0] = kMedium; ladder[1] = kLow;    ladder[2] = kMedium;
+        } else if (wantedKhrPriority == kLow) {
+            ladder[0] = kMedium; ladder[1] = kHigh;   ladder[2] = kMedium;
+        }
+        for (std::int32_t want : ladder) {
+            for (std::size_t i = 0; i < prios.size(); ++i) {
+                if (prios[i] == want) {
+                    return queues[i].second;
+                }
+            }
+        }
+        // Last resort: the first opened queue. Better than VK_NULL_HANDLE
+        // even when every reasonable priority slot is somehow empty.
+        return queues.front().second;
+    }
+
+    /// Phase-2 typed-pool path. Routes through `VulkanQueueFamilies::Pick`
+    /// to resolve `desc.type` to a real Vulkan queue family (with the
+    /// documented fallback ladder when no dedicated family exists), and
+    /// plumbs `desc.label` through `VK_EXT_debug_utils` when available.
+    ///
+    /// `desc.priority` is recorded on the returned queue for introspection
+    /// but is currently NOT plumbed into `VkDeviceQueueCreateInfo`. The
+    /// `VK_KHR_global_priority` opt-in (and the matching
+    /// `VkDeviceQueueGlobalPriorityCreateInfoKHR` chain at device-create
+    /// time) is a Phase-2 follow-up tracked in the plan doc — it requires
+    /// extension probing at device-create, not at queue-create, so wiring
+    /// it deserves its own change.
+    ///
+    /// Returns `nullptr` when `desc.requireDedicated` is set and no family
+    /// can satisfy the request (e.g. Transfer-only requested on a device
+    /// that only exposes a unified graphics+compute family).
+    SharedHandle<GECommandQueue> GEVulkanEngine::makeCommandQueue(const GECommandQueueDesc & desc){
+        auto result = std::make_shared<GEVulkanCommandQueue>(this, desc);
+        if (result->getNativeQueue() == VK_NULL_HANDLE) {
+            // Construction failed to resolve a family (requireDedicated with
+            // nothing dedicated, or the device exposes no families at all).
+            // Return nullptr rather than handing back a half-constructed
+            // queue — caller can fall back to a less-specific request.
+            return nullptr;
+        }
         trackResource(result);
         return result;
-    };
+    }
 
     SharedHandle<GEBuffer> GEVulkanEngine::makeBuffer(const BufferDescriptor &desc){
         if(device == VK_NULL_HANDLE || memAllocator == nullptr){
@@ -3910,6 +4140,20 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             return nullptr;
         }
 
+        // Phase 2 of the CommandQueue-Typed-Pool plan: a Transfer-typed
+        // queue is not allowed to be the presentation queue. Vulkan
+        // requires a graphics-capable family for swap-chain ownership
+        // (vkAcquireNextImageKHR / vkQueuePresentKHR) and even when a
+        // transfer-only family is present-capable on a given driver, the
+        // user said "this queue is for DMA" — present must go through a
+        // queue that matches that intent. Reject up front so the
+        // descriptor parse fails loudly rather than later in swap-chain
+        // creation with a generic VK_ERROR_INITIALIZATION_FAILED.
+        if(presentQueue != nullptr && presentQueue->type() == GECommandQueueDesc::Type::Transfer){
+            std::cerr << "Vulkan native render target creation failed: presentQueue is a Transfer queue; swap-chain presents require a graphics-capable queue." << std::endl;
+            return nullptr;
+        }
+
         VkSurfaceKHR surfaceKhr = VK_NULL_HANDLE;
 
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
@@ -4321,8 +4565,16 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             std::cerr << "[debugReadback] no queue" << std::endl;
             return false;
         }
-        VkQueue queue = deviceQueuefamilies[0][0].second;
         std::uint32_t qfi = queueFamilyIndices.empty() ? 0 : queueFamilyIndices[0];
+        // CommandQueue-Typed-Pool follow-up — debug readback runs as
+        // MEDIUM background work; same reasoning as uploadQueue. The
+        // pre-Phase-2 code grabbed `[0][0].second` directly, which was
+        // MEDIUM in that world but is HIGH in this one.
+        VkQueue queue = lookupQueueOnFamily(qfi,
+                                            static_cast<std::int32_t>(VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR));
+        if (queue == VK_NULL_HANDLE) {
+            queue = deviceQueuefamilies[0][0].second;
+        }
 
         VkBufferCreateInfo bufInfo {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bufInfo.size = 4;

@@ -618,3 +618,103 @@ for cooked convex hulls). The body-side header was split out of `AQSpace.h` to
 `AQRigidBody.h` — §10 paths updated accordingly. Phase 2's remaining scope is:
 shape POD + handle + space-owned table, the broadphase algorithm + tests,
 inertia-from-shape wiring, COM-offset wiring, and the new debug-flag bits.*
+
+---
+
+## 12. Recency-principle audit (addendum, 2026-06-06)
+
+Roadmap §4 was strengthened to make "newest viable algorithm from the
+literature" the standing default for every phase, with incumbents adopted
+only when no substantively-newer alternative offers a real improvement for
+AQUA's substrate (`Physics-Roadmap.md` §4 — "Recency principle"). The
+Phase 2 brief predates the explicit rule; the audit ran retroactively on
+all three sub-choices (shape representation, world-AABB recomputation,
+broadphase structure). Findings recorded here, mirrored as a one-line
+entry in `Physics-Roadmap.md` §5 Phase 2.
+
+The Phase 2 picks (fattened analytic AABBs + sort-based uniform spatial
+grid per Green 2010, with LBVH per Karras 2012 as the §11.1 escape hatch
+for size variance) date to a 2010-2012 line. What does 2018-onwards add?
+
+- **Hardware-accelerated RT-core broadphase — substantively newer,
+  flagged-for-Phase-5, not adopted now.** Two recent papers exploit
+  RTX/RT-core BVH-traversal hardware for collision detection: **Wang et
+  al., "Hardware-Accelerated Ray Tracing for Discrete and Continuous
+  Collision Detection on GPUs" (arXiv 2409.09918, 2024)** uses the BVH
+  traversal hardware as a black-box broadphase; **Liu et al., "Mochi:
+  Fast & Exact Collision Detection" (arXiv 2402.14801, 2024)** combines
+  OBB-BVH broad-phase with a novel object-object intersection narrow-
+  phase. Both report substantial speedups vs. software broadphases on
+  RTX-capable hardware. **Not adopted for Phase 2** because: (a) the
+  hardware is **NVIDIA-RTX-specific** today (AMD's patented unified
+  BVH for ray tracing + physics is filed but not yet shipping; Apple
+  Metal RT and Vulkan VK_KHR_ray_tracing are gaining ground but
+  feature-uneven across GPUs), and AQUA's compute-first promise
+  (`About.rst` / roadmap §3) is *all three backends, software path
+  required, hardware path optional*. (b) The win is at the broadphase
+  query stage; AQUA's broadphase is already a sort-based grid whose hot
+  path is `O(n + p)` where `p` is candidate pairs — the cliff RT cores
+  flatten is BVH traversal, which we don't pay. **Revisit as a
+  Phase 5.x optional acceleration path** when the OmegaGTE backend has
+  feature flags for hardware RT (`GTEDEVICE_FEATURE_RAYTRACING` — per
+  the `project_rt_runtime_feature_check` memory). Note recorded in
+  §11.1 as a third path joining grid / LBVH / SAP.
+- **PLOC / PLOC++ / PRBVH (Meister & Bittner 2018a, 2018b, 2022) — the
+  Karras 2012 LBVH successor.** PLOC (Parallel Locally-Ordered
+  Clustering) and PRBVH (Parallel Reinsertion BVH) produce
+  substantially-higher-quality BVHs than Karras's LBVH at competitive
+  build cost (Meister & Bittner 2018a/b, EUROGRAPHICS 2018; Meister &
+  Bittner 2022 selects per-node between object and spatial splits).
+  **If the §11.1 escape hatch fires** — i.e. AQUA's workload mix proves
+  to need a BVH instead of the grid for size-variance reasons —
+  **PLOC/PRBVH is what we build, not Karras LBVH.** Phase 2 picks the
+  grid as the lead so this doesn't bite yet; the citation is recorded
+  so the eventual BVH path skips a generation. The §11.1 decision text
+  is updated accordingly (LBVH → "PLOC++ / PRBVH per Meister & Bittner
+  2018/2022").
+- **Compact hashing (Teschner et al. 2003; Lefebvre & Hoppe 2006;
+  refined Ihmsen et al. 2011) — minor refinement, not a blocker.** A
+  sparse-cell hash table feeding the sort step trades the uniform
+  grid's full-allocation cost for a hashing one, with the same
+  candidate-pair output. For AQUA's dense-mid-volume rigid-body
+  workload the uniform grid's bounded allocation is fine; for the
+  Phase 6 particles workload with hundreds of thousands of points
+  spread sparsely, compact hashing is the cleaner memory pattern.
+  **Carry as a Phase 6 note**: the per-pillar split option
+  (§11.2 — "one shared broadphase vs. per-pillar") becomes specifically
+  "compact-hashing variant of the same sort-based grid for the particle
+  pillar," which is a layout swap not an algorithm swap.
+- **GPU spatial hashing with thread-block-level cooperation
+  (FLIP / SPH literature, 2024+) — adopted in spirit.** Recent
+  GPU-spatial-hashing refinements (Liu et al. 2024 MDPI FLIP paper +
+  earlier SPH lines) emphasize cooperative-group reduction and L1
+  cache-friendly traversal patterns; these are *kernel-level
+  optimizations* of the same sort-based grid Phase 2 picks, not
+  algorithmic divergence. Roll into the Phase 5 OmegaSL kernel author
+  pass — the Phase 2 algorithm is unchanged.
+- **AABB fattening — no divergence.** The fattened-AABB + velocity-
+  dilation policy (§11.4) is the same shape as Bullet's btDbvtBroadphase
+  (DBVT) and PhysX's incremental SAP; no substantively-newer policy
+  has emerged. The two-tree DBVT (separate static/dynamic) is an
+  *architecture* choice that re-engages SAP/BVH heritage AQUA
+  deliberately leaves behind. No change.
+- **Karras 2012 LBVH — superseded by PLOC++** (see above) as the
+  modern BVH-construction reference; the §11.1 decision lean is
+  updated.
+
+**Net for Phase 2:** the recency audit finds **no algorithmic
+divergence to adopt now** for the chosen sort-based uniform grid lead —
+Green 2010 + Karras 2012 (as the alternative) + fattened analytic AABBs
+remain the right answer for AQUA's compute-first, all-three-backends,
+particle-coexistent substrate. One **citation update** lands: the
+§11.1 LBVH alternative is recharacterized as PLOC++ / PRBVH
+(Meister & Bittner 2018/2022) so the future BVH path skips a
+generation. Two future-work items recorded: **(a)** hardware RT-core
+broadphase as a Phase 5.x acceleration path gated on
+`GTEDEVICE_FEATURE_RAYTRACING` (Wang 2024, Mochi 2024); **(b)**
+compact-hashing as a Phase 6 particle-pillar memory layout swap.
+
+Re-audit due: 2028-06-06 (roadmap §4 two-year freshness rule) or sooner
+if (a) PhysX 6 / Chaos roadmaps publicly commit to RT-core broadphase
+shipping, or (b) the §11.1 escape hatch fires and we actually need to
+build the BVH path.

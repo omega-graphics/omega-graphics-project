@@ -35,7 +35,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     OmegaGTE::NativeRenderTargetDescriptor rtDesc{};
     rtDesc.isHwnd = true;
     rtDesc.hwnd = hwnd;
-    auto commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+    commandQueueDesc.maxBufferCount = 64;
+    auto commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
     auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc, commandQueue);
 
     auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);

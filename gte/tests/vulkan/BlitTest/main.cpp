@@ -204,7 +204,9 @@ static void start_application(GtkApplication *app, gpointer){
     OmegaGTE::NativeRenderTargetDescriptor nDesc {};
     nDesc.x_display = x_display;
     nDesc.x_window = x_window;
-    commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+    commandQueueDesc.maxBufferCount = 64;
+    commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
     nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(nDesc, commandQueue);
     if(!nativeTarget){
         std::cerr << "[BlitTest] FAILED to create native render target" << std::endl;

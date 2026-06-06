@@ -1236,9 +1236,36 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) release];
     }
 
-    GEMetalCommandQueue::GEMetalCommandQueue(NSSmartPtr & queue,unsigned size):
-    GECommandQueue(size),
+    /// Pick the auto-generated label suffix for a queue type when the caller
+    /// did not supply one. Matches the suffixes named in the
+    /// CommandQueue-Typed-Pool plan's backend mapping table ("gfx", "compute",
+    /// "xfer", "any"). Metal has no native split, so this is purely a hint
+    /// in the Xcode GPU frame capture / Instruments traces.
+    static const char * metal_autoLabelFor(GECommandQueueDesc::Type t){
+        switch(t){
+            case GECommandQueueDesc::Type::Graphics:  return "GECommandQueue[gfx]";
+            case GECommandQueueDesc::Type::Compute:   return "GECommandQueue[compute]";
+            case GECommandQueueDesc::Type::Transfer:  return "GECommandQueue[xfer]";
+            case GECommandQueueDesc::Type::Universal:
+            default:                                  return "GECommandQueue[any]";
+        }
+    }
+
+    GEMetalCommandQueue::GEMetalCommandQueue(NSSmartPtr & queue, const GECommandQueueDesc & desc):
+    GECommandQueue(desc, /*achievedType=*/desc.type),
     commandQueue(queue),commandBuffers(),semaphore(dispatch_semaphore_create(0)){
+        // Apply the descriptor label to the MTLCommandQueue so it shows up
+        // in Xcode's GPU capture / Instruments. Fall back to a type-derived
+        // auto label when no user label was supplied — non-empty labels are
+        // more informative than the default `<MTLCommandQueue: 0x…>`.
+        const char * labelCStr = desc.label.empty()
+                                     ? metal_autoLabelFor(desc.type)
+                                     : desc.label.c_str();
+        NSString *label = [[NSString alloc] initWithUTF8String:labelCStr];
+        if(label != nil){
+            NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>, commandQueue.handle()).label = label;
+            [label release];
+        }
         traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
         ResourceTracking::Tracker::instance().emit(
                 ResourceTracking::EventType::Create,

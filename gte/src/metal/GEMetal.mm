@@ -1072,10 +1072,16 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             return (SharedHandle<GEAccelerationStruct>)new GEMetalAccelerationStruct (handle,buffer);
         }
 
-        SharedHandle<GECommandQueue> makeCommandQueue(unsigned int maxBufferCount) override{
+        /// Phase-2 typed-pool path. Metal has no native split between queue
+        /// families — every `MTLCommandQueue` is universal — so `desc.type`
+        /// and `desc.priority` are recorded on the queue for introspection
+        /// and to drive `[MTLCommandQueue setLabel:]` (auto-derived from
+        /// `desc.type` when `desc.label` is empty). `isDedicated()` always
+        /// returns true because nothing is downgraded.
+        SharedHandle<GECommandQueue> makeCommandQueue(const GECommandQueueDesc & desc) override {
             metalDevice.assertExists();
-            NSSmartPtr commandQueue ({NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newCommandQueueWithMaxCommandBufferCount:maxBufferCount]});
-            return std::shared_ptr<GECommandQueue>(new GEMetalCommandQueue(commandQueue,maxBufferCount));
+            NSSmartPtr commandQueue ({NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newCommandQueueWithMaxCommandBufferCount:desc.maxBufferCount]});
+            return std::shared_ptr<GECommandQueue>(new GEMetalCommandQueue(commandQueue, desc));
         };
         SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override{
             metalDevice.assertExists();
@@ -1296,6 +1302,16 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             }
             if(desc.metalLayer == nil){
                 std::cerr << "[GEMetalEngine_Internal] makeNativeRenderTarget: descriptor.metalLayer is nil" << std::endl;
+                return nullptr;
+            }
+            // Phase 2 of the CommandQueue-Typed-Pool plan: present
+            // through a Transfer-typed queue makes no sense — Metal
+            // doesn't actually distinguish queue families, but the
+            // user's intent here is "DMA-only queue, no draws," and we
+            // refuse rather than silently allowing presents that the
+            // user said they didn't want this queue to do.
+            if(presentQueue != nullptr && presentQueue->type() == GECommandQueueDesc::Type::Transfer){
+                std::cerr << "[GEMetalEngine_Internal] makeNativeRenderTarget: presentQueue is a Transfer queue; cannot present from a transfer-typed queue" << std::endl;
                 return nullptr;
             }
             metalDevice.assertExists();

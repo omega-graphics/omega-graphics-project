@@ -16,6 +16,12 @@ _NAMESPACE_BEGIN_
         ComPtr<ID3D12GraphicsCommandList6> commandList;
         ComPtr<ID3D12CommandAllocator> commandAllocator;
         GED3D12CommandQueue *parentQueue;
+        /// CommandQueue-Typed-Pool Phase 3 — slot in the parent queue's
+        /// pool this buffer was checked out from. UINT32_MAX (default)
+        /// means the buffer wasn't from a tracked pool slot; the submit
+        /// paths skip stamping in that case so a defensive fallback path
+        /// can still issue an ad-hoc buffer without confusing recycler.
+        std::uint32_t poolSlot = UINT32_MAX;
         bool inComputePass;
         bool inBlitPass;
         bool inRenderPass;
@@ -208,6 +214,41 @@ _NAMESPACE_BEGIN_
         bool multiQueueSync = false;
 
         unsigned currentCount;
+
+        // CommandQueue-Typed-Pool Phase 3 — growable pool of
+        // (allocator, list) pairs with per-slot in-flight tracking via
+        // `retentionFence`. `poolAllocators[i]` and `poolLists[i]`
+        // co-own the allocator/list backing pool slot i;
+        // `poolSubmissionIndex[i]` holds the `retentionFence` value at
+        // which that slot was last handed to `ExecuteCommandLists`. The
+        // recycler reuses a slot once `retentionFence->GetCompletedValue()`
+        // catches up.
+        std::vector<ComPtr<ID3D12CommandAllocator>>      poolAllocators;
+        std::vector<ComPtr<ID3D12GraphicsCommandList6>>  poolLists;
+        std::vector<std::uint64_t>                       poolSubmissionIndex;
+        // Slot indices parallel to `commandLists`. At submit/commit time
+        // these are stamped into `poolSubmissionIndex` so getAvailableBuffer
+        // knows when each slot is recyclable. UINT32_MAX entries
+        // correspond to lists that weren't from a tracked pool slot
+        // (defensive — shouldn't happen in normal use).
+        std::vector<std::uint32_t>                       pendingSlots;
+        std::uint32_t                                    currentBufferIndex = 0;
+        std::uint32_t                                    initialBufferHint  = 0;
+        bool                                             poolGrowthWarned   = false;
+
+        D3D12_COMMAND_LIST_TYPE listType = D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+        // Tag `poolSubmissionIndex[slot]` for every entry of `pendingSlots`
+        // and clear `pendingSlots`. Call after Signal(retentionFence,
+        // nextSubmitValue) on any code path that successfully submitted
+        // the pending batch.
+        void stampPendingSlots(std::uint64_t signalValue);
+        // Try to allocate one more pool slot (allocator + list) on
+        // demand. Returns the new slot index on success, UINT32_MAX on
+        // failure or at the hard ceiling (256). Soft-warns once when the
+        // pool first crosses 4× the initial hint.
+        std::uint32_t growPoolOnce();
+
         friend class GED3D12Engine;
         friend class GED3D12CommandBuffer;
     public:
@@ -240,7 +281,15 @@ _NAMESPACE_BEGIN_
         void signalFence(SharedHandle<GEFence> & fence) override;
         void waitForFence(SharedHandle<GEFence> & fence, std::uint64_t value) override;
         SharedHandle<GECommandBuffer> getAvailableBuffer() override;
-        GED3D12CommandQueue(GED3D12Engine *engine,unsigned size);
+        /// Builds a real `D3D12_COMMAND_QUEUE_DESC` from `desc` (Type →
+        /// `D3D12_COMMAND_LIST_TYPE_*`, Priority →
+        /// `D3D12_COMMAND_QUEUE_PRIORITY_*`) and applies `desc.label` via
+        /// `ID3D12Object::SetName`. Realtime priority silently downgrades
+        /// to HIGH if the device denies it (no entitlement). This is the
+        /// only ctor after the Phase 4 legacy-overload retirement; build
+        /// a default-initialized `GECommandQueueDesc` for the historical
+        /// "universal queue with N pool slots" use case.
+        GED3D12CommandQueue(GED3D12Engine *engine,const GECommandQueueDesc & desc);
         ~GED3D12CommandQueue() override;
     };
 _NAMESPACE_END_

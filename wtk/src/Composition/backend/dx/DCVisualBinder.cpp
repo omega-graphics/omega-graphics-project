@@ -62,7 +62,12 @@ namespace OmegaWTK::Composition {
         desc.height = toBackingDimension(rect.h, scale);
         desc.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
 
-        auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
+        OmegaGTE::GECommandQueueDesc presentQueueDesc{};
+        presentQueueDesc.type = OmegaGTE::GECommandQueueDesc::Type::Graphics;
+        presentQueueDesc.priority = OmegaGTE::GECommandQueueDesc::Priority::High;
+        presentQueueDesc.maxBufferCount = 64;
+        presentQueueDesc.label = "WTK::DCVisualBinder presentQueue";
+        auto presentQueue = gte.graphicsEngine->makeCommandQueue(presentQueueDesc);
         auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);
         if(nativeTarget == nullptr){
             std::cerr << "[OmegaWTK][D3D12][DComp] makeNativeRenderTarget returned null." << std::endl;

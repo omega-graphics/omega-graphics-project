@@ -68,7 +68,9 @@ int main(int argc, const char * argv[]){
     writer->flush();
     std::cout << "Input buffer written" << std::endl;
 
-    auto commandQueue = gte.graphicsEngine->makeCommandQueue(1);
+    OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+    commandQueueDesc.maxBufferCount = 1;
+    auto commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
     auto cmdBuf = commandQueue->getAvailableBuffer();
 
     OmegaGTE::GEComputePassDescriptor compDesc;

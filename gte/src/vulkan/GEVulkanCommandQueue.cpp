@@ -4,6 +4,7 @@
 #include "GEVulkanPipeline.h"
 #include "GEVulkan.h"
 #include "GEVulkanTexture.h"
+#include "VulkanQueueFamilies.h"
 #include "vulkan/vulkan_core.h"
 #include "../common/GEResourceTracker.h"
 
@@ -2604,6 +2605,18 @@ _NAMESPACE_BEGIN_
         submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(buffer->commandBuffer);
         ResourceTracking::Tracker::instance().emit(submitEvent);
         commandQueue.push_back(buffer->commandBuffer);
+        // CommandQueue-Typed-Pool Phase 3 — mark the pool slot busy
+        // immediately at submit time with a sentinel (UINT64_MAX) so the
+        // recycler in getAvailableBuffer() doesn't hand the same buffer
+        // back before commitToGPU fires. commitToGPU re-stamps with the
+        // actual signal value via stampPendingSlots so the GPU's
+        // completed counter eventually overtakes the slot. UINT32_MAX
+        // means the buffer wasn't from getAvailableBuffer; skip it.
+        if (buffer->poolSlot != UINT32_MAX
+            && buffer->poolSlot < commandBufferSubmissionIndex.size()) {
+            commandBufferSubmissionIndex[buffer->poolSlot] = UINT64_MAX;
+        }
+        pendingSlots.push_back(buffer->poolSlot);
         pendingRetainedBuffers.push_back(commandBuffer);
     };
 
@@ -2624,29 +2637,117 @@ _NAMESPACE_BEGIN_
             vkCmdSetEvent(buffer->commandBuffer,fence->event,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
         }
         commandQueue.push_back(buffer->commandBuffer);
+        // CommandQueue-Typed-Pool Phase 3 — same slot busy-stamp as the
+        // unsignaled submit overload above. See that comment for why.
+        if (buffer->poolSlot != UINT32_MAX
+            && buffer->poolSlot < commandBufferSubmissionIndex.size()) {
+            commandBufferSubmissionIndex[buffer->poolSlot] = UINT64_MAX;
+        }
+        pendingSlots.push_back(buffer->poolSlot);
         pendingRetainedBuffers.push_back(commandBuffer);
     }
 
    SharedHandle<GECommandBuffer> GEVulkanCommandQueue::getAvailableBuffer(){
+       // CommandQueue-Typed-Pool Phase 3 — growable pool with in-flight
+       // tracking via the retention timeline semaphore. The flow:
+       //   1. Read the most recent submission counter value the GPU has
+       //      already finished. Slots whose last submission is <= that
+       //      value are safe to recycle without any further wait.
+       //   2. Walk the pool starting from currentBufferIndex for locality;
+       //      return the first free slot.
+       //   3. If every slot is still in flight, allocate a new
+       //      VkCommandBuffer from the pool's command pool (one at a time)
+       //      up to a hard ceiling of 256. Soft-warn exactly once when the
+       //      pool first grows past 4× the initial hint so a user who
+       //      under-sized the hint sees the signal but not the spam.
+       //   4. At the ceiling, return nullptr — the caller has 256
+       //      simultaneously in-flight buffers, which is almost certainly
+       //      a leak somewhere in the user's submit/commit pairing.
+       constexpr std::uint32_t kPoolCeiling = 256;
+
        if(commandBuffers.empty()){
            return nullptr;
        }
-       if(currentBufferIndex >= commandBuffers.size()){
+
+       std::uint64_t completed = 0;
+       if (engine != nullptr && engine->device != VK_NULL_HANDLE &&
+           retentionTimeline != VK_NULL_HANDLE) {
+           // Failure leaves completed = 0 — every "never-submitted" slot
+           // still qualifies as free, so the first cycle through a fresh
+           // queue still works without a semaphore query.
+           vkGetSemaphoreCounterValue(engine->device, retentionTimeline, &completed);
+       }
+
+       const std::uint32_t poolSize = static_cast<std::uint32_t>(commandBuffers.size());
+       if (currentBufferIndex >= poolSize) {
            currentBufferIndex = 0;
        }
-       auto &commandBuffer = commandBuffers[currentBufferIndex];
-       auto resetRes = vkResetCommandBuffer(commandBuffer,0);
-       if(resetRes != VK_SUCCESS){
+
+       std::uint32_t chosenSlot = UINT32_MAX;
+       for (std::uint32_t step = 0; step < poolSize; ++step) {
+           const std::uint32_t slot = (currentBufferIndex + step) % poolSize;
+           if (commandBufferSubmissionIndex[slot] <= completed) {
+               chosenSlot = slot;
+               break;
+           }
+       }
+
+       if (chosenSlot == UINT32_MAX) {
+           // No free slot — grow if we can.
+           if (poolSize >= kPoolCeiling) {
+               std::cerr << "GEVulkanCommandQueue: pool at ceiling (" << kPoolCeiling
+                         << ") and every slot is still in flight — refusing to grow; "
+                            "check for missed commitToGPU / over-submission." << std::endl;
+               return nullptr;
+           }
+           VkCommandBufferAllocateInfo allocInfo {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+           allocInfo.pNext = nullptr;
+           allocInfo.commandPool = commandPool;
+           allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+           allocInfo.commandBufferCount = 1;
+           VkCommandBuffer fresh = VK_NULL_HANDLE;
+           const auto allocRes = vkAllocateCommandBuffers(engine->device, &allocInfo, &fresh);
+           if (allocRes != VK_SUCCESS || fresh == VK_NULL_HANDLE) {
+               std::cerr << "GEVulkanCommandQueue: vkAllocateCommandBuffers (grow) failed ("
+                         << allocRes << ")" << std::endl;
+               return nullptr;
+           }
+           commandBuffers.push_back(fresh);
+           commandBufferSubmissionIndex.push_back(0);
+           chosenSlot = poolSize;  // old size == new slot index
+           if (!poolGrowthWarned && initialBufferHint > 0
+               && commandBuffers.size() > 4ull * initialBufferHint) {
+               std::cerr << "GEVulkanCommandQueue: pool grew to " << commandBuffers.size()
+                         << " (initial hint=" << initialBufferHint
+                         << "); consider raising desc.maxBufferCount on this queue."
+                         << std::endl;
+               poolGrowthWarned = true;
+           }
+       }
+
+       auto &commandBuffer = commandBuffers[chosenSlot];
+       const auto resetRes = vkResetCommandBuffer(commandBuffer, 0);
+       if (resetRes != VK_SUCCESS) {
            std::cerr << "Vulkan reset command buffer failed (" << resetRes << ")" << std::endl;
        }
-       auto res = std::make_shared<GEVulkanCommandBuffer>(commandBuffer,this);
-       currentBufferIndex = (currentBufferIndex + 1) % commandBuffers.size();
+       auto res = std::make_shared<GEVulkanCommandBuffer>(commandBuffer, this);
+       res->poolSlot = chosenSlot;
+       currentBufferIndex = (chosenSlot + 1) % static_cast<std::uint32_t>(commandBuffers.size());
        return res;
    };
 
     VkCommandBuffer &GEVulkanCommandQueue::getLastCommandBufferInQueue() {
         return commandQueue.back();
     }
+
+   void GEVulkanCommandQueue::stampPendingSlots(std::uint64_t signalValue){
+       for (auto slot : pendingSlots) {
+           if (slot != UINT32_MAX && slot < commandBufferSubmissionIndex.size()) {
+               commandBufferSubmissionIndex[slot] = signalValue;
+           }
+       }
+       pendingSlots.clear();
+   }
 
    Retention::FenceGate GEVulkanCommandQueue::gateForNextSubmit(){
        const std::uint64_t v = nextSubmitValue + 1;
@@ -2726,6 +2827,11 @@ _NAMESPACE_BEGIN_
 
    void GEVulkanCommandQueue::commitToGPU(){
         if(commandQueue.empty()){
+            // CommandQueue-Typed-Pool Phase 3 — drop any slot tags that
+            // were enqueued but never made it to a real submit (e.g. caller
+            // submitted then committed with no work). Without this the
+            // slots would stay flagged at UINT32_MAX-ish stale values.
+            pendingSlots.clear();
             submittedTraceCommandBufferIds.clear();
             return;
         }
@@ -2734,23 +2840,28 @@ _NAMESPACE_BEGIN_
             if(endRes != VK_SUCCESS){
                 std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
                 commandQueue.clear();
+                pendingSlots.clear();
                 submittedTraceCommandBufferIds.clear();
                 return;
             }
         }
-        if(engine == nullptr || engine->deviceQueuefamilies.empty() || engine->deviceQueuefamilies.front().empty()){
+        // CommandQueue-Typed-Pool Phase 2 — submit through this queue's own
+        // (familyIndex, VkQueue) resolved at construction, NOT through
+        // `engine->deviceQueuefamilies.front().front()`. The latter would
+        // collapse every typed queue back onto family 0 and defeat the
+        // whole point of opening multiple families. `nativeQueue` is
+        // VK_NULL_HANDLE only when construction couldn't resolve a family
+        // (e.g. requireDedicated with no dedicated family available), in
+        // which case OmegaGraphicsEngine::makeCommandQueue should have
+        // returned nullptr to the caller — but defend against use anyway.
+        if(engine == nullptr || nativeQueue == VK_NULL_HANDLE){
             commandQueue.clear();
+            pendingSlots.clear();
             submittedTraceCommandBufferIds.clear();
             return;
         }
 
-        auto &queueEntry = engine->deviceQueuefamilies.front().front();
-        auto vkQueue = queueEntry.second;
-        if(vkQueue == VK_NULL_HANDLE){
-            commandQueue.clear();
-            submittedTraceCommandBufferIds.clear();
-            return;
-        }
+        auto vkQueue = nativeQueue;
 
        VkSubmitInfo submission {VK_STRUCTURE_TYPE_SUBMIT_INFO};
        submission.waitSemaphoreCount = 0;
@@ -2769,10 +2880,17 @@ _NAMESPACE_BEGIN_
            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
            commandQueue.clear();
            pendingRetainedBuffers.clear();
+           pendingSlots.clear();
            submittedTraceCommandBufferIds.clear();
            return;
        };
        ++nextSubmitValue;
+       // CommandQueue-Typed-Pool Phase 3 — stamp the new submission counter
+       // onto every pool slot that contributed a buffer to this submit.
+       // After this point getAvailableBuffer() can recycle those slots as
+       // soon as vkGetSemaphoreCounterValue(retentionTimeline) reaches
+       // nextSubmitValue.
+       stampPendingSlots(nextSubmitValue);
 
        commandQueue.clear();
        flushPendingRetentionUnder(gate);
@@ -2784,19 +2902,23 @@ _NAMESPACE_BEGIN_
             submittedTraceCommandBufferIds.clear();
             return;
         }
-        if(engine == nullptr || engine->deviceQueuefamilies.empty() || engine->deviceQueuefamilies.front().empty()){
+        // CommandQueue-Typed-Pool Phase 2 — submit through this queue's own
+        // (familyIndex, VkQueue) resolved at construction, NOT through
+        // `engine->deviceQueuefamilies.front().front()`. The latter would
+        // collapse every typed queue back onto family 0 and defeat the
+        // whole point of opening multiple families. `nativeQueue` is
+        // VK_NULL_HANDLE only when construction couldn't resolve a family
+        // (e.g. requireDedicated with no dedicated family available), in
+        // which case OmegaGraphicsEngine::makeCommandQueue should have
+        // returned nullptr to the caller — but defend against use anyway.
+        if(engine == nullptr || nativeQueue == VK_NULL_HANDLE){
             commandQueue.clear();
+            pendingSlots.clear();
             submittedTraceCommandBufferIds.clear();
             return;
         }
 
-        auto &queueEntry = engine->deviceQueuefamilies.front().front();
-        auto vkQueue = queueEntry.second;
-        if(vkQueue == VK_NULL_HANDLE){
-            commandQueue.clear();
-            submittedTraceCommandBufferIds.clear();
-            return;
-        }
+        auto vkQueue = nativeQueue;
 
         // Two flows reach here after the queue-decoupling refactor:
         //   (a) Caller submitted CBs but has not yet committed — flush them
@@ -2834,10 +2956,17 @@ _NAMESPACE_BEGIN_
                 std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
                 commandQueue.clear();
                 pendingRetainedBuffers.clear();
+                pendingSlots.clear();
                 submittedTraceCommandBufferIds.clear();
                 return;
             }
             ++nextSubmitValue;
+            // CommandQueue-Typed-Pool Phase 3 — see commitToGPU above for
+            // why this lands here. commitToGPUPresent waits on submitFence
+            // below, so by the time control returns to the caller these
+            // slots are also reachable via the fence wait, but the
+            // submission-index path is the canonical signal.
+            stampPendingSlots(nextSubmitValue);
             auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
             if(waitRes != VK_SUCCESS){
                 std::cerr << "Failed waiting for submitted command buffers (" << waitRes << ")" << std::endl;
@@ -2885,6 +3014,7 @@ _NAMESPACE_BEGIN_
 
    void GEVulkanCommandQueue::commitToGPUAndWait(){
         if(commandQueue.empty()){
+            pendingSlots.clear();
             submittedTraceCommandBufferIds.clear();
             return;
         }
@@ -2893,23 +3023,28 @@ _NAMESPACE_BEGIN_
             if(endRes != VK_SUCCESS){
                 std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
                 commandQueue.clear();
+                pendingSlots.clear();
                 submittedTraceCommandBufferIds.clear();
                 return;
             }
         }
-        if(engine == nullptr || engine->deviceQueuefamilies.empty() || engine->deviceQueuefamilies.front().empty()){
+        // CommandQueue-Typed-Pool Phase 2 — submit through this queue's own
+        // (familyIndex, VkQueue) resolved at construction, NOT through
+        // `engine->deviceQueuefamilies.front().front()`. The latter would
+        // collapse every typed queue back onto family 0 and defeat the
+        // whole point of opening multiple families. `nativeQueue` is
+        // VK_NULL_HANDLE only when construction couldn't resolve a family
+        // (e.g. requireDedicated with no dedicated family available), in
+        // which case OmegaGraphicsEngine::makeCommandQueue should have
+        // returned nullptr to the caller — but defend against use anyway.
+        if(engine == nullptr || nativeQueue == VK_NULL_HANDLE){
             commandQueue.clear();
+            pendingSlots.clear();
             submittedTraceCommandBufferIds.clear();
             return;
         }
 
-        auto &queueEntry = engine->deviceQueuefamilies.front().front();
-        auto vkQueue = queueEntry.second;
-        if(vkQueue == VK_NULL_HANDLE){
-            commandQueue.clear();
-            submittedTraceCommandBufferIds.clear();
-            return;
-        }
+        auto vkQueue = nativeQueue;
 
         vkResetFences(engine->device,1,&submitFence);
 
@@ -2930,10 +3065,15 @@ _NAMESPACE_BEGIN_
            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
            commandQueue.clear();
            pendingRetainedBuffers.clear();
+           pendingSlots.clear();
            submittedTraceCommandBufferIds.clear();
            return;
        };
        ++nextSubmitValue;
+       // CommandQueue-Typed-Pool Phase 3 — stamp slots before the
+       // synchronous wait below. After vkWaitForFences returns success
+       // every slot stamped here is already recyclable.
+       stampPendingSlots(nextSubmitValue);
 
        commandQueue.clear();
        auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
@@ -2961,10 +3101,67 @@ _NAMESPACE_BEGIN_
 
    }
 
-   GEVulkanCommandQueue::GEVulkanCommandQueue(GEVulkanEngine *engine,unsigned size):GECommandQueue(size){
+   GEVulkanCommandQueue::GEVulkanCommandQueue(GEVulkanEngine *engine, const GECommandQueueDesc & desc):
+       // Provisionally tell the base ctor that we achieved exactly what
+       // the user asked for; if Pick downgrades below, the body patches
+       // `desc_.type` to the actual achieved type. That keeps the family
+       // picker a single call instead of resolving twice in the
+       // initializer list.
+       GECommandQueue(desc, /*achievedType=*/desc.type){
        this->engine = engine;
        VkResult res;
-       VkCommandPoolCreateInfo poolCreateInfo {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+
+       auto picked = VulkanQueueFamilies::Pick(
+           engine->queueFamilyProps.data(),
+           static_cast<std::uint32_t>(engine->queueFamilyProps.size()),
+           desc.type,
+           desc.requireDedicated);
+       if (!picked) {
+           // No family satisfies the request. Leave nativeQueue at
+           // VK_NULL_HANDLE; the engine factory checks for that and
+           // returns nullptr to the caller. We still need to construct
+           // the trace ID so the destructor's emit path is consistent.
+           DEBUG_STREAM("GEVulkanCommandQueue: no queue family satisfies type=" << static_cast<int>(desc.type)
+                       << " (requireDedicated=" << desc.requireDedicated << ")");
+           traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+           return;
+       }
+
+       // Patch the achieved type onto the base if Pick downgraded — the
+       // initializer list always passes `desc.type` as the optimistic
+       // achievement, but the picker's fallback ladder may have routed us
+       // to a less-specific family (e.g. Transfer → Compute when no
+       // dedicated DMA family exists). isDedicated() reads `desc_.type`
+       // against `requestedType_`, so writing the achieved value here is
+       // what makes the downgrade observable to callers.
+       desc_.type = picked->achievedType;
+
+       boundFamilyIndex = picked->familyIndex;
+       // CommandQueue-Typed-Pool follow-up — route through the engine's
+       // priority-aware lookup. When VK_KHR_global_priority is enabled,
+       // this picks the VkQueue created with the matching global priority
+       // (with HIGH/MEDIUM/LOW fallback); when the extension is disabled,
+       // it falls through to the single default-priority queue. REALTIME
+       // requests resolve to HIGH (or MEDIUM) because we don't open
+       // REALTIME VkQueues at device-create — the entitlement gate makes
+       // that an opt-in concern that lives outside this path.
+       const VkQueueGlobalPriorityKHR wantedKhrPrio = [&]() {
+           switch (desc.priority) {
+               case GECommandQueueDesc::Priority::Low:      return VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR;
+               case GECommandQueueDesc::Priority::High:     return VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR;
+               case GECommandQueueDesc::Priority::Realtime: return VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR;
+               case GECommandQueueDesc::Priority::Normal:
+               default:                                     return VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR;
+           }
+       }();
+       nativeQueue = engine->lookupQueueOnFamily(
+           boundFamilyIndex, static_cast<std::int32_t>(wantedKhrPrio));
+       if (nativeQueue == VK_NULL_HANDLE) {
+           DEBUG_STREAM("GEVulkanCommandQueue: family " << boundFamilyIndex
+                       << " was not opened at device-create time; no VkQueue handle");
+           traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
+           return;
+       }
 
        VkFenceCreateInfo fenceCreateInfo {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
        fenceCreateInfo.pNext = nullptr;
@@ -2985,7 +3182,8 @@ _NAMESPACE_BEGIN_
            exit(1);
        }
 
-       poolCreateInfo.queueFamilyIndex = engine->queueFamilyIndices.front();
+       VkCommandPoolCreateInfo poolCreateInfo {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+       poolCreateInfo.queueFamilyIndex = boundFamilyIndex;
        poolCreateInfo.pNext = nullptr;
        poolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
@@ -2996,17 +3194,38 @@ _NAMESPACE_BEGIN_
        };
 
        VkCommandBufferAllocateInfo commandBufferCreateInfo {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-       commandBufferCreateInfo.commandBufferCount = size;
+       commandBufferCreateInfo.commandBufferCount = desc.maxBufferCount;
        commandBufferCreateInfo.commandPool = commandPool;
        commandBufferCreateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
        commandBufferCreateInfo.pNext = nullptr;
-       commandBuffers.resize(size);
+       commandBuffers.resize(desc.maxBufferCount);
 
        res = vkAllocateCommandBuffers(engine->device,&commandBufferCreateInfo,commandBuffers.data());
 
        if(!VK_RESULT_SUCCEEDED(res)){
            exit(1);
        };
+
+       // CommandQueue-Typed-Pool Phase 3 — initial state for the growable
+       // pool: every slot's "last submitted at" counter is 0 ("never
+       // submitted"), so the first `getAvailableBuffer()` returns slot 0
+       // immediately without polling the GPU. `initialBufferHint` is
+       // sticky for the 4×-hint soft-warn threshold.
+       commandBufferSubmissionIndex.resize(desc.maxBufferCount, 0);
+       initialBufferHint = desc.maxBufferCount;
+
+       // Apply desc.label via VK_EXT_debug_utils when supplied. The
+       // setName() override below uses the same call shape for user-driven
+       // post-construction renames — kept in lockstep so the debug-name
+       // semantics don't drift between create-time and rename-time.
+       if (!desc.label.empty()) {
+           VkDebugUtilsObjectNameInfoEXT nameInfo {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+           nameInfo.pNext = nullptr;
+           nameInfo.objectType = VK_OBJECT_TYPE_COMMAND_POOL;
+           nameInfo.objectHandle = reinterpret_cast<std::uint64_t>(commandPool);
+           nameInfo.pObjectName = desc.label.c_str();
+           vkSetDebugUtilsObjectNameEXT(engine->device, &nameInfo);
+       }
 
        currentBufferIndex = 0;
        traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
@@ -3031,6 +3250,12 @@ _NAMESPACE_BEGIN_
        if(!commandBuffers.empty()){
            vkFreeCommandBuffers(engine->device,commandPool,commandBuffers.size(),commandBuffers.data());
            commandBuffers.resize(0);
+           // CommandQueue-Typed-Pool Phase 3 — keep the growable-pool
+           // parallel state aligned with `commandBuffers`. Without these
+           // resets the engine's destructor or a subsequent re-init would
+           // see a stale submission-index table.
+           commandBufferSubmissionIndex.resize(0);
+           pendingSlots.clear();
        }
        if(commandPool != VK_NULL_HANDLE){
            vkDestroyCommandPool(engine->device,commandPool,nullptr);

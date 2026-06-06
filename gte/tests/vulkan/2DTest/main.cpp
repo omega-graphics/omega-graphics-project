@@ -163,7 +163,9 @@ static void start_application(GtkApplication *app, gpointer user_data){
     desc.x_display = x_display;
     desc.x_window = x_window;
 
-    commandQueue = gte.graphicsEngine->makeCommandQueue(64);
+    OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+    commandQueueDesc.maxBufferCount = 64;
+    commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
     nativeRenderTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, commandQueue);
     tessContext = gte.triangulationEngine->createTEContextFromNativeRenderTarget(nativeRenderTarget);
 

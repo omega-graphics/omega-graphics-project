@@ -77,3 +77,29 @@ add_vulkan_test(
     SOURCES
     "../mesh_shader_test.cpp")
 add_test(NAME omegagte_mesh_shader COMMAND MeshShaderTest)
+
+# CommandQueue-Typed-Pool Phase 2 — pure-CPU unit test for the queue-family
+# picker. Pulls in the in-tree VulkanQueueFamilies translation unit
+# directly so no GPU device is required. Deterministic and fast.
+add_executable(VulkanQueueFamiliesTest
+    "VulkanQueueFamiliesTest/main.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../src/vulkan/VulkanQueueFamilies.cpp")
+target_include_directories(VulkanQueueFamiliesTest PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/include")
+target_compile_definitions(VulkanQueueFamiliesTest PRIVATE ${PUBLIC_DEFS})
+target_link_libraries(VulkanQueueFamiliesTest PRIVATE OmegaCommon)
+add_test(NAME omegagte_vulkan_queue_families COMMAND VulkanQueueFamiliesTest)
+
+# CommandQueue-Typed-Pool Phase 2 — backend-independent integration test
+# that creates one queue of each `GECommandQueueDesc::Type` against the
+# real GTE device, asserts type()/isDedicated()/priority()/label() round-
+# trip, and verifies makeNativeRenderTarget rejects a Transfer present
+# queue. Source is shared so D3D12 / Metal CMakeLists can wire it the
+# same way later.
+add_vulkan_test(
+    NAME
+    "CommandQueueDescTest"
+    SOURCES
+    "../command_queue_desc_test.cpp")
+add_test(NAME omegagte_command_queue_desc COMMAND CommandQueueDescTest)

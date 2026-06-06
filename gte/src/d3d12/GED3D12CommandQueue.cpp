@@ -17,8 +17,36 @@ _NAMESPACE_BEGIN_
 #endif
 // GED3D12CommandBuffer::GED3D12CommandBuffer(){};
 // void GED3D12CommandBuffer::commitToBuffer(){};
-GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, unsigned size)
-    : GECommandQueue(size), engine(engine), currentCount(0) {
+
+/// Map `GECommandQueueDesc::Type` → `D3D12_COMMAND_LIST_TYPE`.
+/// Universal and Graphics both alias to DIRECT — D3D12 has no notion of
+/// "must also expose transfer," every DIRECT queue already does.
+static D3D12_COMMAND_LIST_TYPE d3d12_listTypeFor(GECommandQueueDesc::Type t) {
+    switch (t) {
+        case GECommandQueueDesc::Type::Compute:  return D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        case GECommandQueueDesc::Type::Transfer: return D3D12_COMMAND_LIST_TYPE_COPY;
+        case GECommandQueueDesc::Type::Graphics:
+        case GECommandQueueDesc::Type::Universal:
+        default:                                 return D3D12_COMMAND_LIST_TYPE_DIRECT;
+    }
+}
+
+/// Map `GECommandQueueDesc::Priority` → `D3D12_COMMAND_QUEUE_PRIORITY`.
+/// D3D12 only exposes NORMAL / HIGH / GLOBAL_REALTIME — Low collapses into
+/// NORMAL on this backend.
+static D3D12_COMMAND_QUEUE_PRIORITY d3d12_priorityFor(GECommandQueueDesc::Priority p) {
+    switch (p) {
+        case GECommandQueueDesc::Priority::High:     return D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
+        case GECommandQueueDesc::Priority::Realtime: return D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME;
+        case GECommandQueueDesc::Priority::Low:
+        case GECommandQueueDesc::Priority::Normal:
+        default:                                     return D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+    }
+}
+
+GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQueueDesc & desc)
+    : GECommandQueue(desc, /*achievedType=*/desc.type),
+      engine(engine), currentCount(0), initialBufferHint(desc.maxBufferCount) {
     HRESULT hr;
 
     hr = engine->d3d12_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
@@ -36,20 +64,108 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, unsigned size)
 
     fence->SetEventOnCompletion(1, cpuEvent);
 
-    D3D12_COMMAND_QUEUE_DESC desc;
-    desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-    desc.NodeMask = engine->d3d12_device->GetNodeCount();
-    desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-    desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    hr = engine->d3d12_device->CreateCommandQueue(&desc, IID_PPV_ARGS(&commandQueue));
+    D3D12_COMMAND_QUEUE_DESC d3dDesc;
+    d3dDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    d3dDesc.NodeMask = engine->d3d12_device->GetNodeCount();
+    d3dDesc.Priority = d3d12_priorityFor(desc.priority);
+    d3dDesc.Type = d3d12_listTypeFor(desc.type);
+    hr = engine->d3d12_device->CreateCommandQueue(&d3dDesc, IID_PPV_ARGS(&commandQueue));
+    if (FAILED(hr) && d3dDesc.Priority == D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME) {
+        // Realtime requires the GPU-priority entitlement (Win10 Game Mode /
+        // priority-class profile). The plan defines this as a silent
+        // downgrade to HIGH so test rigs and dev machines without the
+        // entitlement still get a functional queue. The user's requested
+        // priority remains visible via priority() — it's the achieved type
+        // that controls dedication, not priority.
+        DEBUG_STREAM("CreateCommandQueue: GLOBAL_REALTIME denied (no entitlement); retrying at HIGH");
+        d3dDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
+        hr = engine->d3d12_device->CreateCommandQueue(&d3dDesc, IID_PPV_ARGS(&commandQueue));
+    }
     if (FAILED(hr)) {
         MessageBoxA(GetForegroundWindow(), "Failed to Create Command Queue.", "NOTE", MB_OK);
         exit(1);
     };
+    if (!desc.label.empty()) {
+        ATL::CStringW wstr(desc.label.c_str());
+        commandQueue->SetName(wstr);
+    }
+
+    // CommandQueue-Typed-Pool Phase 3 — pre-allocate the (allocator, list)
+    // pool to `desc.maxBufferCount` slots. Each slot keeps its own
+    // ID3D12CommandAllocator + ID3D12GraphicsCommandList6 owning ComPtrs;
+    // `poolSubmissionIndex` tracks the retentionFence value the slot was
+    // last submitted at so getAvailableBuffer can recycle it once the
+    // GPU has caught up. Failing to create a slot at construction time
+    // is treated as fatal — same posture as the queue-itself create
+    // above — because the queue is then unusable.
+    listType = d3d12_listTypeFor(desc.type);
+    poolAllocators.reserve(desc.maxBufferCount);
+    poolLists.reserve(desc.maxBufferCount);
+    poolSubmissionIndex.reserve(desc.maxBufferCount);
+    for (unsigned i = 0; i < desc.maxBufferCount; ++i) {
+        ComPtr<ID3D12CommandAllocator> alloc;
+        ComPtr<ID3D12GraphicsCommandList6> list;
+        if (FAILED(engine->d3d12_device->CreateCommandAllocator(listType, IID_PPV_ARGS(&alloc)))) {
+            DEBUG_STREAM("GED3D12CommandQueue: CreateCommandAllocator (pool) failed; queue construction aborted");
+            std::exit(1);
+        }
+        if (FAILED(engine->d3d12_device->CreateCommandList(engine->d3d12_device->GetNodeCount(),
+                                                            listType, alloc.Get(), nullptr, IID_PPV_ARGS(&list)))) {
+            DEBUG_STREAM("GED3D12CommandQueue: CreateCommandList (pool) failed; queue construction aborted");
+            std::exit(1);
+        }
+        poolAllocators.push_back(std::move(alloc));
+        poolLists.push_back(std::move(list));
+        poolSubmissionIndex.push_back(0);
+    }
+
     traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
     ResourceTracking::Tracker::instance().emit(ResourceTracking::EventType::Create, ResourceTracking::Backend::D3D12,
                                                "CommandQueue", traceResourceId, commandQueue.Get());
 };
+
+std::uint32_t GED3D12CommandQueue::growPoolOnce() {
+    constexpr std::uint32_t kPoolCeiling = 256;
+    if (poolAllocators.size() >= kPoolCeiling) {
+        std::cerr << "GED3D12CommandQueue: pool at ceiling (" << kPoolCeiling
+                  << ") and every slot is still in flight — refusing to grow; "
+                     "check for missed commitToGPU / over-submission." << std::endl;
+        return UINT32_MAX;
+    }
+    ComPtr<ID3D12CommandAllocator> alloc;
+    ComPtr<ID3D12GraphicsCommandList6> list;
+    if (FAILED(engine->d3d12_device->CreateCommandAllocator(listType, IID_PPV_ARGS(&alloc)))) {
+        DEBUG_STREAM("GED3D12CommandQueue: CreateCommandAllocator (grow) failed");
+        return UINT32_MAX;
+    }
+    if (FAILED(engine->d3d12_device->CreateCommandList(engine->d3d12_device->GetNodeCount(),
+                                                        listType, alloc.Get(), nullptr, IID_PPV_ARGS(&list)))) {
+        DEBUG_STREAM("GED3D12CommandQueue: CreateCommandList (grow) failed");
+        return UINT32_MAX;
+    }
+    const std::uint32_t slot = static_cast<std::uint32_t>(poolAllocators.size());
+    poolAllocators.push_back(std::move(alloc));
+    poolLists.push_back(std::move(list));
+    poolSubmissionIndex.push_back(0);
+    if (!poolGrowthWarned && initialBufferHint > 0
+        && poolAllocators.size() > 4ull * initialBufferHint) {
+        std::cerr << "GED3D12CommandQueue: pool grew to " << poolAllocators.size()
+                  << " (initial hint=" << initialBufferHint
+                  << "); consider raising desc.maxBufferCount on this queue."
+                  << std::endl;
+        poolGrowthWarned = true;
+    }
+    return slot;
+}
+
+void GED3D12CommandQueue::stampPendingSlots(std::uint64_t signalValue) {
+    for (auto slot : pendingSlots) {
+        if (slot != UINT32_MAX && slot < poolSubmissionIndex.size()) {
+            poolSubmissionIndex[slot] = signalValue;
+        }
+    }
+    pendingSlots.clear();
+}
 
 Retention::FenceGate GED3D12CommandQueue::gateForNextSubmit() {
     const std::uint64_t v = nextSubmitValue + 1;
@@ -1876,6 +1992,17 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
     ResourceTracking::Tracker::instance().emit(submitEvent);
     retainedCommandBuffers.push_back(commandBuffer);
     commandLists.push_back(d3d12_buffer->commandList.Get());
+    // CommandQueue-Typed-Pool Phase 3 — mark the pool slot busy at
+    // submit time with a UINT64_MAX sentinel so the recycler in
+    // getAvailableBuffer() won't hand the same slot back before
+    // commitToGPU / Signal fires. The Signal+stamp pair re-stamps with
+    // the actual retentionFence value so the GPU's GetCompletedValue()
+    // eventually overtakes the slot.
+    if (d3d12_buffer->poolSlot != UINT32_MAX
+        && d3d12_buffer->poolSlot < poolSubmissionIndex.size()) {
+        poolSubmissionIndex[d3d12_buffer->poolSlot] = UINT64_MAX;
+    }
+    pendingSlots.push_back(d3d12_buffer->poolSlot);
 };
 
 void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer,
@@ -1908,6 +2035,10 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
         const auto pendingGate = gateForNextSubmit();
         ++nextSubmitValue;
         commandQueue->Signal(retentionFence.Get(), nextSubmitValue);
+        // CommandQueue-Typed-Pool Phase 3 — stamp the slots of every list
+        // we just submitted. The single-buffer Execute below stamps its
+        // own slot separately.
+        stampPendingSlots(nextSubmitValue);
         flushPendingRetentionUnder(pendingGate);
     }
 
@@ -1917,6 +2048,14 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
         const auto bufGate = gateForNextSubmit();
         ++nextSubmitValue;
         commandQueue->Signal(retentionFence.Get(), nextSubmitValue);
+        // CommandQueue-Typed-Pool Phase 3 — stamp the single buffer's
+        // own pool slot now that retentionFence has been signaled at
+        // nextSubmitValue. UINT32_MAX is safe — the stamp helper skips
+        // it.
+        if (d3d12_buffer->poolSlot != UINT32_MAX
+            && d3d12_buffer->poolSlot < poolSubmissionIndex.size()) {
+            poolSubmissionIndex[d3d12_buffer->poolSlot] = nextSubmitValue;
+        }
         engine->retentionQueue.retainShared(SharedHandle<GECommandBuffer>(commandBuffer), {bufGate});
     }
     const auto signalValue = fence->nextSignalValue++;
@@ -1970,6 +2109,11 @@ void GED3D12CommandQueue::commitToGPU() {
             const auto gate = gateForNextSubmit();
             ++nextSubmitValue;
             commandQueue->Signal(retentionFence.Get(), nextSubmitValue);
+            // CommandQueue-Typed-Pool Phase 3 — stamp every pool slot
+            // that contributed a list to this Execute. After this point
+            // getAvailableBuffer() can recycle any slot whose
+            // poolSubmissionIndex <= retentionFence->GetCompletedValue().
+            stampPendingSlots(nextSubmitValue);
             commandLists.clear();
             flushPendingRetentionUnder(gate);
         } else {
@@ -1980,6 +2124,10 @@ void GED3D12CommandQueue::commitToGPU() {
             // touch them anyway.
             retainedCommandBuffers.clear();
             retainedDescriptorHeaps.clear();
+            // CommandQueue-Typed-Pool Phase 3 — also drop any stale slot
+            // flags collected without ever reaching Execute (would otherwise
+            // leak into the next commitToGPU and over-stamp unrelated work).
+            pendingSlots.clear();
         }
     }
     engine->retentionQueue.drainCompleted();
@@ -2010,25 +2158,63 @@ void GED3D12CommandQueue::commitToGPUAndWait() {
 }
 
 SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer() {
-    HRESULT hr;
-    ID3D12GraphicsCommandList6 *commandList;
+    // CommandQueue-Typed-Pool Phase 3 — growable pool with per-slot
+    // in-flight tracking via the existing retentionFence. Walk the pool
+    // from currentBufferIndex for locality; recycle the first slot whose
+    // last submission has been completed by the GPU. On miss, grow the
+    // pool by one (up to the hard 256 ceiling). When the pool first
+    // crosses 4× the initial hint, log a one-shot warning so a user who
+    // under-sized the hint sees the signal but isn't spammed each frame.
+    if (poolAllocators.empty()) {
+        // Defensive — desc.maxBufferCount == 0 would skip ctor preallocation;
+        // grow once so the queue is still usable instead of returning null.
+        const std::uint32_t fresh = growPoolOnce();
+        if (fresh == UINT32_MAX) {
+            return nullptr;
+        }
+    }
 
-    ID3D12CommandAllocator *commandAllocator;
+    const std::uint64_t completed = retentionFence ? retentionFence->GetCompletedValue() : 0;
+    const std::uint32_t poolSize = static_cast<std::uint32_t>(poolAllocators.size());
+    if (currentBufferIndex >= poolSize) {
+        currentBufferIndex = 0;
+    }
 
-    hr = engine->d3d12_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator));
+    std::uint32_t chosenSlot = UINT32_MAX;
+    for (std::uint32_t step = 0; step < poolSize; ++step) {
+        const std::uint32_t slot = (currentBufferIndex + step) % poolSize;
+        if (poolSubmissionIndex[slot] <= completed) {
+            chosenSlot = slot;
+            break;
+        }
+    }
+    if (chosenSlot == UINT32_MAX) {
+        chosenSlot = growPoolOnce();
+        if (chosenSlot == UINT32_MAX) {
+            return nullptr;
+        }
+    }
 
-    if (FAILED(hr)) {
-        exit(1);
-    };
+    // Reset both allocator and list so the slot is ready for fresh
+    // recording. GED3D12CommandBuffer::reset() does the same thing on a
+    // re-used wrapper; we replicate it here for the very first use after
+    // recycling.
+    auto & alloc = poolAllocators[chosenSlot];
+    auto & list  = poolLists[chosenSlot];
+    if (FAILED(alloc->Reset())) {
+        DEBUG_STREAM("GED3D12CommandQueue::getAvailableBuffer: allocator reset failed on slot " << chosenSlot);
+        return nullptr;
+    }
+    if (FAILED(list->Reset(alloc.Get(), nullptr))) {
+        DEBUG_STREAM("GED3D12CommandQueue::getAvailableBuffer: list reset failed on slot " << chosenSlot);
+        return nullptr;
+    }
 
-    hr = engine->d3d12_device->CreateCommandList(engine->d3d12_device->GetNodeCount(), D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                 commandAllocator, NULL, IID_PPV_ARGS(&commandList));
-    if (FAILED(hr)) {
-        MessageBoxA(GetForegroundWindow(), "Failed to Create Command List", "NOTE", MB_OK);
-        std::cout << "ERROR:" << std::hex << hr << std::endl;
-        exit(1);
-    };
-    return SharedHandle<GECommandBuffer>(new GED3D12CommandBuffer(commandList, commandAllocator, this));
+    auto wrapper = SharedHandle<GECommandBuffer>(new GED3D12CommandBuffer(list.Get(), alloc.Get(), this));
+    auto * d3d12_buffer = static_cast<GED3D12CommandBuffer *>(wrapper.get());
+    d3d12_buffer->poolSlot = chosenSlot;
+    currentBufferIndex = (chosenSlot + 1) % static_cast<std::uint32_t>(poolAllocators.size());
+    return wrapper;
 };
 
 ID3D12GraphicsCommandList6 *GED3D12CommandQueue::getLastCommandList() {

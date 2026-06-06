@@ -80,7 +80,12 @@ namespace OmegaWTK::Composition {
 
         // The Vulkan swap chain is bound to a dedicated 64-deep present
         // queue, matching the pre-§2.14 path in VKLayerTree::makeRootVisual.
-        auto presentQueue = gte.graphicsEngine->makeCommandQueue(64);
+        OmegaGTE::GECommandQueueDesc presentQueueDesc{};
+        presentQueueDesc.type = OmegaGTE::GECommandQueueDesc::Type::Graphics;
+        presentQueueDesc.priority = OmegaGTE::GECommandQueueDesc::Priority::High;
+        presentQueueDesc.maxBufferCount = 64;
+        presentQueueDesc.label = "WTK::VKVisualBinder presentQueue";
+        auto presentQueue = gte.graphicsEngine->makeCommandQueue(presentQueueDesc);
         auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);
         if(nativeTarget == nullptr){
             // GTE rejected the descriptor — surface format mismatch or
