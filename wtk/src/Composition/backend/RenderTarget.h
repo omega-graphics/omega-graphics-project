@@ -104,27 +104,29 @@ namespace OmegaWTK::Composition {
         unsigned backingHeight_ = 1;
         SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessellationContext_;
 
-#ifdef _WIN32
-        // Win32 swap-chain resize is GPU-side work that must run on the
-        // same thread as frame recording / commit / present, because
-        // `IDXGISwapChain3::ResizeBuffers` releases the back-buffer
-        // ID3D12Resources whose raw pointers the compositor worker's
-        // command lists bake in at record time. Calling it from the GUI
-        // thread (where `setRenderTargetSize` arrives via WM_SIZE →
-        // syncNativePresentLayer) frees buffers the worker is mid-
-        // recording against, which D3D12 catches as error 924
-        // ("render target resource has been freed") and the nvidia
-        // driver eventually segfaults on. The GUI thread stashes the
-        // requested backing dims here; the worker thread drains them at
-        // the top of `beginFrame` (single-owner of frame lifecycle, and
-        // `resizeSwapChain`'s internal `commitToGPUAndWait` safely
-        // drains the previous frame's submissions before releasing
-        // back-buffers).
+        // Swap-chain resize is GPU-side work that must run on the same
+        // thread as frame recording / commit / present, because the
+        // resize itself releases backing resources (DXGI back-buffer
+        // ID3D12Resources on Windows, VkImage / VkImageView per-frame
+        // handles on Vulkan) whose raw pointers the compositor worker's
+        // command lists / command buffers bake in at record time.
+        // Calling it from the GUI thread (where `setRenderTargetSize`
+        // arrives via WM_SIZE / X11 ConfigureNotify / Wayland
+        // configure → syncNativePresentLayer) frees resources the
+        // worker is mid-recording against — on D3D12 that surfaces as
+        // error 924 ("render target resource has been freed") and the
+        // nvidia driver eventually segfaults on; on Vulkan the same
+        // race manifests as VVL VUID-vkCmdDraw-renderpass after a
+        // silent OUT_OF_DATE acquire on a stale swapchain. The GUI
+        // thread stashes the requested backing dims here; the worker
+        // thread drains them at the top of `beginFrame` (sole owner of
+        // frame lifecycle, and `resizeSwapChain`'s internal
+        // device-idle / commitToGPUAndWait safely drains the previous
+        // frame's submissions before releasing resources).
         std::atomic<bool>     pendingSwapChainResize_ {false};
         std::atomic<unsigned> pendingSwapChainW_      {0};
         std::atomic<unsigned> pendingSwapChainH_      {0};
         void applyPendingSwapChainResize();
-#endif
 
         FrameRenderPass frameRenderPass_;
         SharedHandle<BackendCanvasEffectProcessor> imageProcessor;
@@ -338,9 +340,12 @@ namespace OmegaWTK::Composition {
         // `pendingNativeContent()` / `clearPendingNativeContent()` —
         // alongside `pendingNativeContent_` itself. See the comment
         // at `BackendNativeContentRegion`'s former definition above.
-#ifdef _WIN32
-        /// Resize swap chain after waiting for GPU; use instead of calling ResizeBuffers on the swap chain directly.
+        /// Resize the underlying swap chain after waiting for GPU. Use
+        /// instead of calling the native resize directly. Forwards to
+        /// `GENativeRenderTarget::resizeSwapChain` (no-op on backends with
+        /// platform-managed drawables like Metal).
         void resizeSwapChain(unsigned int backingWidth, unsigned int backingHeight);
+#ifdef _WIN32
         /// Wait for this context's native target GPU work to complete. Call after commit() to avoid cross-context texture pool races.
         void waitForGPU();
 #endif

@@ -374,11 +374,18 @@ _NAMESPACE_BEGIN_
         /// queue beforehand.
         virtual void present() = 0;
 
+        /// Wait for GPU to finish, resize swap chain, and recreate RTVs.
+        /// Cross-platform: on D3D12, call instead of IDXGISwapChain::ResizeBuffers;
+        /// on Vulkan, recreates the VkSwapchainKHR + image views at the new
+        /// extent (the native window resize otherwise leaves the swapchain
+        /// permanently OUT_OF_DATE and vkAcquireNextImageKHR fails every
+        /// frame). Default no-op for backends with platform-managed
+        /// drawables (e.g. Metal `CAMetalLayer` auto-resizes).
+        virtual void resizeSwapChain(unsigned int width, unsigned int height) { (void)width; (void)height; }
+
         #ifdef _WIN32
         /// @returns IDXGISwapChain1 * if D3D11, else IDXGISwapChain3 *
         virtual void *getSwapChain() = 0;
-        /// Wait for GPU to finish, resize swap chain, and recreate RTVs. Call instead of IDXGISwapChain::ResizeBuffers.
-        virtual void resizeSwapChain(unsigned int width, unsigned int height) {}
 
         //TODO: Remove these methods as GECommandQueue should have these methods.
         /// Wait for the present queue to finish. Use to serialize cross-context texture pool use.

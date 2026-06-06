@@ -47,6 +47,12 @@ public:
     SharedHandle<GECommandQueue> presentQueue() const override;
     void present() override;
 
+    /// Recreate the swapchain at the requested extent. The surface is reused;
+    /// the old VkSwapchainKHR / image views / per-frame fence are destroyed
+    /// after the device is idle. `currentFrameIndex` is reset to 0 so the
+    /// next acquire targets the fresh image set.
+    void resizeSwapChain(unsigned int width, unsigned int height) override;
+
     void releaseNative();
     ~GEVulkanNativeRenderTarget();
 };

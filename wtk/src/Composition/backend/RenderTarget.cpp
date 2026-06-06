@@ -239,30 +239,20 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         const unsigned newH = toBackingDimension(renderTargetSize_.h, renderScale_);
         if(oldW != newW || oldH != newH){
             rebuildBackingTarget();
-#ifdef _WIN32
-            // D3D12 + DComp: rebuildBackingTarget only updates
-            // backing-dim bookkeeping and invalidates the tessellation
-            // cache — the DXGI swap-chain back-buffers themselves stay
-            // at their original size until ResizeBuffers is called.
-            // ResizeBuffers releases the existing back-buffer
-            // ID3D12Resources, but the compositor worker thread is
-            // concurrently recording command lists that bake those raw
-            // pointers in as render targets. Calling resizeSwapChain
-            // here (on the GUI thread, since setRenderTargetSize
-            // arrives via WM_SIZE → syncNativePresentLayer) would race
-            // and freed-resource D3D12 errors / driver AVs would
-            // follow. Stash the requested backing dims instead and let
-            // the worker thread drain them at the top of beginFrame
-            // (see `applyPendingSwapChainResize`), where it is the
-            // sole owner of the frame lifecycle.
+            // Defer the native swap-chain resize to the worker thread's
+            // `beginFrame`. The actual resize releases backing resources
+            // (DXGI ID3D12Resources / VkImage handles) that the worker is
+            // mid-recording against; the worker is sole owner of frame
+            // lifecycle so it can safely device-idle / commitToGPUAndWait
+            // before tearing them down. On Metal, `GENativeRenderTarget::
+            // resizeSwapChain` is a no-op default (CAMetalLayer auto-resizes
+            // off the layer bounds), so the drain runs but does nothing.
             pendingSwapChainW_.store(newW, std::memory_order_relaxed);
             pendingSwapChainH_.store(newH, std::memory_order_relaxed);
             pendingSwapChainResize_.store(true, std::memory_order_release);
-#endif
         }
     }
 
-#ifdef _WIN32
     void BackendRenderTargetContext::applyPendingSwapChainResize(){
         // Acquire-load pairs with the release-store in setRenderTargetSize
         // so the new W/H reads below see the values the GUI thread wrote
@@ -276,7 +266,6 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         const unsigned h = pendingSwapChainH_.load(std::memory_order_relaxed);
         resizeSwapChain(w, h);
     }
-#endif
 
     void BackendRenderTargetContext::applySetClip(const Core::Optional<Composition::Rect> & clipRect){
         // Tier 3 Phase 3.5: translate the resolved canvas-local clip
@@ -359,11 +348,11 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         frameRenderPass_.clearViewportOverride();
     }
 
-#ifdef _WIN32
 void BackendRenderTargetContext::resizeSwapChain(unsigned int newBackingWidth, unsigned int newBackingHeight) {
     if (renderTarget != nullptr)
         renderTarget->resizeSwapChain(newBackingWidth, newBackingHeight);
 }
+#ifdef _WIN32
 void BackendRenderTargetContext::waitForGPU() {
     if (renderTarget != nullptr)
         renderTarget->waitForGPU();
@@ -371,16 +360,17 @@ void BackendRenderTargetContext::waitForGPU() {
 #endif
 
 void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float clearB, float clearA) {
-#ifdef _WIN32
-    // Drain any pending DXGI ResizeBuffers request queued by
-    // `setRenderTargetSize` on the GUI thread. We are on the
-    // compositor worker thread here, sole owner of this context's
-    // frame lifecycle, and the previous frame's submissions are
-    // either retired or about to be drained by resizeSwapChain's
-    // internal `commitToGPUAndWait` — so releasing the old
-    // back-buffers cannot race with an in-recording command list.
+    // Drain any pending swap-chain resize request queued by
+    // `setRenderTargetSize` on the GUI thread. We are on the compositor
+    // worker thread here, sole owner of this context's frame lifecycle,
+    // and the previous frame's submissions are either retired or about
+    // to be drained by `resizeSwapChain`'s internal device-idle /
+    // commitToGPUAndWait — so releasing the old back-buffers / image
+    // views cannot race with an in-recording command list / buffer.
+    // Cross-platform now (was Windows-only until the Vulkan
+    // GEVulkanNativeRenderTarget::resizeSwapChain path landed); the
+    // Metal default override is a no-op since CAMetalLayer auto-resizes.
     applyPendingSwapChainResize();
-#endif
     frameRenderPass_.begin(clearR, clearG, clearB, clearA);
     // §2.14 Pass 1 retired `pendingNativeContent_` — see the
     // header's comment at the former

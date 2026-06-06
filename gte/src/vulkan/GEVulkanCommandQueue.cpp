@@ -1254,6 +1254,17 @@ _NAMESPACE_BEGIN_
     }
 
     void GEVulkanCommandBuffer::drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount, size_t startIdx){
+        // Defensive: when startRenderPass silently early-returned (most
+        // commonly `vkAcquireNextImageKHR` returning OUT_OF_DATE on a stale
+        // swapchain mid-resize), `activeRenderPass` is VK_NULL_HANDLE and
+        // the deferred-begin would never have been set up. Recording
+        // vkCmdDraw outside a render pass triggers VVL VUID-vkCmdDraw-
+        // renderpass and dereferences a NULL render-pass tracker inside
+        // the layer (the SIGSEGV at offset 0x90). The frame is unusable
+        // either way — bail before the GPU/validation crash.
+        if(activeRenderPass == VK_NULL_HANDLE){
+            return;
+        }
         // Begin the render pass now — any barriers from bind* calls have
         // already been recorded outside the render pass instance.
         beginRenderPassIfDeferred();
@@ -1275,6 +1286,7 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
                                                     unsigned indexCount, size_t startIndex,
                                                     int baseVertex){
+        if(activeRenderPass == VK_NULL_HANDLE){ return; }  // see drawPolygons rationale
         beginRenderPassIfDeferred();
         bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
@@ -1284,6 +1296,7 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::drawPolygonsInstanced(RenderPassDrawPolygonType polygonType,
                                                       unsigned vertexCount, size_t startIdx,
                                                       unsigned instanceCount, unsigned firstInstance){
+        if(activeRenderPass == VK_NULL_HANDLE){ return; }
         beginRenderPassIfDeferred();
         bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
@@ -1294,6 +1307,7 @@ _NAMESPACE_BEGIN_
                                                              unsigned indexCount, size_t startIndex,
                                                              int baseVertex, unsigned instanceCount,
                                                              unsigned firstInstance){
+        if(activeRenderPass == VK_NULL_HANDLE){ return; }
         beginRenderPassIfDeferred();
         bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
@@ -1303,6 +1317,7 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::drawPolygonsIndirect(RenderPassDrawPolygonType polygonType,
                                                      SharedHandle<GEBuffer> & argumentBuffer,
                                                      size_t argumentBufferOffset){
+        if(activeRenderPass == VK_NULL_HANDLE){ return; }
         beginRenderPassIfDeferred();
         bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);
@@ -1316,6 +1331,7 @@ _NAMESPACE_BEGIN_
     void GEVulkanCommandBuffer::drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
                                                             SharedHandle<GEBuffer> & argumentBuffer,
                                                             size_t argumentBufferOffset){
+        if(activeRenderPass == VK_NULL_HANDLE){ return; }
         beginRenderPassIfDeferred();
         bindDescriptorSetsIfPending();
         applyTopologyIfDynamic(polygonType);

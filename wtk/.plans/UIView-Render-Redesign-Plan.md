@@ -2405,6 +2405,122 @@ G.3.3 change).
 ~1280 LOC across ~7 mergeable PRs. The largest single PR is G.3.1
 (~200 LOC); every other sub-phase is ≤ 180 LOC.
 
+##### Phase F-G (follow-up) — Bucketed render-target + image allocation: render-into-region, never reallocate per resize tick
+
+**Goal:** stop reallocating the render-target backing texture, the
+Phase G content-cache textures, and the effect-path scratch textures
+on every resize tick. Allocate each at a power-of-two bucket (or
+fixed-tile) size ≥ the requested logical size, drive the render pass
+viewport + scissor from the *live* size, and only re-bucket when the
+logical size crosses a bucket boundary. A live-drag through 500
+resize ticks should cross 1–2 buckets, not trigger 500 GPU object
+recreations.
+
+**Why (separate from Phase F + Phase G):** Phase F makes the full-tree
+repaint correct on every resize tick; Phase G makes that repaint
+cheap by caching geometry / shaped text / rasterized content. Neither
+fixes the *texture allocation* underneath. Today every resize tick
+that crosses the current backing dimensions runs
+`BackendRenderTargetContext::recomputeBackingDimensions` →
+`rebuildBackingTarget`, which releases the prior `targetTexture` /
+`effectTexture` to `TexturePool` and acquires a new pair after a
+`waitForGPU()` sync (see
+[Render-Execution-Efficiency-Plan §3](done/Render-Execution-Efficiency-Plan.md)
+"Render target re-creation on every resize"). The existing
+`TexturePool` 1.5× oversize tolerance was already noted as
+ineffective during a resize storm — adjacent ticks differ by a few
+pixels and fall outside the 1.5× envelope of the *previous* size, so
+every tick misses. Phase G's content cache inherits the same problem
+one level up: G.3.1's per-RTC cache texture pool allocates each
+transient texture at the View's exact pixel rect, so a 1-pixel resize
+invalidates every cached widget texture even though G.3.2's lookup
+key already buckets to `{wBucket, hBucket}`. The fix is the same idea
+applied to two pools — promote bucketing from a *cache-key* concept
+to an *allocation* concept.
+
+**Bucket policy (shared across all pools):**
+
+- `bucketDim(x) = max(kMinBucket, next_pow2(x))`. `kMinBucket = 256`;
+  G.3.2's 64×64 skip threshold means the floor only affects the
+  swapchain / effect paths.
+- Cap at `kMaxBucket = 8192` (modern max texture dim). Above the cap,
+  fall back to exact-size allocation with no caching.
+- Optional fixed-tile mode (`OMEGAWTK_RT_TILE_SIZE=512`) forces a
+  single bucket for embedded targets — one allocation for the life of
+  the window, live region always a sub-rect.
+- All pools key on `(bucketW, bucketH, format, usage)`, never on
+  logical `(w, h)`. `TexturePool`'s 1.5× tolerance becomes redundant
+  and is removed.
+
+**Render-into-region contract:** the backend gains two fields —
+`backingTextureSize_` (bucket dims, feeds allocations) and
+`backingLiveSize_` (live dims, feeds viewport / scissor / clear).
+`recomputeBackingDimensions` updates both; the common-case tick
+updates only `backingLiveSize_` and skips the allocation path
+entirely. Pixels outside the live rect are undefined and never read
+— the present blit and the cache blit both consume the live
+sub-rect.
+
+**Per-pool changes:**
+
+- **Effect-path `TexturePool`** (still used when `effectQueue` is
+  non-empty per Phase A-1). Switch acquire key to bucketed dims; drop
+  the 1.5× branch. Existing `applyViewportAndScissor` becomes correct
+  once `backingLiveSize_` is the source of truth.
+- **G.3.1 content-cache texture pool.** Allocate the transient cache
+  texture at `bucketDim` of the View's rasterized rect; store
+  `(textureHandle, bucketSize, liveRasterizedSize)` in the cache
+  entry. G.3.2's blit emits `DrawOp::Bitmap` with src = live sub-rect
+  of the bucket texture, dst = View's current rect. A 1-pixel resize
+  inside the same bucket is Paint-dirty (per G.3.3) but rewrites the
+  bucket texture in place rather than freeing and reallocating.
+  `OMEGAWTK_CONTENT_CACHE_BYTES` accounting switches to
+  bucket-rounded bytes (a 1080p widget at `renderScale 2.0` rounds to
+  ~32 MB — half the 64 MB default), and a new
+  `OMEGAWTK_CONTENT_CACHE_MAX_BUCKET` (default 4096) caps the largest
+  bucket the cache will accept; above the cap, fall back to
+  non-cached paint.
+- **Swapchain / native drawable.** Phase A-1 made the common
+  no-effect path render directly to the platform-managed drawable.
+  Metal's `CAMetalLayer` auto-resizes cheaply — no change. D3D12
+  (`ResizeBuffers`) and Vulkan (`vkRecreateSwapchainKHR`) carry a
+  sync flush per call; on those backends, allocate an offscreen
+  bucket-sized `GETextureRenderTarget` from the per-RTC pool, render
+  into it, and emit one fullscreen-quad blit of the live sub-rect to
+  the platform drawable at present time. The blit cost is one draw
+  call per frame — far cheaper than per-tick swapchain recreation.
+  Gated by `OMEGAWTK_BUCKETED_SWAPCHAIN` (default ON for D3D12 /
+  Vulkan, N/A for Metal) so the reversal of Phase A-1's "no
+  offscreen, no blit" contract is explicit and scoped to the
+  resize-storm window.
+
+**Does NOT change:**
+
+- `DrawOp::Bitmap` for user-supplied images (icons, decoded files,
+  video frames) — those are sized to the source asset, not the
+  window; bucketing them wastes VRAM with no win.
+- Pixel format (BGRA8Unorm, Phase A-1.1) — bucket textures use the
+  same format.
+- The Phase G cache keys (`wBucket` / `hBucket` were already in the
+  key). This phase makes the underlying texture obey the bucketing
+  the key already promised.
+
+**Sequencing:** after G.3.1 (the natural integration point — the
+cache texture pool exists by then) and before Phase H (per-tick
+texture reallocation produces 5–20 ms latency spikes that would
+confuse Phase H's pacer measurements; remove them first).
+
+**Validator:** Phase F's multi-widget resize scene instrumented to
+log every `TexturePool::acquire` / `beginCacheTarget` call. A
+5-second live-drag from 800×600 → 1600×900 should produce ≤ 4
+acquires per pool (W and H bucket crossings), not ~300. Visual
+output is identical to the non-bucketed path.
+
+**Scope estimate:** ~400 LOC across three small PRs (effect pool,
+content-cache pool, opt-in swapchain offscreen for D3D12 / Vulkan).
+Largest is the swapchain offscreen (~200 LOC, env-gated); the other
+two are ~100 LOC each.
+
 ##### Phase H (follow-up) — Frame pacing: vsync-aligned production + real `FrameTime` + load-aware frame gating (folds Frame-Pacing-Plan)
 
 **Goal:** Replace Phase 4.3's interim `steady_clock` `FrameTime` stand-in

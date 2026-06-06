@@ -133,6 +133,158 @@ void GEVulkanNativeRenderTarget::present() {
     commandQueue->clearSubmittedTraceCommandBufferIds();
 }
 
+void GEVulkanNativeRenderTarget::resizeSwapChain(unsigned int width, unsigned int height){
+    if(parentEngine == nullptr || parentEngine->device == VK_NULL_HANDLE ||
+       surface == VK_NULL_HANDLE){
+        return;
+    }
+    if(width == 0 || height == 0){
+        return;
+    }
+
+    // Idle the device before tearing down the old swapchain + image views.
+    // The render-pass framebuffers built from these views are command-buffer-
+    // scope (recreated per pass in startRenderPass) so retention here only
+    // needs to cover in-flight present/acquire work.
+    vkDeviceWaitIdle(parentEngine->device);
+
+    // Resolve the new extent against surface capabilities. The platform may
+    // clamp our request (e.g. Wayland reports UINT32_MAX as "you decide"; X11
+    // reports the actual server-side window extent).
+    VkSurfaceCapabilitiesKHR caps{};
+    auto capsRes = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(parentEngine->physicalDevice,
+                                                             surface, &caps);
+    if(capsRes != VK_SUCCESS){
+        std::cerr << "vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed during resize ("
+                  << capsRes << ")" << std::endl;
+        return;
+    }
+
+    VkExtent2D newExtent{ width, height };
+    if(caps.currentExtent.width != UINT32_MAX){
+        newExtent = caps.currentExtent;
+    }
+    if(newExtent.width  < caps.minImageExtent.width)  newExtent.width  = caps.minImageExtent.width;
+    if(newExtent.height < caps.minImageExtent.height) newExtent.height = caps.minImageExtent.height;
+    if(caps.maxImageExtent.width  != 0 && newExtent.width  > caps.maxImageExtent.width)  newExtent.width  = caps.maxImageExtent.width;
+    if(caps.maxImageExtent.height != 0 && newExtent.height > caps.maxImageExtent.height) newExtent.height = caps.maxImageExtent.height;
+    if(newExtent.width == 0)  newExtent.width  = 1;
+    if(newExtent.height == 0) newExtent.height = 1;
+
+    // Re-pick the present mode — the surface may have lost support for our
+    // prior choice on a different output (rare; cheap to re-query).
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    {
+        std::uint32_t count = 0;
+        if(vkGetPhysicalDeviceSurfacePresentModesKHR(parentEngine->physicalDevice, surface, &count, nullptr) == VK_SUCCESS && count > 0){
+            OmegaCommon::Vector<VkPresentModeKHR> modes(count);
+            if(vkGetPhysicalDeviceSurfacePresentModesKHR(parentEngine->physicalDevice, surface, &count, modes.data()) == VK_SUCCESS){
+                for(auto mode : modes){
+                    if(mode == VK_PRESENT_MODE_IMMEDIATE_KHR){ presentMode = mode; break; }
+                    if(mode == VK_PRESENT_MODE_FIFO_KHR){ presentMode = mode; }
+                }
+            }
+        }
+    }
+
+    // Resolve the color space that pairs with our stable `format`. The format
+    // we keep on the target is the VkFormat the swapchain was built with;
+    // pair it with whatever colorSpace the surface still advertises for it.
+    VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    {
+        std::uint32_t count = 0;
+        if(vkGetPhysicalDeviceSurfaceFormatsKHR(parentEngine->physicalDevice, surface, &count, nullptr) == VK_SUCCESS && count > 0){
+            OmegaCommon::Vector<VkSurfaceFormatKHR> formats(count);
+            if(vkGetPhysicalDeviceSurfaceFormatsKHR(parentEngine->physicalDevice, surface, &count, formats.data()) == VK_SUCCESS){
+                for(auto & f : formats){
+                    if(f.format == format){
+                        colorSpace = f.colorSpace;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    std::uint32_t imageCount = caps.minImageCount > 2 ? caps.minImageCount : 2;
+    if(caps.maxImageCount > 0 && imageCount > caps.maxImageCount){
+        imageCount = caps.maxImageCount;
+    }
+
+    VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
+    VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    info.surface = surface;
+    info.minImageCount = imageCount;
+    info.imageFormat = format;
+    info.imageColorSpace = colorSpace;
+    info.imageExtent = newExtent;
+    info.imageArrayLayers = 1;
+    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    info.imageSharingMode = parentEngine->queueFamilyIndices.size() > 1
+                            ? VK_SHARING_MODE_CONCURRENT
+                            : VK_SHARING_MODE_EXCLUSIVE;
+    info.queueFamilyIndexCount = static_cast<std::uint32_t>(parentEngine->queueFamilyIndices.size());
+    info.pQueueFamilyIndices = parentEngine->queueFamilyIndices.data();
+    info.preTransform = caps.currentTransform;
+    info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    info.presentMode = presentMode;
+    info.clipped = VK_FALSE;
+    info.oldSwapchain = swapchainKHR;
+
+    auto createRes = vkCreateSwapchainKHR(parentEngine->device, &info, nullptr, &newSwapchain);
+    if(createRes != VK_SUCCESS || newSwapchain == VK_NULL_HANDLE){
+        std::cerr << "vkCreateSwapchainKHR failed during resize (" << createRes << ")" << std::endl;
+        return;
+    }
+
+    // Tear down the old views + swapchain. The acquire fence stays (it's
+    // signaled per-acquire, not per-swapchain), the semaphore stays.
+    for(auto view : frameViews){
+        if(view != VK_NULL_HANDLE){
+            vkDestroyImageView(parentEngine->device, view, nullptr);
+        }
+    }
+    frameViews.clear();
+    frames.clear();
+    if(swapchainKHR != VK_NULL_HANDLE){
+        vkDestroySwapchainKHR(parentEngine->device, swapchainKHR, nullptr);
+    }
+    swapchainKHR = newSwapchain;
+    extent = newExtent;
+    currentFrameIndex = 0;
+
+    // Repopulate the per-image views.
+    std::uint32_t imgCount = 0;
+    if(vkGetSwapchainImagesKHR(parentEngine->device, swapchainKHR, &imgCount, nullptr) != VK_SUCCESS || imgCount == 0){
+        std::cerr << "vkGetSwapchainImagesKHR(count) failed after resize" << std::endl;
+        return;
+    }
+    frames.resize(imgCount);
+    if(vkGetSwapchainImagesKHR(parentEngine->device, swapchainKHR, &imgCount, frames.data()) != VK_SUCCESS){
+        std::cerr << "vkGetSwapchainImagesKHR(list) failed after resize" << std::endl;
+        frames.clear();
+        return;
+    }
+
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    frameViews.reserve(frames.size());
+    for(auto & img : frames){
+        viewInfo.image = img;
+        VkImageView view = VK_NULL_HANDLE;
+        if(vkCreateImageView(parentEngine->device, &viewInfo, nullptr, &view) != VK_SUCCESS){
+            continue;
+        }
+        frameViews.push_back(view);
+    }
+}
+
 void GEVulkanNativeRenderTarget::releaseNative(){
     if(nativeReleased_) return;
     nativeReleased_ = true;
