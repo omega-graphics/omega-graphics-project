@@ -367,6 +367,51 @@ void AppWindow::setRootWidget(WidgetPtr widget){
             comp->notifyFrameDirty();
         });
     }
+    // UIView-Render-Redesign-Plan Phase F (2026-06-05): re-realize
+    // consumer. `onRealize` fires on every subsequent re-realize
+    // transition — X11 DPI scale change, Wayland scale/transform update,
+    // Windows display-change recreation, macOS layer re-host on space
+    // switch — but never on the first realize (that goes through
+    // `onFirstRealize` above; the two events are disjoint by API
+    // contract, so neither subscriber runs redundantly at startup).
+    //
+    // The lambda runs the same three-step coupling Phase F's resize and
+    // `WindowScaleFactorChanged` handlers do, in the same order, on the
+    // shared `dispatchResizeToHosts` ScopedFrame:
+    //   1. Compositor scale propagation. Pull the new scale from the
+    //      *screen* (canonical source per §2.9 NativeScreen) — re-realize
+    //      typically means the window now lives on a screen with a
+    //      different DPI, so the destination screen is the right altitude
+    //      to query. Push it through `ViewRenderTarget::setRenderScale`,
+    //      the same path `WindowScaleFactorChanged` uses, so the backend
+    //      visual tree reads the new scale at the next allocation.
+    //   2. RenderTarget backing-dim recompute happens inside
+    //      `dispatchResizeToHosts` → `syncNativePresentLayer` →
+    //      `visualTree_->resize`, which fires `Visual::onResize_` →
+    //      the backend RTC's `setRenderTargetSize` →
+    //      `recomputeBackingDimensions`. Single shared call site for
+    //      resize and re-realize.
+    //   3. Full-tree repaint walks. `dispatchResizeToHosts` brackets
+    //      `WidgetTreeHost::notifyWindowResize` in a
+    //      `FrameBuilder::ScopedFrame`; Phase F's `forceFullRepaint`
+    //      then re-emits every widget's complete `DisplayList` against
+    //      the fresh `renderTargetSize_` / `renderScale_`.
+    //
+    // Capturing `this` is safe: `nativeWindow` is owned by `impl_`,
+    // so its lifetime cannot outlast the AppWindow's, and callbacks
+    // registered on it cannot fire after it (and therefore after
+    // `this`) is destroyed.
+    impl_->nativeWindow->onRealize([this]{
+        if(impl_ == nullptr || impl_->nativeWindow == nullptr ||
+           impl_->delegate == nullptr){
+            return;
+        }
+        const float newScale = impl_->nativeWindow->currentScreen().scaleFactor;
+        if(impl_->rootViewRenderTarget != nullptr){
+            impl_->rootViewRenderTarget->setRenderScale(newScale);
+        }
+        impl_->delegate->dispatchResizeToHosts(impl_->nativeWindow->getRect());
+    });
     impl_->widgetTreeHost->attachedToWindow = true;
 };
 

@@ -16,12 +16,17 @@ void Widget::handleHostResize(const Composition::Rect &rect){
     runWidgetLayout(*this, layoutCtx);
 
     WIDGET_NOTIFY_OBSERVERS_RESIZE(oldRect);
-    if(impl_->mode == PaintMode::Automatic &&
-       impl_->options.invalidateOnResize &&
-       treeHost != nullptr &&
-       impl_->hasMounted){
-        invalidate(PaintReason::Resize);
-    }
+    // UIView-Render-Redesign-Plan Phase F (2026-06-05): the pre-Phase-F
+    // `invalidate(PaintReason::Resize)` call here is gone. Resize now
+    // force-repaints the whole tree at the `WidgetTreeHost` level
+    // (`WidgetTreeHost::forceFullRepaint` called from the three
+    // `notifyWindowResize*` paths after `handleHostResize`); a per-widget
+    // `invalidate` would double-request a frame (the host already drove
+    // a synchronous repaint inside the resize ScopedFrame). The
+    // `PaintOptions::invalidateOnResize` field stays so existing callers
+    // remain source-compatible, but is no longer a relayout/repaint gate
+    // for the host-resize path. `Widget::setRect` (Widget.Geometry.cpp)
+    // still honors it for programmatic, non-host-driven geometry changes.
 }
 
 void Widget::setLayoutStyle(const LayoutStyle & style){

@@ -30,6 +30,7 @@ namespace OmegaWTK {
     class View;
     class NativeViewHost;
     class FrameBuilder;
+    class OverlayHost;
     enum class PaintReason : std::uint8_t;
 
     struct OMEGAWTK_EXPORT ResizeDynamicsSample {
@@ -128,12 +129,25 @@ namespace OmegaWTK {
         bool attachedToWindow;
         View * hoveredView_ = nullptr;
 
+        /// Overlay-Z-Order-Plan O1 — in-window overlay slot. One per
+        /// host (i.e. one per AppWindow / AppPanel). Constructed in
+        /// the host ctor so `overlayHost()` is always live; destroyed
+        /// before the host's own members so dismissAll's WidgetPtr
+        /// releases run before the host tears down.
+        Core::UniquePtr<OverlayHost> overlayHost_;
+
         WidgetTreeHost();
 
         friend class AppWindowManager;
         friend class AppWindow;
         friend class Widget;
         friend class NativeViewHost;
+        /// Overlay-Z-Order-Plan O1 — `OverlayHost::Impl` reads
+        /// `ownerWindow_` (for the AppWindow's logical size used in
+        /// edge-clamping) and `root` (fallback when no AppWindow is
+        /// attached). Adding accessors for this single internal
+        /// consumer would expand the public surface without benefit.
+        friend class OverlayHost;
         // Tier 3 Phase 3.1: FrameBuilder reads compPtr()/laneId() to
         // wire the window-level proxy at beginFrame, same access
         // pattern `Widget::invalidate` / `Widget::invalidateNow` use
@@ -153,16 +167,12 @@ namespace OmegaWTK {
         // to chain through.
         void applyResizeGovernorMetadata(const Composition::ResizeGovernorMetadata & metadata);
         bool detectAnimatedTreeRecurse(Widget *parent) const;
-        // True iff any widget in the subtree has
-        // PaintOptions::invalidateOnResize == true. Drives the
-        // short-circuit in notifyWindowResize / Begin / End: when
-        // false, the per-widget handleHostResize walk is skipped
-        // entirely and the AppWindow's syncNativePresentLayer
-        // (which runs upstream, unconditionally) carries the entire
-        // resize on its own. O(tree size) per resize event today;
-        // could be cached on a Widget::setPaintOptions hook if it
-        // shows up in profiles.
-        static bool anyWidgetOptsIntoResize(Widget *parent);
+        // UIView-Render-Redesign-Plan Phase F (2026-06-05): the
+        // pre-Phase-F `anyWidgetOptsIntoResize` short-circuit (which
+        // skipped the per-widget `handleHostResize` walk when no widget
+        // had set `PaintOptions::invalidateOnResize`) is gone. Resize
+        // unconditionally relayouts and force-repaints the whole tree,
+        // so the gate has no remaining caller.
         View * hitTestWidget(Widget *widget,const Composition::Point2D &point) const;
         void initWidgetTree();
         Composition::Compositor *compPtr(){return compositor;};
@@ -213,6 +223,18 @@ namespace OmegaWTK {
         /// ScopedFrame.
         void paintDirty();
 
+        /// UIView-Render-Redesign-Plan Phase F (2026-06-05): force a
+        /// full-tree repaint independent of `DirtyBits`. Marks every
+        /// node in the view subtree Style|Layout|Paint dirty and runs
+        /// the central paint walk synchronously via `paintDirty()`.
+        /// Called by `notifyWindowResize*` after `handleHostResize`
+        /// so resize always re-rasterizes every widget at the new
+        /// size (the platform stretches the existing surface, so
+        /// dirty-only repaint would leave non-dirty content visibly
+        /// stretched). Cheap once Phase G's content cache lands;
+        /// always correct.
+        void forceFullRepaint();
+
         /// Set the root native item for this window (Phase 5).
         /// Called by AppWindow during setRootWidget().
         void setRootNativeItem(Native::NativeItemPtr item);
@@ -237,6 +259,15 @@ namespace OmegaWTK {
         /// virtual widget tree via hit testing. Mouse events are routed
         /// to the View under the cursor; keyboard events go to the root.
         void dispatchInputEvent(Native::NativeEventPtr event);
+
+        /// Overlay-Z-Order-Plan O1 — in-window overlay slot. Returns
+        /// a reference because the host always owns exactly one
+        /// `OverlayHost` (constructed in this host's ctor, destroyed
+        /// in this host's dtor). Widgets that need to present
+        /// tooltips, popovers, menus, or modals call
+        /// `treeHost->overlayHost().present(...)`.
+        OverlayHost & overlayHost();
+        const OverlayHost & overlayHost() const;
 
         ~WidgetTreeHost();
     };

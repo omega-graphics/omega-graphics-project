@@ -1955,7 +1955,50 @@ new `Composition/CanvasEffect.h`, `DisplayList.{h,cpp}`,
 `backend/Effect.h` + the per-platform effect processors (include swap),
 `tests/CMakeLists.txt` + the 3 deleted test dirs.
 
-##### Phase F (follow-up) — Window resize always relayouts + repaints (no resize opt-in)
+##### Phase F (follow-up) — Window resize always relayouts + repaints (no resize opt-in) [DONE]
+
+**Landed 2026-06-05.** Concrete shape of the change:
+
+- `WidgetTreeHost::anyWidgetOptsIntoResize` deleted from the header and
+  the cpp. The three `notifyWindowResize` / `Begin` / `End` paths now
+  call `root->handleHostResize(rect)` unconditionally and then call a
+  new `WidgetTreeHost::forceFullRepaint()`.
+- `WidgetTreeHost::forceFullRepaint()` marks every node in the view
+  subtree with `View::Style | View::Layout | View::Paint`, then calls
+  `paintDirty()` — the central `FrameBuilder::buildFrame` walk now
+  sees a fully-dirty tree and re-emits every widget's complete
+  `DisplayList` in one frame. Nested inside `dispatchResize*ToHosts`'s
+  `FrameBuilder::ScopedFrame`; the depth counter makes the
+  paintDirty-internal ScopedFrame a no-op.
+- `Widget::handleHostResize` (`Widget.Layout.cpp`) no longer self-fires
+  `invalidate(PaintReason::Resize)`. The full repaint is driven from the
+  host now; per-widget invalidate would double-request a frame.
+  `PaintOptions::invalidateOnResize` stays on the field for source
+  compatibility — `Widget::setRect` (programmatic, non-host-driven
+  geometry) still honors it — but is no longer a relayout/repaint gate
+  for the host-resize path.
+- `AppWindow::setRootWidget` (`AppWindow.cpp`) registers an
+  `onRealize` callback on the native window, paired with the existing
+  `onFirstRealize` registration. The two events are disjoint by API
+  contract, so the full-repaint walker never runs redundantly at
+  startup. The callback runs the three-step coupling:
+  (1) `rootViewRenderTarget->setRenderScale(currentScreen().scaleFactor)`
+  — pulls the new scale from the destination screen (the §2.9
+  canonical source);
+  (2) `delegate->dispatchResizeToHosts(nativeWindow->getRect())` —
+  which fires `syncNativePresentLayer` → `visualTree_->resize` →
+  `Visual::onResize_` → the backend RTC's
+  `recomputeBackingDimensions`, *and* enters the resize ScopedFrame
+  that drives `forceFullRepaint`. Shared machinery with the
+  `WindowScaleFactorChanged` consumer; the same step ordering, the
+  same `ScopedFrame`, the same "every element re-rasterizes"
+  contract.
+
+Sequencing note: this lands before Phase G's content cache, so the
+full-tree repaint on every resize tick is more expensive than the
+final design — but correct. Phase G is the perf layer.
+
+
 
 **Goal (developer, 2026-05-29):** resizing the `AppWindow` must always
 relayout the whole widget tree, resize every widget according to its
@@ -2180,6 +2223,187 @@ just resize. Merge if the two land together.)*
 
 Sequencing: after Phase F (which defines the full-repaint workload the
 cache optimizes) and after the backend DrawOp path (4.0–4.2, done).
+
+###### Locked decisions (developer, 2026-06-05)
+
+1. **Resize cache survival.** Phase F currently marks
+   `Style|Layout|Paint` on every node in the view tree via
+   `WidgetTreeHost::forceFullRepaint`. With G.3.2's content-cache fast
+   path in place, that wholesale Paint-dirty would invalidate every
+   cached widget texture on every resize tick — defeating the cache.
+   The chosen fix is **(a) size-diff-driven invalidation**: extend
+   `Widget::handleHostResize` (and its `runWidgetLayout` callees) to
+   compare each view's old-vs-new absolute size, and only mark
+   `Paint` dirty on views whose pixel-rect actually changed. Views
+   whose rect was unchanged by relayout (the common case in centered /
+   absolute-positioned subtrees that aren't touched by the parent's
+   resize math) keep their cached content. This work is a Phase F
+   surgical follow-up, scheduled into Phase G.3.3 so it lands in the
+   same sub-phase as the cache it protects.
+2. **Text shaping cache scope.** Process-wide. Fonts are globally
+   shared (`FontEngine::inst()`), and static labels frequently appear
+   verbatim across windows (button labels, title bars, dialogs); a
+   per-window cache would miss those cross-window reuses for no gain.
+   Lifetime is the FontEngine's; eviction is LRU by entry count plus a
+   total-subRuns memory cap.
+3. **Content cache memory cap.** 64 MB default (`OMEGAWTK_CONTENT_CACHE_BYTES`
+   environment override). Sized for a typical multi-window desktop
+   app: one or two windows at 1080p × `renderScale 2.0` × ~10 widget
+   tiles fits comfortably; mobile / embedded callers tune down.
+
+###### Sub-phases
+
+The phase decomposes into one scaffolding step (G.0), two contained
+mid-pipeline caches (G.1, G.2), and the cache that motivates the whole
+phase (G.3). Each sub-phase is independently shippable.
+
+**G.0 — Cache infrastructure scaffolding [~150 LOC]**
+
+- New `wtk/src/Composition/backend/ContentCache.{h,cpp}`. Generic
+  LRU template parameterised on `(KeyHash, KeyEq, Value, OnEvict)`;
+  internally a `std::unordered_map<Key, ListIterator>` + intrusive
+  list. Telemetry counters (`hits`, `misses`, `evictions`,
+  `currentBytes`, `peakBytes`).
+- Env-var tuning: `OMEGAWTK_CONTENT_CACHE_BYTES` (default 64 MB),
+  `OMEGAWTK_TESS_CACHE_ENTRIES` (default 1024),
+  `OMEGAWTK_TEXT_SHAPING_CACHE_ENTRIES` (default 4096).
+- Caches live on `BackendRenderTargetContext` (per-window, dies with
+  the window's RTC) for tessellation + content; the text-shaping
+  cache lives on a process-wide singleton next to `FontEngine::inst()`.
+- No render integration yet — pure infra. Ships behind a default-OFF
+  CMake option `OMEGAWTK_ENABLE_CONTENT_CACHE` so the type lands
+  without changing per-frame behavior.
+
+**G.1 — Tessellation cache [~200 LOC]**
+
+- Key: `(path-bytes-hash, strokeWidth, contour, fill, renderTargetSizeBucket)`.
+  - `path-bytes-hash`: FNV-1a over the segment array of `GVectorPath2D`
+    (same segments fed to `triangulateSync`). Stable across copies
+    of the same logical path.
+  - `renderTargetSizeBucket`: `{intRound(rt.w), intRound(rt.h)}`.
+    Sub-pixel jitter during live-resize stays in the same bucket;
+    real size changes miss.
+- Value: `OmegaGTE::TETriangulationResult` (by value — the result is
+  vertex / index vectors plus attachment colors; copy is cheap
+  relative to re-running `triangulateSync`).
+- Lookup at the top of
+  `BackendRenderTargetContext::renderVectorPathSegmented`. Miss →
+  `triangulateSync` + `insert`; hit → reuse the cached result and skip
+  straight to `drawTriangulatedResult`.
+- LRU cap: 1024 entries (tunable). No explicit invalidation; the
+  size bucket alone makes the cache safe — a real resize misses for
+  the size that changed, hits for sizes that didn't.
+
+**G.2 — Text shaping cache [~150 LOC]**
+
+- Key: `(text-string-hash, font-id, font-size, layoutDesc-hash, rect-w-bucket, rect-h-bucket, renderScale)`.
+  - `text-string-hash`: FNV-1a over UTF-32 code points.
+  - `font-id`: the `Font *` pointer (font lifetime owned by FontEngine;
+    same identity == same shaping output).
+  - `layoutDesc-hash`: hash of `TextLayoutDescriptor` fields
+    (alignment, wrapping, line break mode).
+- Value: `ShapedTextRun` by value (subRuns vector + bitmapBlits;
+  copy is one allocation per sub-run).
+- Lookup at the top of `Composition::shapeTextForDisplayList`. On
+  hit, return the cached `ShapedTextRun` after re-running
+  `ensureGlyphsResident` for MSDF sub-runs (atlas residency is
+  per-FontEngine state, may have been evicted; cheap re-check).
+- Lives next to `FontEngine::inst()` as a process-wide singleton.
+- LRU cap: 4096 entries + a memory-bytes cap.
+
+**G.3 — Primitive / content cache (the load-bearing cache for Phase F)**
+
+Internally sub-phased; each ships independently.
+
+**G.3.0 — Per-View identity + content version [~120 LOC]**
+- Add `View::contentVersion_` (`uint64_t`).
+  `View::markDirty(uint8_t bits)` increments it when `bits & Paint`.
+  `clearDirtyBits` does NOT clear it — the version is a monotonic
+  generation counter, not a flag.
+- Add the per-view cache key type
+  `struct ViewCacheKey { uint64_t nodeId; uint64_t contentVersion;
+   uint32_t wBucket; uint32_t hBucket; float renderScale; }`.
+- `ContentCache<ViewCacheEntry>` slot on `BackendRenderTargetContext`;
+  entry value is `(GETexture handle, Rect rasterizedSize)`.
+- API surface only — no integration yet. Existing paint walker
+  ignores the cache. Verifies the version counter increments at all
+  the expected sites.
+
+**G.3.1 — Render-into-cache-texture capture path [~200 LOC]**
+- `BackendRenderTargetContext` gains
+  `beginCacheTarget(size, renderScale) -> CacheTargetHandle` /
+  `endCacheTarget(handle) -> Core::SharedPtr<GETexture>`.
+  Implementation: a transient render-to-texture surface allocated
+  from a per-RTC pool (the texture handle is returned to the pool
+  when the cache entry evicts).
+- `FrameBuilder::buildFrame`'s paint walker, when visiting a View
+  whose entry is not present in the content cache *and* whose
+  eligibility check passes (see G.3.2), opens a cache target,
+  paints the view's DrawOps into it, closes the target, inserts
+  into the cache. The captured texture is then composited back into
+  the window DisplayList via a `DrawOp::Bitmap` op.
+- For G.3.1's first cut, **always re-paint and always capture** —
+  no fast-path lookup yet. Just proves the capture machinery is
+  correct. Measurable as: frame builds the same DisplayList but
+  with an extra capture/composite layer; output should be
+  pixel-identical.
+
+**G.3.2 — Blit-from-cache fast path + eligibility [~180 LOC]**
+- Decision tree in the paint walker, per View:
+  1. If `View` has an active animation (`AnimationScheduler` reports
+     pending property anim or callback for this nodeId), **skip cache**
+     and paint directly — it'll be Paint-dirty next frame anyway.
+  2. If `View`'s DrawOps include `DrawOp::NativeContent`, **skip cache** —
+     the platform carve-out can't be inside a captured texture.
+  3. If `View`'s rect is smaller than 64 × 64 px, **skip cache** —
+     texture allocation overhead exceeds savings.
+  4. Otherwise, look up `(nodeId, contentVersion, sizeBucket, scale)`.
+     Hit → emit a `DrawOp::Bitmap` against the cached texture and
+     **skip the view's normal paint**.
+     Miss → paint normally (capturing per G.3.1 if eligibility 1–3
+     pass).
+- The eligibility numbers above are env-tunable
+  (`OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX` defaults to 64).
+
+**G.3.3 — Phase F surgical follow-up: size-diff invalidation [~100 LOC]**
+- Replaces today's `WidgetTreeHost::forceFullRepaint` blanket
+  `Style|Layout|Paint`-on-every-node with a smarter walker:
+  - Style + Layout dirty bits still get marked on every node (the
+    Style/Layout passes are cheap relative to Paint and already gated
+    by their own subtree pruning).
+  - Paint dirty gets marked only on Views whose absolute pixel rect
+    actually changed. The walker compares each View's pre-resize and
+    post-resize `getRect()` (after `runWidgetLayout` has settled).
+- `Widget::handleHostResize` is the natural place — after
+  `runWidgetLayout` returns, walk the view tree once with the
+  pre-resize rect snapshots and mark Paint only where changed.
+- Effect: with G.3.2 in place, an HStack of four shapes whose
+  cross-axis size didn't change keeps all four shapes' cached
+  content; only the parent's blit position updates. The HStack
+  layout itself runs (Layout dirty) but consults cached textures
+  (Paint not dirty for the children).
+
+**G.4 — Documentation + telemetry [~80 LOC]**
+- Section in `wtk/docs/UIModel.rst` explaining the three caches,
+  their keys, their lifetimes, and how to read the telemetry.
+- `OMEGAWTK_CONTENT_CACHE_STATS=1` env var prints periodic cache
+  stats (per cache: hits, misses, evictions, currentBytes,
+  hitRatePercent) to stderr at frame-end every 60 frames.
+
+###### Sequencing inside Phase G
+
+`G.0 → G.1 → G.2 → G.3.0 → G.3.1 → G.3.2 → G.3.3 → G.4`. G.1 and G.2
+each ship usable wins on their own — non-resize broad invalidations
+stop paying for re-tessellation / re-shaping immediately. G.3 is the
+multi-PR unit; the agreement to pause for re-review between G.3.2 and
+G.3.3 stands (Phase F's actual per-frame cost should be profiled in a
+build with G.0 + G.1 + G.2 landed before committing to the larger
+G.3.3 change).
+
+###### Total scope estimate
+
+~1280 LOC across ~7 mergeable PRs. The largest single PR is G.3.1
+(~200 LOC); every other sub-phase is ≤ 180 LOC.
 
 ##### Phase H (follow-up) — Frame pacing: vsync-aligned production + real `FrameTime` + load-aware frame gating (folds Frame-Pacing-Plan)
 

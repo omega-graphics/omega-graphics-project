@@ -35,7 +35,23 @@
         self.layer.opaque = NO;
         self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
         _delegate = delegate;
-        _trackingArea = [[NSTrackingArea alloc] initWithRect:rect options:NSTrackingMouseEnteredAndExited | NSTrackingCursorUpdate | NSTrackingActiveInKeyWindow owner:self userInfo:nil];
+        // Phase 3 made View purely virtual, so this NSView is the only
+        // native view in the window — per-widget hover is derived in
+        // WidgetTreeHost by hit-testing CursorMove events. That means we
+        // must opt into NSTrackingMouseMoved (and forward -mouseMoved:
+        // below) or hover never updates as the cursor moves between
+        // widgets. NSTrackingInVisibleRect keeps the tracking rect in
+        // sync with the view's visible bounds across resize, so we don't
+        // need to override -updateTrackingAreas.
+        _trackingArea = [[NSTrackingArea alloc]
+            initWithRect:NSZeroRect
+                 options:NSTrackingMouseEnteredAndExited
+                       | NSTrackingMouseMoved
+                       | NSTrackingCursorUpdate
+                       | NSTrackingActiveInKeyWindow
+                       | NSTrackingInVisibleRect
+                   owner:self
+                userInfo:nil];
         [self addTrackingArea:_trackingArea];
     };
     return self;
@@ -76,6 +92,10 @@
 - (void)mouseExited:(NSEvent *)event {
     [self emitEventIfPossible:event];
     [super mouseExited:event];
+};
+- (void)mouseMoved:(NSEvent *)event {
+    [self emitEventIfPossible:event];
+    [super mouseMoved:event];
 };
 
 - (void)scrollWheel:(NSEvent *)event {

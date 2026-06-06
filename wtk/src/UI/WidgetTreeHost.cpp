@@ -6,6 +6,7 @@
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/UI/OverlayHost.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
 #include "omegaWTK/Composition/CompositorClient.h"
@@ -227,7 +228,8 @@ namespace OmegaWTK {
     WidgetTreeHost::WidgetTreeHost():
     compositor(globalCompositor()),
     syncLaneId(g_widgetTreeSyncLaneSeed.fetch_add(1)),
-    attachedToWindow(false)
+    attachedToWindow(false),
+    overlayHost_(Core::UniquePtr<OverlayHost>(new OverlayHost(*this)))
     {
 
     };
@@ -237,8 +239,24 @@ namespace OmegaWTK {
         // the pre-4.8 `unobserveWidgetLayerTreesRecurse(root.get())`
         // call is gone (per-view LayerTree observation retired in
         // Phase 4.8; the method body was a no-op pending this sweep).
+        //
+        // Overlay-Z-Order-Plan O1: `overlayHost_` releases every
+        // presented `WidgetPtr` via the `Core::UniquePtr` member
+        // destructor below. Explicit `dismissAll()` is unnecessary
+        // because the host's destructor already empties its
+        // per-tier `Entry` vectors, which drops the shared widget
+        // refcounts. Sequencing inside this body intentionally leaves
+        // the field destruction to the compiler-generated tail.
         compositor = nullptr;
     };
+
+    OverlayHost & WidgetTreeHost::overlayHost(){
+        return *overlayHost_;
+    }
+
+    const OverlayHost & WidgetTreeHost::overlayHost() const {
+        return *overlayHost_;
+    }
 
     SharedHandle<WidgetTreeHost> WidgetTreeHost::Create(){
         return SharedHandle<WidgetTreeHost>(new WidgetTreeHost());
@@ -337,32 +355,58 @@ namespace OmegaWTK {
         return false;
     }
 
-    // PaintOptions::invalidateOnResize defaults to false (widgets
-    // opt in to resize-driven repaint). Walk the tree once per
-    // resize event; if no widget opted in, every notifyWindowResize*
-    // entry point skips the per-widget handleHostResize walk
-    // entirely. The AppWindow's syncNativePresentLayer is the
-    // load-bearing path for native item + render target + window
-    // LayerTree root layer geometry now — it runs upstream of this
-    // method, unconditionally, so the present surface keeps
-    // tracking the window dimensions even when the widget walk is
-    // short-circuited.
-    bool WidgetTreeHost::anyWidgetOptsIntoResize(Widget *parent){
-        if(parent == nullptr){
-            return false;
-        }
-        if(parent->paintOptions().invalidateOnResize){
-            return true;
-        }
-        for(const auto & child : parent->childWidgets()){
-            if(anyWidgetOptsIntoResize(child.get())){
-                return true;
+    // UIView-Render-Redesign-Plan Phase F (2026-06-05): the
+    // `anyWidgetOptsIntoResize` gate is gone. Every window resize
+    // unconditionally runs `handleHostResize` (sizes the root view +
+    // runs the widget layout pass) AND forces a full-tree repaint
+    // independent of `DirtyBits`. See `markFullRepaintRecurse` and
+    // `forceFullRepaint` below; called once per `notifyWindowResize*`
+    // event after `handleHostResize` returns.
+    //
+    // Rationale: the platform stretches the existing surface to the
+    // new size on resize, so any content rasterized at the old size
+    // appears stretched until re-drawn at the new resolution.
+    // Dirty-only repaint is wrong here — a "non-dirty" widget whose
+    // model did not change still has stale, wrong-resolution pixels.
+
+    namespace {
+        // Mark Style|Layout|Paint dirty on every node in the view
+        // subtree so `FrameBuilder::buildFrame` re-runs all three
+        // passes over the whole tree. Mirrors the cascade-change
+        // helper `markViewSubtreeDirty` in AppWindow.cpp; kept local
+        // here because the call site (resize) is the only Phase F
+        // consumer outside that file.
+        constexpr std::uint8_t kFullRepaintBits =
+            View::Style | View::Layout | View::Paint;
+
+        void markFullRepaintRecurse(View & view){
+            view.markDirty(kFullRepaintBits);
+            for(auto * sv : view.subviews()){
+                if(sv != nullptr){
+                    markFullRepaintRecurse(*sv);
+                }
             }
         }
-        return false;
     }
 
-   
+    void WidgetTreeHost::forceFullRepaint(){
+        if(root == nullptr || root->view == nullptr){
+            return;
+        }
+        // 1. Mark the whole view subtree dirty so `buildFrame`'s
+        //    dirty-bit gates open for all three passes (the Paint
+        //    walker already visits the whole tree unconditionally;
+        //    Style/Layout are gated by `(self|desc) & bit`).
+        markFullRepaintRecurse(*root->view);
+        // 2. Run the central paint walk synchronously. `paintDirty()`
+        //    opens its own `FrameBuilder::ScopedFrame`, but the
+        //    `dispatchResize*ToHosts` caller has one open already, and
+        //    the depth counter makes nested ScopedFrames safe — only
+        //    the outermost pair does the session work.
+        paintDirty();
+    }
+
+
 
     void WidgetTreeHost::propagateWindowRenderTargetRecurse(Widget *parent){
         if(parent == nullptr || windowRenderTarget_ == nullptr){
@@ -439,13 +483,15 @@ namespace OmegaWTK {
     }
 
     void WidgetTreeHost::notifyWindowResize(const Composition::Rect &rect){
-        if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
-            // Tier 3 Phase 3.8: the caller (dispatchResizeToHosts)
-            // brackets this in a FrameBuilder::ScopedFrame, which owns
-            // the window CompositeFrame. handleHostResize drives the
-            // opted-in widgets' executePaint, each of which submits
-            // into that one frame via FrameBuilder.
+        // UIView-Render-Redesign-Plan Phase F (2026-06-05):
+        // unconditionally relayout the whole widget tree, then force a
+        // full-tree repaint independent of DirtyBits. The caller
+        // (dispatchResizeToHosts) brackets this in a
+        // `FrameBuilder::ScopedFrame`; `forceFullRepaint`'s nested
+        // `paintDirty()` shares the same frame via the depth counter.
+        if(root != nullptr){
             root->handleHostResize(rect);
+            forceFullRepaint();
         }
         lastResizeSessionState = resizeTracker.update(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
@@ -468,10 +514,13 @@ namespace OmegaWTK {
         // primed is gone). The recursive call dropped here saves a
         // full-tree walk on every resize-begin. `resizeCoordinatorGeneration`
         // stays — it is still consumed by the resize tracker / diagnostics.
-        if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
-            // Tier 3 Phase 3.8: framed by the caller's
-            // FrameBuilder::ScopedFrame (dispatchResizeBeginToHosts).
+        //
+        // UIView-Render-Redesign-Plan Phase F (2026-06-05):
+        // unconditional relayout + force-full-tree-repaint. See
+        // `notifyWindowResize` above for the rationale.
+        if(root != nullptr){
             root->handleHostResize(rect);
+            forceFullRepaint();
         }
         std::ostringstream stream;
         stream << "ResizeSession lane=" << syncLaneId
@@ -484,10 +533,12 @@ namespace OmegaWTK {
     }
 
     void WidgetTreeHost::notifyWindowResizeEnd(const Composition::Rect &rect){
-        if(root != nullptr && anyWidgetOptsIntoResize(root.get())){
-            // Tier 3 Phase 3.8: framed by the caller's
-            // FrameBuilder::ScopedFrame (dispatchResizeEndToHosts).
+        // UIView-Render-Redesign-Plan Phase F (2026-06-05):
+        // unconditional relayout + force-full-tree-repaint. See
+        // `notifyWindowResize` above for the rationale.
+        if(root != nullptr){
             root->handleHostResize(rect);
+            forceFullRepaint();
         }
         lastResizeSessionState = resizeTracker.end(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
