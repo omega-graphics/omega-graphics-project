@@ -313,6 +313,38 @@ O1–O3 land independently of FocusManager and unblock most of Phase 6. O4–O5 
 
 `AppPanel` is intentionally absent from this dependency chain — see §7.
 
+### 9.1 O1 implementation notes (2026-06-05)
+
+**Files shipped:**
+
+- `wtk/include/omegaWTK/UI/OverlayHost.h` — public surface (`OverlayHost`, `OverlayTier`, `OverlayAnchor`, `OverlayDismissPolicy`, `OverlayOrnamentation`, `OverlayHandle`).
+- `wtk/src/UI/OverlayHost.cpp` — pimpl skeleton with per-tier `std::vector<Entry>` storage, anchor → window-space math, edge-clamping, handle bookkeeping.
+- `wtk/src/UI/WidgetTreeHost.h` + `WidgetTreeHost.cpp` — `Core::UniquePtr<OverlayHost> overlayHost_` member, public `overlayHost()` accessor (mut + const), forward decl, `friend class OverlayHost` so the impl reads `ownerWindow_` / `root` for `windowBounds()`.
+
+**Surface beyond the §3 spec.** The plan §3 listed `present`/`dismiss`/`overlaysTopFirst`. O1 also ships:
+
+- `overlaysIn(tier)` — bottom-up FIFO per tier; what §4's `paintSubtree` pseudo-code references for O2.
+- `rectFor(handle)` / `tierFor(handle)` — O2's paint walker needs the resolved rect for positioning the overlay subtree; tier is what O3's Escape dispatcher routes against.
+- `relayoutAll()` — public entry point for recomputing every entry's anchor → rect on demand. O1 does **not** auto-call it from `WidgetTreeHost::notifyWindowResize*` because the per-overlay policy ("dismiss on resize?" vs. "follow?") is a §11 open question; the call site is left for whichever phase commits to that policy.
+
+Surfacing these in O1 means O2/O3 plug in via the iteration accessors without changing the API.
+
+**Decisions that diverged from defaults** (per shepherd-developer-v14 §"make the invisible visible"):
+
+1. Friend `OverlayHost` on `WidgetTreeHost` rather than adding public `ownerWindow()`/`rootWidget()` accessors — matches the existing tight-coupling pattern (`AppWindow`, `Widget`, `NativeViewHost` are all friends).
+2. Used public `Widget::viewRef()` instead of friending `Widget` for the protected `view` field — kept Widget's coupling surface unchanged.
+3. Pointer-typed host backref inside `OverlayHost::Impl` instead of reference, to satisfy the project's `cppcoreguidelines-avoid-const-or-ref-data-members` default.
+
+**Deferred** (per §9 phase split):
+
+- Paint walk in `FrameBuilder::buildFrame` — O2.
+- Click-outside / Escape / anchor-destroyed dismissal triggers — O3.
+- `FocusManager` push/pop around present/dismiss — O4.
+- Modal tab-trap — O5.
+- Wiring `relayoutAll()` into `WidgetTreeHost::notifyWindowResizeEnd` — decided per §11 open question (the policy "dismiss vs. follow on resize" is per-overlay and not in O1's contract).
+
+**Verification status.** §10's O1+O2 entry requires the paint walk; pure-O1 verification is the mechanical surface: clean build, `WidgetTreeHost` ctor still constructs without regression, BasicAppTest still links. Visible-overlay tests start at O2.
+
 ---
 
 ## 10. Verification
