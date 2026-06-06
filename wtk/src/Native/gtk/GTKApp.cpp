@@ -25,12 +25,33 @@ namespace OmegaWTK::Native::GTK {
         GtkApplication *native = nullptr;
         int argc = 0;
         char **argv = nullptr;
+        // GtkApplication auto-decrements its use count on every window
+        // close (gtk_application_remove_window); reaching zero quits the
+        // GApplication and ends g_application_run. We promise the
+        // public API that only `AppInst::terminate()` shuts the app
+        // down — closing a window must leave the process running so
+        // the host can open another, sit headless, or wait on a
+        // background task. A persistent `g_application_hold` keeps the
+        // use count ≥ 1 regardless of window count; `terminate()`
+        // drops it before quitting so GApplication's accounting stays
+        // balanced.
+        bool holdActive = false;
     public:
         void terminate() override{
-            if(delegate_ != nullptr){
-                delegate_->onAppWillTerminate();
-            }
+            // Delegate notification is routed through the GApplication
+            // `shutdown` signal (see `on_app_shutdown` below) so that
+            // explicit terminate, SIGTERM, OS session-end, and any
+            // other path that ends `g_application_run` all surface as a
+            // single `delegate_->onAppWillTerminate()` invocation.
+            // Firing it here too would double-call the delegate on the
+            // explicit-terminate path while leaving the external-shutdown
+            // path with the single signal-driven call — keep them
+            // symmetric by going through the signal in both cases.
             if(native != nullptr){
+                if(holdActive){
+                    g_application_release(G_APPLICATION(native));
+                    holdActive = false;
+                }
                 g_application_quit(G_APPLICATION(native));
             }
         };
@@ -70,6 +91,14 @@ namespace OmegaWTK::Native::GTK {
                     }
                     std::cerr << std::endl;
                 }
+            }
+            // Bump the GApplication use count so the last window
+            // closing does not auto-quit (see `holdActive` rationale
+            // on the field). Safe to call after register; held until
+            // `terminate()` releases.
+            if(native != nullptr){
+                g_application_hold(G_APPLICATION(native));
+                holdActive = true;
             }
             gActiveApp = native;
         };

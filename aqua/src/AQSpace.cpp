@@ -1,11 +1,24 @@
 #include <aqua/AQSpace.h>
 #include <aqua/AQCollision.h>
+#include <aqua/AQContact.h>
 #include <aqua/AQIntegrator.h>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstddef>
 #include <limits>
+#include <unordered_map>
+
+// Phase 3 narrowphase entry point — implemented in AQNarrowphase.cpp. The
+// declaration lives here (and not in a public header) because the dispatch
+// is an internal seam: callers consume `AQContactManifold` via
+// `AQSpace::contactManifolds()`, not the dispatcher directly. Returns true
+// when at least one contact point was produced.
+bool AQnarrowphase(const AQShape &shapeA, const AQShape &shapeB,
+                   const AQTransform<float> &xfA, const AQTransform<float> &xfB,
+                   const OmegaGTE::FVec<3> *hullVerts, std::size_t hullVertCount,
+                   AQContactManifold &out);
 #ifndef NDEBUG
 #include <cmath>
 #include <iostream>
@@ -46,6 +59,18 @@ struct AQRigidBody::Impl {
     FAABB              fatAABB   =        ///< worldAABB grown by §11.4 fattening
         FAABB::fromMinMax(AQvec3(0.f,0.f,0.f), AQvec3(0.f,0.f,0.f));
     bool               fatValid  = false; ///< first refresh seeds fatAABB
+
+    // --- Phase 3 material coefficients (per-body) ---
+    float restitution = 0.f;   ///< [0, 1]; combined per-pair via AQSpace policy
+    float friction    = 0.5f;  ///< ≥ 0; combined per-pair via AQSpace policy
+
+    // --- Phase 3 split-impulse position correction (per-body, per-substep) ---
+    // The pseudo-velocity field that the position-correction sweep accumulates
+    // into. Applied to `s.position` at the end of the sub-step and zeroed at
+    // the top of the next. Kept off `AQBodyState` so the `double`-precision
+    // integrator parity oracle and `AQStepBody` remain unaffected.
+    FVec<3> pseudoLinear  = AQvec3(0.f, 0.f, 0.f);
+    FVec<3> pseudoAngular = AQvec3(0.f, 0.f, 0.f);
 };
 
 AQRigidBody::AQRigidBody() : impl(std::make_unique<Impl>()) {}
@@ -156,6 +181,16 @@ void AQRigidBody::applyAngularImpulse(const FVec<3> &angularImpulse) {
 
 AQBodyType AQRigidBody::type() const { return impl->type; }
 
+// --- Phase 3 material coefficients (per-body) ---
+float AQRigidBody::restitution() const            { return impl->restitution; }
+void  AQRigidBody::setRestitution(float r) {
+    impl->restitution = r < 0.f ? 0.f : (r > 1.f ? 1.f : r);
+}
+float AQRigidBody::friction() const               { return impl->friction; }
+void  AQRigidBody::setFriction(float mu) {
+    impl->friction = mu < 0.f ? 0.f : mu;
+}
+
 // --- Phase 2 collision accessors (per-body) ---
 AQShapeHandle AQRigidBody::shape() const                       { return impl->shape; }
 void          AQRigidBody::setShape(const AQShapeHandle &s)    { impl->shape = s; }
@@ -163,6 +198,16 @@ FVec<3>       AQRigidBody::aabbMin() const                     { return impl->fa
 FVec<3>       AQRigidBody::aabbMax() const                     { return impl->fatAABB.max; }
 AQCollisionFilter AQRigidBody::collisionFilter() const         { return impl->filter; }
 void          AQRigidBody::setCollisionFilter(const AQCollisionFilter &f) { impl->filter = f; }
+
+// --- Phase 3: persistence cache record (per contact point) ---
+// Holds the accumulated normal and friction impulses across frames so the
+// PGS sweep can warm-start (§6.C / §11.7). Keyed by (sortedPairKey,
+// featureKey) — `sortedPairKey` is `(uint64(a) << 32) | uint64(b)` with
+// `a < b` per the broadphase invariant.
+struct AQManifoldCacheEntry {
+    float accumNormal       = 0.f;
+    float accumFriction[2]  = {0.f, 0.f};
+};
 
 struct AQSpace::Impl {
     FVec<3> gravity = AQvec3(0.f, -9.81f, 0.f);
@@ -185,6 +230,24 @@ struct AQSpace::Impl {
     // --- Phase 2: broadphase output (§5/§8 ordered + de-duplicated) ---
     std::vector<AQBroadphasePair> pairs;
     float fattenMargin = 0.02f;                 ///< §11.4 fixed margin (≈2cm world units)
+
+    // --- Phase 3: contact data + solver state (§7, §8) ---
+    AQMaterialCombine restitutionCombine = AQMaterialCombine::Average;
+    AQMaterialCombine frictionCombine    = AQMaterialCombine::Average;
+    // Defaults: §11.4 leans Box2D's 8 / 4 for short stacks; a 10-box settling
+    // stack (the Phase-3 §1 headline deliverable) is the critical workload.
+    // PGS propagates info one contact per iteration, so a 10-tall stack
+    // needs ~10 iterations just for end-to-end propagation, plus headroom
+    // for refinement. 16 / 8 holds the 5-stack but is borderline on 10. 32
+    // velocity / 12 position lands the bottom contact at >90% of the
+    // analytic resting force and keeps the stack at <5 cm/s indefinitely.
+    int               velocityIters      = 48;
+    int               positionIters      = 16;
+    std::vector<AQContactManifold> manifolds;   ///< current sub-step's manifolds (§10)
+    std::vector<AQConstraintRow>   rows;        ///< current sub-step's row buffer (§8)
+    std::vector<std::uint32_t>     manifoldRowOffset; ///< rows[manifoldRowOffset[m]] = first row of manifold m
+    std::unordered_map<std::uint64_t, AQManifoldCacheEntry> cache;
+    ///< (pair key << 32 | featureKey)-indexed; aged out after one missed frame
 
     // Look up a shape by handle. Returns nullptr if the handle is invalid or
     // stale (generation mismatch). Caller checks the pointer.
@@ -296,6 +359,15 @@ std::shared_ptr<AQRigidBody> AQSpace::addBody(const AQBodyDesc &desc) {
     body->impl->filter = desc.filter;
     body->impl->fatValid = false;        // refresh on the next runBroadphase
 
+    // Phase 3 materials. Clamp the same way the setters do — invalid input
+    // becomes the closest valid value rather than tripping a debug assert,
+    // because the user-facing descriptor is the most likely place to land
+    // a typo (negative, NaN); a silent clamp is the principle-of-least-
+    // surprise for descriptor-driven input.
+    body->impl->restitution = desc.restitution < 0.f ? 0.f
+                            : desc.restitution > 1.f ? 1.f : desc.restitution;
+    body->impl->friction    = desc.friction    < 0.f ? 0.f : desc.friction;
+
     impl->bodies.push_back(body);
     return body;
 }
@@ -388,13 +460,21 @@ void emitAABBDebug(const FAABB& bb, std::vector<AQDebugLine>& out) {
 }
 
 void AQSpace::stepInternal(float dt) {
-    // Phase 1 integrator: the body-frame symplectic Lie scheme with implicit
-    // gyroscopic (AQStepBody, AQIntegrator.h). No collision yet (Phase 2+). The
-    // step is per-body independent — the shape a Phase 5 GPU kernel inherits.
+    // Phase 3 sub-step structure (Phase-3 brief §6, §10):
+    //   1. Velocity half-step — apply gravity / accumulated forces / damping /
+    //      implicit-gyroscopic Newton. Bodies' angular and linear velocities
+    //      now hold the "predicted" velocity the contact solver will modify.
+    //   2. Narrowphase + sequential-impulse PGS + split-impulse position
+    //      correction. Modifies velocities via contact impulses; accumulates
+    //      `pseudoLinear`/`pseudoAngular` per body for the position pass.
+    //   3. Position half-step — advance pose with the solver-corrected
+    //      velocity, then apply pseudoLinear · dt to position (orientation
+    //      stays unaffected per the brief §6.E lean). AABB refresh and debug
+    //      emission then run on the post-step state.
     //
-    // Phase-1.1 additions are folded into AQStepBody itself (per-body gravity
-    // scale, adaptive Newton, damping, clamp, debug NaN guard); the per-space
-    // loop only adds the optional debug emission below.
+    // Phase-1 fast-spin warning lives in the per-body loop just before the
+    // velocity half-step, where it always has — the metric is ‖ω‖·dt of the
+    // pre-step angular velocity, which is what determines integrator drift.
     for (auto &body : impl->bodies) {
         if (body->impl->type == AQBodyType::Static) continue;
         auto &s = body->impl->s;
@@ -419,7 +499,22 @@ void AQSpace::stepInternal(float dt) {
             }
         }
 #endif
-        AQStepBody(s, impl->gravity, dt);
+        AQStepBodyVelocity(s, impl->gravity, dt);
+    }
+
+    // Phase 3 — contact solver (operates on the now-predicted velocities).
+    runNarrowphaseAndSolve(dt);
+
+    // Position half-step + pseudo-velocity position correction + AABB refresh
+    // + debug emission. Static bodies remain skipped (no pose update).
+    for (auto &body : impl->bodies) {
+        if (body->impl->type == AQBodyType::Static) continue;
+        auto &s = body->impl->s;
+        AQStepBodyPosition(s, dt);
+        // Split-impulse positional correction (Phase-3 brief §6.E). Applied
+        // after the velocity-driven position advance so the corrective shift
+        // is layered on top of the integrator's symplectic update.
+        s.position += body->impl->pseudoLinear * dt;
 
         // Debug emission reflects the post-step state. Phase 2 anchors at the
         // world COM (position + R·comOffset); zero offset = pose origin.
@@ -428,10 +523,6 @@ void AQSpace::stepInternal(float dt) {
 
         // Phase 2 §6.A — refresh the world AABB if the body has a shape, and
         // re-fatten on first refresh or when it has wandered out of fatAABB.
-        // Static bodies skip the integrator above but still need their AABB
-        // built (once) so they participate in pair generation. Static bodies
-        // never move, so this loop reaches them via the static-AABB pass that
-        // runBroadphase runs below; here we handle the dynamic case only.
         if (const AQShape *sp = impl->shapeAt(body->impl->shape)) {
             AQTransform<float> bodyXform;
             bodyXform.p = s.position; bodyXform.q = s.orientation;
@@ -517,6 +608,34 @@ AQShapeHandle AQSpace::createConvexHullShape(const FVec<3> *pts, std::size_t n) 
 
 std::vector<AQBroadphasePair> AQSpace::candidatePairs() const {
     return impl->pairs;
+}
+
+// ============================================================================
+// Phase 3 — material combine + solver knob + manifold view (§10 public API).
+// ============================================================================
+
+void AQSpace::setMaterialCombine(AQMaterialCombine restCombine,
+                                 AQMaterialCombine fricCombine) {
+    impl->restitutionCombine = restCombine;
+    impl->frictionCombine    = fricCombine;
+}
+AQMaterialCombine AQSpace::restitutionCombine() const { return impl->restitutionCombine; }
+AQMaterialCombine AQSpace::frictionCombine()    const { return impl->frictionCombine; }
+
+void AQSpace::setSolverIterations(int velocityIters, int positionIters) {
+    // Negative is meaningless; clamp at zero (zero disables that pass — the
+    // `positionIters == 0` case is the energy-non-growth test path; zero
+    // velocity iters disables the contact solver entirely except for warm-
+    // started impulses, which the user can use to short-circuit a settled
+    // scene if they ever want).
+    impl->velocityIters = velocityIters < 0 ? 0 : velocityIters;
+    impl->positionIters = positionIters < 0 ? 0 : positionIters;
+}
+int AQSpace::velocityIterations() const { return impl->velocityIters; }
+int AQSpace::positionIterations() const { return impl->positionIters; }
+
+std::vector<AQContactManifold> AQSpace::contactManifolds() const {
+    return impl->manifolds;
 }
 
 // ============================================================================
@@ -726,6 +845,395 @@ void AQSpace::runBroadphase(float frameDt) {
             const auto o = AQvec3(0.f, 0.f, 0.f);
             const auto y = AQvec3(0.f, 1.f, 0.f);
             impl->debugLines.push_back(makeLine(o, y, 1.f, 0.f, 0.f));
+        }
+    }
+}
+
+// ============================================================================
+// Phase 3 — narrowphase + sequential-impulse PGS solver + split-impulse pos
+// correction + persistence cache + debug emissions. The whole §6 pipeline,
+// per sub-step.
+//
+// Layout: `manifolds` is the per-substep contact-pair list, sorted by the
+// deterministic `(a, b)` pair index (inherited from `impl->pairs`). `rows` is
+// the constraint-row buffer the PGS sweep iterates — three rows per contact
+// point (one normal, two friction) in manifold order. `manifoldRowOffset[m]`
+// is the index in `rows` where manifold m's first row sits, so the
+// persistence handoff can write the accumulated impulses back to the right
+// `AQContactPoint`. The cache is keyed by a packed
+// `(bodyA, bodyB, featureKey)` 64-bit word; the warm-start lookup and the
+// write-back use the same key.
+// ============================================================================
+
+namespace {
+
+// Combine two per-body material coefficients into a per-pair coefficient.
+// Defaults match PhysX `Average`; `Min`/`Max`/`Multiply` are the gameplay
+// overrides (a Max-restitution "super bouncy ball" wins regardless of the
+// surface's restitution).
+inline float combineMaterial(AQMaterialCombine mode, float a, float b) {
+    switch (mode) {
+    case AQMaterialCombine::Average:  return (a + b) * 0.5f;
+    case AQMaterialCombine::Min:      return std::min(a, b);
+    case AQMaterialCombine::Max:      return std::max(a, b);
+    case AQMaterialCombine::Multiply: return a * b;
+    }
+    return (a + b) * 0.5f;
+}
+
+// Build an orthonormal pair of tangents perpendicular to `n`. The choice is
+// deterministic and continuous in `n` for the cone we care about (n on the
+// upper hemisphere); for the resting-stack and incline tests this stays
+// stable across sub-steps so the warm-started friction impulses remain
+// meaningful frame to frame.
+inline void buildTangentBasis(const FVec<3> &n, FVec<3> &t1, FVec<3> &t2) {
+    const FVec<3> alt = (std::abs(n[0][0]) < 0.6f) ? AQvec3(1.f, 0.f, 0.f)
+                       : (std::abs(n[1][0]) < 0.6f) ? AQvec3(0.f, 1.f, 0.f)
+                                                    : AQvec3(0.f, 0.f, 1.f);
+    t1 = OmegaGTE::cross(n, alt);
+    const float t1n2 = OmegaGTE::dot(t1, t1);
+    t1 = (t1n2 > 1e-12f) ? t1 * (1.f / std::sqrt(t1n2)) : AQvec3(1.f, 0.f, 0.f);
+    t2 = OmegaGTE::cross(n, t1);
+    const float t2n2 = OmegaGTE::dot(t2, t2);
+    t2 = (t2n2 > 1e-12f) ? t2 * (1.f / std::sqrt(t2n2)) : AQvec3(0.f, 1.f, 0.f);
+}
+
+// Pack a 64-bit cache key from (bodyA, bodyB, featureKey). Body indices use
+// 16 bits each (we never expect 65k+ bodies in a single space; the broadphase
+// is the tighter ceiling). Feature key uses the top 32 bits — wide enough for
+// the box/box composite (refAxis, refSign, incAxis, incSign, vertex slot)
+// without collisions.
+inline std::uint64_t pairFeatureKey(std::uint32_t a, std::uint32_t b, std::uint32_t feat) {
+    return (static_cast<std::uint64_t>(a)    & 0xFFFFull)       |
+           ((static_cast<std::uint64_t>(b)   & 0xFFFFull) << 16) |
+           (static_cast<std::uint64_t>(feat) << 32);
+}
+
+} // namespace
+
+void AQSpace::runNarrowphaseAndSolve(float dt) {
+    impl->manifolds.clear();
+    impl->rows.clear();
+    impl->manifoldRowOffset.clear();
+
+    // Zero the split-impulse pseudo-velocities. They accumulate during the
+    // position-correction pass and are applied to `s.position` in
+    // `stepInternal` after the position half-step.
+    for (auto &body : impl->bodies) {
+        body->impl->pseudoLinear  = AQvec3(0.f, 0.f, 0.f);
+        body->impl->pseudoAngular = AQvec3(0.f, 0.f, 0.f);
+    }
+
+    if (impl->pairs.empty()) return;
+
+    // --- A. Narrowphase: build manifolds from candidate pairs ---
+    for (const auto &pair : impl->pairs) {
+        AQRigidBody *bodyA = impl->bodies[pair.a].get();
+        AQRigidBody *bodyB = impl->bodies[pair.b].get();
+        const AQShape *shA = impl->shapeAt(bodyA->impl->shape);
+        const AQShape *shB = impl->shapeAt(bodyB->impl->shape);
+        if (shA == nullptr || shB == nullptr) continue;
+
+        AQTransform<float> xfA;
+        xfA.p = bodyA->impl->s.position;
+        xfA.q = bodyA->impl->s.orientation;
+        AQTransform<float> xfB;
+        xfB.p = bodyB->impl->s.position;
+        xfB.q = bodyB->impl->s.orientation;
+
+        AQContactManifold mf;
+        mf.a = pair.a;
+        mf.b = pair.b;
+        if (!AQnarrowphase(*shA, *shB, xfA, xfB,
+                           impl->hullVerts.data(), impl->hullVerts.size(),
+                           mf) || mf.pointCount == 0) {
+            continue;
+        }
+
+        // --- B. Material combine ---
+        mf.restitutionCombined = combineMaterial(impl->restitutionCombine,
+                                                 bodyA->impl->restitution,
+                                                 bodyB->impl->restitution);
+        mf.frictionCombined    = combineMaterial(impl->frictionCombine,
+                                                 bodyA->impl->friction,
+                                                 bodyB->impl->friction);
+
+        // --- C. Persistence lookup (warm-start) ---
+        for (std::uint32_t i = 0; i < mf.pointCount; ++i) {
+            const std::uint64_t key = pairFeatureKey(pair.a, pair.b,
+                                                    mf.points[i].featureKey);
+            auto it = impl->cache.find(key);
+            if (it != impl->cache.end()) {
+                mf.points[i].accumNormal       = it->second.accumNormal;
+                mf.points[i].accumFriction[0]  = it->second.accumFriction[0];
+                mf.points[i].accumFriction[1]  = it->second.accumFriction[1];
+            }
+        }
+        impl->manifolds.push_back(mf);
+    }
+
+    if (impl->manifolds.empty()) {
+        // Drop the cache so settled contacts don't carry stale impulses if
+        // the bodies separate and re-contact later — zero-frame grace is the
+        // §11.8 default.
+        impl->cache.clear();
+        return;
+    }
+
+    // --- Constraint-row build: 1 normal + 2 friction per contact point ---
+    for (std::size_t mi = 0; mi < impl->manifolds.size(); ++mi) {
+        AQContactManifold &mf = impl->manifolds[mi];
+        impl->manifoldRowOffset.push_back(static_cast<std::uint32_t>(impl->rows.size()));
+
+        const auto &bA = impl->bodies[mf.a]->impl->s;
+        const auto &bB = impl->bodies[mf.b]->impl->s;
+        const FMatrix<3,3> invIA = AQworldInvInertia(bA.orientation, bA.invInertiaBody);
+        const FMatrix<3,3> invIB = AQworldInvInertia(bB.orientation, bB.invInertiaBody);
+        const FVec<3> comA = bA.position + AQrotate(bA.orientation, bA.comOffset);
+        const FVec<3> comB = bB.position + AQrotate(bB.orientation, bB.comOffset);
+
+        FVec<3> t1 = AQvec3(1.f, 0.f, 0.f), t2 = AQvec3(0.f, 1.f, 0.f);
+        buildTangentBasis(mf.normalWorld, t1, t2);
+
+        // Effective mass denominator for a single direction `dir` at arms rA, rB.
+        // Catto 2005 §3: Keff = 1/m_A + 1/m_B + (rA × dir)ᵀ · invI_A · (rA × dir)
+        //                                     + (rB × dir)ᵀ · invI_B · (rB × dir)
+        auto effMass = [&](const FVec<3> &rA, const FVec<3> &rB, const FVec<3> &dir) {
+            const FVec<3> rAxN  = OmegaGTE::cross(rA, dir);
+            const FVec<3> rBxN  = OmegaGTE::cross(rB, dir);
+            const FVec<3> IArAN = invIA * rAxN;
+            const FVec<3> IBrBN = invIB * rBxN;
+            const float k = bA.invMass + bB.invMass
+                          + OmegaGTE::dot(rAxN, IArAN)
+                          + OmegaGTE::dot(rBxN, IBrBN);
+            return (k > 1e-12f) ? (1.f / k) : 0.f;
+        };
+
+        // Pre-step relative normal velocity for the restitution bias (Catto's
+        // velocity-threshold model — resting contacts get bias 0 so they
+        // don't artifact-bounce).
+        const FVec<3> wAworld = AQrotate(bA.orientation, bA.angularVelBody);
+        const FVec<3> wBworld = AQrotate(bB.orientation, bB.angularVelBody);
+
+        for (std::uint32_t pi = 0; pi < mf.pointCount; ++pi) {
+            const AQContactPoint &cp = mf.points[pi];
+            const FVec<3> rA = cp.positionWorld - comA;
+            const FVec<3> rB = cp.positionWorld - comB;
+
+            const FVec<3> velA = bA.velocity + OmegaGTE::cross(wAworld, rA);
+            const FVec<3> velB = bB.velocity + OmegaGTE::cross(wBworld, rB);
+            const float relVN = OmegaGTE::dot(velB - velA, mf.normalWorld);
+
+            constexpr float kRestitutionVelThr = 1.0f;  // m/s
+            const float bias = (relVN < -kRestitutionVelThr)
+                ? (mf.restitutionCombined * relVN)
+                : 0.f;
+
+            const std::uint32_t normalRowIdx = static_cast<std::uint32_t>(impl->rows.size());
+
+            AQConstraintRow nRow;
+            nRow.kind          = AQConstraintKind::ContactNormal;
+            nRow.bodyA         = mf.a;
+            nRow.bodyB         = mf.b;
+            nRow.contactPoint  = cp.positionWorld;
+            nRow.rA            = rA;
+            nRow.rB            = rB;
+            nRow.direction     = mf.normalWorld;
+            nRow.effectiveMass = effMass(rA, rB, mf.normalWorld);
+            nRow.bias          = bias;
+            nRow.accumImpulse  = cp.accumNormal;
+            nRow.peerRow       = normalRowIdx;       // self-peer for the normal row
+            nRow.frictionCoeff = 0.f;
+            impl->rows.push_back(nRow);
+
+            AQConstraintRow fRow;
+            fRow.kind          = AQConstraintKind::ContactFriction;
+            fRow.bodyA         = mf.a;
+            fRow.bodyB         = mf.b;
+            fRow.contactPoint  = cp.positionWorld;
+            fRow.rA            = rA;
+            fRow.rB            = rB;
+            fRow.direction     = t1;
+            fRow.effectiveMass = effMass(rA, rB, t1);
+            fRow.bias          = 0.f;
+            fRow.accumImpulse  = cp.accumFriction[0];
+            fRow.peerRow       = normalRowIdx;
+            fRow.frictionCoeff = mf.frictionCombined;
+            impl->rows.push_back(fRow);
+
+            fRow.direction     = t2;
+            fRow.effectiveMass = effMass(rA, rB, t2);
+            fRow.accumImpulse  = cp.accumFriction[1];
+            impl->rows.push_back(fRow);
+        }
+    }
+
+    // --- D. Warm-start: apply cached impulses once before the iteration ---
+    for (const AQConstraintRow &row : impl->rows) {
+        if (row.accumImpulse == 0.f) continue;
+        const FVec<3> P = row.direction * row.accumImpulse;
+        impl->bodies[row.bodyB]->applyImpulseAtPoint(P,       row.contactPoint);
+        impl->bodies[row.bodyA]->applyImpulseAtPoint(P * -1.f, row.contactPoint);
+    }
+
+    // --- E. Sequential-impulse PGS sweep ---
+    for (int iter = 0; iter < impl->velocityIters; ++iter) {
+        for (AQConstraintRow &row : impl->rows) {
+            const auto &bA = impl->bodies[row.bodyA]->impl->s;
+            const auto &bB = impl->bodies[row.bodyB]->impl->s;
+            const FVec<3> wA = AQrotate(bA.orientation, bA.angularVelBody);
+            const FVec<3> wB = AQrotate(bB.orientation, bB.angularVelBody);
+            const FVec<3> velA = bA.velocity + OmegaGTE::cross(wA, row.rA);
+            const FVec<3> velB = bB.velocity + OmegaGTE::cross(wB, row.rB);
+            const float relV = OmegaGTE::dot(velB - velA, row.direction);
+
+            float lambda = -(relV + row.bias) * row.effectiveMass;
+
+            // Per-row bound clamp. Normal row: λ ≥ 0 (no pull-together).
+            // Friction row: |λ| ≤ μ · λ_n_accumulated of the peer normal row.
+            float newAccum = row.accumImpulse + lambda;
+            if (row.kind == AQConstraintKind::ContactNormal) {
+                if (newAccum < 0.f) newAccum = 0.f;
+            } else {
+                const float peerN = impl->rows[row.peerRow].accumImpulse;
+                const float maxF  = row.frictionCoeff * peerN;
+                if (newAccum >  maxF) newAccum =  maxF;
+                if (newAccum < -maxF) newAccum = -maxF;
+            }
+            const float dl = newAccum - row.accumImpulse;
+            row.accumImpulse = newAccum;
+
+            if (dl != 0.f) {
+                const FVec<3> P = row.direction * dl;
+                impl->bodies[row.bodyB]->applyImpulseAtPoint(P,        row.contactPoint);
+                impl->bodies[row.bodyA]->applyImpulseAtPoint(P * -1.f, row.contactPoint);
+            }
+        }
+    }
+
+    // --- F. Split-impulse position correction (pseudo-velocity sweep) ---
+    if (impl->positionIters > 0 && dt > 0.f) {
+        // Precompute world-frame inverse inertia per body once; reused for
+        // every iteration's pseudo-impulse application.
+        std::vector<FMatrix<3,3>> invIWorld;
+        invIWorld.reserve(impl->bodies.size());
+        for (auto &body : impl->bodies) {
+            invIWorld.push_back(AQworldInvInertia(body->impl->s.orientation,
+                                                  body->impl->s.invInertiaBody));
+        }
+
+        constexpr float kSlop                = 0.005f;  // 5 mm tolerated penetration
+        constexpr float kPositionERP         = 0.2f;    // Catto split-impulse rate
+        constexpr float kMaxPosCorrectionVel = 2.f;     // m/s clamp on pseudo-velocity
+
+        for (int iter = 0; iter < impl->positionIters; ++iter) {
+            for (std::size_t mi = 0; mi < impl->manifolds.size(); ++mi) {
+                const AQContactManifold &mf = impl->manifolds[mi];
+                AQRigidBody::Impl &biA = *impl->bodies[mf.a]->impl;
+                AQRigidBody::Impl &biB = *impl->bodies[mf.b]->impl;
+                const auto &bA = biA.s;
+                const auto &bB = biB.s;
+                const FMatrix<3,3> &invIA = invIWorld[mf.a];
+                const FMatrix<3,3> &invIB = invIWorld[mf.b];
+                const FVec<3> comA = bA.position + AQrotate(bA.orientation, bA.comOffset);
+                const FVec<3> comB = bB.position + AQrotate(bB.orientation, bB.comOffset);
+
+                for (std::uint32_t pi = 0; pi < mf.pointCount; ++pi) {
+                    const AQContactPoint &cp = mf.points[pi];
+                    const float pen = cp.depth - kSlop;
+                    if (pen <= 0.f) continue;
+
+                    const FVec<3> rA = cp.positionWorld - comA;
+                    const FVec<3> rB = cp.positionWorld - comB;
+
+                    const FVec<3> pVelA = biA.pseudoLinear + OmegaGTE::cross(biA.pseudoAngular, rA);
+                    const FVec<3> pVelB = biB.pseudoLinear + OmegaGTE::cross(biB.pseudoAngular, rB);
+                    const float relPV = OmegaGTE::dot(pVelB - pVelA, mf.normalWorld);
+
+                    float targetVel = kPositionERP * pen / dt;
+                    if (targetVel > kMaxPosCorrectionVel) targetVel = kMaxPosCorrectionVel;
+
+                    const FVec<3> rAxN  = OmegaGTE::cross(rA, mf.normalWorld);
+                    const FVec<3> rBxN  = OmegaGTE::cross(rB, mf.normalWorld);
+                    const FVec<3> IArAN = invIA * rAxN;
+                    const FVec<3> IBrBN = invIB * rBxN;
+                    const float k = bA.invMass + bB.invMass
+                                  + OmegaGTE::dot(rAxN, IArAN)
+                                  + OmegaGTE::dot(rBxN, IBrBN);
+                    if (k < 1e-12f) continue;
+
+                    float lambda = (targetVel - relPV) / k;
+                    if (lambda < 0.f) lambda = 0.f;
+
+                    const FVec<3> P = mf.normalWorld * lambda;
+                    biB.pseudoLinear  += P * bB.invMass;
+                    biB.pseudoAngular += invIB * OmegaGTE::cross(rB, P);
+                    biA.pseudoLinear  -= P * bA.invMass;
+                    biA.pseudoAngular -= invIA * OmegaGTE::cross(rA, P);
+                }
+            }
+        }
+    }
+
+    // --- G. Persistence handoff: write the accumulated impulses back to the
+    // manifold points and into the cache. The new cache replaces the old
+    // unconditionally (zero-frame grace per §11.8: a contact that misses a
+    // frame loses its warm-start).
+    decltype(impl->cache) newCache;
+    newCache.reserve(impl->rows.size() / 3 + 1);
+    for (std::size_t mi = 0; mi < impl->manifolds.size(); ++mi) {
+        AQContactManifold &mf = impl->manifolds[mi];
+        const std::uint32_t off = impl->manifoldRowOffset[mi];
+        for (std::uint32_t pi = 0; pi < mf.pointCount; ++pi) {
+            const std::uint32_t base = off + pi * 3;
+            const float ln  = impl->rows[base + 0].accumImpulse;
+            const float lt0 = impl->rows[base + 1].accumImpulse;
+            const float lt1 = impl->rows[base + 2].accumImpulse;
+            mf.points[pi].accumNormal       = ln;
+            mf.points[pi].accumFriction[0]  = lt0;
+            mf.points[pi].accumFriction[1]  = lt1;
+            AQManifoldCacheEntry ce;
+            ce.accumNormal = ln;
+            ce.accumFriction[0] = lt0;
+            ce.accumFriction[1] = lt1;
+            newCache.emplace(pairFeatureKey(mf.a, mf.b, mf.points[pi].featureKey), ce);
+        }
+    }
+    impl->cache = std::move(newCache);
+
+    // --- Debug emissions (Phase-3 brief §9 / new AQDebugContact* flags) ---
+    if (impl->debugFlags & (AQDebugContactPoint | AQDebugContactNormal | AQDebugContactImpulse)) {
+        for (std::size_t mi = 0; mi < impl->manifolds.size(); ++mi) {
+            const AQContactManifold &mf = impl->manifolds[mi];
+            const std::uint32_t off = impl->manifoldRowOffset[mi];
+            for (std::uint32_t pi = 0; pi < mf.pointCount; ++pi) {
+                const AQContactPoint &cp = mf.points[pi];
+                if (impl->debugFlags & AQDebugContactPoint) {
+                    constexpr float e = 0.05f;
+                    impl->debugLines.push_back(makeLine(cp.positionWorld - AQvec3(e, 0.f, 0.f),
+                                                        cp.positionWorld + AQvec3(e, 0.f, 0.f),
+                                                        1.f, 0.f, 0.f));
+                    impl->debugLines.push_back(makeLine(cp.positionWorld - AQvec3(0.f, e, 0.f),
+                                                        cp.positionWorld + AQvec3(0.f, e, 0.f),
+                                                        0.f, 1.f, 0.f));
+                    impl->debugLines.push_back(makeLine(cp.positionWorld - AQvec3(0.f, 0.f, e),
+                                                        cp.positionWorld + AQvec3(0.f, 0.f, e),
+                                                        0.f, 0.f, 1.f));
+                }
+                if (impl->debugFlags & AQDebugContactNormal) {
+                    impl->debugLines.push_back(makeLine(
+                        cp.positionWorld,
+                        cp.positionWorld + mf.normalWorld * cp.depth,
+                        1.f, 0.5f, 0.f));
+                }
+                if (impl->debugFlags & AQDebugContactImpulse) {
+                    const float ln = impl->rows[off + pi * 3].accumImpulse;
+                    impl->debugLines.push_back(makeLine(
+                        cp.positionWorld,
+                        cp.positionWorld + mf.normalWorld * ln,
+                        0.f, 1.f, 1.f));
+                }
+            }
         }
     }
 }

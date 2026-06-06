@@ -54,3 +54,18 @@ target_link_libraries(aqua_broadphase_test PRIVATE AQUA OmegaCommon)
 add_dependencies(aqua_broadphase_test AQUA)
 set_target_properties(aqua_broadphase_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 add_test(NAME aqua_broadphase COMMAND aqua_broadphase_test)
+
+# Phase 3 narrowphase + contact-solver validation: settling stack, incline
+# friction (stay + slide), sphere bounce restitution, GJK/EPA hull pair,
+# determinism, and energy non-growth on a settled stack. Drives the same
+# public AQContext/AQSpace/AQRigidBody surface as the earlier phase tests
+# and asserts the Phase-3 brief §1/§9 runnable-deliverable bars verbatim.
+add_executable(aqua_contact_test aqua_contact_test.cpp)
+target_include_directories(aqua_contact_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../gte/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../common/include")
+target_link_libraries(aqua_contact_test PRIVATE AQUA OmegaCommon)
+add_dependencies(aqua_contact_test AQUA)
+set_target_properties(aqua_contact_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME aqua_contact COMMAND aqua_contact_test)

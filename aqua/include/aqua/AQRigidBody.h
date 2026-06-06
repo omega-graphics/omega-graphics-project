@@ -112,6 +112,18 @@ public:
     /// the silent default stability path.
     void  setMaxAngularSpeed(float s); AQUA_NODISCARD float maxAngularSpeed() const;
 
+    // --- material coefficients (Phase 3) ---
+    /// Coefficient of restitution in [0, 1]. 0 ⇒ perfectly inelastic; 1 ⇒
+    /// perfectly elastic. Combined per-pair via the AQSpace's restitution
+    /// combine rule (see `AQSpace::setMaterialCombine`).
+    AQUA_NODISCARD float restitution() const;
+    void setRestitution(float r);
+    /// Coefficient of friction ≥ 0. Single μ on the isotropic Coulomb cone
+    /// (the Phase 3 lean — anisotropic friction is the §11.6 deferred case).
+    /// Combined per-pair via the AQSpace's friction combine rule.
+    AQUA_NODISCARD float friction() const;
+    void setFriction(float mu);
+
     // --- collision geometry & filter (Phase 2) ---
     /// Current shape handle. Invalid handle ⇒ no shape (broadphase-invisible).
     AQUA_NODISCARD AQShapeHandle shape() const;

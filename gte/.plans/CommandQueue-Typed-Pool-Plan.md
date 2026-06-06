@@ -280,7 +280,7 @@ allow `Type::Compute` only on platforms where it is presentable.
    16. Both numbers are configurable via a CMake option for power users
    and headless test rigs.
 
-   Anwser: This honestly depends on the capability of a device and whether or not we need to many concurrent queues.
+   Anwser: This honestly depends on the capability of a device and whether or not we need to allocate many concurrent queues.
 
 4. **Metal priority hints.** Apple does not expose queue priority on
    public API. We could route urgent work through dedicated queues and

@@ -55,12 +55,19 @@ struct AQBodyState {
 template<class Ty> inline constexpr Ty kAQAdaptiveAngle() { return Ty(1e-2); }
 inline constexpr int kAQAdaptiveCap = 4;
 
-// Advance one body by one fixed sub-step `dt` under world-frame `gravity`.
-// Body-frame symplectic Lie integrator with implicit-gyroscopic angular update
-// (Phase-1 doc §6). One body, no interaction — embarrassingly parallel; this is
-// exactly the body of a future one-thread-per-body GPU kernel.
+// Half-step #1: advance velocities by external forces (gravity, accumulated
+// forces and torques), apply damping and the implicit-gyroscopic Newton
+// update. Does NOT touch position or orientation, and does NOT clear the
+// force / torque accumulators — that is `AQStepBodyPosition`'s job.
+//
+// This split lands in Phase 3 so the contact solver can run *between* the
+// velocity update and the position update (Phase-3 brief §6): forces compute
+// the predicted velocity here, PGS modifies it via contact impulses
+// (`applyImpulseAtPoint`), then `AQStepBodyPosition` advances pose with the
+// solver-corrected velocity. Without contacts the two halves compose into the
+// original Phase 1 `AQStepBody` byte-for-byte.
 template<class Ty>
-inline void AQStepBody(AQBodyState<Ty>& b, const AQVec3<Ty>& gravity, Ty dt) {
+inline void AQStepBodyVelocity(AQBodyState<Ty>& b, const AQVec3<Ty>& gravity, Ty dt) {
     if (b.invMass == Ty(0)) return;                       // static / immovable
 
     // 1. Linear: symplectic Euler, velocity first. Per-body gravityScale scales
@@ -142,6 +149,22 @@ inline void AQStepBody(AQBodyState<Ty>& b, const AQVec3<Ty>& gravity, Ty dt) {
             w[0][0] *= scale; w[1][0] *= scale; w[2][0] *= scale;
         }
     }
+}
+
+// Half-step #2: advance pose by the (possibly contact-solver-modified) body
+// velocity. Clears the per-sub-step force/torque accumulators on the way out
+// and runs the debug NaN guard on the post-step state.
+//
+// Static bodies (`invMass == 0`) skip cleanly — pose stays put, accumulators
+// are still cleared so any stray applied-force on a static body in the same
+// frame doesn't carry forward (Phase 1 semantics preserved).
+template<class Ty>
+inline void AQStepBodyPosition(AQBodyState<Ty>& b, Ty dt) {
+    if (b.invMass == Ty(0)) {
+        b.forceAccum  = AQVec3<Ty>::Create();
+        b.torqueAccum = AQVec3<Ty>::Create();
+        return;
+    }
 
     // 4. Orientation: exponential-map update from body-frame ω (on-manifold).
     b.orientation = AQintegrate(b.orientation, b.angularVelBody, dt);
@@ -157,12 +180,25 @@ inline void AQStepBody(AQBodyState<Ty>& b, const AQVec3<Ty>& gravity, Ty dt) {
     //    that goes non-finite spreads silent NaN through any downstream system;
     //    catching it here is the loud-fail principle (Physics-Roadmap.md §6).
 #ifndef NDEBUG
+    const AQVec3<Ty>& w = b.angularVelBody;
     assert(std::isfinite(b.position[0][0])    && std::isfinite(b.position[1][0])    && std::isfinite(b.position[2][0]));
     assert(std::isfinite(b.velocity[0][0])    && std::isfinite(b.velocity[1][0])    && std::isfinite(b.velocity[2][0]));
     assert(std::isfinite(w[0][0])             && std::isfinite(w[1][0])             && std::isfinite(w[2][0]));
     assert(std::isfinite(b.orientation.x) && std::isfinite(b.orientation.y) &&
            std::isfinite(b.orientation.z) && std::isfinite(b.orientation.w));
 #endif
+}
+
+// Advance one body by one fixed sub-step `dt` under world-frame `gravity`.
+// Composition of the velocity half-step and the position half-step — the
+// original Phase 1 `AQStepBody` signature, preserved for callers that want
+// the monolithic form (the math/parity test and any non-contact scene). When
+// contacts are involved (Phase 3), the AQSpace step loop calls the two
+// halves separately and runs the PGS solver between them.
+template<class Ty>
+inline void AQStepBody(AQBodyState<Ty>& b, const AQVec3<Ty>& gravity, Ty dt) {
+    AQStepBodyVelocity(b, gravity, dt);
+    AQStepBodyPosition(b, dt);
 }
 
 #endif // AQUA_AQINTEGRATOR_H

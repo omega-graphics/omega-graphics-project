@@ -10,6 +10,7 @@
 
 #include "AQBase.h"
 #include "AQCollision.h"
+#include "AQContact.h"
 #include "AQDebug.h"
 #include "AQRigidBody.h"
 #include <omegaGTE/GTEMath.h>
@@ -71,6 +72,30 @@ public:
     /// the space's body-SoA array). Updated once per `AQContext::advance`.
     AQUA_NODISCARD std::vector<AQBroadphasePair> candidatePairs() const;
 
+    // --- material combine + solver (Phase 3) ---
+    /// Per-space restitution and friction combine rules. Default is Average
+    /// for both (the PhysX default; the most physically-defensible
+    /// isotropic-material policy). See `AQMaterialCombine`.
+    void setMaterialCombine(AQMaterialCombine restCombine,
+                            AQMaterialCombine fricCombine);
+    AQUA_NODISCARD AQMaterialCombine restitutionCombine() const;
+    AQUA_NODISCARD AQMaterialCombine frictionCombine() const;
+
+    /// Sequential-impulse PGS sweep counts (Phase-3 §11.4). Defaults: 8
+    /// velocity, 4 position. `positionIters == 0` disables the split-impulse
+    /// position-correction pass entirely — useful for the energy-non-growth
+    /// test and for scenes that don't need penetration recovery.
+    void setSolverIterations(int velocityIters, int positionIters);
+    AQUA_NODISCARD int velocityIterations() const;
+    AQUA_NODISCARD int positionIterations() const;
+
+    /// Read-only manifold view, refreshed by the most recent sub-step. Stable
+    /// for the duration of one `AQContext::advance` call between the final
+    /// sub-step and the next `advance`. Useful for the Phase 4 joint wiring
+    /// and for debug overlays — the value-type copy carries body indices, not
+    /// pointers, so it is safe to hold across `advance` boundaries.
+    AQUA_NODISCARD std::vector<AQContactManifold> contactManifolds() const;
+
 private:
     AQSpace();
 
@@ -89,6 +114,14 @@ private:
     /// proportional fattening (§11.4). Drives the new AQDebugAABB /
     /// AQDebugBroadphasePair / AQDebugBroadphaseGuard emissions.
     void runBroadphase(float frameDt);
+
+    /// Phase 3 narrowphase + contact solver. Consumes the current candidate
+    /// pair list, builds manifolds via the specialized + GJK/EPA branch
+    /// table, runs the sequential-impulse PGS velocity sweep with Coulomb
+    /// friction, and applies split-impulse position correction. Called by
+    /// `AQSpace::stepInternal` between the velocity half-step and the
+    /// position half-step of `AQStepBody*` (Phase-3 brief §6, §10).
+    void runNarrowphaseAndSolve(float dt);
 
     friend class AQContext;
 

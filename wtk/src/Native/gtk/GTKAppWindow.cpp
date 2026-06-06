@@ -307,6 +307,25 @@ class GTKAppWindow : public NativeWindow {
             self->fromGtkLogical(static_cast<float>(configure->width)),
             self->fromGtkLogical(static_cast<float>(configure->height))
         };
+        // GTK's `configure-event` fires for moves, resizes, AND stacking
+        // changes (X11/Wayland spec) — same handler invocation for all
+        // three. If only the position changed (user is dragging the
+        // window across the same screen), the size in DIPs is bit-for-bit
+        // identical to the last event we processed, and dispatching
+        // `WindowWillResize` / `handleAllocation` would force the
+        // FrameBuilder into an unnecessary full-tree relayout + repaint
+        // tick for every pixel of the drag — a hot loop that pegs the
+        // worker for the duration of the move. Gate on size-changed.
+        // `self->rect.w/h` is the canonical post-`fromGtkLogical` store
+        // updated below; `configure->width`/`height` is an int feeding
+        // a pure function so equal ints yield equal floats here.
+        if(resizeRect.w == self->rect.w && resizeRect.h == self->rect.h){
+            // Move-only (or stacking-only): nothing for the compositor /
+            // widget tree to do. Position itself isn't tracked in
+            // `self->rect` (the window-local rect anchors at (0,0)), so
+            // there is no state to update either.
+            return FALSE;
+        }
         self->rect = sanitizeRect(resizeRect,self->rect);
         // Push the new bounds into the root GTKItem so the compositor
         // and the per-window WidgetTreeHost see the resize via the

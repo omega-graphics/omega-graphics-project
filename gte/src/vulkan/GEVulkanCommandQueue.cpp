@@ -969,22 +969,37 @@ _NAMESPACE_BEGIN_
         }
         retiredFallbackSets.clear();
         fallbackDescriptorSets.clear();
-        // Defer each per-pool free to the engine's retention queue so the
-        // GPU has finished using the sets before they're returned to the
-        // pool. Mirrors the framebuffer teardown elsewhere in this file.
+        fallbackDescriptorPool = VK_NULL_HANDLE;
+        if(buckets.empty()){ return; }
+        // GPU-safety: ~CB runs only after `flushPendingRetentionUnder`'s
+        // `retainShared` lambda fires (the wrapper's submission gate has
+        // signaled, GPU is done with this CB), or for an unsubmitted CB
+        // there was never any GPU work. So the sets are physically safe
+        // to free synchronously here.
+        //
+        // VVL-safety: at this moment the underlying VkCommandBuffer has
+        // transitioned pending → executable but still carries VVL's
+        // tracked binding dependencies on every descriptor set this
+        // recording bound. Freeing those sets first (and only later
+        // resetting the CB in `getAvailableBuffer` for its next reuse)
+        // is what causes VUID-vkCmd*-commandBuffer-recording errors to
+        // fire on the NEXT recording into this CB even though the next
+        // recording begins with its own vkResetCommandBuffer — VVL's
+        // invalidation cascade outlives the eager free. The fix is to
+        // reset the CB FIRST (executable → initial, all binding
+        // dependencies dropped), then free. `getAvailableBuffer` will
+        // reset again on the next reuse — idempotent. Bypassing the
+        // retention queue here is deliberate: the empty-gate enqueue it
+        // previously used fired the free at "next drainCompleted" which
+        // was during a still-recording later frame, exactly the timing
+        // VVL flagged.
+        vkResetCommandBuffer(commandBuffer, 0);
         for(auto & [pool, sets] : buckets){
             if(sets.empty()){ continue; }
-            parentQueue->engine->retentionQueue.enqueue(
-                {},
-                [dev, pool, sets = std::move(sets)]() mutable {
-                    if(!sets.empty()){
-                        vkFreeDescriptorSets(dev, pool,
-                                             static_cast<std::uint32_t>(sets.size()),
-                                             sets.data());
-                    }
-                });
+            vkFreeDescriptorSets(dev, pool,
+                                 static_cast<std::uint32_t>(sets.size()),
+                                 sets.data());
         }
-        fallbackDescriptorPool = VK_NULL_HANDLE;
     }
 
     void GEVulkanCommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned id){

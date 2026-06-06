@@ -39,6 +39,10 @@ enum AQDebugFlags : std::uint32_t {
     AQDebugAABB             = 1U << 4,   ///< Per-body fattened world AABB (12 line segments)
     AQDebugBroadphasePair   = 1U << 5,   ///< One line per emitted candidate, COM(a)→COM(b)
     AQDebugBroadphaseGuard  = 1U << 6,   ///< Single red line when candidate/brute(n²) > 0.5
+    // --- Phase 3 additions (narrowphase + contact solver, see Phase-3 brief §9) ---
+    AQDebugContactPoint     = 1U << 7,   ///< Tiny cross at each contact point (3 line segments)
+    AQDebugContactNormal    = 1U << 8,   ///< Contact normal scaled by penetration depth
+    AQDebugContactImpulse   = 1U << 9,   ///< Accumulated normal-impulse vector (post-solve)
 };
 
 #endif // AQUA_AQDEBUG_H

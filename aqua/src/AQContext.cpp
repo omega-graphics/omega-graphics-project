@@ -31,18 +31,34 @@ void AQContext::advance(float realDt) {
     if (realDt > kMaxFrameTime) realDt = kMaxFrameTime;
 
     accumulator += realDt;
+
+    // Phase 3 broadphase cadence — twice per `advance` tick:
+    //   * BEFORE the sub-step loop, so each sub-step's narrowphase + contact
+    //     solver (`AQSpace::stepInternal` → internal `runNarrowphaseAndSolve`)
+    //     has a pair list to consume. The fat-AABB margin includes
+    //     `v · realDt` dilation, conservatively covering the whole-frame
+    //     motion so the pair list is still a superset of any pair that
+    //     forms during the sub-steps.
+    //   * AFTER the sub-step loop, so the public `candidatePairs()` query
+    //     reflects post-step body state — what users (and the broadphase-
+    //     oracle test) expect to observe after `advance` returns.
+    // Both calls are guarded by `accumulator >= fixedDt`: a frame that
+    // doesn't carry enough banked time to advance any sub-step skips the
+    // broadphase work entirely (no observable behaviour change).
+    const bool willStep = (accumulator >= fixedDt);
+    if (willStep) {
+        for (auto &space : spaces) space->runBroadphase(realDt);
+    }
+
     while (accumulator >= fixedDt) {
         for (auto &space : spaces) space->stepInternal(fixedDt);
         accumulator -= fixedDt;
         elapsedTime += fixedDt;
     }
 
-    // Phase 2 broadphase runs once per `advance` tick (Phase-2 brief §10), not
-    // per sub-step — pair candidates are stable within a frame's sub-steps,
-    // and the fat-AABB margin includes a `v · realDt` dilation that covers
-    // the body's whole-frame motion. CCD/fast-moving bodies will revisit this
-    // cadence in Phase 4 if needed.
-    for (auto &space : spaces) space->runBroadphase(realDt);
+    if (willStep) {
+        for (auto &space : spaces) space->runBroadphase(realDt);
+    }
 }
 
 float AQContext::fixedTimestep() const { return fixedDt; }
