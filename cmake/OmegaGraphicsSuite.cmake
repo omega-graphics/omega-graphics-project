@@ -554,14 +554,20 @@ function(add_third_party)
 
     if(NOT ${_ARG_CUSTOM_PROJECT})
         message("Adding ThirdParty: CMAKE PROJECT:${_ARG_NAME}")
+        # Force Release for every third-party build. -DCMAKE_BUILD_TYPE pins
+        # single-config generators (Ninja, Make); --config Release pins
+        # multi-config generators (Visual Studio, Xcode, Ninja Multi-Config),
+        # which silently ignore CMAKE_BUILD_TYPE and default to Debug otherwise.
+        # Passing --config on a single-config generator is a no-op, so this
+        # works uniformly across every generator we support.
         ExternalProject_Add(
             ${_ARG_NAME}
             SOURCE_DIR "${_ARG_SOURCE_DIR}"
             BINARY_DIR "${_ARG_BINARY_DIR}"
             INSTALL_DIR "${_ARG_INSTALL_DIR}"
-            CONFIGURE_COMMAND ${CMAKE_COMMAND} -S ${_ARG_SOURCE_DIR} -G${CMAKE_GENERATOR} -B ${_ARG_BINARY_DIR} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${_ARG_INSTALL_DIR} ${_ARG_CMAKE_BUILD_ARGS}
-            BUILD_COMMAND ${CMAKE_COMMAND} --build ${_ARG_BINARY_DIR}
-            INSTALL_COMMAND ${CMAKE_COMMAND} --install ${_ARG_BINARY_DIR}
+            CONFIGURE_COMMAND ${CMAKE_COMMAND} -S ${_ARG_SOURCE_DIR} -G${CMAKE_GENERATOR} -B ${_ARG_BINARY_DIR} -DCMAKE_BUILD_TYPE=Release -DCMAKE_CONFIGURATION_TYPES=Release -DCMAKE_INSTALL_PREFIX=${_ARG_INSTALL_DIR} ${_ARG_CMAKE_BUILD_ARGS}
+            BUILD_COMMAND ${CMAKE_COMMAND} --build ${_ARG_BINARY_DIR} --config Release
+            INSTALL_COMMAND ${CMAKE_COMMAND} --install ${_ARG_BINARY_DIR} --config Release
             BUILD_BYPRODUCTS ${_BYPRODUCTS}
             DEPENDS ${_ARG_DEPS}
         )

@@ -229,6 +229,81 @@ if(TARGET_DIRECTX)
 	# src/common/MeshParser.cpp behind a CGLTF_IMPLEMENTATION define.
 	# OBJ is parsed inline in MeshParser.cpp (no external dep).
 	target_include_directories("OmegaGTE" PRIVATE "${THIRD_PARTY_DIR}/cgltf")
+
+	# ATL headers (atlstr.h / ATL::CStringW / ATL::CComPtr) are used throughout
+	# GED3D12*.cpp and d3dx12.h, and the headers auto-link atls.lib via
+	# `#pragma comment(lib, ...)`. MSBuild on the Visual Studio generator only
+	# injects atlmfc/include and atlmfc/lib/<arch> into a vcxproj when
+	# <UseOfAtl> is set in <PropertyGroup Label="Configuration">, and CMake
+	# doesn't emit that — so the include is unfindable and the linker hits
+	# LNK1104 on atls.lib even with the ATL workload installed. Ninja does
+	# NOT need this injection: it invokes cl / clang-cl from a vcvars-active
+	# shell where INCLUDE and LIB already carry the atlmfc paths. Required
+	# component: Visual Studio Installer → "Individual components" →
+	# "C++ ATL for latest v143 build tools (x86 & x64)" (or the matching
+	# ARM/ARM64 variant).
+	if(CMAKE_GENERATOR MATCHES "Visual Studio")
+		set(_OMEGA_ATL_BASE "${CMAKE_CXX_COMPILER}")
+		get_filename_component(_OMEGA_ATL_BASE "${_OMEGA_ATL_BASE}" DIRECTORY)  # bin/Host<arch>/<arch>
+		get_filename_component(_OMEGA_ATL_BASE "${_OMEGA_ATL_BASE}" DIRECTORY)  # bin/Host<arch>
+		get_filename_component(_OMEGA_ATL_BASE "${_OMEGA_ATL_BASE}" DIRECTORY)  # bin
+		get_filename_component(_OMEGA_ATL_BASE "${_OMEGA_ATL_BASE}" DIRECTORY)  # <tools version>
+		set(_OMEGA_ATL_INCLUDE "${_OMEGA_ATL_BASE}/atlmfc/include")
+		if(NOT EXISTS "${_OMEGA_ATL_INCLUDE}/atlstr.h" AND DEFINED ENV{VCToolsInstallDir})
+			# Fallback for non-standard compiler paths (Build Tools install,
+			# external clang-cl, etc.). VS / vcvars / vc-env.bat all set this.
+			set(_OMEGA_ATL_INCLUDE "$ENV{VCToolsInstallDir}/atlmfc/include")
+		endif()
+		if(NOT EXISTS "${_OMEGA_ATL_INCLUDE}/atlstr.h")
+			message(FATAL_ERROR
+				"OmegaGTE D3D12 backend requires atlstr.h from ATL.\n"
+				"  Looked at: ${_OMEGA_ATL_INCLUDE}/atlstr.h\n"
+				"Install via the Visual Studio Installer → Individual components →\n"
+				"  'C++ ATL for latest v143 build tools (x86 & x64)'\n"
+				"(or the matching ARM64 variant for ARM targets). If ATL is\n"
+				"already installed, run autom/tools/vc-env.bat before configuring\n"
+				"so VCToolsInstallDir points at the right toolset.")
+		endif()
+		target_include_directories("OmegaGTE" PRIVATE "${_OMEGA_ATL_INCLUDE}")
+
+		# ATL headers auto-link via `#pragma comment(lib, "atls.lib")`, but
+		# the matching atlmfc/lib/<arch>/ directory is only added to the
+		# linker's search path when <UseOfAtl> is set on the vcxproj. Without
+		# this, LNK1104: cannot open file 'atls.lib'. Atlmfc's per-arch lib
+		# subdirs are lowercase (x86/x64/arm/arm64) regardless of the msbuild
+		# Platform name; map both Win32->x86 and the ARM/ARM64 variants.
+		if(CMAKE_GENERATOR_PLATFORM)
+			set(_OMEGA_ATL_ARCH "${CMAKE_GENERATOR_PLATFORM}")
+		elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|aarch64)$")
+			set(_OMEGA_ATL_ARCH "ARM64")
+		elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM|arm)$")
+			set(_OMEGA_ATL_ARCH "ARM")
+		elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+			set(_OMEGA_ATL_ARCH "x64")
+		else()
+			set(_OMEGA_ATL_ARCH "Win32")
+		endif()
+		string(TOLOWER "${_OMEGA_ATL_ARCH}" _OMEGA_ATL_ARCH_LC)
+		if(_OMEGA_ATL_ARCH_LC STREQUAL "win32")
+			set(_OMEGA_ATL_ARCH_LC "x86")
+		endif()
+		set(_OMEGA_ATL_LIB_DIR "${_OMEGA_ATL_BASE}/atlmfc/lib/${_OMEGA_ATL_ARCH_LC}")
+		if(NOT EXISTS "${_OMEGA_ATL_LIB_DIR}/atls.lib")
+			message(FATAL_ERROR
+				"OmegaGTE D3D12 backend requires atls.lib from ATL.\n"
+				"  Looked at: ${_OMEGA_ATL_LIB_DIR}/atls.lib\n"
+				"The ATL workload variant must match the target architecture\n"
+				"(${_OMEGA_ATL_ARCH}). Install the matching 'C++ ATL for latest\n"
+				"v143 build tools' component via the Visual Studio Installer.")
+		endif()
+		target_link_directories("OmegaGTE" PRIVATE "${_OMEGA_ATL_LIB_DIR}")
+
+		unset(_OMEGA_ATL_BASE)
+		unset(_OMEGA_ATL_INCLUDE)
+		unset(_OMEGA_ATL_ARCH)
+		unset(_OMEGA_ATL_ARCH_LC)
+		unset(_OMEGA_ATL_LIB_DIR)
+	endif()
 endif()
 if(TARGET_METAL)
 	target_link_system_frameworks("OmegaGTE" Metal MetalKit ModelIO QuartzCore Cocoa)

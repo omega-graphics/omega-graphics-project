@@ -236,7 +236,16 @@ if(WIN32)
 		BINARY_DIR "${ICU_SOURCE_ROOT}/icu4c/source/allinone"
 		INSTALL_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu"
 		CONF ""
-		BUILD msbuild allinone.sln /p:Configuration=Release /p:Platform=${_ICU_MSBUILD_PLATFORM} /p:SkipUWP=true
+		# /m:1 + /nodeReuse:false isolate the inner msbuild from a VS-parent
+		# outer msbuild: without them the inner shares MSBuild nodes with the
+		# outer (cached state can skip makedata's NMAKE target, leaving the
+		# 3.5 KB stubdata DLL in place) and inherits /m parallelism (NMAKE
+		# failures inside makedata.mak get drowned out and don't propagate as
+		# a project-level failure). /v:normal makes any real makedata error
+		# visible in the outer log instead of being eaten at minimal
+		# verbosity. Ninja-parent didn't trip this because there was no outer
+		# msbuild to share with.
+		BUILD msbuild allinone.sln /p:Configuration=Release /p:Platform=${_ICU_MSBUILD_PLATFORM} /p:SkipUWP=true /m:1 /nodeReuse:false /v:normal
 		INSTALL ${CMAKE_COMMAND} -E copy_directory "${ICU_SOURCE_ROOT}/icu4c/include" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/include"
 		&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/${_ICU_BIN_SUBDIR}/icuuc${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/${_ICU_BIN_SUBDIR}/icudt${ICU_VERSION}.dll" "${ICU_SOURCE_ROOT}/icu4c/${_ICU_BIN_SUBDIR}/icuin${ICU_VERSION}.dll" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/bin"
 		&& ${CMAKE_COMMAND} -E copy "${ICU_SOURCE_ROOT}/icu4c/${_ICU_LIB_SUBDIR}/icuuc.lib" "${ICU_SOURCE_ROOT}/icu4c/${_ICU_LIB_SUBDIR}/icudt.lib" "${ICU_SOURCE_ROOT}/icu4c/${_ICU_LIB_SUBDIR}/icuin.lib" "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/icu/lib"
@@ -332,17 +341,22 @@ else()
 endif()
 
 # --- zlib (static) ---
-# zlib's CMakeLists always builds both `zlib` (shared) and `zlibstatic` (static)
-# regardless of BUILD_SHARED_LIBS — we just consume the static archive. Static
-# install paths: lib/libz.a on UNIX (OUTPUT_NAME=z, prefix=lib), lib/zlibstatic.lib
-# on Windows (target name `zlibstatic`).
+# This bundled zlib uses its own ZLIB_BUILD_SHARED / ZLIB_BUILD_STATIC options
+# (both default ON) and ignores BUILD_SHARED_LIBS, so passing -DZLIB_BUILD_SHARED=OFF
+# is the only way to suppress the shared build — without it we get `z.dll` plus
+# its import lib `z.lib` alongside the static archive, and the shared `z.lib`
+# can collide with the static name resolution at link time.
+# Static install paths: lib/libz.a on UNIX (OUTPUT_NAME=z, prefix=lib), lib/zs.lib
+# on Windows (target name `zlibstatic` but OUTPUT_NAME=z + zlib_static_suffix,
+# where zlib_static_suffix="s" on WIN32 to disambiguate from the shared import
+# lib `z.lib`).
 add_third_party(
 	NAME zlib
 	SOURCE_DIR "${OMEGACOMMON_THIRD_PARTY_SRC_DIR}/zlib/code"
 	BINARY_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/temp/zlib"
 	INSTALL_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/zlib"
-	CMAKE_BUILD_ARGS -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-	EXPORT_STATIC_LIBS "z:lib/libz.a:lib/zlibstatic.lib"
+	CMAKE_BUILD_ARGS -DBUILD_SHARED_LIBS=OFF -DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_STATIC=ON -DZLIB_BUILD_TESTING=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+	EXPORT_STATIC_LIBS "z:lib/libz.a:lib/zs.lib"
 	EXPORT_INCLUDE_DIRS "include")
 
 get_target_property(_OMEGACOMMON_ZLIB_INCLUDE_DIRS z INTERFACE_INCLUDE_DIRECTORIES)
