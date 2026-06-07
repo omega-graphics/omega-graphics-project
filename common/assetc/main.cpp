@@ -39,6 +39,7 @@ struct CompilerOptions {
   bool help = false;
   bool compress = false;
   bool encrypt = true;
+  bool noEncrypt = false;
   bool sign = true;
   bool verbose = false;
   bool keyPassphrase = false;
@@ -973,6 +974,8 @@ int main(int argc, char *const argv[]) {
                    "Backward-compatible alias for --app-id.");
   parser.addFlag(options.compress, "compress", {}, "Enable compression (not implemented yet).");
   parser.addFlag(options.encrypt, "encrypt", {}, "Enable encryption (enabled by default).");
+  parser.addFlag(options.noEncrypt, "no-encrypt", {},
+                 "Disable encryption (encryption is on by default).");
   parser.addOption(options.keyFile, "key-file", {}, "path",
                    "Bundle key file. Defaults to a companion <output>.key file.");
   parser.addFlag(options.keyPassphrase, "key-passphrase", {},
@@ -1000,6 +1003,10 @@ int main(int argc, char *const argv[]) {
   if (options.help) {
     printHelp(parser);
     return 0;
+  }
+
+  if (options.noEncrypt) {
+    options.encrypt = false;
   }
 
   auto validation = validateOptions(options);

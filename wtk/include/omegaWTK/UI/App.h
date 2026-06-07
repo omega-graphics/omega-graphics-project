@@ -18,7 +18,12 @@ class ThemeVars;
 class OMEGAWTK_EXPORT AppInst {
     Native::NAP ptr;
     static AppInst *instance;
-    OmegaCommon::Optional<OmegaCommon::AssetBundle> assetBundle;
+    // The default.pak shipped beside the executable. Opened in the
+    // AppInst constructor and required: missing or unreadable pak is
+    // a hard error. Consumed today by PipelineRegistry::initialize() to
+    // stream the compositor shader library; user code may also load
+    // app-specific assets out of it via getAssetBundle().
+    OmegaCommon::AssetBundle assetBundle;
     // Widget-View-Paint-Lifecycle-Plan Tier D / D7.1 (2026-06-04):
     // process-wide active theme. Referenced by sheet-rule `Var{name}`
     // values; the `StyleResolver` substitutes through this map at
@@ -75,8 +80,8 @@ public:
 //     AppInst(void * windows_inst);
 // #endif
     Native::NAP & getNAP();
-    OmegaCommon::AssetBundle * getAssetBundle();
-    const OmegaCommon::AssetBundle * getAssetBundle() const;
+    OmegaCommon::AssetBundle & getAssetBundle();
+    const OmegaCommon::AssetBundle & getAssetBundle() const;
 
     /// Widget-View-Paint-Lifecycle-Plan Tier D / D7.1 (2026-06-04):
     /// the active process-wide theme. Returns the currently installed

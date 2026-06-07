@@ -292,7 +292,6 @@ _NAMESPACE_BEGIN_
      @brief The Omega Graphics Engine
     */
     class OMEGAGTE_EXPORT OmegaGraphicsEngine {
-        SharedHandle<GTEShaderLibrary> loadShaderLibraryFromInputStream(std::istream & in);
     protected:
         virtual SharedHandle<GTEShader> _loadShaderFromDesc(omegasl_shader *shaderDesc,bool runtime = false) = 0;
 
@@ -358,6 +357,17 @@ _NAMESPACE_BEGIN_
           @returns SharedHandle<GTEShaderLibrary>
          */
          SharedHandle<GTEShaderLibrary> loadShaderLibrary(FS::Path path);
+
+         /**
+          @brief Load an OmegaSL shader library from an arbitrary input stream.
+          @paragraph Reads the library payload incrementally from @p in (no
+          full-buffer slurp), so callers can feed it a sliced bundle stream
+          (see @c OmegaCommon::AssetBundle::stream) instead of a path on
+          disk. Behavior on parse failure mirrors @c loadShaderLibrary.
+          @param in Input stream positioned at the start of an .omegasllib payload.
+          @returns SharedHandle<GTEShaderLibrary>
+         */
+         SharedHandle<GTEShaderLibrary> loadShaderLibraryFromInputStream(std::istream & in);
 
         /**
          @brief Loads an OmegaSL Shader Library on Runtime.

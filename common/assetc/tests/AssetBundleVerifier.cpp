@@ -143,6 +143,30 @@ bool verifyBundle(const String &bundlePath) {
                 "Asset payload mismatch for " + String(asset.name) + ".")) {
       return false;
     }
+
+    auto streamResult = bundle.stream(asset.name);
+    if (streamResult.isErr()) {
+      // Encrypted/compressed entries must be rejected cleanly. The existing
+      // signed+encrypted bundle exercises this branch.
+      const auto &message = streamResult.error();
+      if (!expect(message.find("encrypted") != String::npos ||
+                      message.find("compressed") != String::npos,
+                  "Unexpected stream() error for " + String(asset.name) + ": " + message)) {
+        return false;
+      }
+    } else {
+      auto &stream = *streamResult.value();
+      String streamed((std::istreambuf_iterator<char>(stream)),
+                       std::istreambuf_iterator<char>());
+      if (!expect(!stream.bad(),
+                  "stream() reported a bad state while reading " + String(asset.name) + ".")) {
+        return false;
+      }
+      if (!expect(streamed == loaded,
+                  "stream() bytes differ from load() bytes for " + String(asset.name) + ".")) {
+        return false;
+      }
+    }
   }
 
   auto textResult = bundle.loadText("Config/AppConfig.json");

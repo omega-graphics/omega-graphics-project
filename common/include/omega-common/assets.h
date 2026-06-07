@@ -1,6 +1,7 @@
 #include "omega-common/fs.h"
 
 #include <cstdint>
+#include <istream>
 
 #ifndef OMEGAWTK_ASSETS_H
 #define OMEGAWTK_ASSETS_H
@@ -55,6 +56,12 @@ namespace OmegaCommon {
 
       OMEGACOMMON_NODISCARD Result<Vector<std::uint8_t>, String> load(StrRef name) const;
       OMEGACOMMON_NODISCARD Result<String, String> loadText(StrRef name) const;
+
+      /// Returns an input stream over the raw stored bytes of @p name.
+      /// The stream owns its own file handle; it may outlive the bundle and
+      /// be read independently from other streams. Encrypted or compressed
+      /// entries are rejected — use @c load instead.
+      OMEGACOMMON_NODISCARD Result<UniqueHandle<std::istream>, String> stream(StrRef name) const;
   };
   
   class [[deprecated("Use AssetBundle instead")]] OMEGACOMMON_EXPORT AssetLibrary {

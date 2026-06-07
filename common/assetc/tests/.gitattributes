@@ -1,0 +1,5 @@
+# Test fixtures must have stable byte content across platforms — the
+# AssetBundleVerifier compares load()/stream() output against LF-only C string
+# literals, and any generated golden bundle is a byte-deterministic artifact.
+DemoAssets/** text eol=lf
+DemoAssets.manifest text eol=lf

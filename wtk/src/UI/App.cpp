@@ -11,6 +11,7 @@
 
 #include "omegaWTK/Native/NativeApp.h"
 
+#include <stdexcept>
 #include <string>
 
 #if defined(_WIN32)
@@ -37,14 +38,33 @@ AppInst::AppInst(void *data):ptr(Native::make_native_app(data)),windowManager(st
     instance = this;
     gte = OmegaGTE::InitWithDefaultDevice();
 
-    /// Load your app's assets here. 
-    OmegaCommon::FS::Path assets_path("./default.pak");
-    if(assets_path.exists()){
-        auto bundleResult = OmegaCommon::AssetBundle::open(assets_path);
-        if(bundleResult.isOk()){
-            assetBundle = std::move(bundleResult.value());
+    // Open the app's default.pak from beside the executable (Resources/
+    // on macOS, exe-dir on Win/Linux — OmegaWTKApp.cmake stages it
+    // either way). Mandatory: the compositor shader library is an
+    // entry inside it and Composition::InitializeEngine() below relies
+    // on it. CWD is unreliable (debugger / ctest / Finder launches all
+    // leave it elsewhere than the binary), so resolve from the exe.
+    OmegaCommon::FS::Path bundlePath = AppInst::executableDir();
+#if defined(TARGET_MACOS)
+    // .../Contents/MacOS -> .../Contents/Resources/default.pak
+    {
+        auto &exeDir = bundlePath.str();
+        auto parentSlash = exeDir.rfind('/');
+        if(parentSlash != std::string::npos){
+            bundlePath = OmegaCommon::FS::Path(exeDir.substr(0, parentSlash) + "/Resources/default.pak");
+        } else {
+            bundlePath.append("default.pak");
         }
     }
+#else
+    bundlePath.append("default.pak");
+#endif
+    auto bundleResult = OmegaCommon::AssetBundle::open(bundlePath);
+    if(bundleResult.isErr()){
+        throw std::runtime_error("Failed to open app asset bundle (" + bundlePath.str() +
+                                 "): " + bundleResult.error());
+    }
+    assetBundle = std::move(bundleResult.value());
 
     Composition::InitializeEngine();
     OMEGAWTK_DEBUG("Application Startup")
@@ -139,18 +159,12 @@ Native::NAP & AppInst::getNAP(){
     return ptr;
 }
 
-OmegaCommon::AssetBundle * AppInst::getAssetBundle(){
-    if(!assetBundle.has_value()){
-        return nullptr;
-    }
-    return &(*assetBundle);
+OmegaCommon::AssetBundle & AppInst::getAssetBundle(){
+    return assetBundle;
 }
 
-const OmegaCommon::AssetBundle * AppInst::getAssetBundle() const{
-    if(!assetBundle.has_value()){
-        return nullptr;
-    }
-    return &(*assetBundle);
+const OmegaCommon::AssetBundle & AppInst::getAssetBundle() const{
+    return assetBundle;
 }
 
 // ---------------------------------------------------------------

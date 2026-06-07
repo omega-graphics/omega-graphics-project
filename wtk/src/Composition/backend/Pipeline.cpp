@@ -1,44 +1,12 @@
 #include "Pipeline.h"
 #include "omegaWTK/Core/Core.h"
+#include "omegaWTK/UI/App.h"
 
 #include <exception>
 #include <iostream>
 #include <string>
 
 namespace OmegaWTK::Composition {
-
-    namespace {
-        /// Resolve the path to the precompiled compositor shader library
-        /// shipped alongside the executable. The library is produced at
-        /// build time by `add_omegasl_lib(OmegaWTKCompositorShaderLib ...)`
-        /// and copied into the bundle / output directory by
-        /// `OmegaWTKApp.cmake`.
-        ///
-        /// Finding the running binary is delegated to
-        /// OmegaCommon::FS::getExecutableDir(); only the bundle-relative
-        /// layout of the library differs per platform. On macOS the exe
-        /// lives in `.../Contents/MacOS` and the library is a sibling under
-        /// `.../Contents/Resources`; elsewhere the library sits next to the
-        /// executable.
-        OmegaCommon::String getCompositorShaderLibPath() {
-            OmegaCommon::String exeDir = OmegaCommon::FS::getExecutableDir().str();
-            if(exeDir.empty()) {
-                return {};
-            }
-#if defined(TARGET_MACOS)
-            // .../Contents/MacOS -> .../Contents/Resources/compositor.omegasllib
-            auto parentSlash = exeDir.rfind('/');
-            if(parentSlash == std::string::npos) {
-                return {};
-            }
-            return exeDir.substr(0, parentSlash) + "/Resources/compositor.omegasllib";
-#elif defined(TARGET_WIN32)
-            return exeDir + "\\compositor.omegasllib";
-#else
-            return exeDir + "/compositor.omegasllib";
-#endif
-        }
-    }
 
     void PipelineRegistry::resetState(){
         shaderLibrary_.reset();
@@ -64,30 +32,43 @@ namespace OmegaWTK::Composition {
             return false;
         }
 
-        auto shaderLibPath = getCompositorShaderLibPath();
-        if(shaderLibPath.empty()){
-            std::cout << "Failed to resolve compositor shader library path." << std::endl;
+        // Stream the compositor shader library out of the app's
+        // default.pak (opened and owned by AppInst). The bundle is
+        // mandatory at AppInst construction, so AppInst::inst() and
+        // getAssetBundle() are guaranteed to be valid by the time
+        // Composition::InitializeEngine() reaches us.
+        auto *app = OmegaWTK::AppInst::inst();
+        if(app == nullptr){
+            std::cout << "AppInst is not initialized; cannot load compositor shader library." << std::endl;
+            resetState();
+            return false;
+        }
+        constexpr const char *kCompositorEntry = "compositor.omegasllib";
+        auto streamResult = app->getAssetBundle().stream(kCompositorEntry);
+        if(streamResult.isErr()){
+            std::cout << "Failed to open `" << kCompositorEntry << "` from app bundle: "
+                      << streamResult.error() << std::endl;
             resetState();
             return false;
         }
         try {
-            shaderLibrary_ = gte.graphicsEngine->loadShaderLibrary(
-                    OmegaCommon::FS::Path(shaderLibPath));
+            shaderLibrary_ = gte.graphicsEngine->loadShaderLibraryFromInputStream(
+                    *streamResult.value());
         }
         catch(const std::exception &ex){
-            std::cout << "Failed to load compositor shader library `" << shaderLibPath
+            std::cout << "Failed to load compositor shader library `" << kCompositorEntry
                       << "`: " << ex.what() << std::endl;
             resetState();
             return false;
         }
         catch(...){
-            std::cout << "Failed to load compositor shader library `" << shaderLibPath
+            std::cout << "Failed to load compositor shader library `" << kCompositorEntry
                       << "` due to an unknown exception." << std::endl;
             resetState();
             return false;
         }
         if(shaderLibrary_ == nullptr){
-            std::cout << "Failed to load compositor shader library from `" << shaderLibPath << "`." << std::endl;
+            std::cout << "Failed to load compositor shader library from `" << kCompositorEntry << "`." << std::endl;
             resetState();
             return false;
         }

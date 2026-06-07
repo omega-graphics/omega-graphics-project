@@ -5,9 +5,12 @@
 
 #include "../assetc/assetc.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
+#include <istream>
 #include <limits>
+#include <streambuf>
 #include <utility>
 #include <vector>
 
@@ -359,6 +362,103 @@ Result<void *, String> loadBundleV2Metadata(std::ifstream &in, AssetBundle::Impl
     return Result<void *, String>::ok(nullptr);
 }
 
+class SliceStreambuf : public std::streambuf {
+public:
+    SliceStreambuf(String path, std::streamoff sliceStart, std::streamoff sliceSize)
+        : path_(std::move(path)),
+          start_(sliceStart),
+          size_(sliceSize),
+          bufferStartPos_(0),
+          file_(path_, std::ios::binary | std::ios::in) {
+        if(file_.is_open()) {
+            file_.seekg(start_, std::ios::beg);
+        }
+    }
+
+    bool ok() const {
+        return file_.is_open() && !file_.fail();
+    }
+
+protected:
+    int_type underflow() override {
+        if(!file_.is_open()) {
+            return traits_type::eof();
+        }
+        std::streamoff bufferLen = (eback() == nullptr) ? 0 : (egptr() - eback());
+        std::streamoff nextPos = bufferStartPos_ + bufferLen;
+        if(nextPos >= size_) {
+            return traits_type::eof();
+        }
+        file_.clear();
+        file_.seekg(start_ + nextPos, std::ios::beg);
+        if(file_.fail()) {
+            return traits_type::eof();
+        }
+        std::streamoff remaining = size_ - nextPos;
+        auto bufBytes = static_cast<std::streamoff>(sizeof(buffer_));
+        auto toRead = static_cast<std::streamsize>(std::min(remaining, bufBytes));
+        file_.read(buffer_, toRead);
+        auto got = file_.gcount();
+        if(got <= 0) {
+            return traits_type::eof();
+        }
+        bufferStartPos_ = nextPos;
+        setg(buffer_, buffer_, buffer_ + got);
+        return traits_type::to_int_type(static_cast<unsigned char>(buffer_[0]));
+    }
+
+    pos_type seekoff(off_type off, std::ios_base::seekdir dir,
+                     std::ios_base::openmode which) override {
+        if((which & std::ios_base::in) == 0) {
+            return pos_type(off_type(-1));
+        }
+        std::streamoff consumed = (eback() == nullptr) ? 0 : (gptr() - eback());
+        std::streamoff currentPos = bufferStartPos_ + consumed;
+        std::streamoff newPos = 0;
+        if(dir == std::ios_base::beg) {
+            newPos = static_cast<std::streamoff>(off);
+        } else if(dir == std::ios_base::cur) {
+            newPos = currentPos + static_cast<std::streamoff>(off);
+        } else if(dir == std::ios_base::end) {
+            newPos = size_ + static_cast<std::streamoff>(off);
+        } else {
+            return pos_type(off_type(-1));
+        }
+        if(newPos < 0 || newPos > size_) {
+            return pos_type(off_type(-1));
+        }
+        // Drop the get area; next underflow() will refill from newPos.
+        setg(nullptr, nullptr, nullptr);
+        bufferStartPos_ = newPos;
+        return pos_type(newPos);
+    }
+
+    pos_type seekpos(pos_type pos, std::ios_base::openmode which) override {
+        return seekoff(off_type(pos), std::ios_base::beg, which);
+    }
+
+private:
+    String path_;
+    std::streamoff start_;
+    std::streamoff size_;
+    std::streamoff bufferStartPos_;
+    std::ifstream file_;
+    char buffer_[4096];
+};
+
+class SliceIstream : public std::istream {
+public:
+    explicit SliceIstream(UniqueHandle<SliceStreambuf> buf)
+        : std::istream(buf.get()), buf_(std::move(buf)) {
+        if(!buf_->ok()) {
+            setstate(std::ios::failbit);
+        }
+    }
+
+private:
+    UniqueHandle<SliceStreambuf> buf_;
+};
+
 Result<Vector<std::uint8_t>, String> readStoredBytes(const AssetBundle::Impl &impl,
                                                      const RuntimeAssetEntry &entry) {
     std::ifstream in(impl.bundlePath, std::ios::binary | std::ios::in);
@@ -647,6 +747,48 @@ Result<Vector<std::uint8_t>, String> AssetBundle::load(StrRef name) const {
     }
 
     return Result<Vector<std::uint8_t>, String>::ok(std::move(bytes));
+}
+
+Result<UniqueHandle<std::istream>, String> AssetBundle::stream(StrRef name) const {
+    using ResultT = Result<UniqueHandle<std::istream>, String>;
+
+    if(impl == nullptr) {
+        return ResultT::err("Asset bundle is not open.");
+    }
+
+    auto it = impl->entryIndex.find(stringFromRef(name));
+    if(it == impl->entryIndex.end()) {
+        return ResultT::err("Asset not found: " + stringFromRef(name));
+    }
+
+    auto &entry = impl->entries[it->second];
+    auto isCompressed =
+        (entry.flags & static_cast<std::uint32_t>(assetc::AssetEntryFlags::Compressed)) != 0;
+    auto isEncrypted =
+        (entry.flags & static_cast<std::uint32_t>(assetc::AssetEntryFlags::Encrypted)) != 0;
+
+    if(isCompressed || isEncrypted) {
+        return ResultT::err(
+            "streaming encrypted/compressed entries not yet supported; use load(): " + entry.name);
+    }
+
+    std::streamoff sliceStart = 0;
+    if(!toStreamOffset(entry.fileOffset, sliceStart)) {
+        return ResultT::err("Asset payload offset is too large to stream.");
+    }
+    std::streamoff sliceSize = 0;
+    if(!toStreamOffset(entry.storedSize, sliceSize)) {
+        return ResultT::err("Asset payload is too large to stream.");
+    }
+
+    auto buf = std::unique_ptr<SliceStreambuf>(
+        new SliceStreambuf(impl->bundlePath, sliceStart, sliceSize));
+    if(!buf->ok()) {
+        return ResultT::err("Failed to open asset bundle for streaming: " + impl->bundlePath);
+    }
+
+    UniqueHandle<std::istream> stream(new SliceIstream(std::move(buf)));
+    return ResultT::ok(std::move(stream));
 }
 
 Result<String, String> AssetBundle::loadText(StrRef name) const {

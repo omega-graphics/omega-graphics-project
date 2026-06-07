@@ -81,6 +81,103 @@ Phases assume the **shared** [UI-Engine-Roadmap](UI-Engine-Roadmap.md) advances 
 
 ---
 
+### Phase M1.1 — Detailed breakdown (OmegaWTKM base host)
+
+OmegaWTKM is the **mobile host module** that lands the iOS / Android side of M1.1. The shared widget tree, Composition, Layout, StyleSheet, and FrameBuilder are unchanged — OmegaWTKM only adds the host, the navigator, and the event bridge. The breakdown below resolves five design decisions agreed in chat before this phase opens.
+
+#### Decisions locked in
+
+| Key | Decision | Rationale |
+|-----|----------|-----------|
+| A1 | `OmegaWTK::Mobile::Native::NativeApp` is a **parallel** interface to `OmegaWTK::Native::NativeApp`, not a shared base. | Lifecycle differs (no user-driven terminate, scene/activity recreation, foreground/background) — faking it through the desktop interface leaks mobile-only states into desktop call sites. |
+| B  | Strip `AppWindowManager` to single-window form via `#ifdef TARGET_MOBILE`. | Mobile apps only ever have one window; the multi-window API (`addWindow`, `windows` vector, `WindowIndex`) is dead weight and trains app code into a desktop assumption. `rootWindow` survives as the single window. |
+| D  | Extend `omegaWTK/Native/NativeEvent.h` (the **shared** header) with the missing gesture machinery. | Shared widget code (`Button`, `ScrollableContainer`, list cells) consumes one event stream. Desktop backends simply never emit the mobile-only sub-types. |
+| 5  | Collapse `GesturePinch / GesturePan / GestureRotate` into a single `Gesture` event with a `GestureSubtype` discriminator covering `Pinch / Pan / Rotate / Tap / LongPress / Swipe`. | One umbrella event type → one switch arm in every consumer. Sub-type payload lives in a `GestureParams` struct. No in-tree code emits the old three event types (only the params-destructor switch in `wtk/src/Native/NativeEvent.cpp:67–69` references them) — safe rename. |
+| E1 | Touch is synthesized into `LMouseDown / CursorMove / LMouseUp` for single-finger interactions. | Lets every existing pointer-driven widget work unmodified on day one. First-class `Touch*` events get added later when a widget actually needs multi-touch beyond what `Gesture` covers. |
+
+#### Module boundary
+
+| Concern | Location |
+|---------|----------|
+| Namespace | `OmegaWTK::Mobile::Native` |
+| Public headers | `wtk/include/omegaWTKM/...` |
+| Mobile impl | `wtk/src/Mobile/Native/{ios,android}/...` (already scaffolded) |
+| Private headers | `wtk/src/Mobile/Native/private_include/NativePrivate/{ios,android}/...` (already scaffolded) |
+| Build defines | `TARGET_IOS` / `TARGET_ANDROID` / `TARGET_MOBILE` (already defined) |
+
+#### Header publish list (`wtk/include/omegaWTKM/`)
+
+```
+omegaWTKM/
+  Mobile.h                       # umbrella include
+  Native/
+    NativeMobileApp.h            # OmegaWTK::Mobile::Native::NativeApp (parallel to desktop)
+    NativeWindow.h               # mobile NativeWindow — single per app
+    NativeWindowNavigator.h      # iOS UIWindowScene / Android Activity wrapper; surfaces the one window
+    NativeViewNavigator.h        # push / pop view stack inside the single window
+    NativeItem.h                 # mobile NativeItem (UIView / SurfaceView wrapper)
+    Notification.h               # NotificationCenter (already referenced by AndroidNotification.cpp)
+    SafeArea.h                   # safe-area insets (M1.4 prerequisite; header lands now)
+```
+
+There is no `NativeGesture.h` — gesture event types live in the shared `omegaWTK/Native/NativeEvent.h` per decision D.
+
+#### Sub-step breakdown
+
+##### M1.1.a — Publish OmegaWTKM headers
+Land the header tree above. Headers only, no impl change. Backstops the contracts the existing iOS/Android scaffolds already include (`omegaWTKM/Native/NativeWindowNavigator.h`, `omegaWTKM/Native/NativeMobileApp.h`, `omegaWTKM/Native/NativeViewNavigator.h`, `omegaWTKM/Native/Notification.h`) so those `.mm`/`.cpp` files compile-clean.
+
+The mobile `NativeWindow` interface differs from desktop: no minimize/maximize/restore/fullscreen, no per-window menu, no resizable/key-window state, no per-window opacity. It does keep `setRect`/`getRect` (used by Layout for the available rect), `currentScreen()` (DPI source), the frame-flush callback (Tier A), and the `isNativeReady` / `onFirstRealize` / `onRealize` realize signals — mobile genuinely needs the realize signals because scene re-attach (iOS) and surface destroyed/recreated (Android) are normal events, not edge cases.
+
+`NativeItem::addChildNativeItem` is aligned to the desktop signature (by-value `SharedHandle<NativeItem>`, per `omegaWTK/Native/NativeItem.h:23`); both existing scaffolds currently take by-reference and will be updated in c/d.
+
+##### M1.1.b — Engine integration
+Three coordinated changes in the shared `omegaWTK` headers/impl:
+
+1. **`AppInst::start()` mobile branch.** `#ifdef TARGET_MOBILE` selects `Mobile::Native::make_native_app(data)` instead of `Native::make_native_app(data)`. `AppInst` holds the result in a minimal `NativeAppBase` seam that exposes only `run()` and `terminate()` — A1 rules out a full shared interface, not a two-method run/terminate seam.
+
+2. **`AppWindowManager` strip.** Under `TARGET_MOBILE`, the public surface shrinks to `rootWindow`, `setRootWindow(handle)`, `getRootWindow()`, `displayRootWindow()`, `defaultScreen()`, `setDefaultScreen()`. `addWindow`, `windows`, `WindowIndex`, `closeAllWindows`'s iteration are `#ifndef TARGET_MOBILE`-gated. `closeAllWindows()` collapses to "close the one window."
+
+3. **`Gesture` event unification.** In `omegaWTK/Native/NativeEvent.h`:
+   - Remove `GesturePinch`, `GesturePan`, `GestureRotate` from `NativeEvent::EventType`.
+   - Add a single `Gesture` member.
+   - Add `enum class GestureSubtype { Pinch, Pan, Rotate, Tap, LongPress, Swipe }`.
+   - Add `struct GestureParams` with the subtype discriminator + `Composition::Point2D position` + `unsigned numTouches` + per-subtype payload (scale, translation, rotation, tapCount, pressDurationMs, swipeDirection). Exact field layout finalized in M1.2.
+   - Update the params-destructor switch in `wtk/src/Native/NativeEvent.cpp` — replace the three no-payload arms with a single `case Gesture: delete reinterpret_cast<GestureParams *>(params); break;`.
+
+##### M1.1.c — iOS host
+Bring the existing `wtk/src/Mobile/Native/ios/` files to compile-and-link:
+- `UIKitApp` implements `Mobile::Native::NativeApp` (`run` / `terminate` / `createNavigator` / `setDefaultNavigator`). Wire `OmegaWTKUIKitAppDelegate` to a real `NSObject<UIApplicationDelegate>` (the scaffold's `@interface` omits the protocol).
+- `IOSWindow` implements `Mobile::Native::NativeWindow`. Holds the singleton `UIWindow` for the scene; `setRootView` actually wires the root `UIViewController.view`.
+- `IOSWindowNavigator` collapses to single-window: `newWindow()` → `getWindow()` returning the cached singleton. `setKeyWindow(unsigned)` is removed; mobile does not support multiple key windows.
+- `IOSItem` fixes: declare `OmegaWTKMobileUIViewController : UIViewController` (the scaffold drops the superclass — won't compile); rename the `delegate` property to avoid shadowing `UIResponder.delegate`; align `addChildNativeItem` signature with the desktop interface.
+
+##### M1.1.d — Android host
+Bring the existing `wtk/src/Mobile/Native/android/` files to compile-and-link, with the JNI safety pass:
+- Fix `AndroidApp.cpp:16` self-assignment (`app = (android_app *)app;` → `(android_app *)data`).
+- Cache `JavaVM*` at `AndroidApp` construction; every JNI call site goes through an `AttachCurrentThread` helper. Raw `JNIEnv *env;` fields in `AndroidItem` / `AndroidNotificationCenter` are removed.
+- Wrap every cached `jobject` (`javaObj` in `AndroidApp`, `nativeItem` in `AndroidItem`, `object` in `AndroidNotificationCenter`) in a global ref (`NewGlobalRef` at construction, `DeleteGlobalRef` at destruction). Without this they get GC'd between frames.
+- Add `AndroidWindowNavigator` (currently missing — only `AndroidViewNavigator` exists, which is the view-stack one). The window navigator owns the `NativeActivity` and exposes the singleton `AndroidWindow`.
+- `AndroidWindow` implements `Mobile::Native::NativeWindow`, backed by `android_app->window` (`ANativeWindow*`).
+- Tighten `AndroidItem`: global ref, signature alignment with desktop interface.
+
+##### M1.1.e — Touch → pointer synthesis (E1)
+Single-finger touch events are translated by the iOS/Android bridge into the existing pointer event types:
+- `touchesBegan` (iOS) / `MotionEvent.ACTION_DOWN` (Android) → `NativeEvent::LMouseDown` with `LMouseDownParams { position, screenPosition, modifiers = {}, clickCount = 1 }`.
+- `touchesMoved` / `ACTION_MOVE` → `NativeEvent::CursorMove`.
+- `touchesEnded` / `ACTION_UP` → `NativeEvent::LMouseUp`.
+- `touchesCancelled` / `ACTION_CANCEL` → `NativeEvent::LMouseUp` with a cancellation flag (extend `LMouseUpParams` with `bool cancelled = false` — cheap, desktop emits `false`).
+
+Multi-touch (≥2 fingers) is **not** synthesized into pointer events; it goes to the `Gesture` path landing in M1.2. Verifies M1 exit criteria: VStack + Label + Button responds to touch on iOS and Android.
+
+#### Out of scope for M1.1
+- Real gesture emit (`Gesture` event with sub-types fired from `UIGestureRecognizer` / `GestureDetector`). The event type and params struct land header-only in M1.1.b; the bridges land in **M1.2**.
+- Safe-area inset wiring into Layout — `SafeArea.h` lands in M1.1.a, plumbing in **M1.4**.
+- Keyboard avoidance, IME — **M2.3**.
+- Lifecycle hooks (foreground / background, low-memory, scene re-attach) — scaffolded in M1.1.c/d only; the full delegate surface lands when a widget needs it.
+
+---
+
 ### Phase M2 — Shared widget mobile readiness
 
 **Goal:** Shared widgets are usable and pleasant on mobile without new widget types.
