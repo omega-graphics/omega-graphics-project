@@ -108,12 +108,12 @@ int RunBasicAppTest(AppInst *app) {
 
     float contentW = windowRect.w - 32.f;
 
-    auto root = make<VStack>(windowRect, StackOptions{
-        .spacing = 8.f,
-        .padding = {16.f, 16.f, 16.f, 16.f},
-        .mainAlign = StackMainAlign::Start,
-        .crossAlign = StackCrossAlign::Stretch
-    });
+    StackOptions rootOpts;
+    rootOpts.spacing = 8.f;
+    rootOpts.padding = StackInsets{16.f, 16.f, 16.f, 16.f};
+    rootOpts.mainAlign = StackMainAlign::Start;
+    rootOpts.crossAlign = StackCrossAlign::Stretch;
+    auto root = make<VStack>(windowRect, rootOpts);
 
     // Title
     LabelProps titleProps;
@@ -123,78 +123,81 @@ int RunBasicAppTest(AppInst *app) {
     titleProps.wrapping = Composition::TextLayoutDescriptor::None;
     auto titleLabel = make<Label>(
         Composition::Rect{{0, 0}, contentW, 30.f}, titleProps);
-    root->addChild(titleLabel, StackSlot{.flexGrow = 0.f});
+    StackSlot titleSlot;
+    titleSlot.flexGrow = 0.f;
+    root->addChild(titleLabel, titleSlot);
 
     // Separator
+    SeparatorProps sep1Props;
+    sep1Props.orientation = Orientation::Horizontal;
+    sep1Props.thickness = 1.f;
+    sep1Props.inset = 0.f;
+    sep1Props.brush = Composition::ColorBrush(
+        Composition::Color::create8Bit(0x555555));
     auto sep1 = make<Separator>(
-        Composition::Rect{{0, 0}, contentW, 4.f},
-        SeparatorProps{
-            .orientation = Orientation::Horizontal,
-            .thickness = 1.f,
-            .inset = 0.f,
-            .brush = Composition::ColorBrush(
-                Composition::Color::create8Bit(0x555555))
-        });
-    root->addChild(sep1, StackSlot{.flexGrow = 0.f});
+        Composition::Rect{{0, 0}, contentW, 4.f}, sep1Props);
+    StackSlot sep1Slot;
+    sep1Slot.flexGrow = 0.f;
+    root->addChild(sep1, sep1Slot);
 
     // Shape row
+    StackOptions shapeRowOpts;
+    shapeRowOpts.spacing = 12.f;
+    shapeRowOpts.mainAlign = StackMainAlign::Center;
+    shapeRowOpts.crossAlign = StackCrossAlign::Center;
     auto shapeRow = make<HStack>(
-        Composition::Rect{{0, 0}, contentW, 100.f},
-        StackOptions{
-            .spacing = 12.f,
-            .mainAlign = StackMainAlign::Center,
-            .crossAlign = StackCrossAlign::Center
-        });
+        Composition::Rect{{0, 0}, contentW, 100.f}, shapeRowOpts);
 
+    RectangleProps redProps;
+    redProps.fill = Composition::ColorBrush(
+        Composition::Color::create8Bit(Composition::Color::Red8));
     auto redRect = make<Rectangle>(
-        Composition::Rect{{0, 0}, 80.f, 80.f},
-        RectangleProps{
-            .fill = Composition::ColorBrush(
-                Composition::Color::create8Bit(Composition::Color::Red8))
-        });
+        Composition::Rect{{0, 0}, 80.f, 80.f}, redProps);
     shapeRow->addChild(redRect);
 
+    RoundedRectangleProps blueProps;
+    blueProps.fill = Composition::ColorBrush(
+        Composition::Color::create8Bit(Composition::Color::Blue8));
+    blueProps.topLeft = 12.f;
+    blueProps.topRight = 12.f;
+    blueProps.bottomLeft = 12.f;
+    blueProps.bottomRight = 12.f;
     auto blueRR = make<RoundedRectangle>(
-        Composition::Rect{{0, 0}, 80.f, 80.f},
-        RoundedRectangleProps{
-            .fill = Composition::ColorBrush(
-                Composition::Color::create8Bit(Composition::Color::Blue8)),
-            .topLeft = 12.f, .topRight = 12.f,
-            .bottomLeft = 12.f, .bottomRight = 12.f
-        });
+        Composition::Rect{{0, 0}, 80.f, 80.f}, blueProps);
     shapeRow->addChild(blueRR);
 
+    EllipseProps greenProps;
+    greenProps.fill = Composition::ColorBrush(
+        Composition::Color::create8Bit(Composition::Color::Green8));
     auto greenEllipse = make<Ellipse>(
-        Composition::Rect{{0, 0}, 80.f, 80.f},
-        EllipseProps{
-            .fill = Composition::ColorBrush(
-                Composition::Color::create8Bit(Composition::Color::Green8))
-        });
+        Composition::Rect{{0, 0}, 80.f, 80.f}, greenProps);
     shapeRow->addChild(greenEllipse);
 
+    RectangleProps yellowProps;
+    yellowProps.fill = Composition::ColorBrush(
+        Composition::Color::create8Bit(Composition::Color::Yellow8));
+    yellowProps.stroke = Composition::ColorBrush(
+        Composition::Color::create8Bit(Composition::Color::Black8));
+    yellowProps.strokeWidth = 2.f;
     auto yellowRect = make<Rectangle>(
-        Composition::Rect{{0, 0}, 80.f, 80.f},
-        RectangleProps{
-            .fill = Composition::ColorBrush(
-                Composition::Color::create8Bit(Composition::Color::Yellow8)),
-            .stroke = Composition::ColorBrush(
-                Composition::Color::create8Bit(Composition::Color::Black8)),
-            .strokeWidth = 2.f
-        });
+        Composition::Rect{{0, 0}, 80.f, 80.f}, yellowProps);
     shapeRow->addChild(yellowRect);
 
-    root->addChild(shapeRow, StackSlot{.flexGrow = 0.f});
+    StackSlot shapeRowSlot;
+    shapeRowSlot.flexGrow = 0.f;
+    root->addChild(shapeRow, shapeRowSlot);
 
     // Separator
+    SeparatorProps sep2Props;
+    sep2Props.orientation = Orientation::Horizontal;
+    sep2Props.thickness = 1.f;
+    sep2Props.brush = Composition::ColorBrush(
+        Composition::Color::create8Bit(0x555555));
     auto sep2 = make<Separator>(
-        Composition::Rect{{0, 0}, contentW, 4.f},
-        SeparatorProps{
-            .orientation = Orientation::Horizontal,
-            .thickness = 1.f,
-            .brush = Composition::ColorBrush(
-                Composition::Color::create8Bit(0x555555))
-        });
-    root->addChild(sep2, StackSlot{.flexGrow = 0.f});
+        Composition::Rect{{0, 0}, contentW, 4.f}, sep2Props);
+    StackSlot sep2Slot;
+    sep2Slot.flexGrow = 0.f;
+    root->addChild(sep2, sep2Slot);
 
     // Description
     LabelProps descProps;
@@ -207,20 +210,21 @@ int RunBasicAppTest(AppInst *app) {
     descProps.wrapping = Composition::TextLayoutDescriptor::WrapByWord;
     auto descLabel = make<Label>(
         Composition::Rect{{0, 0}, contentW, 60.f}, descProps);
-    root->addChild(descLabel, StackSlot{.flexGrow = 1.f});
+    StackSlot descSlot;
+    descSlot.flexGrow = 1.f;
+    root->addChild(descLabel, descSlot);
 
     // Button row — exercises the Phase 4A Button base implementation with
     // explicit transition specs on hover. The default
     // ButtonProps::hoverTransitionDuration is 150 ms (matches the macOS
     // / Win32 convention); this row demonstrates it with three buttons
     // at different durations, plus a disabled one.
+    StackOptions buttonRowOpts;
+    buttonRowOpts.spacing = 12.f;
+    buttonRowOpts.mainAlign = StackMainAlign::Center;
+    buttonRowOpts.crossAlign = StackCrossAlign::Center;
     auto buttonRow = make<HStack>(
-        Composition::Rect{{0, 0}, contentW, 40.f},
-        StackOptions{
-            .spacing = 12.f,
-            .mainAlign = StackMainAlign::Center,
-            .crossAlign = StackCrossAlign::Center
-        });
+        Composition::Rect{{0, 0}, contentW, 40.f}, buttonRowOpts);
 
     // Default 150 ms hover transition (per ButtonProps default).
     ButtonProps clickMeProps;
@@ -264,7 +268,9 @@ int RunBasicAppTest(AppInst *app) {
         Composition::Rect{{0, 0}, 100.f, 32.f}, disabledProps);
     buttonRow->addChild(disabledBtn);
 
-    root->addChild(buttonRow, StackSlot{.flexGrow = 0.f});
+    StackSlot buttonRowSlot;
+    buttonRowSlot.flexGrow = 0.f;
+    root->addChild(buttonRow, buttonRowSlot);
 
     window->setRootWidget(root);
 

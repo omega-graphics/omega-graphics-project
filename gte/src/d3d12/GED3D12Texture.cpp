@@ -6,13 +6,14 @@
 
 _NAMESPACE_BEGIN_
 
-GED3D12Texture::GED3D12Texture(const TextureKind & kind,
+GED3D12Texture::GED3D12Texture(GED3D12Engine *engine,
+                               const TextureKind & kind,
                                const GETextureUsage & usage,
                                const TexturePixelFormat & pixelFormat,
                                ID3D12Resource *res,
                                ID3D12Resource *cpuSideRes,
-                               ID3D12DescriptorHeap *descHeap,
-                               ID3D12DescriptorHeap *uavDescHeap,
+                               const D3D12DescriptorHandle & srvHandleIn,
+                               const D3D12DescriptorHandle & uavHandleIn,
                                ID3D12DescriptorHeap *rtvDescHeap,
                                ID3D12DescriptorHeap *dsvDescHeap,
                                D3D12_RESOURCE_STATES & currentState,
@@ -21,10 +22,11 @@ GED3D12Texture::GED3D12Texture(const TextureKind & kind,
                                 GETexture(kind,usage,pixelFormat),
                                 resource(res),
                                 cpuSideresource(cpuSideRes),
-                               srvDescHeap(descHeap),
-                               uavDescHeap(uavDescHeap),
+                               srvHandle(srvHandleIn),
+                               uavHandle(uavHandleIn),
                                rtvDescHeap(rtvDescHeap),
                                dsvDescHeap(dsvDescHeap),
+                               owningEngine(engine),
                                d3d12maAllocation(d3d12maAllocation),
                                d3d12maCpuSideAllocation(d3d12maCpuSideAllocation),
                                currentState(currentState){
@@ -341,11 +343,11 @@ size_t GED3D12Texture::getBytes(void *bytes, size_t bytesPerRow) {
         return false;
     }
 
-ID3D12DescriptorHeap *GED3D12Texture::getOrCreateSwizzledSrvHeap(ID3D12Device *device,
-                                                                  const TextureSwizzle & swizzle){
-    if(swizzle.isIdentity() || !hasPrimarySrvDesc) return srvDescHeap.Get();
+D3D12DescriptorHandle GED3D12Texture::getOrCreateSwizzledSrvHandle(GED3D12Engine *engine,
+                                                                    const TextureSwizzle & swizzle){
+    if(swizzle.isIdentity() || !hasPrimarySrvDesc) return srvHandle;
     for(auto & entry : swizzledSrvCache){
-        if(entry.first == swizzle) return entry.second.Get();
+        if(entry.first == swizzle) return entry.second;
     }
 
     auto encodeSwizzle = [](TextureSwizzleChannel ch, unsigned positional) -> unsigned {
@@ -361,13 +363,13 @@ ID3D12DescriptorHeap *GED3D12Texture::getOrCreateSwizzledSrvHeap(ID3D12Device *d
         return positional;
     };
 
-    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
-    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDesc.NumDescriptors = 1;
-    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    ComPtr<ID3D12DescriptorHeap> newHeap;
-    if(FAILED(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&newHeap)))){
-        return srvDescHeap.Get();
+    // Phase 2: allocate a slot from the engine's shared CBV/SRV/UAV heap.
+    // On exhaustion fall back to the primary handle silently — same shape
+    // as the old per-heap creation-fail branch, but without producing an
+    // orphan heap that would never be freed.
+    D3D12DescriptorHandle h = engine->resourceDescriptorAllocator->allocate(1);
+    if(!h.valid()){
+        return srvHandle;
     }
 
     D3D12_SHADER_RESOURCE_VIEW_DESC swizzledDesc = primarySrvDesc;
@@ -377,9 +379,9 @@ ID3D12DescriptorHeap *GED3D12Texture::getOrCreateSwizzledSrvHeap(ID3D12Device *d
         encodeSwizzle(swizzle.b, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_2),
         encodeSwizzle(swizzle.a, D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_3));
 
-    device->CreateShaderResourceView(resource.Get(), &swizzledDesc, newHeap->GetCPUDescriptorHandleForHeapStart());
-    swizzledSrvCache.push_back({swizzle, newHeap});
-    return newHeap.Get();
+    engine->d3d12_device->CreateShaderResourceView(resource.Get(), &swizzledDesc, h.cpu);
+    swizzledSrvCache.push_back({swizzle, h});
+    return h;
 }
 
 GED3D12Texture::~GED3D12Texture(){
@@ -391,6 +393,23 @@ GED3D12Texture::~GED3D12Texture(){
             resource.Get(),
             static_cast<float>(resource->GetDesc().Width),
             static_cast<float>(resource->GetDesc().Height));
+
+    // Phase 2: return shared-heap descriptor slots to the engine allocator
+    // once every command list currently in flight on every live queue has
+    // retired. `freeDescriptorAfterQueueDrain` is a no-op for invalid
+    // handles, so textures that never got an SRV / UAV are fine.
+    if(owningEngine){
+        owningEngine->freeDescriptorAfterQueueDrain(
+            owningEngine->resourceDescriptorAllocator.get(), srvHandle);
+        owningEngine->freeDescriptorAfterQueueDrain(
+            owningEngine->resourceDescriptorAllocator.get(), uavHandle);
+        for(auto & entry : swizzledSrvCache){
+            owningEngine->freeDescriptorAfterQueueDrain(
+                owningEngine->resourceDescriptorAllocator.get(), entry.second);
+        }
+    }
+    swizzledSrvCache.clear();
+
     // Drop the COM refs before releasing the D3D12MA allocations so the
     // allocator's leak validator sees the underlying resources already
     // destroyed when the allocations go away.

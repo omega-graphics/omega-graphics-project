@@ -1,4 +1,8 @@
 #include "omegaGTE/GECommandQueue.h"
+
+#include "D3D12DescriptorRing.h"
+
+#include <memory>
 #include "GED3D12.h"
 #include <cstdint>
 
@@ -200,6 +204,15 @@ _NAMESPACE_BEGIN_
         // called immediately before issuing the corresponding Signal().
         Retention::FenceGate gateForNextSubmit();
 
+    public:
+        // Snapshot a gate that signals once every command list already
+        // submitted to this queue has retired on the GPU. Captures the
+        // current `nextSubmitValue` — later submits do NOT move the gate.
+        // Cheap; safe to call from any thread. Used by texture / sampler
+        // destructors to defer descriptor-slot frees behind GPU completion.
+        Retention::FenceGate gateForRetiredSubmissions() const;
+    private:
+
         // Move every accumulated retained command buffer / descriptor heap
         // into the engine retention queue under `gate`, then clear the local
         // pending vectors.
@@ -238,6 +251,14 @@ _NAMESPACE_BEGIN_
 
         D3D12_COMMAND_LIST_TYPE listType = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
+        // Shared-Descriptor-Heap-Plan Phase 3 — per-queue transient
+        // descriptor ring for one-shot dispatches (tessellation,
+        // generateMipmaps). Bump-only, recycled when this queue's
+        // retentionFence retires the submission that recorded the slots.
+        // Initial size 4096 — easily covers a typical frame's
+        // generateMipmaps + tessellation traffic on a single window.
+        std::unique_ptr<D3D12DescriptorRing> transientRing;
+
         // Tag `poolSubmissionIndex[slot]` for every entry of `pendingSlots`
         // and clear `pendingSlots`. Call after Signal(retentionFence,
         // nextSubmitValue) on any code path that successfully submitted
@@ -260,6 +281,12 @@ _NAMESPACE_BEGIN_
         void *native() override {
             return (void *)commandQueue.Get();
         }
+        /// Phase 3 (Shared-Descriptor-Heap-Plan) — exposed for external
+        /// dispatch paths that aren't `GED3D12CommandBuffer` (currently
+        /// `D3D12TEContext::d3d12GpuDispatch`, which records its own
+        /// command list against the raw `ID3D12CommandQueue` but still
+        /// wants to reuse the queue's transient descriptor ring).
+        D3D12DescriptorRing *getTransientRing() const { return transientRing.get(); }
         std::uint64_t traceId() const {
             return traceResourceId;
         }

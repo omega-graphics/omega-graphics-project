@@ -123,6 +123,15 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQ
         poolSubmissionIndex.push_back(0);
     }
 
+    // Shared-Descriptor-Heap-Plan Phase 3 — per-queue transient descriptor
+    // ring for one-shot dispatches (tessellation + mipmap generation).
+    // Pre-Phase-3 these paths each called CreateDescriptorHeap per call;
+    // the ring amortizes that into a single heap reused across submissions.
+    transientRing = std::make_unique<D3D12DescriptorRing>(
+        engine->d3d12_device.Get(),
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+        /*capacity=*/4096u);
+
     traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
     ResourceTracking::Tracker::instance().emit(ResourceTracking::EventType::Create, ResourceTracking::Backend::D3D12,
                                                "CommandQueue", traceResourceId, commandQueue.Get());
@@ -178,6 +187,20 @@ Retention::FenceGate GED3D12CommandQueue::gateForNextSubmit() {
     const std::uint64_t v = nextSubmitValue + 1;
     ComPtr<ID3D12Fence> f = retentionFence;
     return [f, v]() { return f->GetCompletedValue() >= v; };
+}
+
+Retention::FenceGate GED3D12CommandQueue::gateForRetiredSubmissions() const {
+    // Snapshot the value that the most-recent submit told the GPU to signal.
+    // Once GetCompletedValue() catches up, every command list we've already
+    // submitted has retired. The captured ComPtr keeps the fence alive even
+    // if this queue is destroyed before the gate fires.
+    const std::uint64_t v = nextSubmitValue;
+    ComPtr<ID3D12Fence> f = retentionFence;
+    return [f, v]() {
+        if (!f) return true;   // queue went away → nothing left to wait on
+        if (v == 0) return true;  // nothing submitted yet on this queue
+        return f->GetCompletedValue() >= v;
+    };
 }
 
 void GED3D12CommandQueue::flushPendingRetentionUnder(const Retention::FenceGate &gate) {
@@ -689,23 +712,22 @@ void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
     const UINT mipCount = texDesc.MipLevels;
     const DXGI_FORMAT format = texDesc.Format;
 
-    // One SRV (mip N) + one UAV (mip N+1) per pair, contiguous in a single shader-visible heap.
-    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
-    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDesc.NumDescriptors = (mipCount - 1) * 2;
-    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    heapDesc.NodeMask = device->GetNodeCount();
-
-    ComPtr<ID3D12DescriptorHeap> descHeap;
-    HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&descHeap));
-    if (FAILED(hr)) {
-        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: CreateDescriptorHeap failed hr="
-                     << std::hex << hr);
+    // Phase 3 — pull (mipCount-1)*2 contiguous slots from the per-queue
+    // transient ring instead of creating a one-off descriptor heap per
+    // call. Gated on the next submit's retentionFence value: once this
+    // queue advances past it, the ring recycles the slots.
+    const UINT slotsNeeded = (mipCount - 1) * 2;
+    D3D12DescriptorHandle ringSlot = parentQueue->transientRing->allocate(
+        slotsNeeded, parentQueue->gateForNextSubmit());
+    if (!ringSlot.valid()) {
+        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: transient ring "
+                     "exhausted (need=" << slotsNeeded
+                     << ", capacity=" << parentQueue->transientRing->capacity() << ")");
         return;
     }
 
     const UINT incr = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    CD3DX12_CPU_DESCRIPTOR_HANDLE cpuStart(descHeap->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_CPU_DESCRIPTOR_HANDLE cpuStart(ringSlot.cpu);
 
     for (UINT i = 0; i + 1 < mipCount; ++i) {
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
@@ -733,12 +755,12 @@ void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
         tex->currentState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
 
-    ID3D12DescriptorHeap *heaps[] = { descHeap.Get() };
+    ID3D12DescriptorHeap *heaps[] = { parentQueue->transientRing->heap() };
     commandList->SetDescriptorHeaps(1, heaps);
     commandList->SetComputeRootSignature(pipeline->rootSignature.Get());
     commandList->SetPipelineState(pipeline->pipelineState.Get());
 
-    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuStart(descHeap->GetGPUDescriptorHandleForHeapStart());
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuStart(ringSlot.gpu);
 
     for (UINT i = 0; i + 1 < mipCount; ++i) {
         const UINT64 dstW = std::max<UINT64>(1, texDesc.Width  >> (i + 1));
@@ -772,8 +794,9 @@ void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
         commandList->ResourceBarrier(2, postBarriers);
     }
 
-    // Keep the descriptor heap alive until the GPU is done with the command list.
-    parentQueue->retainedDescriptorHeaps.push_back(descHeap);
+    // Phase 3 — no per-call descriptor heap to retain; the ring slot is
+    // gated on parentQueue->gateForNextSubmit() at allocate-time and the
+    // ring retires it once that fence value signals.
 }
 
 void GED3D12CommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t value,
@@ -807,15 +830,36 @@ void GED3D12CommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t v
         commandList->ResourceBarrier(resourceBarriers.size(), resourceBarriers.data());
     }
 
-    ID3D12DescriptorHeap *heap = buf->bufferDescHeap.Get();
+    // Phase 1 (Shared-Descriptor-Heap-Plan): buffers no longer own a
+    // per-resource descriptor heap. ClearUnorderedAccessViewUint needs a
+    // matched (CPU, GPU) UAV-handle pair, so we rewrite a raw-buffer UAV
+    // into the engine's single-slot helper heap on every call. Safe while
+    // fills are serialized per command queue — ClearUAV reads the
+    // descriptor synchronously at record time, so the previous fill's
+    // descriptor is no longer referenced once we return. If concurrent
+    // fills across command buffers become possible, promote the helper
+    // to a fence-keyed ring.
+    ID3D12DescriptorHeap *heap = parentQueue->engine->clearUavHelperHeap.Get();
     if (heap == nullptr) {
-        DEBUG_STREAM("GED3D12CommandBuffer::fillBuffer: buffer has no descriptor "
-                     "heap; cannot resolve UAV handle.");
+        DEBUG_STREAM("GED3D12CommandBuffer::fillBuffer: engine clearUavHelperHeap "
+                     "is null; cannot resolve UAV handle.");
         return;
     }
-    const UINT values[4] = {value, value, value, value};
-    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = heap->GetGPUDescriptorHandleForHeapStart();
     D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = heap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = heap->GetGPUDescriptorHandleForHeapStart();
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    uavDesc.Buffer.FirstElement = 0;
+    uavDesc.Buffer.NumElements = static_cast<UINT>(totalSize / 4);
+    uavDesc.Buffer.StructureByteStride = 0;
+    uavDesc.Buffer.CounterOffsetInBytes = 0;
+    uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    parentQueue->engine->d3d12_device->CreateUnorderedAccessView(
+        buf->buffer.Get(), nullptr, &uavDesc, cpuHandle);
+
+    const UINT values[4] = {value, value, value, value};
     commandList->SetDescriptorHeaps(1, &heap);
     commandList->ClearUnorderedAccessViewUint(gpuHandle, cpuHandle,
                                               buf->buffer.Get(), values, 0, nullptr);
@@ -1331,7 +1375,12 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &bu
         }
     }
 
-    commandList->SetDescriptorHeaps(1, d3d12_buffer->bufferDescHeap.GetAddressOf());
+    // Phase 1 (Shared-Descriptor-Heap-Plan): the prior
+    // SetDescriptorHeaps(bufferDescHeap) here was vestigial — every
+    // buffer bind below goes through SetGraphics*View on the GPU
+    // virtual address, which does not read a descriptor heap — and it
+    // also clobbered whichever shader-visible heap a prior texture or
+    // sampler bind required. Removing it is the fix for both.
 
     const auto rootParam = getRootParameterIndexOfResource(index, currentRenderPipeline->vertexShader->internal);
 
@@ -1380,26 +1429,23 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &t
         }
     }
 
-    D3D12_GPU_DESCRIPTOR_HANDLE cpuDescHandle;
-
-    if (d3d12_texture->currentState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
-        /// Use Shader Resource View.
-        cpuDescHandle = d3d12_texture->srvDescHeap->GetGPUDescriptorHandleForHeapStart();
-    } else {
-        /// Use Unordered Access View
-        cpuDescHandle = d3d12_texture->uavDescHeap->GetGPUDescriptorHandleForHeapStart();
-    }
-
+    // Phase 2 (Shared-Descriptor-Heap-Plan): pick the right slot for
+    // the binding the shader expects, then bind the block-specific heap.
+    // Phase 2 follow-on (growth) — handles carry their block index so
+    // multi-heap allocators resolve to the right underlying heap.
+    D3D12DescriptorHandle effHandle{};
     TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, index, currentRenderPipeline->vertexShader->internal);
-    ID3D12DescriptorHeap *heapToBind = d3d12_texture->srvDescHeap.Get();
-    if((d3d12_texture->currentState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) && !effective.isIdentity()){
-        heapToBind = d3d12_texture->getOrCreateSwizzledSrvHeap(parentQueue->engine->d3d12_device.Get(), effective);
-        cpuDescHandle = heapToBind->GetGPUDescriptorHandleForHeapStart();
+    if (d3d12_texture->currentState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
+        effHandle = effective.isIdentity()
+            ? d3d12_texture->srvHandle
+            : d3d12_texture->getOrCreateSwizzledSrvHandle(parentQueue->engine, effective);
+    } else {
+        effHandle = d3d12_texture->uavHandle;
     }
-    currentResourceDescHeap = heapToBind;
+    currentResourceDescHeap = parentQueue->engine->resourceDescriptorAllocator->heap(effHandle.block);
     rebindDescriptorHeaps();
     unsigned idx = getRootParameterIndexOfResource(index, currentRenderPipeline->vertexShader->internal);
-    commandList->SetGraphicsRootDescriptorTable(idx, cpuDescHandle);
+    commandList->SetGraphicsRootDescriptorTable(idx, effHandle.gpu);
 };
 
 void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
@@ -1408,13 +1454,12 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GESamplerStat
     bool ok = checkSamplerBindAgainstShader(id, currentRenderPipeline->vertexShader->internal);
     assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
     if (!ok) return;
-    // Each GED3D12SamplerState owns a shader-visible single-entry SAMPLER
-    // heap. Bind it alongside the current CBV/SRV/UAV heap (Option A: one
-    // runtime sampler per draw, matching the texture path's heap model).
-    currentSamplerDescHeap = d3d12_sampler->descHeap.Get();
+    // Phase 2 — samplers live in the engine's shared SAMPLER heap;
+    // each GED3D12SamplerState carries its slot's GPU handle and block.
+    currentSamplerDescHeap = parentQueue->engine->samplerDescriptorAllocator->heap(d3d12_sampler->samplerHandle.block);
     rebindDescriptorHeaps();
     unsigned rootParam = getRootParameterIndexOfResource(id, currentRenderPipeline->vertexShader->internal);
-    commandList->SetGraphicsRootDescriptorTable(rootParam, d3d12_sampler->descHeap->GetGPUDescriptorHandleForHeapStart());
+    commandList->SetGraphicsRootDescriptorTable(rootParam, d3d12_sampler->samplerHandle.gpu);
 };
 
 void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned int index) {
@@ -1439,7 +1484,8 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &
         }
     }
 
-    commandList->SetDescriptorHeaps(1, d3d12_buffer->bufferDescHeap.GetAddressOf());
+    // Phase 1 (Shared-Descriptor-Heap-Plan): see bindResourceAtVertexShader
+    // for why the per-buffer SetDescriptorHeaps call was removed.
 
     if (d3d12_buffer->role == BufferDescriptor::Uniform) {
         commandList->SetGraphicsRootConstantBufferView(
@@ -1490,27 +1536,21 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> 
         }
     }
 
-    D3D12_GPU_DESCRIPTOR_HANDLE cpuDescHandle{};
-
-    if (d3d12_texture->currentState & D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
-        /// Use Shader Resource View.
-        cpuDescHandle = d3d12_texture->srvDescHeap->GetGPUDescriptorHandleForHeapStart();
-    } else {
-        /// Use Unordered Access View
-        cpuDescHandle = d3d12_texture->uavDescHeap->GetGPUDescriptorHandleForHeapStart();
-    }
-
+    // Phase 2 (Shared-Descriptor-Heap-Plan): see the vertex peer.
+    D3D12DescriptorHandle effHandle{};
     TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, index, currentRenderPipeline->fragmentShader->internal);
-    ID3D12DescriptorHeap *heapToBind = d3d12_texture->srvDescHeap.Get();
-    if((d3d12_texture->currentState & D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) && !effective.isIdentity()){
-        heapToBind = d3d12_texture->getOrCreateSwizzledSrvHeap(parentQueue->engine->d3d12_device.Get(), effective);
-        cpuDescHandle = heapToBind->GetGPUDescriptorHandleForHeapStart();
+    if (d3d12_texture->currentState & D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+        effHandle = effective.isIdentity()
+            ? d3d12_texture->srvHandle
+            : d3d12_texture->getOrCreateSwizzledSrvHandle(parentQueue->engine, effective);
+    } else {
+        effHandle = d3d12_texture->uavHandle;
     }
-    currentResourceDescHeap = heapToBind;
+    currentResourceDescHeap = parentQueue->engine->resourceDescriptorAllocator->heap(effHandle.block);
     rebindDescriptorHeaps();
     unsigned rootParam = getRootParameterIndexOfResource(index, currentRenderPipeline->fragmentShader->internal);
     DEBUG_STREAM("Root Param With Texture:" << rootParam);
-    commandList->SetGraphicsRootDescriptorTable(rootParam, cpuDescHandle);
+    commandList->SetGraphicsRootDescriptorTable(rootParam, effHandle.gpu);
 };
 
 void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
@@ -1519,10 +1559,10 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GESamplerSt
     bool ok = checkSamplerBindAgainstShader(id, currentRenderPipeline->fragmentShader->internal);
     assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
     if (!ok) return;
-    currentSamplerDescHeap = d3d12_sampler->descHeap.Get();
+    currentSamplerDescHeap = parentQueue->engine->samplerDescriptorAllocator->heap(d3d12_sampler->samplerHandle.block);
     rebindDescriptorHeaps();
     unsigned rootParam = getRootParameterIndexOfResource(id, currentRenderPipeline->fragmentShader->internal);
-    commandList->SetGraphicsRootDescriptorTable(rootParam, d3d12_sampler->descHeap->GetGPUDescriptorHandleForHeapStart());
+    commandList->SetGraphicsRootDescriptorTable(rootParam, d3d12_sampler->samplerHandle.gpu);
 };
 
 void GED3D12CommandBuffer::setStencilRef(unsigned int ref) {
@@ -1782,7 +1822,8 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &b
     D3D12_HEAP_PROPERTIES heap_props;
     D3D12_HEAP_FLAGS heapFlags;
     d3d12_buffer->buffer->GetHeapProperties(&heap_props, &heapFlags);
-    commandList->SetDescriptorHeaps(1, d3d12_buffer->bufferDescHeap.GetAddressOf());
+    // Phase 1 (Shared-Descriptor-Heap-Plan): see bindResourceAtVertexShader
+    // for why the per-buffer SetDescriptorHeaps call was removed.
     if (d3d12_buffer->role == BufferDescriptor::Uniform) {
         // §2.4 constant buffer — root CBV.
         commandList->SetComputeRootConstantBufferView(
@@ -1817,12 +1858,12 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &
     D3D12_HEAP_PROPERTIES heap_props;
     D3D12_HEAP_FLAGS heapFlags;
     d3d12_texture->resource->GetHeapProperties(&heap_props, &heapFlags);
+    // Phase 2 (Shared-Descriptor-Heap-Plan): SRV-only compute bind path.
     TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, id, currentComputePipeline->computeShader->internal);
-    ID3D12DescriptorHeap *heapToBind = d3d12_texture->srvDescHeap.Get();
-    if(!effective.isIdentity()){
-        heapToBind = d3d12_texture->getOrCreateSwizzledSrvHeap(parentQueue->engine->d3d12_device.Get(), effective);
-    }
-    currentResourceDescHeap = heapToBind;
+    D3D12DescriptorHandle h = effective.isIdentity()
+        ? d3d12_texture->srvHandle
+        : d3d12_texture->getOrCreateSwizzledSrvHandle(parentQueue->engine, effective);
+    currentResourceDescHeap = parentQueue->engine->resourceDescriptorAllocator->heap(h.block);
     rebindDescriptorHeaps();
     if (heap_props.Type == D3D12_HEAP_TYPE_READBACK) {
         auto resource_barrier = CD3DX12_RESOURCE_BARRIER::Transition(d3d12_texture->resource.Get(),
@@ -1832,7 +1873,7 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &
     }
     commandList->SetComputeRootDescriptorTable(
         getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
-        heapToBind->GetGPUDescriptorHandleForHeapStart());
+        h.gpu);
 }
 
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
@@ -1841,11 +1882,11 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GESamplerSta
     bool ok = checkSamplerBindAgainstShader(id, currentComputePipeline->computeShader->internal);
     assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
     if (!ok) return;
-    currentSamplerDescHeap = d3d12_sampler->descHeap.Get();
+    currentSamplerDescHeap = parentQueue->engine->samplerDescriptorAllocator->heap(d3d12_sampler->samplerHandle.block);
     rebindDescriptorHeaps();
     commandList->SetComputeRootDescriptorTable(
         getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
-        d3d12_sampler->descHeap->GetGPUDescriptorHandleForHeapStart());
+        d3d12_sampler->samplerHandle.gpu);
 }
 
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> &accelStruct,
@@ -2070,6 +2111,9 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
     commandQueue->Signal(fence->fence.Get(), signalValue);
     multiQueueSync = false;
     engine->retentionQueue.drainCompleted();
+    // Phase 3 — the same fence advance that retires retention queue
+    // entries also retires transient-ring slots stamped on prior submits.
+    if (transientRing) transientRing->retire();
 }
 
 void GED3D12CommandQueue::signalFence(SharedHandle<GEFence> &fence) {
@@ -2138,6 +2182,9 @@ void GED3D12CommandQueue::commitToGPU() {
         }
     }
     engine->retentionQueue.drainCompleted();
+    // Phase 3 — the same fence advance that retires retention queue
+    // entries also retires transient-ring slots stamped on prior submits.
+    if (transientRing) transientRing->retire();
 };
 
 void GED3D12CommandQueue::commitToGPUAndWait() {
@@ -2162,6 +2209,9 @@ void GED3D12CommandQueue::commitToGPUAndWait() {
     // been reached, so any retention entries gated on this queue are
     // releasable now.
     engine->retentionQueue.drainCompleted();
+    // Phase 3 — the same fence advance that retires retention queue
+    // entries also retires transient-ring slots stamped on prior submits.
+    if (transientRing) transientRing->retire();
 }
 
 SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer() {

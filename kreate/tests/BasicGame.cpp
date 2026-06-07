@@ -67,7 +67,7 @@ class BasicGame : public Kreate::App {
     std::chrono::steady_clock::time_point startTime;
 
 public:
-    BasicGame() : App({{.title = "KREATE - BasicGame", .width = 1280, .height = 720}}) {}
+    BasicGame() : App(Kreate::AppDesc{Kreate::WindowDesc{"KREATE - BasicGame", 1280, 720}}) {}
 
     void onInit() override {
         Kreate::PipelineDesc pdesc{};

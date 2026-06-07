@@ -2390,20 +2390,247 @@ Internally sub-phased; each ships independently.
   stats (per cache: hits, misses, evictions, currentBytes,
   hitRatePercent) to stderr at frame-end every 60 frames.
 
+**G.5 — Persistent buffer / texture handles: write-over instead of recreate**
+
+**Motivation.** Even with G.0–G.3 landed and Phase F-G's bucketed
+render-target pool in front, the per-frame `GEBuffer` /
+`GETexture` handles that the cache entries *point at* still churn on
+every resize tick. Trace evidence (see `BufferPool` `PoolHit` /
+`PoolMiss` counters in `wtk/src/Composition/backend/BufferPool.h`):
+during a live drag, even when a cached widget's pixel size hasn't
+crossed a bucket boundary, the renderer typically does one of:
+
+- `bufferPool()->acquire(vertexBytes, vertexStride)` in
+  `RenderTarget.cpp` (vertex / params buffers — six sites today,
+  `RenderTarget.cpp:594-630`, `:760-790`, `:1043-1080`,
+  `:1716`). The pool's bucket-by-power-of-two + LRU is doing its
+  job, but the cache entry doesn't keep a hold on the *same* buffer
+  across frames — it acquires, writes, defers-release, and the next
+  frame's matching draw acquires a new pool entry. With multiple
+  widgets sharing one bucket size that's still a pool win — but the
+  cached `TETriangulationResult` (G.1) and the cached widget content
+  (G.3) could keep their *own* vertex / params buffer and skip the
+  pool round-trip entirely when the data is unchanged or the
+  size-class is identical.
+- For textures, similar story: the G.3.1 cache-target pool returns
+  a fresh `GETexture` per `beginCacheTarget` call. When G.3.2's
+  fast-path miss falls back to "re-paint and re-capture", the
+  texture *handle* on the cache entry is replaced even when the
+  bucket-sized backing dims didn't change — every Paint-dirty
+  widget at a stable size frees and reacquires a `GETexture` from
+  the pool.
+
+The fix is the same idea on both axes: **a cache entry owns its
+buffer / texture handle across its lifetime, and a refresh
+overwrites contents in place.** The vertex data changes, the bucket
+size doesn't; the rasterized texture content changes, the bucket
+dims don't. Re-allocating the GPU object on top of an unchanged size
+class is pure churn.
+
+**G.5.1 — Persistent vertex / params buffer handles on cache
+entries [~200 LOC]**
+
+- The G.1 tessellation cache entry grows from
+  `TETriangulationResult` to
+  `struct { TETriangulationResult mesh;
+            SharedHandle<GEBuffer> vertexBuf;
+            SharedHandle<GEBuffer> paramsBuf;
+            std::size_t vertexBucketSize;
+            std::size_t paramsBucketSize; }`.
+  On a hit, the renderer's `drawTriangulatedResult` path reuses the
+  entry's `vertexBuf` / `paramsBuf` directly when the required
+  vertex / params byte count rounds to the same bucket size; if
+  the mesh data is byte-identical to last frame the buffer's
+  current GPU contents are kept and only the bind happens.
+  Different-data-same-size hits re-`setOutputBuffer` and overwrite
+  (see G.5.3). Different-size misses release the entry's buffers
+  back to `BufferPool` and acquire fresh ones — same path as
+  today, just keyed off bucket-size delta instead of always.
+- The G.3 content-cache entry holds the per-blit `DrawOp::Bitmap`'s
+  vertex buffer (a fullscreen-quad of 6 verts) once. That buffer is
+  written at `endCacheTarget` time and reused for every subsequent
+  blit until the entry evicts; no pool churn for the blit-quad
+  vertex buffer at all.
+- The non-cache hot-path emitters in `RenderTarget.cpp` that
+  currently fall through `makeBuffer` on `bufferPool() == nullptr`
+  (`:602`, `:623`, `:760`, `:778`, `:1043`, `:1068`) get a thin
+  per-call-site scratch handle that's reused across frames the same
+  way — the fallback path was an oversight, not an optimization.
+- Telemetry: extend `BufferPool::Stats` with `persistentReuses` so
+  the G.4 stats line shows pool hits vs persistent reuses (the
+  latter is the new optimal path).
+
+**G.5.2 — Persistent texture handles on content-cache entries [~150 LOC]**
+
+- The G.3.1 cache-target pool's `endCacheTarget` returns *into* the
+  cache entry; the cache entry holds the `SharedHandle<GETexture>`
+  for its lifetime. A subsequent Paint-dirty refresh at the same
+  bucket dims calls `beginCacheTarget(reuseHandle = existing)`
+  which skips `TexturePool::acquire` entirely — same `GETexture`,
+  same backing memory, render pass writes new pixels into it.
+- The Phase F-G "bucketed allocation" contract is what makes this
+  safe at resize time: as long as the new live-rasterized rect
+  fits inside the bucket dims of the existing texture (the
+  near-universal case — Phase F-G covers ≥ 95% of resize ticks
+  here), reuse. Re-allocation happens only on bucket-crossing
+  ticks, and that's the same low-frequency path Phase F-G already
+  designs for.
+- For texture-content uploads that go through `copyBytes(region)`
+  (the §7.1 path on `GETexture`), the existing API already updates
+  a sub-region in place — no GTE-side change needed. The work is
+  WTK-side: track the handle on the cache entry instead of
+  releasing it.
+- Effect-path scratch textures (`BlurScratch.cpp`) and the bitmap
+  texture cache (`BitmapTextureCache.cpp`) already keep persistent
+  handles in their respective objects; this sub-phase is only the
+  content-cache extension. Confirm in passing that neither
+  re-allocates on resize.
+
+**G.5.3 — GTE BufferWriter / BufferReader hygiene for overwrite
+[~80 LOC]**
+
+- `GEBufferWriter::setOutputBuffer` currently Maps the new buffer
+  without Unmapping any previously-bound one (see
+  `GED3D12.cpp:922-935`, Metal `:354`, Vulkan `:667`). For the
+  one-writer-many-buffers pattern this leaks Map state; for the
+  G.5.1 reuse pattern it leaves a stale persistent mapping that
+  the next overwrite could collide with. Add a sibling
+  `clearOutputBuffer()` (or have `setOutputBuffer` Unmap the
+  previous binding internally) so the writer is safe to point at a
+  new buffer or re-point at the same one. Vulkan / Metal / D3D12
+  parallel updates land in one PR.
+- `GEBufferReader` gets the analogous fix on the readback path.
+- Add `GEBufferWriter::resetCursor()` (renames internal
+  `currentOffset = 0` into a public API) so a cache entry can
+  ask the writer to start a fresh overwrite at byte 0 without
+  having to drop and re-acquire the writer instance. This is the
+  "even better: just write new data on top" path the developer
+  flagged — no buffer clear, no allocation, just rewind and
+  overwrite. Document that the caller is responsible for fully
+  overwriting any region a downstream shader reads (no implicit
+  zero of trailing bytes).
+- No public-API breakage: `setOutputBuffer` keeps its current
+  signature; the new methods are additive. Existing callers that
+  acquire-write-release continue to work unchanged.
+
+**G.5.4 — Fixed-tile texture + stretch during resize drag [~120 LOC]**
+
+Both Phase F-G and G.5.2 stop *reallocating* the underlying texture
+during a resize, but they still expect every resize tick to *re-render
+the content* into the persistent texture at the new live size. That
+leaves a per-tick paint cost — small with the rest of Phase G in place,
+but non-zero, and proportional to the widget's complexity.
+
+The Chromium pattern documented in
+[Render-Execution-Efficiency-Plan §3](done/Render-Execution-Efficiency-Plan.md)
+is the next step: *render the content at a fixed tile size, then
+**stretch** the tile to the live size during the drag.* No
+re-rasterization on the tick — just a final-blit scale during present.
+On drag end, kick off one re-render at the exact target size and swap
+back to the 1:1 path.
+
+This is opt-in for the resize-drag case specifically because it trades
+fidelity (slight blur / aliasing while stretching) for cost (zero
+re-render). That trade is appropriate during a live drag — the user is
+interacting, not reading text — and the snap-back on drag end restores
+crisp output before they look again.
+
+**Contract additions on top of Phase F-G:**
+
+- The cache entry already carries `bucketSize` (Phase F-G). Add
+  `lastRenderedSize` (the live size the texture's pixels were
+  actually rasterized at — may equal bucketSize or any smaller
+  sub-rect inside it).
+- During a resize drag (signal: `WidgetTreeHost::isResizing()` or
+  the equivalent from Phase H's pacer), the paint walker for a
+  cached View **skips its re-render** if the entry's texture is
+  present, regardless of whether the live size changed. The blit
+  to the window DisplayList emits `DrawOp::Bitmap` with src =
+  `lastRenderedSize` sub-rect of the bucket texture, dst = the
+  View's *current live* rect — the GPU sampler does the stretch.
+- The G.3.2 eligibility table grows a fifth rule: "if a resize drag
+  is in flight AND the cache entry's `lastRenderedSize` is within
+  `OMEGAWTK_RESIZE_STRETCH_TOLERANCE` (default 1.5×) of the current
+  live size, stretch — don't re-render." Above the tolerance,
+  fall back to G.5.2's persistent-handle re-render path so
+  extreme drags stay crisp.
+- On drag-end (signal: no resize event in the last
+  `OMEGAWTK_RESIZE_SETTLE_MS`, default 80 ms), the next paint
+  walker pass re-renders the View into its persistent texture at
+  the current live size, updates `lastRenderedSize`, and resumes
+  the 1:1 path. The first post-drag frame is the "snap back to
+  crisp" frame.
+
+**Why this is a separate sub-phase from G.5.2:** G.5.2's contract is
+"same bucket → reuse handle, re-render into it." G.5.4's contract is
+"resize drag → reuse handle, **don't** re-render, stretch on present."
+G.5.2 ships independently and is the right default outside drags;
+G.5.4 layers on top and is the drag-only fast path. Splitting them
+keeps the drag-stretch fidelity trade explicit and opt-out-able
+(`OMEGAWTK_RESIZE_STRETCH=0` reverts to G.5.2 behavior — re-render
+every tick, slower but always crisp).
+
+**Per-backend note on the stretch:** the cache blit is already a
+`DrawOp::Bitmap` against the bucket texture; the linear sampler the
+existing blit pipeline uses gives free bilinear filtering on all
+three backends (Metal MTLSamplerState, D3D12 sampler, Vulkan
+VkSampler) with no pipeline changes. No mipmap chain on cache
+textures — bicubic-style minification artifacts during drag are
+acceptable per the fidelity trade; revisit if a drag is wider than
+1.5× the bucket.
+
+**Sequencing inside G.5:** `G.5.3 → G.5.1 → G.5.2 → G.5.4`. The GTE
+writer hygiene is a prerequisite for G.5.1 (depends on
+`clearOutputBuffer` / `resetCursor`); the buffer-handle work then
+unblocks the texture-handle work because the G.3 content cache entry
+needs to own both buffer and texture to make the blit-quad path
+zero-churn; G.5.4 layers on G.5.2's persistent handle so a drag tick
+can skip re-render entirely.
+
 ###### Sequencing inside Phase G
 
-`G.0 → G.1 → G.2 → G.3.0 → G.3.1 → G.3.2 → G.3.3 → G.4`. G.1 and G.2
-each ship usable wins on their own — non-resize broad invalidations
-stop paying for re-tessellation / re-shaping immediately. G.3 is the
-multi-PR unit; the agreement to pause for re-review between G.3.2 and
-G.3.3 stands (Phase F's actual per-frame cost should be profiled in a
-build with G.0 + G.1 + G.2 landed before committing to the larger
-G.3.3 change).
+`G.0 → G.1 → G.2 → G.3.0 → G.3.1 → G.3.2 → G.3.3 → G.4 → G.5.3 →
+G.5.1 → G.5.2 → G.5.4`. G.1 and G.2 each ship usable wins on their
+own — non-resize broad invalidations stop paying for re-tessellation
+/ re-shaping immediately. G.3 is the multi-PR unit; the agreement
+to pause for re-review between G.3.2 and G.3.3 stands (Phase F's
+actual per-frame cost should be profiled in a build with G.0 + G.1
++ G.2 landed before committing to the larger G.3.3 change). G.5
+lands after G.4 so the telemetry line is already in place to
+compare pre-/post-persistent-reuse rates; G.5 is independent of
+Phase F-G but the two compose well (bucketing keeps a single resize
+storm in one bucket → G.5's persistent handles never have to
+release → G.5.4 lets the drag ticks skip re-render entirely and
+stretch the persistent texture on present).
 
 ###### Total scope estimate
 
-~1280 LOC across ~7 mergeable PRs. The largest single PR is G.3.1
-(~200 LOC); every other sub-phase is ≤ 180 LOC.
+~1830 LOC across ~11 mergeable PRs. The largest single PR is G.3.1
+(~200 LOC), tied with G.5.1; every other sub-phase is ≤ 180 LOC.
+
+###### Validators specific to G.5
+
+- Live-drag `BasicAppTest` from 800×600 → 1600×900 across 5 s
+  produces (after G.5.1 lands) **zero** `BufferPool::acquire` hits
+  for the cached widgets' vertex / params buffers — every frame
+  should be a `persistentReuses++` event. Pool acquires occur
+  only when a bucket-size delta legitimately changes.
+- The same drag produces ≤ 4 `TexturePool::acquire` events
+  per cached widget (Phase F-G's bucket-crossing count) instead of
+  the ~300 we get today.
+- A `OMEGAWTK_CONTENT_CACHE_STATS=1` run on a steady-state
+  (no-resize) animation frame shows `persistentReuses` rising at
+  the per-frame draw-count rate while `pool.hits` and `pool.misses`
+  stay flat.
+- After G.5.4 lands, the same 5 s live-drag produces **zero**
+  cache-entry re-renders (the paint walker's "re-rendered this
+  view this frame" counter stays flat for any View whose
+  `lastRenderedSize` is within tolerance), and exactly **one**
+  re-render per cached widget on drag end (the snap-back-to-crisp
+  frame). With `OMEGAWTK_RESIZE_STRETCH=0` the counter rises every
+  frame — the G.5.2 behavior — and the screenshot is pixel-crisp
+  throughout; with stretch on, the screenshot at mid-drag is
+  visibly bilinear-filtered, post-drag is crisp.
 
 ##### Phase F-G (follow-up) — Bucketed render-target + image allocation: render-into-region, never reallocate per resize tick
 

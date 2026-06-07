@@ -115,15 +115,20 @@ TETriangulationResult readbackD3D12(ID3D12Resource *buf, unsigned vc,
 struct D3D12TessPipelines {
     ComPtr<ID3D12Device> dev;
     ComPtr<ID3D12CommandQueue> queue;
+    // Phase 3 (Shared-Descriptor-Heap-Plan) — the GE-side queue wrapper
+    // owns the per-queue transient descriptor ring; the bare D3D12
+    // queue above is still used for ExecuteCommandLists / Signal.
+    GED3D12CommandQueue *engineQueue = nullptr;
     ComPtr<ID3D12RootSignature> rootSig;
     ComPtr<ID3D12PipelineState> rect, ellip, prism, path;
     bool ready = false;
 
-    void init(ID3D12Device *d, ID3D12CommandQueue *q) {
+    void init(ID3D12Device *d, ID3D12CommandQueue *q, GED3D12CommandQueue *eq) {
         if (ready) return;
         ready = true;
         d->QueryInterface(IID_PPV_ARGS(&dev));
         q->QueryInterface(IID_PPV_ARGS(&queue));
+        engineQueue = eq;
 
         CD3DX12_DESCRIPTOR_RANGE1 srvRange, uavRange;
         srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
@@ -261,18 +266,32 @@ std::future<TETriangulationResult> d3d12GpuDispatch(
                                       nullptr, IID_PPV_ARGS(&readbackBuf));
     if (FAILED(hr)) return fallback();
 
-    D3D12_DESCRIPTOR_HEAP_DESC dhDesc {};
-    dhDesc.NumDescriptors = 2;
-    dhDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    dhDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    dhDesc.NodeMask = dev->GetNodeCount();
-
-    ComPtr<ID3D12DescriptorHeap> descHeap;
-    hr = dev->CreateDescriptorHeap(&dhDesc, IID_PPV_ARGS(&descHeap));
+    // Phase 3 (Shared-Descriptor-Heap-Plan) — suballocate the SRV+UAV
+    // pair from the engine queue's per-queue transient ring. Gate it on
+    // a closure over our local `fence` (created below); after
+    // WaitForSingleObject we call retire() so the slot is reclaimed.
+    // If the engine queue isn't available (caller used a raw queue)
+    // we'd have nowhere to allocate from — fall back to the CPU path.
+    if (!pip.engineQueue) {
+        DEBUG_STREAM("d3d12GpuDispatch: no engineQueue available; falling back to CPU");
+        return fallback();
+    }
+    ComPtr<ID3D12Fence> dispatchFence;
+    hr = dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&dispatchFence));
     if (FAILED(hr)) return fallback();
 
+    D3D12DescriptorHandle ringSlot = pip.engineQueue->getTransientRing()->allocate(
+        /*count=*/2u,
+        [f = dispatchFence, target = UINT64(1)]() {
+            return f && f->GetCompletedValue() >= target;
+        });
+    if (!ringSlot.valid()) {
+        DEBUG_STREAM("d3d12GpuDispatch: transient ring exhausted; falling back to CPU");
+        return fallback();
+    }
+
     UINT increment = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle(descHeap->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle(ringSlot.cpu);
 
     size_t paramStride = (ep.type == ET::Path2D) ? sizeof(D3D12PathSeg) : sizeof(D3D12TessParams);
     UINT paramCount = (UINT)(paramBufSize / paramStride);
@@ -299,10 +318,10 @@ std::future<TETriangulationResult> d3d12GpuDispatch(
     dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc.Get(), pso, IID_PPV_ARGS(&cmdList));
 
     cmdList->SetComputeRootSignature(pip.rootSig.Get());
-    ID3D12DescriptorHeap *heaps[] = { descHeap.Get() };
+    ID3D12DescriptorHeap *heaps[] = { pip.engineQueue->getTransientRing()->heap() };
     cmdList->SetDescriptorHeaps(1, heaps);
 
-    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(descHeap->GetGPUDescriptorHandleForHeapStart());
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(ringSlot.gpu);
     cmdList->SetComputeRootDescriptorTable(0, gpuHandle);
     gpuHandle.Offset(1, increment);
     cmdList->SetComputeRootDescriptorTable(1, gpuHandle);
@@ -321,13 +340,19 @@ std::future<TETriangulationResult> d3d12GpuDispatch(
     ID3D12CommandList *lists[] = { cmdList.Get() };
     pip.queue->ExecuteCommandLists(1, lists);
 
-    ComPtr<ID3D12Fence> fence;
-    dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    // Reuse the fence we created above for the ring stamp — saves an
+    // extra CreateFence and means the gate captured inside the ring
+    // stamp will signal exactly when this dispatch retires.
     HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    fence->SetEventOnCompletion(1, event);
-    pip.queue->Signal(fence.Get(), 1);
+    dispatchFence->SetEventOnCompletion(1, event);
+    pip.queue->Signal(dispatchFence.Get(), 1);
     WaitForSingleObject(event, INFINITE);
     CloseHandle(event);
+
+    // Our slot is now safe to recycle. The ring's retire() is FIFO — if
+    // any earlier dispatch still has its gate pending, our slot has to
+    // wait for it. That's fine; the ring has 4096 slots of headroom.
+    pip.engineQueue->getTransientRing()->retire();
 
     auto result = readbackD3D12(readbackBuf.Get(), vc, colorAtt);
 
@@ -364,9 +389,10 @@ public:
             auto presentQueue = target->presentQueue();
             if(presentQueue){
                 auto *queue = (ID3D12CommandQueue *)presentQueue->native();
+                auto *engineQueue = dynamic_cast<GED3D12CommandQueue *>(presentQueue.get());
                 ComPtr<ID3D12Device> dev;
                 queue->GetDevice(IID_PPV_ARGS(&dev));
-                pip.init(dev.Get(), queue);
+                pip.init(dev.Get(), queue, engineQueue);
             }
         }
         GPUTriangulationExtractedParams ep;
@@ -404,9 +430,10 @@ public:
             GTEPolygonFrontFaceRotation direction, GEViewport *viewport) override {
         if (!pip.ready && queue) {
             auto *q = (ID3D12CommandQueue *)queue->native();
+            auto *engineQueue = dynamic_cast<GED3D12CommandQueue *>(queue.get());
             ComPtr<ID3D12Device> dev;
             q->GetDevice(IID_PPV_ARGS(&dev));
-            pip.init(dev.Get(), q);
+            pip.init(dev.Get(), q, engineQueue);
         }
         GPUTriangulationExtractedParams ep;
         extractGPUTriangulationParams(params, ep);

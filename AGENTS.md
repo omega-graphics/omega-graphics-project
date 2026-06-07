@@ -6,6 +6,7 @@
     Use PascalCase for file-naming conventions.
         -Static methods use PascalCase.
     C++ 17 is the default cpp standard of this entire repo
+        C++17 is also the **ceiling**, not just the floor. No C++20-and-later features anywhere in the codebase (production OR tests): no designated initializers (`Foo{.field = value}`), no concepts, no `<ranges>`, no `consteval`, no three-way `<=>`, no `std::span` from `<span>`, etc. Apple Clang accepts most of them as extensions in `-std=c++17` mode, so a `.cpp`/`.mm` that builds clean on macOS will still break MSVC (`/std:c++17`) and GCC (`-std=c++17`), where they are hard errors. When you need a struct-literal-like pattern, hoist a named local, assign each field, and pass it — matches the `LabelProps`/`ButtonProps` idiom already in `wtk/tests/BasicAppTest/BasicAppTestRun.cpp`. Positional aggregate init (`StackInsets{16.f, 16.f, 16.f, 16.f}`) is fine — it's pre-C++17 syntax — but only use it for small structs where field order is stable.
     Use an object-oriented, Modular coding style that has modular rules so if a specific rule needs to be changed across the object it can be.
 
 # Building

@@ -298,42 +298,11 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
         return nullptr;
     }
 
-    D3D12_DESCRIPTOR_HEAP_DESC descHeapDesc {};
-    descHeapDesc.NumDescriptors = 1;
-    descHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    descHeapDesc.NodeMask = engine->d3d12_device->GetNodeCount();
-    descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    ID3D12DescriptorHeap *descHeap;
-    hr = engine->d3d12_device->CreateDescriptorHeap(&descHeapDesc,IID_PPV_ARGS(&descHeap));
-    if(FAILED(hr)){
-        return nullptr;
-    }
+    // Phase 1 (Shared-Descriptor-Heap-Plan): heap-pool buffers also do
+    // not own a per-resource shader-visible descriptor heap. See the
+    // engine path above for the rationale.
 
-    if(desc.role == BufferDescriptor::Uniform){
-        // §2.4 — uniform buffers bind via a root CBV; no SRV/UAV needed.
-    } else if(desc.usage == BufferDescriptor::Upload && desc.objectStride > 0){
-        D3D12_SHADER_RESOURCE_VIEW_DESC res_view_desc {};
-        res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        res_view_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        res_view_desc.Format = DXGI_FORMAT_UNKNOWN;
-        res_view_desc.Buffer.StructureByteStride = desc.objectStride;
-        res_view_desc.Buffer.FirstElement = 0;
-        res_view_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-        res_view_desc.Buffer.NumElements = desc.len / desc.objectStride;
-        engine->d3d12_device->CreateShaderResourceView(buffer,&res_view_desc,descHeap->GetCPUDescriptorHandleForHeapStart());
-    } else if(desc.objectStride > 0) {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc {};
-        uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        uav_desc.Format = DXGI_FORMAT_UNKNOWN;
-        uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-        uav_desc.Buffer.NumElements = desc.len / desc.objectStride;
-        uav_desc.Buffer.StructureByteStride = desc.objectStride;
-        uav_desc.Buffer.CounterOffsetInBytes = 0;
-        uav_desc.Buffer.FirstElement = 0;
-        engine->d3d12_device->CreateUnorderedAccessView(buffer,nullptr,&uav_desc,descHeap->GetCPUDescriptorHandleForHeapStart());
-    }
-
-    auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,descHeap,state,allocation);
+    auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation);
     d3d12_buffer->role = desc.role;
     return SharedHandle<GEBuffer>(d3d12_buffer);
 }
@@ -415,14 +384,12 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         return nullptr;
     }
 
-    D3D12_DESCRIPTOR_HEAP_DESC descHeapDesc {};
-    descHeapDesc.NumDescriptors = 1;
-    descHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    descHeapDesc.NodeMask = engine->d3d12_device->GetNodeCount();
-    descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    ID3D12DescriptorHeap *descHeap;
-    hr = engine->d3d12_device->CreateDescriptorHeap(&descHeapDesc,IID_PPV_ARGS(&descHeap));
-    if(FAILED(hr)){
+    // Phase 2: suballocate an SRV slot from the engine's shared heap.
+    D3D12DescriptorHandle srvSlot = engine->resourceDescriptorAllocator->allocate(1);
+    if(!srvSlot.valid()){
+        DEBUG_STREAM("GED3D12Heap::makeTexture: resourceDescriptorAllocator exhausted");
+        if(texture)    texture->Release();
+        if(allocation) allocation->Release();
         return nullptr;
     }
 
@@ -474,9 +441,12 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             res_view_desc.Texture2D.MipLevels = effectiveMips;
             break;
     }
-    engine->d3d12_device->CreateShaderResourceView(texture,&res_view_desc,descHeap->GetCPUDescriptorHandleForHeapStart());
+    engine->d3d12_device->CreateShaderResourceView(texture,&res_view_desc,srvSlot.cpu);
 
     ID3D12DescriptorHeap *rtvDescHeap = nullptr;
+    D3D12_DESCRIPTOR_HEAP_DESC descHeapDesc {};
+    descHeapDesc.NumDescriptors = 1;
+    descHeapDesc.NodeMask = engine->d3d12_device->GetNodeCount();
     if(desc.usage == GETexture::RenderTarget || desc.usage == GETexture::RenderTargetAndDepthStencil){
         descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         descHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
@@ -516,7 +486,13 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         }
     }
 
-    auto result = SharedHandle<GETexture>(new GED3D12Texture(kind, desc.usage, desc.pixelFormat, texture, nullptr, descHeap, nullptr, rtvDescHeap, nullptr, res_states, allocation));
+    auto result = SharedHandle<GETexture>(new GED3D12Texture(engine, kind, desc.usage, desc.pixelFormat, texture, nullptr, srvSlot, D3D12DescriptorHandle{}, rtvDescHeap, nullptr, res_states, allocation));
+    // GED3D12Heap::makeTexture wraps every kind as an SRV (no UAV path here),
+    // so capture the desc for the swizzle cache.
+    if(auto *d3d12Tex = static_cast<GED3D12Texture *>(result.get())){
+        d3d12Tex->primarySrvDesc = res_view_desc;
+        d3d12Tex->hasPrimarySrvDesc = true;
+    }
     result->setShape(kind, arrayLayers, effectiveSampleCount);
     return result;
 }
@@ -632,9 +608,66 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         gteDevice = std::static_pointer_cast<GTEDevice>(device);
         _deviceFeatures = gteDevice->features.featuresAsBitmask();
 
+        // Engine-owned helper heap used by fillBuffer's ClearUAV path
+        // (single-slot, shader-visible CBV/SRV/UAV). See
+        // Shared-Descriptor-Heap-Plan.md Phase 1.
+        {
+            D3D12_DESCRIPTOR_HEAP_DESC helperDesc {};
+            helperDesc.NumDescriptors = 1;
+            helperDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            helperDesc.NodeMask = d3d12_device->GetNodeCount();
+            helperDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            hr = d3d12_device->CreateDescriptorHeap(&helperDesc, IID_PPV_ARGS(&clearUavHelperHeap));
+            if(FAILED(hr)){
+                DEBUG_STREAM("Failed to create clearUavHelperHeap");
+                exit(1);
+            }
+        }
+
+        // Shared-Descriptor-Heap-Plan Phase 2 — device-wide shader-visible
+        // allocators for textures / samplers. 65536 CBV/SRV/UAV descriptors
+        // and the D3D12 hardware cap of 2048 samplers are the starting
+        // points; raise either if a multi-window or texture-heavy workload
+        // exhausts them.
+        resourceDescriptorAllocator = std::make_unique<D3D12DescriptorAllocator>(
+            d3d12_device.Get(),
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+            /*capacity=*/65536u);
+        samplerDescriptorAllocator = std::make_unique<D3D12DescriptorAllocator>(
+            d3d12_device.Get(),
+            D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+            /*capacity=*/2048u);
+
         DEBUG_STREAM("GED3D12Engine Intialized!");
 
     };
+
+    std::vector<Retention::FenceGate> GED3D12Engine::snapshotAllQueuesGates(){
+        std::vector<Retention::FenceGate> gates;
+        gates.reserve(liveCommandQueues.size());
+        for(auto & weakQ : liveCommandQueues){
+            if(auto q = weakQ.lock()){
+                auto * dq = static_cast<GED3D12CommandQueue *>(q.get());
+                gates.push_back(dq->gateForRetiredSubmissions());
+            }
+        }
+        return gates;
+    }
+
+    void GED3D12Engine::freeDescriptorAfterQueueDrain(D3D12DescriptorAllocator *allocator,
+                                                       const D3D12DescriptorHandle &handle){
+        if(allocator == nullptr || !handle.valid()) return;
+        auto gates = snapshotAllQueuesGates();
+        if(gates.empty()){
+            // No live queue ever recorded against this descriptor → free
+            // immediately. Avoids accumulating retention entries with no
+            // gate that drain only on engine shutdown.
+            allocator->free(handle);
+            return;
+        }
+        retentionQueue.enqueue(std::move(gates),
+            [allocator, handle](){ allocator->free(handle); });
+    }
 
     void GED3D12Engine::waitForGPUIdle(){
         // Per-queue Signal+wait. liveCommandQueues holds weak refs to
@@ -666,6 +699,13 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         // signaled. drainAll runs releases unconditionally, which avoids
         // the cost of querying every gate one more time.
         retentionQueue.drainAll();
+
+        // Phase 2 — release the shared descriptor allocators after the
+        // retention queue has drained (its callbacks call
+        // `allocator->free(handle)`, so the allocator must still be live
+        // here). Resetting unique_ptrs runs the heap ComPtr release.
+        resourceDescriptorAllocator.reset();
+        samplerDescriptorAllocator.reset();
 
         if(memAllocator){
             memAllocator->Release();
@@ -2682,67 +2722,61 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
 
 
-        ID3D12DescriptorHeap *descHeap = nullptr, *rtvDescHeap = nullptr;
+        // Phase 2 (Shared-Descriptor-Heap-Plan): SRV / UAV slots come
+        // from the engine's shared CBV/SRV/UAV allocator. RTV / DSV stay
+        // as per-texture non-shader-visible heaps.
+        D3D12DescriptorHandle srvSlot{};
+        D3D12DescriptorHandle uavSlot{};
+        ID3D12DescriptorHeap *rtvDescHeap = nullptr;
+        ID3D12DescriptorHeap *dsvDescHeap = nullptr;
+
+        auto releaseTextureResources = [&](){
+            if(texture)            texture->Release();
+            if(cpuSideRes)         cpuSideRes->Release();
+            if(texAllocation)      texAllocation->Release();
+            if(cpuSideAllocation)  cpuSideAllocation->Release();
+        };
+        if(isSRV){
+            srvSlot = resourceDescriptorAllocator->allocate(1);
+            if(!srvSlot.valid()){
+                DEBUG_STREAM("makeTexture: resourceDescriptorAllocator exhausted (SRV)");
+                releaseTextureResources();
+                return nullptr;
+            }
+            d3d12_device->CreateShaderResourceView(texture, &res_view_desc, srvSlot.cpu);
+        }
+
+        if(isUAV){
+            uavSlot = resourceDescriptorAllocator->allocate(1);
+            if(!uavSlot.valid()){
+                DEBUG_STREAM("makeTexture: resourceDescriptorAllocator exhausted (UAV)");
+                if(srvSlot.valid()) resourceDescriptorAllocator->free(srvSlot);
+                releaseTextureResources();
+                return nullptr;
+            }
+            d3d12_device->CreateUnorderedAccessView(texture, nullptr, &uav_view_desc, uavSlot.cpu);
+        }
 
         D3D12_DESCRIPTOR_HEAP_DESC descHeapDesc {};
         descHeapDesc.NumDescriptors = 1;
-        descHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        descHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         descHeapDesc.NodeMask = d3d12_device->GetNodeCount();
-
-         ID3D12DescriptorHeap *uavDescHeap = nullptr;
-
-        if(isSRV || isUAV) {
-            descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-
-            hr = d3d12_device->CreateDescriptorHeap(&descHeapDesc, IID_PPV_ARGS(&descHeap));
-            if (FAILED(hr)) {
-                DEBUG_STREAM("Failed to Create Descriptor Heap");
-                exit(1);
-            };
-            // auto increment = d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-            CD3DX12_CPU_DESCRIPTOR_HANDLE handle(descHeap->GetCPUDescriptorHandleForHeapStart());
-
-            if(isSRV){
-                d3d12_device->CreateShaderResourceView(texture, &res_view_desc,
-                                                       handle);
-            }
-
-            if(isUAV) {
-                hr = d3d12_device->CreateDescriptorHeap(&descHeapDesc, IID_PPV_ARGS(&uavDescHeap));
-                if (FAILED(hr)) {
-                    DEBUG_STREAM("Failed to Create Descriptor Heap");
-                    exit(1);
-                };
-
-                CD3DX12_CPU_DESCRIPTOR_HANDLE uav_handle(uavDescHeap->GetCPUDescriptorHandleForHeapStart());
-
-                d3d12_device->CreateUnorderedAccessView(texture,nullptr, &uav_view_desc,
-                                                        uav_handle);
-            }
-
-        }
 
         if(desc.usage == GETexture::RenderTarget || desc.usage == GETexture::RenderTargetAndDepthStencil){
             descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-            descHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
             hr = d3d12_device->CreateDescriptorHeap(&descHeapDesc,IID_PPV_ARGS(&rtvDescHeap));
             if(FAILED(hr)){
                 DEBUG_STREAM("Failed to Create RTV Desc Heap");
             };
 
             d3d12_device->CreateRenderTargetView(texture,&view_desc,rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
-            descHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         };
-
-        ID3D12DescriptorHeap *dsvDescHeap = nullptr;
 
         // 3D textures cannot be depth-stencil targets on D3D12; the
         // §6.1 validation rule already rejects DepthStencil + Tex3D, so
         // mirror that here on the resolved kind.
         if(isDSV && kind != TextureKind::Tex3D){
             descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-
             hr = d3d12_device->CreateDescriptorHeap(&descHeapDesc, IID_PPV_ARGS(&dsvDescHeap));
             if(FAILED(hr)){
                 DEBUG_STREAM("Failed to Create DSV Desc Heap");
@@ -2753,7 +2787,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         DEBUG_STREAM("Will Return Texture");
 
-        auto result = SharedHandle<GETexture>(new GED3D12Texture(kind,desc.usage,desc.pixelFormat,texture,cpuSideRes,descHeap,uavDescHeap,rtvDescHeap,dsvDescHeap,res_states,texAllocation,cpuSideAllocation));
+        auto result = SharedHandle<GETexture>(new GED3D12Texture(this,kind,desc.usage,desc.pixelFormat,texture,cpuSideRes,srvSlot,uavSlot,rtvDescHeap,dsvDescHeap,res_states,texAllocation,cpuSideAllocation));
         // §6.1 — record the resolved shape on the texture so bind-time
         // validation (§6.3) and any future per-kind queries can read
         // it without having to re-derive from `type` + `sampleCount`.
@@ -2822,65 +2856,14 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             return nullptr;
         };
 
-        D3D12_DESCRIPTOR_HEAP_DESC descHeapDesc {};
-        descHeapDesc.NumDescriptors = 1;
-        descHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        descHeapDesc.NodeMask = d3d12_device->GetNodeCount();
-        descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        // Initialize to nullptr explicitly: on failure the COM contract
-        // says the callee may leave the output untouched, so without
-        // this an uninitialized stack slot leaks through to the SRV /
-        // UAV creation below.
-        ID3D12DescriptorHeap *descHeap = nullptr;
-        hr = d3d12_device->CreateDescriptorHeap(&descHeapDesc,IID_PPV_ARGS(&descHeap));
-        if(FAILED(hr) || descHeap == nullptr){
-            // Under churn — for example a fast WTK window resize that
-            // rebuilds the buffer pool every frame — CreateDescriptorHeap
-            // can transiently fail. Previously the empty handler fell
-            // straight through to `descHeap->GetCPUDescriptorHandleForHeapStart()`
-            // and AV'd reading the null vtable. Release the already-
-            // created D3D12 buffer + allocation, log, and bubble the
-            // failure up. Callers (e.g. `BufferPool::acquire` →
-            // `emitTextSubRun`) already treat a null GEBuffer as "skip
-            // this subrun for the frame."
-            DEBUG_STREAM("Failed to Create D3D12 Descriptor Heap for Buffer");
-            if (buffer)     buffer->Release();
-            if (allocation) allocation->Release();
-            return nullptr;
-        };
+        // Phase 1 (Shared-Descriptor-Heap-Plan): buffers no longer own a
+        // per-resource shader-visible descriptor heap. Uniform / SRV / UAV
+        // buffer binds go through SetGraphics*View on the GPU virtual
+        // address, which does not consult any descriptor heap; the
+        // ClearUAV path in fillBuffer rewrites a UAV into the engine's
+        // shared helper heap on demand.
 
-        if(desc.role == BufferDescriptor::Uniform){
-            // §2.4 — uniform buffers bind via a root CBV (GPU virtual
-            // address), so no per-buffer SRV/UAV descriptor is created here.
-        }
-        else if(desc.usage == BufferDescriptor::Upload) {
-
-            D3D12_SHADER_RESOURCE_VIEW_DESC res_view_desc{};
-            res_view_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            res_view_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            res_view_desc.Format = DXGI_FORMAT_UNKNOWN;
-            res_view_desc.Buffer.StructureByteStride = desc.objectStride;
-            res_view_desc.Buffer.FirstElement = 0;
-            res_view_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-            res_view_desc.Buffer.NumElements = desc.len / desc.objectStride;
-
-            d3d12_device->CreateShaderResourceView(buffer, &res_view_desc,
-                                                   descHeap->GetCPUDescriptorHandleForHeapStart());
-        }
-        else {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc{};
-            uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-            uav_desc.Format = DXGI_FORMAT_UNKNOWN;
-            uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-            uav_desc.Buffer.NumElements = desc.len/desc.objectStride;
-            uav_desc.Buffer.StructureByteStride = desc.objectStride;
-            uav_desc.Buffer.CounterOffsetInBytes = 0;
-            uav_desc.Buffer.FirstElement = 0;
-
-            d3d12_device->CreateUnorderedAccessView(buffer,nullptr,&uav_desc,descHeap->GetCPUDescriptorHandleForHeapStart());
-        }
-
-        auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,descHeap,state,allocation);
+        auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation);
         d3d12_buffer->role = desc.role;
         return SharedHandle<GEBuffer>(d3d12_buffer);
     }
@@ -3082,13 +3065,6 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
 
     SharedHandle<GESamplerState> GED3D12Engine::makeSamplerState(const SamplerDescriptor &desc) {
-        D3D12_DESCRIPTOR_HEAP_DESC desc1 {};
-        desc1.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
-        desc1.NodeMask = d3d12_device->GetNodeCount();
-        desc1.NumDescriptors = 1;
-        desc1.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        
-
         D3D12_FILTER filter;
         /// TOOD: Handle all Filter Cases
         switch (desc.filter) {
@@ -3110,21 +3086,32 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             }
         }
 
-        ID3D12DescriptorHeap *descHeap;
-        d3d12_device->CreateDescriptorHeap(&desc1,IID_PPV_ARGS(&descHeap));
+        // Phase 2 (Shared-Descriptor-Heap-Plan): one engine-wide SAMPLER
+        // heap. The D3D12 hardware cap is 2048 per heap — the allocator
+        // returns an invalid handle on exhaustion and we propagate
+        // nullptr so callers can fall back gracefully.
+        D3D12DescriptorHandle slot = samplerDescriptorAllocator->allocate(1);
+        if(!slot.valid()){
+            DEBUG_STREAM("makeSamplerState: samplerDescriptorAllocator exhausted");
+            return nullptr;
+        }
         D3D12_SAMPLER_DESC samplerDesc {};
         samplerDesc.AddressU = convertAddressModeGTE(desc.uAddressMode);
         samplerDesc.AddressV = convertAddressModeGTE(desc.vAddressMode);
         samplerDesc.AddressW = convertAddressModeGTE(desc.wAddressMode);
         samplerDesc.Filter = filter;
         samplerDesc.MaxAnisotropy = desc.maxAnisotropy;
-        
-        d3d12_device->CreateSampler(&samplerDesc,descHeap->GetCPUDescriptorHandleForHeapStart());
 
-        ATL::CStringW wstr(desc.name.data());
-        descHeap->SetName(wstr.GetString());
+        d3d12_device->CreateSampler(&samplerDesc, slot.cpu);
 
-        return SharedHandle<GESamplerState>(new GED3D12SamplerState(descHeap,samplerDesc));
+        return SharedHandle<GESamplerState>(new GED3D12SamplerState(this, slot, samplerDesc));
+    }
+
+    GED3D12SamplerState::~GED3D12SamplerState(){
+        if(owningEngine){
+            owningEngine->freeDescriptorAfterQueueDrain(
+                owningEngine->samplerDescriptorAllocator.get(), samplerHandle);
+        }
     }
 
 _NAMESPACE_END_

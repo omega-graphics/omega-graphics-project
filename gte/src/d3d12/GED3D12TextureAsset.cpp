@@ -315,21 +315,16 @@ public:
         // barrier in submitUpload moves it to PIXEL_SHADER_RESOURCE.
         if (!submitUpload(device, resource.Get(), subs)) return false;
 
-        // Build a single-descriptor SRV heap.
-        D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
-        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        heapDesc.NumDescriptors = 1;
-        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        ID3D12DescriptorHeap *srvHeap = nullptr;
-        hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&srvHeap));
-        if (FAILED(hr)) {
-            std::cerr << "[GETextureAsset/D3D12] SRV heap creation failed." << std::endl;
+        // Phase 2 (Shared-Descriptor-Heap-Plan): asset SRVs share the
+        // engine's CBV/SRV/UAV heap with every other texture.
+        D3D12DescriptorHandle srvSlot = d3dEngine->resourceDescriptorAllocator->allocate(1);
+        if (!srvSlot.valid()) {
+            std::cerr << "[GETextureAsset/D3D12] resourceDescriptorAllocator exhausted." << std::endl;
             return false;
         }
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
         fillSrvDesc(md, srvDesc);
-        device->CreateShaderResourceView(resource.Get(), &srvDesc,
-                                         srvHeap->GetCPUDescriptorHandleForHeapStart());
+        device->CreateShaderResourceView(resource.Get(), &srvDesc, srvSlot.cpu);
 
         // Wrap as a GED3D12Texture. The resource is already on the GPU
         // and in PIXEL_SHADER_RESOURCE state; pass that as currentState.
@@ -341,9 +336,9 @@ public:
         raw->AddRef();  // GED3D12Texture holds via ComPtr; ScratchImage path
                         // didn't go through D3D12MA so allocations are null.
 
-        auto *tex = new GED3D12Texture(ekind, GETexture::ToGPU, enginePF,
+        auto *tex = new GED3D12Texture(d3dEngine, ekind, GETexture::ToGPU, enginePF,
                                        raw, /*cpuSideRes*/ nullptr,
-                                       srvHeap, /*uavDescHeap*/ nullptr,
+                                       srvSlot, /*uavHandle*/ D3D12DescriptorHandle{},
                                        /*rtvDescHeap*/ nullptr, /*dsvDescHeap*/ nullptr,
                                        state,
                                        /*d3d12maAllocation*/ nullptr,

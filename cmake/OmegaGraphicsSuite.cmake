@@ -554,18 +554,58 @@ function(add_third_party)
 
     if(NOT ${_ARG_CUSTOM_PROJECT})
         message("Adding ThirdParty: CMAKE PROJECT:${_ARG_NAME}")
+        # If a previous configure cached a different compiler than the parent
+        # is currently using, the child's CMakeCache.txt will pin that stale
+        # value and silently override the -DCMAKE_C_COMPILER we pass below.
+        # This bites on Windows where a child can pick up MSVC's
+        # version-stamped cl.exe path (e.g. .../MSVC/14.50.35717/.../cl.exe)
+        # that ceases to exist after MSVC servicing. Detect drift against the
+        # parent and wipe the child cache + CMakeFiles so the new configure
+        # honors the forwarded compiler.
+        set(_OG_CHILD_CACHE "${_ARG_BINARY_DIR}/CMakeCache.txt")
+        if(EXISTS "${_OG_CHILD_CACHE}")
+            set(_OG_CHILD_STALE FALSE)
+            foreach(_OG_VAR CMAKE_C_COMPILER CMAKE_CXX_COMPILER)
+                file(STRINGS "${_OG_CHILD_CACHE}" _OG_LINES
+                    REGEX "^${_OG_VAR}:[A-Z]+=")
+                if(_OG_LINES)
+                    list(GET _OG_LINES 0 _OG_LINE)
+                    string(REGEX REPLACE "^${_OG_VAR}:[A-Z]+=" "" _OG_CACHED "${_OG_LINE}")
+                    if(NOT "${_OG_CACHED}" STREQUAL "${${_OG_VAR}}")
+                        message(STATUS
+                            "add_third_party(${_ARG_NAME}): cached ${_OG_VAR}='${_OG_CACHED}' "
+                            "differs from parent '${${_OG_VAR}}'; invalidating child cache")
+                        set(_OG_CHILD_STALE TRUE)
+                    endif()
+                endif()
+            endforeach()
+            if(_OG_CHILD_STALE)
+                file(REMOVE "${_OG_CHILD_CACHE}")
+                file(REMOVE_RECURSE "${_ARG_BINARY_DIR}/CMakeFiles")
+            endif()
+        endif()
         # Force Release for every third-party build. -DCMAKE_BUILD_TYPE pins
         # single-config generators (Ninja, Make); --config Release pins
         # multi-config generators (Visual Studio, Xcode, Ninja Multi-Config),
         # which silently ignore CMAKE_BUILD_TYPE and default to Debug otherwise.
         # Passing --config on a single-config generator is a no-op, so this
         # works uniformly across every generator we support.
+        # CMAKE_C_COMPILER/CMAKE_CXX_COMPILER are forwarded explicitly so the
+        # child locks to the parent's toolchain choice instead of auto-detecting
+        # from PATH (which on Windows can silently fall through to MSVC's
+        # cl.exe even when the parent is clang-cl).
+        # CMAKE_POLICY_VERSION_MINIMUM=3.5 is CMake's official escape hatch for
+        # CMake 4.x: it dropped compatibility with cmake_minimum_required(<3.5),
+        # and every bundled third-party source whose top-level CMakeLists still
+        # declares an older minimum (libjpeg-turbo is the obvious one, but the
+        # trap is generic) refuses to configure without it. Harmless for deps
+        # that already require >= 3.5.
         ExternalProject_Add(
             ${_ARG_NAME}
             SOURCE_DIR "${_ARG_SOURCE_DIR}"
             BINARY_DIR "${_ARG_BINARY_DIR}"
             INSTALL_DIR "${_ARG_INSTALL_DIR}"
-            CONFIGURE_COMMAND ${CMAKE_COMMAND} -S ${_ARG_SOURCE_DIR} -G${CMAKE_GENERATOR} -B ${_ARG_BINARY_DIR} -DCMAKE_BUILD_TYPE=Release -DCMAKE_CONFIGURATION_TYPES=Release -DCMAKE_INSTALL_PREFIX=${_ARG_INSTALL_DIR} ${_ARG_CMAKE_BUILD_ARGS}
+            CONFIGURE_COMMAND ${CMAKE_COMMAND} -S ${_ARG_SOURCE_DIR} -G${CMAKE_GENERATOR} -B ${_ARG_BINARY_DIR} -DCMAKE_BUILD_TYPE=Release -DCMAKE_CONFIGURATION_TYPES=Release -DCMAKE_INSTALL_PREFIX=${_ARG_INSTALL_DIR} -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER} -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER} -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ${_ARG_CMAKE_BUILD_ARGS}
             BUILD_COMMAND ${CMAKE_COMMAND} --build ${_ARG_BINARY_DIR} --config Release
             INSTALL_COMMAND ${CMAKE_COMMAND} --install ${_ARG_BINARY_DIR} --config Release
             BUILD_BYPRODUCTS ${_BYPRODUCTS}

@@ -12,9 +12,12 @@
 #include <cstdint>
 
 #include <wrl.h>
+#include <memory>
+#include <vector>
 #include "D3D12MemAlloc.h"
 #include "../common/GEResourceTracker.h"
 #include "../common/GERetentionQueue.h"
+#include "D3D12DescriptorAllocator.h"
 
 #pragma comment(lib,"d3d12.lib")
 #pragma comment(lib,"dxgi.lib")
@@ -32,7 +35,6 @@ _NAMESPACE_BEGIN_
     public:
 
         ComPtr<ID3D12Resource> buffer;
-        ComPtr<ID3D12DescriptorHeap> bufferDescHeap;
         std::uint64_t traceResourceId = 0;
 
         D3D12_RESOURCE_STATES currentState;
@@ -55,9 +57,8 @@ _NAMESPACE_BEGIN_
         size_t size() override{
             return buffer->GetDesc().Width;
         };
-        GED3D12Buffer(const BufferDescriptor::Usage & usage,ID3D12Resource *buffer,ID3D12DescriptorHeap *bufferDescHeap, D3D12_RESOURCE_STATES currentState, D3D12MA::Allocation *d3d12maAllocation = nullptr):
+        GED3D12Buffer(const BufferDescriptor::Usage & usage,ID3D12Resource *buffer, D3D12_RESOURCE_STATES currentState, D3D12MA::Allocation *d3d12maAllocation = nullptr):
         GEBuffer(usage),buffer(buffer),
-        bufferDescHeap(bufferDescHeap),
         traceResourceId(ResourceTracking::Tracker::instance().nextResourceId()), currentState(currentState),
         d3d12maAllocation(d3d12maAllocation){
 
@@ -105,13 +106,22 @@ _NAMESPACE_BEGIN_
         ~GED3D12Fence() override = default;
     };
 
+    class GED3D12Engine;
+
     class GED3D12SamplerState : public GESamplerState {
     public:
-        ComPtr<ID3D12DescriptorHeap> descHeap;
+        // Phase 2 — sampler slot inside the engine's shared SAMPLER heap.
+        D3D12DescriptorHandle samplerHandle{};
         D3D12_SAMPLER_DESC staticSampler;
-        explicit GED3D12SamplerState(ID3D12DescriptorHeap *descriptorHeap,D3D12_SAMPLER_DESC & samplerDesc):descHeap(descriptorHeap),staticSampler(samplerDesc){
-
-        };
+        GED3D12Engine *owningEngine = nullptr;
+        explicit GED3D12SamplerState(GED3D12Engine *engine,
+                                     const D3D12DescriptorHandle & handle,
+                                     D3D12_SAMPLER_DESC & samplerDesc):
+            samplerHandle(handle), staticSampler(samplerDesc), owningEngine(engine){};
+        // SharedHandle<GESamplerState> is shared_ptr, whose deleter uses the
+        // static type at wrap time, so this destructor runs even though the
+        // base GESamplerState has no virtual dtor.
+        ~GED3D12SamplerState();
     };
 
     class GED3D12Engine;
@@ -205,6 +215,37 @@ _NAMESPACE_BEGIN_
         // resource trips the D3D12 debug layer's CORRUPTION 921.
         void waitForGPUIdle() override;
         // ComPtr<ID3D12DescriptorHeap> descriptorHeapForRes;
+
+        // Single-slot shader-visible CBV/SRV/UAV heap reused by
+        // GED3D12CommandBuffer::fillBuffer. ClearUnorderedAccessViewUint
+        // requires a matched (CPU, GPU) UAV handle pair, so the UAV is
+        // rewritten in place per fill rather than allocated per buffer.
+        // Created at engine init, released in the destructor. Single-slot
+        // suffices while fills are serialized per command queue; promote
+        // to a fence-keyed ring if concurrent fills become possible.
+        ComPtr<ID3D12DescriptorHeap> clearUavHelperHeap;
+
+        // Shared-Descriptor-Heap-Plan Phase 2: one device-wide shader-
+        // visible CBV/SRV/UAV heap and one device-wide shader-visible
+        // SAMPLER heap. Texture / sampler creation suballocates a slot;
+        // the per-resource heap that the old path created per call is
+        // gone. Released after waitForGPUIdle() in the destructor.
+        std::unique_ptr<D3D12DescriptorAllocator> resourceDescriptorAllocator;  // CBV/SRV/UAV
+        std::unique_ptr<D3D12DescriptorAllocator> samplerDescriptorAllocator;   // SAMPLER
+
+        // Build a fence-gate vector that signals once every command list
+        // currently submitted to every live command queue has retired.
+        // Used by texture / sampler destruction paths to defer descriptor-
+        // slot frees behind GPU completion via `retentionQueue`. Empty if
+        // no queues are live (no submissions to wait on).
+        std::vector<Retention::FenceGate> snapshotAllQueuesGates();
+
+        // Convenience wrapper: enqueue a deferred free of `handle` against
+        // `allocator`, gated on the current live-queue snapshot. Safe to
+        // call from any thread; if no queues are live, frees immediately.
+        void freeDescriptorAfterQueueDrain(D3D12DescriptorAllocator *allocator,
+                                           const D3D12DescriptorHandle &handle);
+
         static SharedHandle<OmegaGraphicsEngine> Create(SharedHandle<GTEDevice> & device);
         // SharedHandle<GEShaderLibrary> loadShaderLibrary(FS::Path path);
         // SharedHandle<GEShaderLibrary> loadStdShaderLibrary();

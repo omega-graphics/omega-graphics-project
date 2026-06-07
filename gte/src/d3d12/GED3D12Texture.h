@@ -26,30 +26,43 @@ public:
     ComPtr<ID3D12Resource> resource;
 
     ComPtr<ID3D12Resource> cpuSideresource;
-    ComPtr<ID3D12DescriptorHeap> srvDescHeap;
-    ComPtr<ID3D12DescriptorHeap> uavDescHeap;
+
+    /// Shared-Descriptor-Heap-Plan Phase 2: SRV / UAV slots live in the
+    /// engine's device-wide shader-visible CBV/SRV/UAV heap. Invalid
+    /// handle = no view of that kind for this texture. RTV / DSV stay as
+    /// per-texture non-shader-visible heaps (different heap type, low
+    /// churn, lifetime-tied).
+    D3D12DescriptorHandle srvHandle{};
+    D3D12DescriptorHandle uavHandle{};
     ComPtr<ID3D12DescriptorHeap> rtvDescHeap;
     ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
+
+    /// Owning engine pointer for descriptor-slot lifetime management. Raw
+    /// pointer is safe because the engine outlives every texture it
+    /// hands out (waitForGPUIdle + retentionQueue.drainAll run in
+    /// `~GED3D12Engine` before the allocators are released).
+    GED3D12Engine *owningEngine = nullptr;
 
     /// Captured at primary-SRV creation time so swizzled-view recreation
     /// can clone every field except `Shader4ComponentMapping`. Populated
     /// only for textures that actually have an SRV (`isSRV` in
     /// `GED3D12Engine::makeTexture`); other textures leave it default-init
-    /// and the cache helper short-circuits to the primary heap.
+    /// and the cache helper short-circuits to the primary handle.
     D3D12_SHADER_RESOURCE_VIEW_DESC primarySrvDesc{};
     bool hasPrimarySrvDesc = false;
 
-    /// Lazily-created single-slot SRV descriptor heaps for non-identity
-    /// swizzles requested at bind time. Linear scan; freed alongside the
-    /// parent texture when the ComPtr drops to zero.
-    OmegaCommon::Vector<std::pair<TextureSwizzle, ComPtr<ID3D12DescriptorHeap>>> swizzledSrvCache;
+    /// Lazily-allocated swizzled-SRV slots in the engine's shared CBV/SRV/UAV
+    /// heap, keyed by swizzle. Linear scan (typical swizzle counts are 1-3).
+    /// Each slot is deferred-freed alongside the parent texture in the
+    /// destructor.
+    OmegaCommon::Vector<std::pair<TextureSwizzle, D3D12DescriptorHandle>> swizzledSrvCache;
 
-    /// Resolve (or lazily create) an SRV heap whose single descriptor has
-    /// the requested swizzle baked in via `Shader4ComponentMapping`.
-    /// Identity returns `srvDescHeap` directly. If the texture has no
-    /// captured base SRV desc, falls back to the primary heap silently.
-    ID3D12DescriptorHeap *getOrCreateSwizzledSrvHeap(ID3D12Device *device,
-                                                     const TextureSwizzle & swizzle);
+    /// Resolve (or lazily create) an SRV slot whose descriptor has the
+    /// requested swizzle baked into `Shader4ComponentMapping`. Identity
+    /// returns the primary `srvHandle` directly. If the texture has no
+    /// captured base SRV desc, falls back to the primary handle silently.
+    D3D12DescriptorHandle getOrCreateSwizzledSrvHandle(GED3D12Engine *engine,
+                                                        const TextureSwizzle & swizzle);
 
     // D3D12MA-owned suballocations. nullptr when the corresponding resource
     // was created outside the allocator (heap-placed via GED3D12Heap, or
@@ -76,13 +89,14 @@ public:
     }
 
     explicit GED3D12Texture(
+            GED3D12Engine *engine,
             const TextureKind & kind,
             const GETextureUsage & usage,
             const TexturePixelFormat & pixelFormat,
             ID3D12Resource *res,
             ID3D12Resource *cpuSideRes,
-            ID3D12DescriptorHeap *descHeap,
-            ID3D12DescriptorHeap *uavDescHeap,
+            const D3D12DescriptorHandle & srvHandle,
+            const D3D12DescriptorHandle & uavHandle,
             ID3D12DescriptorHeap *rtvDescHeap,
             ID3D12DescriptorHeap *dsvDescHeap,
             D3D12_RESOURCE_STATES & currentState,

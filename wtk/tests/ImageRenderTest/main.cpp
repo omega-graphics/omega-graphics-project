@@ -72,12 +72,12 @@ int omegaWTKMain(AppInst *app) {
     // the diagnostic.
     float contentW = windowRect.w - 32.f;
 
-    auto root = make<VStack>(windowRect, StackOptions{
-        .spacing = 8.f,
-        .padding = {16.f, 16.f, 16.f, 16.f},
-        .mainAlign = StackMainAlign::Start,
-        .crossAlign = StackCrossAlign::Stretch
-    });
+    StackOptions rootOpts;
+    rootOpts.spacing = 8.f;
+    rootOpts.padding = StackInsets{16.f, 16.f, 16.f, 16.f};
+    rootOpts.mainAlign = StackMainAlign::Start;
+    rootOpts.crossAlign = StackCrossAlign::Stretch;
+    auto root = make<VStack>(windowRect, rootOpts);
 
     LabelProps titleProps;
     titleProps.text = U"ImageRenderTest — drawImage / bitmap quad path";
@@ -86,14 +86,18 @@ int omegaWTKMain(AppInst *app) {
     titleProps.wrapping = Composition::TextLayoutDescriptor::None;
     auto titleLabel = make<Label>(
         Composition::Rect{{0, 0}, contentW, 30.f}, titleProps);
-    root->addChild(titleLabel, StackSlot{.flexGrow = 0.f});
+    StackSlot titleSlot;
+    titleSlot.flexGrow = 0.f;
+    root->addChild(titleLabel, titleSlot);
 
     ImageProps imgProps;
     imgProps.source = bitmap;
     imgProps.fitMode = ImageFitMode::Contain;
     auto img = make<Image>(
         Composition::Rect{{0, 0}, contentW, 400.f}, imgProps);
-    root->addChild(img, StackSlot{.flexGrow = 1.f});
+    StackSlot imgSlot;
+    imgSlot.flexGrow = 1.f;
+    root->addChild(img, imgSlot);
 
     window->setRootWidget(root);
 
