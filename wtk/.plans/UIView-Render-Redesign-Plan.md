@@ -2294,7 +2294,33 @@ phase (G.3). Each sub-phase is independently shippable.
   CMake option `OMEGAWTK_ENABLE_CONTENT_CACHE` so the type lands
   without changing per-frame behavior.
 
-**G.1 — Tessellation cache [~200 LOC]**
+**G.1 — Tessellation cache [~200 LOC] [DONE 2026-06-07]**
+
+- `wtk/src/Composition/backend/TessellationCache.{h,cpp}` landed:
+  `TessellationCacheKey` struct, `std::hash` specialization, the path's
+  FNV-1a hash walker (`hashPath2D` — out-of-line so the GTE math
+  headers stay scoped to the .cpp), `packRGBA` color packer, and
+  `bucketDim` size rounder.
+- `BackendRenderTargetContext` gains a `std::unique_ptr<TessellationCacheState>`
+  PIMPL slot; `TessellationCacheState` (defined in `RenderTarget.cpp`)
+  wraps `ContentCache<TessellationCacheKey, OmegaGTE::TETriangulationResult>`
+  with the entry cap from `ContentCacheConfig::inst()
+  .tessellationCacheEntries` (default 1024). The slot is always
+  allocated so the class layout is stable across the macro toggle.
+- `renderVectorPathSegmented` does cache lookup / insert when
+  `OMEGAWTK_CONTENT_CACHE_ENABLED` is defined: hit → reuse the cached
+  `TETriangulationResult` and skip straight to `drawTriangulatedResult`;
+  miss → `triangulateSync` + `drawTriangulatedResult` + cache insert
+  (move). Cache disabled at compile time falls through to the original
+  inline path.
+- Build verified clean both with `OMEGAWTK_ENABLE_CONTENT_CACHE=OFF`
+  (default) and `=ON`.
+- Divergence from the plan key spec: the key includes stroke/fill RGBA.
+  Necessary because `triangulateSync` bakes the brush colors into every
+  per-vertex `attachment->color` of the mesh, and
+  `drawTriangulatedResult` reads those colors when authoring the GPU
+  buffer (`RenderTarget.cpp` color-write path). Same-geometry-
+  different-color hits would render the wrong color otherwise.
 
 - Key: `(path-bytes-hash, strokeWidth, contour, fill, renderTargetSizeBucket)`.
   - `path-bytes-hash`: FNV-1a over the segment array of `GVectorPath2D`

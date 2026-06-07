@@ -13,6 +13,8 @@
 #include "omegaWTK/Composition/CanvasEffect.h"
 #include "GeometryConvert.h"
 #include "ResourceTrace.h"
+#include "ContentCache.h"
+#include "TessellationCache.h"
 
 #include <algorithm>
 #include <cmath>
@@ -135,6 +137,22 @@ namespace OmegaWTK::Composition {
         BackendResourceFactory::instance().pipelines().shutdown();
     }
 
+    // Phase G.1: tessellation-cache PIMPL. Defined here (not in
+    // `RenderTarget.h`) so the `ContentCache<…, TETriangulationResult>`
+    // instantiation only needs `<omegaGTE/TE.h>`'s full definition inside
+    // this translation unit — RTC consumers stay free of the GTE math
+    // surface. The byte limit is left at 0 (entry count is the only cap,
+    // per the plan's "LRU cap: 1024 entries" decision); a real byte cap is
+    // unnecessary because the cached value is a vector of `Polygon`
+    // structs whose total weight is bounded by the entry count plus the
+    // typical mesh size.
+    struct TessellationCacheState {
+        ContentCache<TessellationCacheKey, OmegaGTE::TETriangulationResult> cache;
+        TessellationCacheState()
+            : cache(ContentCacheConfig::inst().tessellationCacheEntries,
+                    /*byteLimit*/0) {}
+    };
+
 BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
         SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTargetIn,
         SharedHandle<OmegaGTE::GECommandQueue> commandQueueIn,
@@ -151,6 +169,13 @@ BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
                                            renderScale_);
     backingWidth_  = toBackingDimension(renderTargetSize_.w, renderScale_);
     backingHeight_ = toBackingDimension(renderTargetSize_.h, renderScale_);
+
+    // Phase G.1: allocate the tessellation cache PIMPL eagerly. Allocating
+    // unconditionally (rather than gating on `OMEGAWTK_CONTENT_CACHE_ENABLED`)
+    // keeps the destructor's invocation of `~TessellationCacheState` valid
+    // across both build modes; the macro only gates whether the hot path
+    // inside `renderVectorPathSegmented` consults the cache.
+    tessellationCacheState_ = std::make_unique<TessellationCacheState>();
 
     traceResourceId = ResourceTrace::nextResourceId();
     ResourceTrace::emit("Create",
@@ -1954,10 +1979,6 @@ void BackendRenderTargetContext::resetElementState() {
         viewPort.width = renderTargetSize_.w;
         viewPort.height = renderTargetSize_.h;
 
-        auto te_params = OmegaGTE::TETriangulationParams::GraphicsPath2D(*path,
-                                                                         strokeWidth,
-                                                                         contour,
-                                                                         fill);
         // First attachment: stroke color.
         auto strokeColor = OmegaGTE::makeColor(1.f,1.f,1.f,1.f);
         bool hasStrokeColor = false;
@@ -1968,7 +1989,6 @@ void BackendRenderTargetContext::resetElementState() {
                                               strokeBrush->color.a);
             hasStrokeColor = true;
         }
-        te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(strokeColor));
 
         // Second attachment: fill color.
         auto fillColor = OmegaGTE::FVec<4>::Create();
@@ -1979,6 +1999,63 @@ void BackendRenderTargetContext::resetElementState() {
                                             fillBrush->color.b,
                                             fillBrush->color.a);
             hasFillColor = true;
+        }
+
+        // Phase 6.4: route the dual-attachment mesh through the path
+        // pipeline when available, else fall back to the flat color
+        // pipeline (same logic the old VectorPath case carried).
+        const bool usePathRenderPipeline = (pipelineRegistry().path() != nullptr);
+
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+        // Phase G.1: cache lookup. The key captures everything
+        // `triangulateSync` consumes plus the stroke/fill colors that
+        // `drawTriangulatedResult` reads back out of the mesh
+        // attachments. A cache hit skips `triangulateSync` entirely and
+        // draws from the cached mesh.
+        TessellationCacheKey key;
+        const auto pathHashPair = hashPath2D(*path);
+        key.pathHash    = pathHashPair.first;
+        key.pointCount  = pathHashPair.second;
+        key.wBucket     = bucketDim(renderTargetSize_.w);
+        key.hBucket     = bucketDim(renderTargetSize_.h);
+        key.strokeWidth = strokeWidth;
+        key.flagsBits   = 0;
+        if(contour){
+            key.flagsBits |= TessellationCacheKey::FlagContour;
+        }
+        if(fill){
+            key.flagsBits |= TessellationCacheKey::FlagFill;
+        }
+        if(hasStrokeColor){
+            key.flagsBits |= TessellationCacheKey::FlagHasStrokeColor;
+        }
+        key.strokeRGBA = packRGBA(strokeColor[0][0], strokeColor[1][0],
+                                  strokeColor[2][0], strokeColor[3][0]);
+        if(hasFillColor){
+            key.flagsBits |= TessellationCacheKey::FlagHasFillColor;
+            key.fillRGBA  = packRGBA(fillColor[0][0], fillColor[1][0],
+                                     fillColor[2][0], fillColor[3][0]);
+        }
+
+        auto * cacheState = tessellationCacheState_.get();
+        if(cacheState != nullptr){
+            if(auto * hit = cacheState->cache.find(key)){
+                drawTriangulatedResult(*hit, false, usePathRenderPipeline,
+                                       1.f, 1.f,
+                                       strokeColor, hasStrokeColor,
+                                       fillColor, hasFillColor,
+                                       nullptr, nullptr);
+                return;
+            }
+        }
+#endif
+
+        auto te_params = OmegaGTE::TETriangulationParams::GraphicsPath2D(*path,
+                                                                         strokeWidth,
+                                                                         contour,
+                                                                         fill);
+        te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(strokeColor));
+        if(hasFillColor){
             te_params.addAttachment(OmegaGTE::TETriangulationParams::Attachment::makeColor(fillColor));
         }
 
@@ -1986,15 +2063,25 @@ void BackendRenderTargetContext::resetElementState() {
                                                             OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
                                                             &viewPort);
 
-        // Phase 6.4: route the dual-attachment mesh through the path
-        // pipeline when available, else fall back to the flat color
-        // pipeline (same logic the old VectorPath case carried).
-        const bool usePathRenderPipeline = (pipelineRegistry().path() != nullptr);
         drawTriangulatedResult(result, false, usePathRenderPipeline,
                                1.f, 1.f,
                                strokeColor, hasStrokeColor,
                                fillColor, hasFillColor,
                                nullptr, nullptr);
+
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+        // Phase G.1: cache the just-computed mesh for the next frame.
+        // Byte cost is an estimate — the polygon vector dominates the
+        // mesh weight; we don't recurse into the per-vertex optional
+        // attachments. The estimate feeds telemetry only; the cache caps
+        // on entry count, not bytes (plan §G.1 "LRU cap: 1024 entries").
+        if(cacheState != nullptr){
+            const std::size_t entryBytes =
+                    result.mesh.vertexPolygons.size()
+                    * sizeof(OmegaGTE::TETriangulationResult::TEMesh::Polygon);
+            cacheState->cache.insert(key, std::move(result), entryBytes);
+        }
+#endif
     }
 
     void BackendRenderTargetContext::pushDrawOpClip(const Composition::Rect & rect){

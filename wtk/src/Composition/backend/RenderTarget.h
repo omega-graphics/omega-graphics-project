@@ -67,6 +67,13 @@ namespace OmegaWTK::Composition {
     // routed through `Native::VisualTree` directly without a per-frame
     // drain.
 
+    // Phase G.1: per-RTC tessellation cache. Forward-declared so the
+    // unique_ptr member below doesn't drag `<omegaGTE/TE.h>` (full
+    // `TETriangulationResult` definition) into every `RenderTarget.h`
+    // consumer. The state struct is defined inside `RenderTarget.cpp`
+    // where the GTE math headers are already in scope.
+    struct TessellationCacheState;
+
     enum class BackendSubmissionStatus : std::uint8_t {
         Completed,
         Error,
@@ -138,6 +145,16 @@ namespace OmegaWTK::Composition {
         /// for the lifetime of the context (compositor handles cleanup of
         /// dead layers via `RenderTargetStore::cleanTreeTargets`).
         OmegaCommon::Map<Layer *, std::unique_ptr<LayerBlurScratch>> layerScratches;
+
+        /// Phase G.1: tessellation cache state (per-RTC, dies with this
+        /// context). Always allocated, even when
+        /// `OMEGAWTK_CONTENT_CACHE_ENABLED` is off, so the class layout is
+        /// stable across the macro toggle; the hot-path lookup/insert
+        /// inside `renderVectorPathSegmented` is what the macro actually
+        /// gates. The state holds the
+        /// `ContentCache<TessellationCacheKey, TETriangulationResult>`
+        /// plus any per-cache configuration the integration uses.
+        std::unique_ptr<TessellationCacheState> tessellationCacheState_;
 
         /// Pure dimension math: sanitize the logical rect, clamp it to the
         /// engine's max texture dimension, and recompute backingWidth /
