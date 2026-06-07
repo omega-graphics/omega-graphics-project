@@ -3,6 +3,16 @@
 set(OMEGAWTK_VERSION "0.8")
 option(OMEGAWTK_SKIP_THIRD_PARTY_BUILD "Use prebuilt third-party artifacts and skip building ExternalProject dependencies." OFF)
 
+# UIView-Render-Redesign Phase G.0: gate that switches on the content-cache
+# integration paths (tessellation cache G.1, text-shaping cache G.2, content
+# cache G.3). G.0 itself ships only the `ContentCache` template +
+# `ContentCacheConfig` env-var resolution — those compile unconditionally so
+# the type and its tests can land without altering per-frame behavior. When
+# G.1+ wire the caches into the render hot path, those code paths are guarded
+# by `#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED` so the feature stays opt-in until
+# the cache validators in the plan are met. Default OFF.
+option(OMEGAWTK_ENABLE_CONTENT_CACHE "Enable the WTK content-cache subsystem (Phase G of UIView-Render-Redesign-Plan)." OFF)
+
 set(OMEGAWTK_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 
@@ -273,6 +283,15 @@ target_include_directories(OmegaWTK_Composition
 	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
 	        ${NATIVE_PRIVATE_INCLUDE_DIR})
 target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon PRIVATE OmegaGTE)
+
+# UIView-Render-Redesign Phase G: when the content-cache gate is ON, define
+# OMEGAWTK_CONTENT_CACHE_ENABLED=1 for the Composition submodule. G.0 lands
+# the ContentCache type unconditionally; G.1+ wrap their render-path hooks
+# in `#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED` so the cache stays opt-in until
+# its validators pass.
+if(OMEGAWTK_ENABLE_CONTENT_CACHE)
+	target_compile_definitions(OmegaWTK_Composition PRIVATE OMEGAWTK_CONTENT_CACHE_ENABLED=1)
+endif()
 
 # msdfgen — Phase 6.7 MSDF glyph atlas. Core-only build (no SVG / PNG /
 # OpenMP / vcpkg / standalone exe / freetype-via-msdfgen-ext). We feed

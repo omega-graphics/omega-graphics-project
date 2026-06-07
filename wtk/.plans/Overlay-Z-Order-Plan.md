@@ -304,7 +304,7 @@ No interaction. A widget chooses its tier (or none, staying in the main tree); w
 | Phase | Description                                                                                                                                                       | Requires (cross-plan)                                                                                       | Blocks (downstream)                                                                |
 |-------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------|
 | **O1** [DONE] | `OverlayHost` skeleton — `present` / `dismiss` / `overlaysTopFirst`. Overlay slot on `WidgetTreeHost`. Anchor → rect math. No focus integration, no Modal trap. | — (uses existing `WidgetTreeHost`, `View::containsPoint`, `UIView`)                                          | Widget-Stub Phase 6 Tooltip / Popover / Snackbar MVPs                              |
-| **O2** | Paint walk extension — `paintSubtree` over the overlay slot after the main tree, tier ordering, per-tier FIFO.                                                  | O1; uses existing `FrameBuilder::buildFrame` paint pass                                                       | Visible overlays of any kind                                                       |
+| **O2** [DONE] | Paint walk extension — `paintSubtree` over the overlay slot after the main tree, tier ordering, per-tier FIFO.                                                  | O1; uses existing `FrameBuilder::buildFrame` paint pass                                                       | Visible overlays of any kind                                                       |
 | **O3** | Hit-test + click-outside + Escape + anchor-destruction dismissal.                                                                                                | O1; uses existing `WidgetTreeHost` hit dispatcher                                                             | Real dropdown / context-menu behavior; Native-API §2.3a Tooltip activation         |
 | **O4** | Focus restoration around present/dismiss (`pushRestorationPoint` / `popAndRestore`).                                                                              | O1 + **Native-API §2.3a Focus step 5** (`pushRestorationPoint` / `popAndRestore` on `FocusManager`)           | Widget-Stub Phase 6 `ContextMenu`, `Modal` (focus returns to opener)               |
 | **O5** | Modal tab-trap (`Tab`/`Backtab` constrained to the Modal subtree while presented).                                                                                | O4 + **Native-API §2.3a Focus step 4** (`FocusManager::focusNext` / `focusPrevious`)                          | Widget-Stub Phase 6 `Modal` (keyboard cannot escape modal)                         |
@@ -344,6 +344,66 @@ Surfacing these in O1 means O2/O3 plug in via the iteration accessors without ch
 - Wiring `relayoutAll()` into `WidgetTreeHost::notifyWindowResizeEnd` — decided per §11 open question (the policy "dismiss vs. follow on resize" is per-overlay and not in O1's contract).
 
 **Verification status.** §10's O1+O2 entry requires the paint walk; pure-O1 verification is the mechanical surface: clean build, `WidgetTreeHost` ctor still constructs without regression, BasicAppTest still links. Visible-overlay tests start at O2.
+
+### 9.2 O2 implementation notes (2026-06-05)
+
+**Files touched:**
+
+- `wtk/include/omegaWTK/UI/OverlayHost.h` — added `bool isPresentingAny() const` accessor used by the paintDirty gate.
+- `wtk/src/UI/OverlayHost.cpp` — `present()` now marks the overlay's root view dirty across `Style | Layout | Paint` (so the first `buildFrame` runs all three passes) and calls `host->requestFrame()` (the overlay is outside the main tree, so `Widget::invalidate`'s usual `requestFrame` driver doesn't fire on first present).
+- `wtk/src/UI/WidgetTreeHost.cpp` — `paintDirty()` extended to (a) force-Paint the main tree when overlays exist, then (b) walk every presented overlay in tier paint order (`Floating → Modal → Tooltip → DragGhost`), FIFO within tier, calling `fb->buildFrame(*overlay->view)` per overlay.
+
+**Mechanics — how the slices land in the right order.** Each `FrameBuilder::buildFrame` call appends a `CompositeFrame::WidgetSlice` (see `CompositorClientProxy::submitDisplayList` at `wtk/src/Composition/CompositorClient.cpp:156`). Calling `buildFrame` N+1 times in one `beginFrame/endFrame` scope deposits N+1 slices in submission order. The backend renders slices in order, so the visual stack is exactly the §2 tier order: main tree first, then Floating, Modal, Tooltip, DragGhost.
+
+**Why the main-tree force-Paint guard.** `FrameBuilder::buildFrame` early-returns when the root's dirty mask is zero ("nothing to do — the tree is clean"). If only an overlay subtree dirties (e.g. a tooltip animation tick), the main-tree `buildFrame` would skip submission and the deposited `CompositeFrame` would carry only overlay slices — the rest of the window would blank out. The `hasOverlays → markDirty(Paint)` guard ensures every frame the main slice is part of the composite. Cost: one extra pre-order paint walk per frame on the main tree when overlays exist — same shape of work pre-O2 `paintDirty` did anyway.
+
+**Why the per-overlay force-Paint.** Same rationale — `buildFrame(overlay->view)` would early-return if the overlay's mask were zero on a follow-up frame (e.g. the user moves the mouse in the main tree and triggers a frame; the overlay didn't change but must remain visible). Force-Paint each overlay each frame keeps every overlay in every composited frame. Style and Layout are not force-marked because they ran on the present-time dirty bits — re-marking them every frame would re-style and re-layout unchanged overlays (NativeViewHost listens to `View::onLayoutResolved`, so spurious layout runs would generate downstream noise).
+
+**Decisions surfaced beyond the plan §4 sketch:**
+
+1. **Force-Paint instead of region-gated re-paint.** The §4 pseudocode shows the tier loop but says nothing about how to gate it across frames. The minimum correct shape is "force-Paint every frame an overlay is present"; the minimum optimal shape is "Tier-5 region-gated paint, which knows when nothing in the overlay's subtree changed." O2 ships the former; the latter is the Tier-5 work the FrameBuilder comment already calls out.
+2. **One `buildFrame` call per overlay subtree** instead of extending `FrameBuilder::buildFrame` to accept multiple roots. Keeps the FrameBuilder signature unchanged, so future overlay-side changes don't ripple. The cost is N extra ScopedPhase brackets per overlay; immeasurable next to the actual paint walk.
+3. **Drop shadow deferred to a small follow-up (call it O2.1).** §4.3 specifies "applied via `Style::dropShadow` at present time" — but `Style::dropShadow` is a UIView-only API, and not every overlay is UIView-backed (a `Container`-backed `Popover` has a plain `View`). The shadow can ship two ways: (a) Force every overlay's root view to be a UIView (constrains the catalog), or (b) emit a `DrawOp(DropShadowParams, shapeRect, ...)` directly from `paintDirty` into a small one-op submission *before* each overlay's `buildFrame`. (b) is cleaner but adds FrameBuilder→OverlayHost coupling. O2 stops at the paint walk; O2.1 picks one of (a)/(b). The `OverlayOrnamentation` struct from O1 carries the params verbatim until then. **[DONE 2026-06-05 — shipped option (b); see §9.3.]**
+
+**Deferred** (still on the dependency chain):
+
+- O3 — hit-test + click-outside + Escape + anchor-destroyed dismissal.
+- O4 — focus restoration around present/dismiss.
+- O5 — Modal tab-trap.
+
+### 9.3 O2.1 implementation notes (2026-06-05) — drop shadow
+
+§4.3 calls for the host to apply a soft drop shadow as the one piece of visual chrome on every presented overlay. O2 deferred this (§9.2 decision 3); O2.1 ships it via option (b) — emit a `DrawOp::Shadow` directly from the paint walk, rather than constraining every overlay to be UIView-backed.
+
+**Files touched:**
+
+- `wtk/src/UI/FrameBuilder.h` + `FrameBuilder.cpp` — added `submitOverlayShadow(const Composition::LayerEffect::DropShadowParams &, const Composition::Rect & shapeRect, float cornerRadius)`. Allocates a one-op `DisplayList` carrying a single `DrawOp::Shadow` and appends a `PendingSubmission` with `windowOffset == {0,0}` (the shadow's `shapeRect` is already in absolute window coordinates). No-op outside of `beginFrame`/`endFrame` brackets so stray callers don't silently accumulate orphaned ops in `pending_`.
+- `wtk/include/omegaWTK/UI/OverlayHost.h`:
+  - Added `OverlayOrnamentation::cornerRadius` (default `0.f`) so callers can match the overlay widget's visible silhouette.
+  - Added `struct PresentedOverlay { Widget * widget; Composition::Rect rect; OverlayOrnamentation ornament; };` — the paint-time view of an entry.
+  - Added `OmegaCommon::ArrayRef<PresentedOverlay> overlaysForPaintIn(OverlayTier tier) const;` — bottom-up FIFO iteration that hands the widget pointer, resolved rect, and ornament in one walk so `paintDirty` doesn't have to look up the rect/ornament separately.
+- `wtk/src/UI/OverlayHost.cpp` — `overlaysForPaintIn` implementation backed by a new `tierPaintScratch` array (mirrors the existing `tierScratch` for widget-only iteration).
+- `wtk/src/UI/WidgetTreeHost.cpp` — `paintDirty`'s overlay walk now uses `overlaysForPaintIn(tier)` and, for each entry with `ornament.dropShadow == true`, calls `fb->submitOverlayShadow(...)` *before* the per-overlay `buildFrame`. The shadow slice appends first, the overlay content slice appends second, the backend renders shadow underneath content.
+
+**Submission order across multiple overlays.** For N overlays in one tier the deposited slices are `[shadow1, content1, shadow2, content2, ...]`. Overlay 2's shadow can therefore land on top of overlay 1's content if they overlap. Same effect as native UIs where a later popover's shadow falls across an earlier popover — the right behavior.
+
+**Why a separate one-op submission rather than appending to the overlay's own DL.** `FrameBuilder::buildFrame` allocates a fresh `DisplayList` inside its body and submits exactly one slice at the end. Threading an extra pre-content shadow op into that DL would require either passing the shadow params into `buildFrame` (couples FrameBuilder to OverlayHost) or splitting buildFrame into smaller pieces (intrusive). The one-op submission keeps `buildFrame` untouched at the cost of one extra slice per shadow-bearing overlay — trivially cheap given the backend's per-slice cost is ~zero compared to the actual drawing inside it.
+
+**Decisions surfaced:**
+
+1. **`cornerRadius` lives on `OverlayOrnamentation`, not derived from the overlay widget's style.** The host has no way to ask a `View` "what corner radius do you paint with?" — that's an internal UIView/Style detail. Callers (the future `Popover`, `Tooltip`, `ContextMenu` widgets in Phase 6 of Widget-Stub-Implementation-Plan) know their own corner radius and pass it in the `ornament` arg at present time. The plan §4.3 said host-default ornamentation; the corner radius is part of that contract.
+2. **Shadow `isEllipse` is hard-coded `false`.** Every overlay tier today renders against a rectangle (rounded or not). When a future tier needs an elliptical silhouette (drag ghost showing a circular avatar?), it would set `cornerRadius = w/2` to make the rectangle render as a pill, or we extend `OverlayOrnamentation` with an `isEllipse` flag. Defer until the case shows up.
+3. **No-op when `dropShadow == false`.** The `Snackbar` and `DragGhost` cases in §4.3 explicitly opt out via this flag. The plumbing is a single `if` so there's no cost to the opt-out path.
+
+**Verification status.** Mechanical: clean build, BasicAppTest still links. The shadow appears on screen behind any presented overlay whose `ornament.dropShadow` is true (default). On-screen verification — same caveat as O2 — needs a Phase 6 overlay widget to instantiate against.
+
+**Verification status.** O2's §10 entries that are now buildable:
+
+- *O1+O2 paint-above-buttons*: Present a `Popover` over a `Button` row → render order has Popover slice after main → Popover visually on top. Mechanically verified by the clean build + composite-frame slice ordering; visual verification needs the user to wire a `Popover` widget (Phase 6 of Widget-Stub-Implementation-Plan, which is itself gated on this phase + O3).
+- *O2 stacking within tier*: Two `Popover`s presented in sequence — `overlaysIn(Floating)` returns them in insertion order, paintDirty walks them in that order, so the second's slice lands after the first's.
+- *O2 stacking across tiers*: `Popover` → `Modal` → `Tooltip` — the `kPaintOrder` constant in `paintDirty` guarantees the §2 tier order.
+
+The mechanics are correct; on-screen verification waits for a Phase 6 overlay widget to test against. Until then, the verification is mechanical (build + slice-order assertions).
 
 ---
 

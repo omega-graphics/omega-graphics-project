@@ -333,7 +333,75 @@ namespace OmegaWTK {
             return;
         }
         FrameBuilder::ScopedFrame frame(fb);
+
+        // Overlay-Z-Order-Plan O2: when overlays are presented, the
+        // composited frame must include the main tree's slice
+        // alongside the overlays' slices. `FrameBuilder::buildFrame`
+        // early-returns on a clean root (mask == 0); if a main-tree
+        // dirty trigger missed (e.g. an animation tick scheduled
+        // via the overlay subtree, not via a main-tree widget), the
+        // main-tree call below would skip submission and the
+        // deposited `CompositeFrame` would only carry overlay
+        // slices — blanking the rest of the window. Force-paint the
+        // main tree whenever overlays exist. Tier-5 subtree-region
+        // gating will refine this; the cost today is one extra
+        // pre-order paint walk per frame on the main tree, which is
+        // the same work pre-O2 paintDirty did anyway.
+        const bool hasOverlays = overlayHost_ != nullptr &&
+                                 overlayHost_->isPresentingAny();
+        if(hasOverlays){
+            root->view->markDirty(View::Paint);
+        }
+
         fb->buildFrame(*root->view);
+
+        // Overlay-Z-Order-Plan O2: walk overlay subtrees after the
+        // main tree, in tier paint order (Floating → Modal →
+        // Tooltip → DragGhost — §2). FIFO within tier matches
+        // §2's "OverlayHost::present call order" tie-break. Each
+        // call to `buildFrame` appends a `CompositeFrame::WidgetSlice`
+        // (see `CompositorClientProxy::submitDisplayList`), so the
+        // deposited frame layers main → Floating → Modal → Tooltip →
+        // DragGhost in submission order — overlay DrawOps land on
+        // top because the backend renders slices in order.
+        //
+        // Each overlay is force-Paint-dirtied per the same rationale
+        // as the main-tree guard above. Style / Layout dirty bits
+        // were set at present-time (see `OverlayHost::present`) so
+        // the FIRST paint runs all three passes; on subsequent
+        // frames only Paint runs (Style / Layout were cleared at
+        // the end of the previous `buildFrame`).
+        if(overlayHost_ == nullptr){
+            return;
+        }
+        static constexpr OverlayTier kPaintOrder[] = {
+            OverlayTier::Floating,
+            OverlayTier::Modal,
+            OverlayTier::Tooltip,
+            OverlayTier::DragGhost
+        };
+        for(auto tier : kPaintOrder){
+            for(const auto & po : overlayHost_->overlaysForPaintIn(tier)){
+                if(po.widget == nullptr || po.widget->view == nullptr){
+                    continue;
+                }
+                // Overlay-Z-Order-Plan O2.1: drop shadow emitted as a
+                // standalone one-op submission BEFORE the overlay's
+                // own `buildFrame`. The shadow slice appends first,
+                // the overlay's content slice appends second, so the
+                // backend renders the shadow underneath the overlay
+                // content. `cornerRadius` lets the shadow track the
+                // overlay widget's visible silhouette — callers set
+                // this in `OverlayOrnamentation` at present time.
+                if(po.ornament.dropShadow){
+                    fb->submitOverlayShadow(po.ornament.shadowParams,
+                                            po.rect,
+                                            po.ornament.cornerRadius);
+                }
+                po.widget->view->markDirty(View::Paint);
+                fb->buildFrame(*po.widget->view);
+            }
+        }
     }
 
     // `paintDirtyRecurse` and `beginResizeCoordinatorSessionRecurse`

@@ -428,6 +428,31 @@ void FrameBuilder::buildFrame(View & root){
 // — it still drains `pending_` and submits each entry's DisplayList
 // via the proxy.
 
+void FrameBuilder::submitOverlayShadow(
+    const Composition::LayerEffect::DropShadowParams & shadow,
+    const Composition::Rect & shapeRect,
+    float cornerRadius){
+    // Overlay-Z-Order-Plan O2.1: one-op overlay-chrome submission.
+    // No-op outside of `beginFrame`/`endFrame` brackets — pending_
+    // is drained at endFrame, so submissions outside that window
+    // would never reach the compositor anyway and would silently
+    // accumulate. Matching the dirty-bit-gated buildFrame
+    // semantics of "no slice if there's nothing to render," but
+    // here gated on lifecycle rather than mask: callers (today
+    // only `WidgetTreeHost::paintDirty`) are expected to be inside
+    // a `ScopedFrame`.
+    if(depth_ == 0){
+        return;
+    }
+    Composition::DisplayList dl{};
+    dl.append(Composition::DrawOp{shadow, shapeRect, cornerRadius,
+                                  /*isEllipse=*/false});
+    PendingSubmission sub;
+    sub.windowOffset = {0.f, 0.f};
+    sub.list         = std::move(dl);
+    pending_.push_back(std::move(sub));
+}
+
 // Phase 3.2: static accessor lives on AppWindow but reads the
 // FrameBuilder-internal slot, so the AppWindow header does not have
 // to expose the static storage. Defined here for the same reason

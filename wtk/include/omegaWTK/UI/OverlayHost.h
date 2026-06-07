@@ -66,8 +66,8 @@ struct OMEGAWTK_EXPORT OverlayDismissPolicy {
 };
 
 /// Visual chrome the host applies on top of the overlay widget's own
-/// style. O1 stores the configuration verbatim; O2 reads it during the
-/// overlay paint pass. Plan §4.3.
+/// style. O1 stores the configuration verbatim; O2.1 reads it during
+/// the overlay paint pass. Plan §4.3.
 struct OMEGAWTK_EXPORT OverlayOrnamentation {
     bool dropShadow = true;
     Composition::LayerEffect::DropShadowParams shadowParams {
@@ -78,6 +78,11 @@ struct OMEGAWTK_EXPORT OverlayOrnamentation {
         /* opacity    */ 0.25f,
         /* color      */ {0.f, 0.f, 0.f, 1.f}
     };
+    /// Corner radius for the shadow silhouette. Callers should set
+    /// this to match the overlay widget's own background corner
+    /// rounding so the shadow tracks the visible edge. `0.f` =
+    /// rectangular shadow.
+    float cornerRadius = 0.f;
 };
 
 /// Opaque ticket returned by `OverlayHost::present`. Zero means
@@ -85,6 +90,17 @@ struct OMEGAWTK_EXPORT OverlayOrnamentation {
 struct OMEGAWTK_EXPORT OverlayHandle {
     std::uint64_t id = 0;
     bool valid() const { return id != 0; }
+};
+
+/// Paint-time view of a presented overlay. O2.1 consumes this in
+/// `WidgetTreeHost::paintDirty` to emit per-overlay chrome (drop
+/// shadow) before walking the overlay subtree. Carries the
+/// already-resolved window-space rect and ornament so the paint
+/// loop does not have to walk back through the host for each.
+struct OMEGAWTK_EXPORT PresentedOverlay {
+    Widget * widget = nullptr;
+    Composition::Rect rect {{0.f, 0.f}, 0.f, 0.f};
+    OverlayOrnamentation ornament {};
 };
 
 /// In-window overlay layer. One instance per `WidgetTreeHost`; reach
@@ -131,6 +147,13 @@ public:
     /// True iff at least one overlay in `tier` is currently presented.
     bool isPresenting(OverlayTier tier) const;
 
+    /// True iff at least one overlay is currently presented in any
+    /// tier. O2's `WidgetTreeHost::paintDirty` consults this to
+    /// decide whether to force-paint the main tree alongside the
+    /// overlay subtree walks — the deposited `CompositeFrame` must
+    /// carry the main slice or the rest of the window blanks out.
+    bool isPresentingAny() const;
+
     /// Topmost-first iteration across all tiers: reverse tier order
     /// (DragGhost → Tooltip → Modal → Floating), then reverse
     /// insertion order within tier. Used by O3 hit-test and Escape
@@ -142,6 +165,15 @@ public:
     /// Used by O2's paint walk. The returned range is valid until
     /// the next mutating call on this host.
     OmegaCommon::ArrayRef<Widget *> overlaysIn(OverlayTier tier) const;
+
+    /// Bottom-up iteration scoped to a single tier (insertion order),
+    /// returning the resolved rect and ornament alongside the widget
+    /// pointer. O2.1 uses this in `WidgetTreeHost::paintDirty` so the
+    /// per-overlay chrome (drop shadow) can be emitted without a
+    /// second walk through the host. The returned range is valid
+    /// until the next mutating call on this host.
+    OmegaCommon::ArrayRef<PresentedOverlay> overlaysForPaintIn(
+        OverlayTier tier) const;
 
     /// Window-space rect committed for `handle` at present time
     /// (already edge-clamped). Used by O2's paint walk to position

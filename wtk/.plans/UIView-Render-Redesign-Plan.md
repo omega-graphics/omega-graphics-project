@@ -2257,7 +2257,27 @@ The phase decomposes into one scaffolding step (G.0), two contained
 mid-pipeline caches (G.1, G.2), and the cache that motivates the whole
 phase (G.3). Each sub-phase is independently shippable.
 
-**G.0 — Cache infrastructure scaffolding [~150 LOC]**
+**G.0 — Cache infrastructure scaffolding [~150 LOC] [DONE 2026-06-07]**
+
+- `wtk/src/Composition/backend/ContentCache.{h,cpp}` landed: generic LRU
+  template (`std::unordered_map<Key, list-iterator>` + `std::list<Entry>`
+  with per-entry byte cost), `ContentCacheStats` counters (`hits`,
+  `misses`, `evictions`, `entries`, `currentBytes`, `peakBytes`),
+  optional `OnEvictFn` for G.5's persistent-handle hooks.
+- `ContentCacheConfig::inst()` resolves the three env vars once
+  (`OMEGAWTK_CONTENT_CACHE_BYTES`, `OMEGAWTK_TESS_CACHE_ENTRIES`,
+  `OMEGAWTK_TEXT_SHAPING_CACHE_ENTRIES`) via `OmegaCommon::getEnvVar` and
+  caches the parsed values for the process lifetime (same pattern as
+  `ResourceTrace::enabled()`).
+- CMake option `OMEGAWTK_ENABLE_CONTENT_CACHE` (default OFF) defines
+  `OMEGAWTK_CONTENT_CACHE_ENABLED=1` on `OmegaWTK_Composition` when ON;
+  G.1+ wrap their render-path hooks in that guard. The template type
+  itself compiles unconditionally so the file lands without per-frame
+  behavior changes.
+- The per-RTC tessellation / content cache slots and the process-wide
+  text-shaping singleton are *not* added in G.0 — they need their
+  concrete `Value` types (`TETriangulationResult`, `ShapedTextRun`,
+  `GETexture`) and arrive in G.1 / G.2 / G.3 with those types.
 
 - New `wtk/src/Composition/backend/ContentCache.{h,cpp}`. Generic
   LRU template parameterised on `(KeyHash, KeyEq, Value, OnEvict)`;

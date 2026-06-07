@@ -145,6 +145,24 @@ public:
     // before Paint.
     void buildFrame(View & root);
 
+    /// Overlay-Z-Order-Plan O2.1 — emit a one-op overlay-chrome
+    /// submission containing a single `DrawOp::Shadow`. The op's
+    /// `shapeRect` is the overlay's already-resolved window-space
+    /// rect; the slice's `windowOffset` is `{0, 0}` so the op lands
+    /// in absolute window coordinates, matching every other slice
+    /// the FrameBuilder produces. Call this *before* the overlay's
+    /// own `buildFrame(overlay->view)` so the shadow slice appends
+    /// to `pending_` first and the backend renders the shadow
+    /// underneath the overlay content. No-op if not inside a
+    /// `beginFrame`/`endFrame` bracket. The `cornerRadius` parameter
+    /// lets the caller match the overlay widget's visible corner
+    /// rounding so the shadow tracks the silhouette; pass `0.f`
+    /// for a rectangular overlay.
+    void submitOverlayShadow(
+        const Composition::LayerEffect::DropShadowParams & shadow,
+        const Composition::Rect & shapeRect,
+        float cornerRadius);
+
     // Phase 4.4 (Block 2): per-window AnimationScheduler accessor for the
     // animation surfaces (View::applyLayoutDelta, UIView::applyLayoutDelta,
     // UIView::Impl::startOrUpdateAnimation, the applyAnimated*/animatedValue

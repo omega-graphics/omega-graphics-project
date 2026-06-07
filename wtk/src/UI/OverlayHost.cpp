@@ -70,11 +70,13 @@ struct OverlayHost::Impl {
     std::uint64_t nextHandleId = 1;
 
     /// Scratch buffers backing the `ArrayRef`s returned from
-    /// `overlaysTopFirst` / `overlaysIn`. Rebuilt on each accessor
-    /// call so callers see current state; valid until the next
-    /// accessor or mutating call.
+    /// `overlaysTopFirst` / `overlaysIn` / `overlaysForPaintIn`.
+    /// Rebuilt on each accessor call so callers see current state;
+    /// valid until the next accessor or mutating call.
     mutable std::vector<Widget *> topFirstScratch;
     mutable std::array<std::vector<Widget *>, kTierCount> tierScratch {};
+    mutable std::array<std::vector<PresentedOverlay>, kTierCount>
+        tierPaintScratch {};
 
     explicit Impl(WidgetTreeHost * h) : host(h) {}
 
@@ -203,6 +205,30 @@ OverlayHandle OverlayHost::present(WidgetPtr overlay,
     // own view, which is what we want here.
     overlay->setRect(resolved);
 
+    // O2: mark the overlay's root view dirty across Style / Layout /
+    // Paint so the first `FrameBuilder::buildFrame(*overlay->view)`
+    // call runs all three passes. `Widget::setRect` only flows
+    // through `View::resize`, which updates the rect and emits
+    // `onLayoutResolved` but does NOT mark dirty (View.Core.cpp:194).
+    // Without this, the overlay's first paint silently no-ops because
+    // its root mask is zero. Subsequent paintDirty passes mark Paint
+    // only (see `WidgetTreeHost::paintDirty`) to avoid spurious
+    // Layout/Style work on unchanged overlays.
+    overlay->viewRef().markDirty(
+        View::Style | View::Layout | View::Paint);
+
+    // O2: request a frame so the overlay shows on the next vsync.
+    // Overlay widgets sit outside the main tree, so `Widget::invalidate`
+    // (the usual driver of `WidgetTreeHost::requestFrame`) never gets
+    // a chance to run — `setRect` short-circuits because
+    // `treeHost == nullptr && impl_->hasMounted == false` on the
+    // presented widget. We route the request through the host
+    // directly. If the host's owner window is null (detached host),
+    // `requestFrame` is itself a no-op.
+    if(impl_->host != nullptr){
+        impl_->host->requestFrame();
+    }
+
     Impl::Entry entry;
     entry.handleId = impl_->nextHandleId++;
     entry.widget = overlay;
@@ -260,6 +286,15 @@ bool OverlayHost::isPresenting(OverlayTier tier) const {
     return !impl_->entriesByTier[tierIndex(tier)].empty();
 }
 
+bool OverlayHost::isPresentingAny() const {
+    for(const auto & bucket : impl_->entriesByTier){
+        if(!bucket.empty()){
+            return true;
+        }
+    }
+    return false;
+}
+
 OmegaCommon::ArrayRef<Widget *> OverlayHost::overlaysTopFirst() const {
     auto & scratch = impl_->topFirstScratch;
     scratch.clear();
@@ -283,6 +318,21 @@ OmegaCommon::ArrayRef<Widget *> OverlayHost::overlaysIn(OverlayTier tier) const 
         scratch.push_back(entry.widget.get());
     }
     return OmegaCommon::ArrayRef<Widget *>(scratch);
+}
+
+OmegaCommon::ArrayRef<PresentedOverlay> OverlayHost::overlaysForPaintIn(
+        OverlayTier tier) const {
+    const auto idx = tierIndex(tier);
+    auto & scratch = impl_->tierPaintScratch[idx];
+    scratch.clear();
+    for(const auto & entry : impl_->entriesByTier[idx]){
+        PresentedOverlay po;
+        po.widget = entry.widget.get();
+        po.rect = entry.rect;
+        po.ornament = entry.ornament;
+        scratch.push_back(std::move(po));
+    }
+    return OmegaCommon::ArrayRef<PresentedOverlay>(scratch);
 }
 
 Composition::Rect OverlayHost::rectFor(OverlayHandle handle) const {
