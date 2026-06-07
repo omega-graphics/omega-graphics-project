@@ -39,7 +39,20 @@ target_compile_definitions(AQUA PRIVATE AQUA__BUILD__)
 # wins, which means Release sees `-O2` instead of `-O3`. The ~5% delta vs.
 # `-O3` is dwarfed by the ~50× recovery vs. `-O0`; if a future profile
 # needs `-O3` specifically, tighten the condition then.
-target_compile_options(AQUA PRIVATE $<$<NOT:$<CONFIG:Debug>>:-O2 -DNDEBUG>)
+#
+# CMake's `MSVC` variable is set for both cl.exe and clang-cl.exe (clang's
+# MSVC-compatible driver), and both reject `-O2`/`-DNDEBUG` — they only
+# understand the slash-style switches. Branch on the driver so the same
+# AQUA-only floor lands on Windows-toolchain builds as well: `/O2` is the
+# standard "maximize speed" preset (auto-inline, intrinsics, loop opt) and
+# `/DNDEBUG` strips `assert()` the same way `-DNDEBUG` does in the
+# GCC/Clang branch. clang-cl maps `/O2` onto the same LLVM passes as
+# `-O2`, so the physics hot-path recovery is the same as on Linux.
+if(MSVC)
+    target_compile_options(AQUA PRIVATE $<$<NOT:$<CONFIG:Debug>>:/O2 /DNDEBUG>)
+else()
+    target_compile_options(AQUA PRIVATE $<$<NOT:$<CONFIG:Debug>>:-O2 -DNDEBUG>)
+endif()
 
 # NOTE: No third-party physics SDK is currently vendored. Whether AQUA grows its
 # own solver or integrates an external SDK is an open decision — if it integrates

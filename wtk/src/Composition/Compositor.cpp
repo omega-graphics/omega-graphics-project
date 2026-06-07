@@ -204,6 +204,13 @@ void Compositor::detachVisualTree(CompositionRenderTarget * target){
     if(target == nullptr){
         return;
     }
+    // Quiesce the worker for this target before touching its rootContext.
+    // drainWindowSurfaces holds frameProcessingMutex_ for the duration of
+    // a frame iteration, so acquiring it here waits until any in-flight
+    // renderCompositeFrame finishes. Once we hold it, no new frame work
+    // can start until detach is done. Order is frameProcessingMutex_
+    // BEFORE `mutex` to match drainWindowSurfaces.
+    std::lock_guard<std::mutex> processLk(frameProcessingMutex_);
     std::lock_guard<std::mutex> lk(mutex);
     auto it = nativeAttachedTrees_.find(target);
     if(it == nativeAttachedTrees_.end()){
@@ -242,6 +249,11 @@ void Compositor::drainWindowSurfaces(){
     if(OmegaGTE::isDebugLayerEnabled()){
         std::cerr << "[WTK_RP] drainWindowSurfaces: snapshotSize=" << snapshot.size() << std::endl;
     }
+    // Hold frameProcessingMutex_ across the entire processing loop so a
+    // concurrent detachVisualTree blocks until the worker is done touching
+    // the targets it snapshotted above. Must be acquired AFTER `mutex`
+    // is released (see frameProcessingMutex_'s comment in Compositor.h).
+    std::lock_guard<std::mutex> processLk(frameProcessingMutex_);
     for(auto & entry : snapshot){
         auto & surface = entry.second;
         const bool surfaceNull = (surface == nullptr);

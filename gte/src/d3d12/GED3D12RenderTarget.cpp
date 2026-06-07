@@ -35,6 +35,14 @@ _NAMESPACE_BEGIN_
     };
 
     GED3D12NativeRenderTarget::~GED3D12NativeRenderTarget(){
+        // D3D12 final-release of back buffers / swap chain is only safe when
+        // no GPU work on the present queue still references them. The
+        // Compositor's global waitForGPUIdle only covers the main rendering
+        // queue; this target owns a dedicated present queue (e.g.
+        // "WTK::DCVisualBinder presentQueue") whose pending Present1 /
+        // barrier work has to be drained explicitly here, before the
+        // renderTargets[] Release()s and the swapChain ComPtr drop below.
+        waitForGPU();
         ResourceTracking::Tracker::instance().emit(
                 ResourceTracking::EventType::Destroy,
                 ResourceTracking::Backend::D3D12,

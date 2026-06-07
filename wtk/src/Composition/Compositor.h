@@ -54,6 +54,17 @@ namespace OmegaWTK::Composition {
         OmegaCommon::Vector<LayerTree *> targetLayerTrees;
 
         std::mutex mutex;
+        // Held by drainWindowSurfaces for the duration of its per-target
+        // processing loop and acquired by detachVisualTree before `mutex`.
+        // Lets a teardown caller (e.g. ~AppWindow → detachVisualTree)
+        // wait for any in-flight renderCompositeFrame on this compositor's
+        // worker thread to finish before the target's rootContext is
+        // reset, so the worker never dereferences a destroyed
+        // BackendRenderTargetContext. Order is always
+        // frameProcessingMutex_ -> mutex; drainWindowSurfaces takes mutex
+        // only for the snapshot and releases it before acquiring
+        // frameProcessingMutex_, so the orders never invert.
+        std::mutex frameProcessingMutex_;
         std::condition_variable queueCondition;
 
         friend class CompositorClientProxy;

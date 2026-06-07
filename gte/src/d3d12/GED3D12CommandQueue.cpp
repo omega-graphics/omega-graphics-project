@@ -114,6 +114,10 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQ
             DEBUG_STREAM("GED3D12CommandQueue: CreateCommandList (pool) failed; queue construction aborted");
             std::exit(1);
         }
+        // CreateCommandList returns the list in recording state; close it now
+        // so the first getAvailableBuffer() recycle path can Reset its
+        // allocator without hitting "list currently being recorded".
+        list->Close();
         poolAllocators.push_back(std::move(alloc));
         poolLists.push_back(std::move(list));
         poolSubmissionIndex.push_back(0);
@@ -143,6 +147,9 @@ std::uint32_t GED3D12CommandQueue::growPoolOnce() {
         DEBUG_STREAM("GED3D12CommandQueue: CreateCommandList (grow) failed");
         return UINT32_MAX;
     }
+    // Same close-after-create as the ctor: keep new slots in the closed
+    // steady-state the recycle path assumes.
+    list->Close();
     const std::uint32_t slot = static_cast<std::uint32_t>(poolAllocators.size());
     poolAllocators.push_back(std::move(alloc));
     poolLists.push_back(std::move(list));

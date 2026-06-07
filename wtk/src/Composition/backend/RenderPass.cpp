@@ -68,6 +68,12 @@ namespace OmegaWTK::Composition {
             return;
         }
         frameCB_ = queue->getAvailableBuffer();
+        // Defense in depth: a backend can return null when it cannot hand
+        // out a fresh buffer (e.g. D3D12 pool slot in a bad state). Skip
+        // the frame rather than dereferencing null into startRenderPass.
+        if(frameCB_ == nullptr){
+            return;
+        }
 
         OmegaGTE::GERenderPassDescriptor renderPassDesc {};
         renderPassDesc.nRenderTarget = nativeTarget.get();
