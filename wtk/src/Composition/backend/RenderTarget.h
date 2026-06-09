@@ -175,6 +175,61 @@ namespace OmegaWTK::Composition {
         /// `ContentCacheConfig::inst().contentCacheBytes`.
         std::unique_ptr<ContentCacheState> contentCacheState_;
 
+        /// Phase G.3.1+G.3.2: per-frame cache-capture state.
+        ///
+        /// `captureDepth_` counts active Begin/End ranges; only the
+        /// outermost (depth==1) Begin/End triggers actual work. G.3.2's
+        /// per-View walker guarantees the markers don't nest, but the
+        /// counter survives as a defensive nest-safe stub.
+        ///
+        /// `captureSkipping_` is the G.3.2 hit signal: when an outer
+        /// `BeginCacheCapture` finds the key in the per-RTC cache, the
+        /// handler emits a Bitmap blit of the cached texture and flips
+        /// this flag so subsequent draw ops in the range are skipped
+        /// (they would otherwise re-render the View's content and
+        /// composite over the cached blit). The matching End clears
+        /// the flag.
+        ///
+        /// `captureTexture_` / `captureTarget_` / `captureFence_` are
+        /// only populated on the *miss* path — the outer Begin opens a
+        /// cache target via `beginCacheTarget`, draw ops in the range
+        /// render into it via the existing scratch-pass redirect, and
+        /// End closes the pass + inserts the captured texture into the
+        /// cache + composites it back into the resumed window pass.
+        int captureDepth_ = 0;
+        bool captureSkipping_ = false;
+        std::uint64_t                              captureKeyNodeId_         = 0;
+        std::uint64_t                              captureKeyContentVersion_ = 0;
+        Composition::Rect                          captureRect_              {};
+        SharedHandle<OmegaGTE::GETexture>          captureTexture_;
+        SharedHandle<OmegaGTE::GETextureRenderTarget> captureTarget_;
+        SharedHandle<OmegaGTE::GEFence>            captureFence_;
+
+        /// Open a transient render-to-texture pass for a content-cache
+        /// capture (G.3.2-rev2). The texture is sized to the View's
+        /// backing pixel rect `(widthPx, heightPx)`; the capture pass
+        /// installs a window-sized viewport offset by
+        /// `-(originXLogical, originYLogical) × renderScale` and a
+        /// View-sized scissor, so the View's absolute-window-coord draw
+        /// ops land at the texture origin (zero emit-side changes — see
+        /// `FrameRenderPass::beginCapturePass`). Acquires a `GETexture`
+        /// (RenderTarget usage) + `GETextureRenderTarget` from the same
+        /// `TexturePool` path the blur scratch surfaces use. Returns
+        /// true when the pass opened cleanly; false on allocation
+        /// failure, in which case the caller treats the capture as
+        /// aborted and lets subsequent ops render onto the window target.
+        bool beginCacheTarget(unsigned widthPx, unsigned heightPx,
+                              float originXLogical, float originYLogical);
+
+        /// Close the cache-target pass and resume the window-target
+        /// render pass. Returns the captured `GETexture` (the caller
+        /// hands it to the content cache + `emitBitmapPrimitive`); the
+        /// `GETextureRenderTarget` is dropped because only the texture
+        /// is sampled downstream. The capture fence is registered as
+        /// a wait on the resumed window pass so the blit reads the
+        /// texture only after the scratch pass's writes have completed.
+        SharedHandle<OmegaGTE::GETexture> endCacheTarget();
+
         /// Pure dimension math: sanitize the logical rect, clamp it to the
         /// engine's max texture dimension, and recompute backingWidth /
         /// backingHeight from it. Does not touch the GPU.

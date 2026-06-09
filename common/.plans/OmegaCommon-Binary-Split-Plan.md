@@ -7,9 +7,9 @@ binaries with disjoint third-party dependency footprints:
 
 | Binary | Contents | External deps |
 |--------|----------|---------------|
-| **OmegaCommon.Core** | utils, fs, crt, json, cli, format, regex, crypto, multithread, net, unicode, assets | ICU, OpenSSL, PCRE2, libcurl/WinHTTP |
-| **OmegaCommon.Img** | image codec (BitmapImage, loadFromFile/Buffer/URL) | libpng, libjpeg-turbo, libtiff, zlib (+ Core) |
-| **OmegaCommon.ASIO** | async I/O reactor + WebSocket (see Async plan) | Boost (+ Core, + OpenSSL via Core) |
+| **OmegaCommonCore** | utils, fs, crt, json, cli, format, regex, crypto, multithread, net, unicode, assets | ICU, OpenSSL, PCRE2, libcurl/WinHTTP |
+| **OmegaCommonImg** | image codec (BitmapImage, loadFromFile/Buffer/URL) | libpng, libjpeg-turbo, libtiff, zlib (+ Core) |
+| **OmegaCommonASIO** | async I/O reactor + WebSocket (see Async plan) | Boost (+ Core, + OpenSSL via Core) |
 
 The split is **binary-only**. Public header layout under
 `include/omega-common/*.h` does **not** change; the `OmegaCommon::`
@@ -36,19 +36,19 @@ the ASIO binary is the target the async work lands in.
 
 | # | Decision | Default | Reasoning |
 |---|----------|---------|-----------|
-| 1 | Target name format | `OmegaCommon.Core`, `OmegaCommon.Img`, `OmegaCommon.ASIO` (literal dot in CMake target name) | Honors the user's stated naming. CMake supports dots in target names; resulting DLL/dylib filenames are `OmegaCommon.Core.dll` etc. |
+| 1 | Target name format | `OmegaCommonCore`, `OmegaCommonImg`, `OmegaCommonASIO` (no dot) | Honors the user's stated naming. Plain concatenated names avoid any loader / install-tooling quirks around dotted DLL filenames; resulting DLL/dylib filenames are `OmegaCommonCore.dll` etc. |
 | 2 | Public header layout | Unchanged — img.h / io.h / websocket.h stay under `include/omega-common/` | Avoids consumer #include churn. The split is binary, not API. |
 | 3 | Namespace | Unchanged — everything stays in `OmegaCommon::` | Same as above. |
-| 4 | Export macros | One per binary: `OMEGACOMMON_CORE_EXPORT`, `OMEGACOMMON_IMG_EXPORT`, `OMEGACOMMON_ASIO_EXPORT` | The existing `OMEGACOMMON_EXPORT` macro stays as a **compat alias** for `OMEGACOMMON_CORE_EXPORT` so non-Core headers can be retargeted without a flag-day rename. |
+| 4 | Export macro | A single `OMEGACOMMON_EXPORT` shared by all three binaries (the existing macro, unchanged) | The split is binary-only; all public headers keep the one macro they use today, so there is zero header churn and nothing to alias or retarget. Each binary defines `OMEGACOMMON__BUILD__` while compiling its own TUs. |
 | 5 | Dependency direction | Img → Core; ASIO → Core; Core depends on neither | Only physically possible direction — Core has no img / async knowledge. |
-| 6 | Tools (omega-ebin, omega-wrapgen, omega-assetc, parse-test) | Link `OmegaCommon.Core` only | None of them touch image codec or async I/O. |
+| 6 | Tools (omega-ebin, omega-wrapgen, omega-assetc, parse-test) | Link `OmegaCommonCore` only | None of them touch image codec or async I/O. |
 | 7 | Versioning | Single `OMEGACOMMON_VERSION` covers all three | Avoids three independently-drifting version numbers for what is logically one project. |
 
 ## Dependency graph
 
 ```
                 +----------------------+
-                |   OmegaCommon.Core   |
+                |   OmegaCommonCore    |
                 |  ICU, OpenSSL,       |
                 |  PCRE2, curl/WinHTTP |
                 +----------+-----------+
@@ -56,7 +56,7 @@ the ASIO binary is the target the async work lands in.
               +------------+------------+
               |                         |
   +-----------+----------+   +----------+-----------+
-  |   OmegaCommon.Img    |   |   OmegaCommon.ASIO   |
+  |   OmegaCommonImg     |   |   OmegaCommonASIO    |
   |  libpng, libjpeg,    |   |  Boost (header-only) |
   |  libtiff, zlib       |   |  (+ OpenSSL via Core)|
   +----------------------+   +----------------------+
@@ -68,7 +68,7 @@ through Core's transitive `PUBLIC` link (see CMake section below).
 
 ## Source migration
 
-### `OmegaCommon.Core` sources
+### `OmegaCommonCore` sources
 
 Everything currently in OmegaCommon **except** the image codec and
 the async I/O TUs:
@@ -93,17 +93,17 @@ src/unix/multithread-unix.cpp (Linux)
 src/macos/fs-cocoa.mm         (macOS)
 ```
 
-### `OmegaCommon.Img` sources
+### `OmegaCommonImg` sources
 
 ```
 src/img/*.cpp                  (everything currently matched by COMMON_IMG_SRCS)
 ```
 
-### `OmegaCommon.ASIO` sources
+### `OmegaCommonASIO` sources
 
 ```
-src/io.cpp                     (new — from Async plan Phase 2)
-src/websocket.cpp              (new — from Async plan Phases 3–4)
+src/asio/io.cpp                     (new — from Async plan Phase 2)
+src/asio/websocket.cpp              (new — from Async plan Phases 3–4)
 ```
 
 Phase 3 of this plan creates the empty ASIO binary so the Async plan
@@ -111,57 +111,38 @@ has somewhere to land.
 
 ## Public header changes
 
-Per Decision #4, three new export macros are introduced. The existing
-`OMEGACOMMON_EXPORT` keeps working as a compat alias for the Core
-macro so we never need a flag-day rename.
+Per Decision #4, there is a single export macro shared by all three
+binaries: the existing `OMEGACOMMON_EXPORT`. No new macros are
+introduced, no public header's `OMEGACOMMON_EXPORT` uses change, and
+there is nothing to alias. The only edit is to the macro's own
+definition in `utils.h`.
 
-### `include/omega-common/utils.h` (Core's home for the macro pattern)
-
-```cpp
-// Per-binary export macros. Each split binary defines its own
-// OMEGACOMMON_<BIN>__BUILD__ at compile time; consumers see dllimport.
-// On non-Windows targets these are all empty (default visibility).
-
-#ifdef _WIN32
-  #ifdef OMEGACOMMON_CORE__BUILD__
-    #define OMEGACOMMON_CORE_EXPORT __declspec(dllexport)
-  #else
-    #define OMEGACOMMON_CORE_EXPORT __declspec(dllimport)
-  #endif
-#else
-  #define OMEGACOMMON_CORE_EXPORT
-#endif
-
-// Compat: OMEGACOMMON_EXPORT continues to mean "exported from Core"
-// for headers that haven't been retargeted yet (or never will be).
-#define OMEGACOMMON_EXPORT OMEGACOMMON_CORE_EXPORT
-```
-
-### `include/omega-common/img.h`
-
-Add at top:
+### `include/omega-common/utils.h` (home of the export macro)
 
 ```cpp
+// Single export macro shared by every OmegaCommon binary. Whichever
+// binary is currently compiling defines OMEGACOMMON__BUILD__, so its
+// own TUs emit dllexport; consumers see dllimport. On non-Windows
+// targets it is empty (default visibility).
+
 #ifdef _WIN32
-  #ifdef OMEGACOMMON_IMG__BUILD__
-    #define OMEGACOMMON_IMG_EXPORT __declspec(dllexport)
+  #ifdef OMEGACOMMON__BUILD__
+    #define OMEGACOMMON_EXPORT __declspec(dllexport)
   #else
-    #define OMEGACOMMON_IMG_EXPORT __declspec(dllimport)
+    #define OMEGACOMMON_EXPORT __declspec(dllimport)
   #endif
 #else
-  #define OMEGACOMMON_IMG_EXPORT
+  #define OMEGACOMMON_EXPORT
 #endif
 ```
 
-Then rewrite the existing `OMEGACOMMON_EXPORT` uses in img.h to
-`OMEGACOMMON_IMG_EXPORT`. (Currently 6 occurrences: `PixelStorage`,
-`BitmapImage`, and the four `loadFrom*` free functions.)
+### `include/omega-common/img.h`, `io.h`, and `websocket.h`
 
-### `include/omega-common/io.h` and `include/omega-common/websocket.h`
-
-Use `OMEGACOMMON_ASIO_EXPORT`, mirroring the same pattern. Defined
-inline at the top of each header (no separate visibility.h —
-the existing per-header pattern in OmegaCommon stays).
+No change. These headers keep using `OMEGACOMMON_EXPORT` exactly as
+they do today (img.h's 6 uses — `PixelStorage`, `BitmapImage`, and the
+four `loadFrom*` free functions — stay as-is). They inherit the macro
+from `utils.h`, so there is no per-header macro block and no separate
+visibility.h.
 
 ## CMake changes (`common/CMakeLists.txt`)
 
@@ -170,59 +151,59 @@ the existing per-header pattern in OmegaCommon stays).
 with three:
 
 ```cmake
-# --- OmegaCommon.Core ---
+# --- OmegaCommonCore ---
 file(GLOB COMMON_CORE_SRCS         CONFIGURE_DEPENDS "src/*.cpp")
 file(GLOB COMMON_UNICODE_SRCS      CONFIGURE_DEPENDS "src/unicode/*.cpp")
-list(REMOVE_ITEM COMMON_CORE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/io.cpp"
-                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/websocket.cpp")
+list(REMOVE_ITEM COMMON_CORE_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/asio/io.cpp"
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/asio/websocket.cpp")
 list(APPEND COMMON_CORE_SRCS ${COMMON_UNICODE_SRCS})
 
-add_omega_graphics_module("OmegaCommon.Core" SHARED
+add_omega_graphics_module("OmegaCommonCore" SHARED
     SOURCES ${COMMON_CORE_SRCS}
     HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include"
     EMBEDDED_LIBS ${ICU_RUNTIME})
 
-target_include_directories("OmegaCommon.Core" PRIVATE "${OMEGACOMMON_RAPIDJSON_INCLUDE_DIR}")
-target_link_libraries("OmegaCommon.Core" PRIVATE pcre2-8 ssl crypto icuuc icudata icui18n)
-target_compile_definitions("OmegaCommon.Core" PRIVATE OMEGACOMMON_CORE__BUILD__)
-add_dependencies("OmegaCommon.Core" icu)
+target_include_directories("OmegaCommonCore" PRIVATE "${OMEGACOMMON_RAPIDJSON_INCLUDE_DIR}")
+target_link_libraries("OmegaCommonCore" PRIVATE pcre2-8 ssl crypto icuuc icudata icui18n)
+target_compile_definitions("OmegaCommonCore" PRIVATE OMEGACOMMON__BUILD__)
+add_dependencies("OmegaCommonCore" icu)
 
 # Platform sources + system libs for Core (curl/WinHTTP, etc.) — same
 # per-platform target_sources blocks as today, just retargeted to
-# "OmegaCommon.Core" instead of "OmegaCommon".
+# "OmegaCommonCore" instead of "OmegaCommon".
 
-# --- OmegaCommon.Img ---
+# --- OmegaCommonImg ---
 file(GLOB COMMON_IMG_SRCS CONFIGURE_DEPENDS "src/img/*.cpp")
 
-add_omega_graphics_module("OmegaCommon.Img" SHARED
+add_omega_graphics_module("OmegaCommonImg" SHARED
     SOURCES ${COMMON_IMG_SRCS}
     HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-target_link_libraries("OmegaCommon.Img"
-    PUBLIC  "OmegaCommon.Core"
+target_link_libraries("OmegaCommonImg"
+    PUBLIC  "OmegaCommonCore"
     PRIVATE png turbojpeg tiff z)
-target_compile_definitions("OmegaCommon.Img" PRIVATE OMEGACOMMON_IMG__BUILD__)
-add_dependencies("OmegaCommon.Img" libpng libjpeg-turbo libtiff zlib)
+target_compile_definitions("OmegaCommonImg" PRIVATE OMEGACOMMON__BUILD__)
+add_dependencies("OmegaCommonImg" libpng libjpeg-turbo libtiff zlib)
 
-# --- OmegaCommon.ASIO ---
+# --- OmegaCommonASIO ---
 # Created empty in this plan's Phase 3. The Async plan (Phase 2/3/4)
 # fills io.cpp and websocket.cpp.
-add_omega_graphics_module("OmegaCommon.ASIO" SHARED
+add_omega_graphics_module("OmegaCommonASIO" SHARED
     SOURCES ""    # filled by Async plan
     HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-target_link_libraries("OmegaCommon.ASIO" PUBLIC "OmegaCommon.Core")
-target_compile_definitions("OmegaCommon.ASIO" PRIVATE OMEGACOMMON_ASIO__BUILD__)
+target_link_libraries("OmegaCommonASIO" PUBLIC "OmegaCommonCore")
+target_compile_definitions("OmegaCommonASIO" PRIVATE OMEGACOMMON__BUILD__)
 # Boost include path + defines applied by the Async plan, not here.
 ```
 
 ### Tools — retarget to Core
 
 ```cmake
-add_omega_graphics_tool("omega-wrapgen" LIBS "OmegaCommon.Core" ...)
-add_omega_graphics_tool("omega-assetc"  LIBS "OmegaCommon.Core" ...)
-add_omega_graphics_tool("omega-ebin"    LIBS "OmegaCommon.Core" ...)
-add_omega_graphics_tool("parse-test"    LIBS "OmegaCommon.Core" ...)
+add_omega_graphics_tool("omega-wrapgen" LIBS "OmegaCommonCore" ...)
+add_omega_graphics_tool("omega-assetc"  LIBS "OmegaCommonCore" ...)
+add_omega_graphics_tool("omega-ebin"    LIBS "OmegaCommonCore" ...)
+add_omega_graphics_tool("parse-test"    LIBS "OmegaCommonCore" ...)
 ```
 
 None of the tools touch image codec or async I/O today.
@@ -230,7 +211,7 @@ None of the tools touch image codec or async I/O today.
 ### macOS install-name fixups
 
 The existing `add_dependencies("OmegaCommon" libicuuc.dylib_install_name ...)`
-block retargets to `OmegaCommon.Core` (it's the binary that embeds ICU).
+block retargets to `OmegaCommonCore` (it's the binary that embeds ICU).
 
 ## Consumer impact (other modules)
 
@@ -238,9 +219,9 @@ Audit from `grep`-of-record (already done — see implementation):
 
 | Consumer | Current link | Post-split link |
 |----------|--------------|-----------------|
-| `gte` (OmegaGTE) | `OmegaCommon` PUBLIC | `OmegaCommon.Core` PUBLIC + `OmegaCommon.Img` PUBLIC (uses image loading for textures — confirmed by `OmegaCommon::Img` reference in gte/CMakeLists.txt comment) |
-| `wtk` (OmegaWTK_Core / _Native / _Composition) | `OmegaCommon` PUBLIC | `OmegaCommon.Core` PUBLIC + `OmegaCommon.Img` PUBLIC (uses image loading for asset thumbnails / bitmap surfaces) |
-| `aqua` | `OmegaCommon` PUBLIC | `OmegaCommon.Core` PUBLIC (no image / async usage) |
+| `gte` (OmegaGTE) | `OmegaCommon` PUBLIC | `OmegaCommonCore` PUBLIC + `OmegaCommonImg` PUBLIC (uses image loading for textures — confirmed by `OmegaCommon::Img` reference in gte/CMakeLists.txt comment) |
+| `wtk` (OmegaWTK_Core / _Native / _Composition) | `OmegaCommon` PUBLIC | `OmegaCommonCore` PUBLIC + `OmegaCommonImg` PUBLIC (uses image loading for asset thumbnails / bitmap surfaces) |
+| `aqua` | `OmegaCommon` PUBLIC | `OmegaCommonCore` PUBLIC (no image / async usage) |
 | `kreate` | not currently linking OmegaCommon directly — confirm during Phase 4 | TBD per audit |
 | `ide` | not currently linking OmegaCommon directly — confirm during Phase 4 | TBD per audit |
 | `autom` | not a consumer (it sits below common in the build) | unchanged |
@@ -250,52 +231,55 @@ Img binaries existing and tested in isolation.
 
 ## Implementation phases
 
-### Phase 1 — Per-binary export macros, single binary intact (~60 LOC)
+### Phase 1 — Confirm the single export macro + build flag (~10 LOC)
 
-- `1a` Edit `utils.h` to define the new `OMEGACOMMON_CORE_EXPORT` macro
-  and alias the legacy `OMEGACOMMON_EXPORT` to it.
-- `1b` Edit `img.h` to define `OMEGACOMMON_IMG_EXPORT` and rewrite its
-  6 export-macro uses.
-- `1c` Pre-stage `io.h` / `websocket.h` export macros (the Async plan
-  Phase 1c creates the headers themselves; this phase just confirms the
-  macro pattern is in place beforehand).
-- `1d` CMake: rename the `OMEGACOMMON__BUILD__` compile-definition on
-  the existing single `OmegaCommon` target to `OMEGACOMMON_CORE__BUILD__`.
-  Still a single binary, still called `OmegaCommon`. **No consumer
-  change yet.**
+With one shared `OMEGACOMMON_EXPORT` (Decision #4) there are no new
+macros to introduce — this phase just confirms the existing pattern is
+what the split relies on.
+
+- `1a` Confirm `utils.h` defines `OMEGACOMMON_EXPORT` gated on
+  `OMEGACOMMON__BUILD__` (the single-macro form shown above). No new
+  macro, no alias.
+- `1b` `img.h` — no change; it already uses `OMEGACOMMON_EXPORT`.
+- `1c` `io.h` / `websocket.h` — created by the Async plan and use
+  `OMEGACOMMON_EXPORT` from the start; nothing to pre-stage.
+- `1d` CMake: confirm the existing single `OmegaCommon` target defines
+  `OMEGACOMMON__BUILD__` (no rename — every split binary will define the
+  same flag). Still a single binary, still called `OmegaCommon`. **No
+  consumer change yet.**
 - Verifies: clean build on Linux + Windows. Symbol table of the lone
   DLL unchanged.
 
 Small-feature exception applies (<300 LOC). No sub-bullets needed.
 
-### Phase 2 — Split out `OmegaCommon.Img` (~120 LOC of CMake)
+### Phase 2 — Split out `OmegaCommonImg` (~120 LOC of CMake)
 
-- `2a` Add a second `add_omega_graphics_module("OmegaCommon.Img" SHARED ...)`
+- `2a` Add a second `add_omega_graphics_module("OmegaCommonImg" SHARED ...)`
   call. Drop `src/img/*.cpp` from Core's source glob.
 - `2b` Drop `png turbojpeg tiff z` from Core's `target_link_libraries`,
   add them to Img.
 - `2c` Drop `libpng libjpeg-turbo libtiff zlib` from Core's
   `add_dependencies`, add them to Img.
-- `2d` Img `target_link_libraries(... PUBLIC OmegaCommon.Core)`.
-- `2e` **Rename the Core target from `OmegaCommon` → `OmegaCommon.Core`.**
+- `2d` Img `target_link_libraries(... PUBLIC OmegaCommonCore)`.
+- `2e` **Rename the Core target from `OmegaCommon` → `OmegaCommonCore`.**
   This is the flag-day. Two consumer updates needed in the same commit:
-  - `gte/CMakeLists.txt`: `OmegaCommon` → `OmegaCommon.Core` + add
-    `OmegaCommon.Img` to PUBLIC link.
-  - `wtk/CMakeLists.txt`: `OmegaCommon` → `OmegaCommon.Core` + add
-    `OmegaCommon.Img` to PUBLIC link (three `target_link_libraries`
+  - `gte/CMakeLists.txt`: `OmegaCommon` → `OmegaCommonCore` + add
+    `OmegaCommonImg` to PUBLIC link.
+  - `wtk/CMakeLists.txt`: `OmegaCommon` → `OmegaCommonCore` + add
+    `OmegaCommonImg` to PUBLIC link (three `target_link_libraries`
     lines).
-  - `aqua/CMakeLists.txt`: `OmegaCommon` → `OmegaCommon.Core` (no Img).
+  - `aqua/CMakeLists.txt`: `OmegaCommon` → `OmegaCommonCore` (no Img).
 - `2f` Audit kreate/ide for any indirect references; update if found.
 - Verifies: full top-level CMake build on Linux + Windows. wtk
   `OmegaWTK` framework still links and image loads still work.
 
-### Phase 3 — Reserve empty `OmegaCommon.ASIO` (~30 LOC)
+### Phase 3 — Reserve empty `OmegaCommonASIO` (~30 LOC)
 
-- `3a` Add a third `add_omega_graphics_module("OmegaCommon.ASIO" SHARED ...)`
-  with a single stub TU `src/asio_stub.cpp` that defines nothing (so
-  the linker has something to produce a DLL from).
-- `3b` `target_link_libraries(OmegaCommon.ASIO PUBLIC OmegaCommon.Core)`.
-- `3c` `target_compile_definitions(OmegaCommon.ASIO PRIVATE OMEGACOMMON_ASIO__BUILD__)`.
+- `3a` Add a third `add_omega_graphics_module("OmegaCommonASIO" SHARED ...)`
+  with a single stub TU `src/asio/asio_stub.cpp` that defines nothing
+  (so the linker has something to produce a DLL from).
+- `3b` `target_link_libraries(OmegaCommonASIO PUBLIC OmegaCommonCore)`.
+- `3c` `target_compile_definitions(OmegaCommonASIO PRIVATE OMEGACOMMON__BUILD__)`.
 - No Boost yet — that's Async plan Phase 1b.
 - Verifies: empty DLL builds clean on all platforms.
 
@@ -316,20 +300,19 @@ Small-feature exception applies (<300 LOC). No sub-bullets needed.
 - Phase 2 carries the real risk — `OmegaCommon::Img` symbols need to
   resolve from a different DLL than before. wtk's image-loading paths
   are the load-bearing test:
-  - On Windows, confirm `libOmegaCommon.Img.dll` ends up next to the
+  - On Windows, confirm `libOmegaCommonImg.dll` ends up next to the
     consumer at install time (the `EMBEDDED_LIBS` /
     `add_omega_graphics_module` infrastructure already handles co-located
     DLLs; double-check by examining the build/bin/ tree).
   - On Linux/macOS, the dependency graph at runtime (`ldd` / `otool -L`)
-    must show OmegaCommon.Img loaded by wtk binaries.
+    must show OmegaCommonImg loaded by wtk binaries.
 
 ## Risks
 
 | Risk | Mitigation |
 |------|------------|
-| Windows DLL filenames with literal dots (`OmegaCommon.Core.dll`) confuse loader / install tooling | CMake-supported; existing `add_omega_graphics_module` SHARED path already handles arbitrary names. If a real issue surfaces during Phase 2, fall back to `OmegaCommonCore` (no dot) — `~10`-line CMake change, no header impact. |
 | Phase 2 flag-day touches three top-level modules in one commit | Land Phase 2 with the consumer updates in a single PR. Don't try to half-migrate. |
-| The `OMEGACOMMON_EXPORT → OMEGACOMMON_CORE_EXPORT` alias means non-Core headers using the legacy macro silently get dllimport-from-Core symbols | Phase 1b rewrites img.h's uses immediately. The Async plan headers use the new ASIO macro from the start. The alias is for **transitional** use only — by end of Phase 2, no non-Core public header uses the bare `OMEGACOMMON_EXPORT`. |
+| Single `OMEGACOMMON_EXPORT` + single `OMEGACOMMON__BUILD__`: when an Img/ASIO TU includes a Core header on Windows, `OMEGACOMMON__BUILD__` is defined for that compile, so Core's symbols are marked `dllexport` instead of `dllimport` (risk of LNK4217 / accidental re-export from the wrong DLL). | Non-Windows is unaffected — the macro is empty there. For Windows, the clean fix is to keep the one macro as a no-op and let CMake auto-export via per-target `WINDOWS_EXPORT_ALL_SYMBOLS`; otherwise confirm at the Phase 2 Windows hand-off whether the mismatch actually surfaces (pure consumers, which never define the flag, are always correct). |
 | Image consumer count higher than the audit caught | Phase 4 explicit audit pass covers this. |
 
 ## Out of scope
@@ -344,10 +327,9 @@ Small-feature exception applies (<300 LOC). No sub-bullets needed.
 
 ## Open items (confirm before Phase 1 lands)
 
-1. **Target name format** — keep the literal `.` (`OmegaCommon.Core` etc.)
-   or canonicalize to `OmegaCommonCore` / `OmegaCommonImg` /
-   `OmegaCommonASIO`? Default in this plan: literal dot per the user's
-   wording. Easy to change later.
+1. **Target name format** — RESOLVED: no-dot names `OmegaCommonCore` /
+   `OmegaCommonImg` / `OmegaCommonASIO`, per the user's instruction.
+   Decision #1 and the rest of the plan reflect this.
 2. **Audit scope for Phase 4** — should kreate/ide/va be included even
    though grep shows no direct `OmegaCommon` reference today, or is the
    transitive-via-OmegaGTE path good enough? Default: include them in

@@ -50,18 +50,32 @@ void View::markDirty(uint8_t bits){
     // descents off `node.dirtyBits() | node.descendantDirty()` &
     // passBit (skip whole subtrees with no dirty bit in their subtree).
     impl_->dirtyBits_ |= bits;
-    // UIView-Render-Redesign Phase G.3.0: bump the content-version
-    // counter whenever the Paint bit is in this mark. The counter is
-    // monotonic (no rollover handling needed — a uint64 increment per
-    // Paint-dirty mark survives the heat death of the universe), and
-    // it's *intentionally* untouched by `clearDirtyBits`. The G.3
-    // content cache keys against `(nodeId, contentVersion)` so any
-    // Paint-dirty mark transparently misses the old cache entry on
-    // the next lookup; nothing in the cache machinery needs to be
-    // notified.
-    if((bits & View::Paint) != 0){
-        impl_->contentVersion_ += 1;
-    }
+    // UIView-Render-Redesign Phase G.3.0 (semantic set by G.3.2-rev2,
+    // 2026-06-09): bump THIS view's content-generation counter on ANY
+    // dirty bit.
+    //
+    // Why any bit, not just Paint: `FrameBuilder::buildFrame` runs the
+    // Paint pass whenever ANY dirty bit is set in the tree (Style,
+    // Layout, Content, or Paint). A Style-only change (e.g. a hover
+    // pseudo-class flip, which marks `View::Style`, not `View::Paint`)
+    // still produces different painted output, so the View's own cache
+    // entry must invalidate. If the generation only moved on Paint, the
+    // hover would hit the stale cached texture and never visibly update.
+    //
+    // Why NOT propagate to ancestors: the G.3.2-rev2 content cache is
+    // per-View and caches each View's OWN paint (not its subtree). A
+    // descendant change therefore must NOT invalidate an ancestor's own
+    // cached background — the ancestor's own paint is unchanged. (The
+    // intervening G.3.2 root-only version DID propagate, because it
+    // keyed the whole-window capture on the root's generation; rev2
+    // drops that whole-window capture, so the propagation goes with it.)
+    // `descendantDirty_` is still propagated — that's the separate Phase
+    // 4.7.3 dirty-gating mask, unrelated to the content generation.
+    //
+    // The counter is monotonic (uint64, never rolls over in practice)
+    // and is *intentionally* untouched by `clearDirtyBits` — it is a
+    // generation number, not a per-frame flag.
+    impl_->contentVersion_ += 1;
     auto * ancestor = impl_->parent_ptr;
     while(ancestor != nullptr){
         ancestor->impl_->descendantDirty_ |= bits;

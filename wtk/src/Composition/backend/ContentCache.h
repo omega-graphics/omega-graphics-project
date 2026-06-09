@@ -296,6 +296,13 @@ namespace OmegaWTK::Composition {
         /// G.2 text-shaping-cache max entry count (process-wide). Default
         /// 4096; override via `OMEGAWTK_TEXT_SHAPING_CACHE_ENTRIES`.
         std::size_t textShapingCacheEntries  = 4096;
+        /// G.3.2 minimum View rect dimension (in logical pixels) below
+        /// which the per-View content cache is skipped. Default 64 px;
+        /// override via `OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX`. Plan
+        /// rationale: under this size the GPU texture allocation +
+        /// per-frame capture overhead exceeds the savings of skipping
+        /// the View's own paint emission.
+        std::uint32_t cacheMinSizePx = 64;
 
         static const ContentCacheConfig & inst();
     };

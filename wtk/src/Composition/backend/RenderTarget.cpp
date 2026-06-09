@@ -1207,6 +1207,113 @@ void BackendRenderTargetContext::resetElementState() {
         }
     }
 
+    // Phase G.3.1: cache-target machinery. Mirrors the blur scratch
+    // setup almost line-for-line — the scratch-pass mechanism in
+    // `FrameRenderPass` already does the heavy lifting (suspend the
+    // window-target pass, switch the recording CB to a new render
+    // pass on the scratch target, resume on close). The difference is
+    // the lifetime of the captured texture: the blur path consumes
+    // and discards it within the same frame; G.3.1 hands the texture
+    // over to the per-RTC content cache so subsequent frames can
+    // (G.3.2) blit it instead of re-painting.
+    bool BackendRenderTargetContext::beginCacheTarget(unsigned widthPx, unsigned heightPx,
+                                                      float originXLogical, float originYLogical){
+        if(widthPx == 0 || heightPx == 0){
+            return false;
+        }
+        if(!frameRenderPass_.active()){
+            return false;
+        }
+        if(frameRenderPass_.scratchActive()){
+            // Already inside a scratch pass (blur, or a malformed
+            // double-capture). Surface as failure so the caller treats
+            // the capture as aborted; subsequent ops keep recording
+            // onto whatever pass is open.
+            return false;
+        }
+
+        auto * pool = BackendResourceFactory::instance().texturePool();
+        TexturePoolKey key {};
+        key.width       = widthPx;
+        key.height      = heightPx;
+        key.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
+        key.usage       = OmegaGTE::GETexture::RenderTarget;
+
+        SharedHandle<OmegaGTE::GETexture> texture;
+        if(pool != nullptr){
+            texture = pool->acquire(key);
+        }
+        if(texture == nullptr){
+            OmegaGTE::TextureDescriptor desc {};
+            desc.usage        = OmegaGTE::GETexture::RenderTarget;
+            desc.storage_opts = OmegaGTE::Shared;
+            desc.width        = widthPx;
+            desc.height       = heightPx;
+            desc.pixelFormat  = OmegaGTE::PixelFormat::BGRA8Unorm;
+            texture = gte.graphicsEngine->makeTexture(desc);
+        }
+        if(texture == nullptr){
+            return false;
+        }
+
+        auto target = gte.graphicsEngine->makeTextureRenderTarget({true, texture});
+        if(target == nullptr){
+            if(pool != nullptr){
+                pool->release(std::move(texture), key);
+            }
+            return false;
+        }
+
+        auto * fp = fencePool();
+        SharedHandle<OmegaGTE::GEFence> fence = (fp != nullptr)
+                ? fp->acquire()
+                : gte.graphicsEngine->makeFence();
+
+        // Capture viewport: window-sized, offset by -(viewOrigin × scale)
+        // so the View's absolute-window-coord ops (NDC authored against
+        // the window in every emit path) land at the View-sized
+        // texture's origin. Scissor = the texture dims, clipping the
+        // rest of the window away.
+        const float scale = renderScale_;
+        const float vpX = -originXLogical * scale;
+        const float vpY = -originYLogical * scale;
+        const float vpW = static_cast<float>(backingWidth_);
+        const float vpH = static_cast<float>(backingHeight_);
+
+        frameRenderPass_.beginCapturePass(target, widthPx, heightPx, vpX, vpY, vpW, vpH);
+        if(!frameRenderPass_.scratchActive()){
+            // beginCapturePass refused (no active frame, or already
+            // inside another scratch). Roll back the allocations.
+            if(pool != nullptr){
+                pool->release(std::move(texture), key);
+            }
+            if(fp != nullptr && fence){
+                fp->release(std::move(fence));
+            }
+            return false;
+        }
+
+        captureTexture_ = std::move(texture);
+        captureTarget_  = std::move(target);
+        captureFence_   = std::move(fence);
+        return true;
+    }
+
+    SharedHandle<OmegaGTE::GETexture> BackendRenderTargetContext::endCacheTarget(){
+        if(captureTexture_ == nullptr){
+            return {};
+        }
+        frameRenderPass_.endScratchPass();
+        frameRenderPass_.resumeFrameAfterScratch(captureFence_);
+
+        auto texture = std::move(captureTexture_);
+        captureTarget_.reset();
+        // Keep `captureFence_` until the bitmap blit has been emitted —
+        // the blit's `emitBitmapPrimitive` consumes it as the
+        // texture-wait fence. The caller resets it after that.
+        return texture;
+    }
+
     void BackendRenderTargetContext::renderBlurredSlice(
             const CompositeFrame::WidgetSlice & slice){
         if(slice.targetLayer == nullptr || !slice.targetLayer->hasBlur()){
@@ -2152,6 +2259,17 @@ void BackendRenderTargetContext::resetElementState() {
     }
 
     void BackendRenderTargetContext::renderToTarget(DrawOp::Type type, void *params){
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+        // G.3.2 hit skip: a Begin marker found the cache and emitted
+        // its Bitmap blit; the wrapped ops are now redundant, so drop
+        // every op until the matching End marker clears the flag. End
+        // is the *only* op allowed through while skipping; everything
+        // else (including nested Begin markers, if any slipped past
+        // the per-View walker's invariant) is silently ignored.
+        if(captureSkipping_ && type != DrawOp::EndCacheCapture){
+            return;
+        }
+#endif
         switch(type){
             case DrawOp::Rect:
                 renderPrimitiveImpl(PrimitiveOp::Rect, (DrawOp::Params*)params); return;
@@ -2201,6 +2319,152 @@ void BackendRenderTargetContext::resetElementState() {
                 // Scoped 3D-effect transform — no producer yet (same as the
                 // Tier 3 replay no-op). Lands when a producer appears.
                 return;
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+            case DrawOp::BeginCacheCapture: {
+                if(params == nullptr) return;
+                auto & p = ((DrawOp::Params*)params)->beginCacheCaptureParams;
+                ++captureDepth_;
+                if(captureDepth_ != 1){
+                    // Nested marker. The G.3.2 per-View walker
+                    // guarantees this should not happen — markers are
+                    // emitted around each View's own paint only, with
+                    // children recursing as siblings afterwards — but
+                    // we tolerate it defensively. The inner pair is
+                    // dropped; the outer pair retains control.
+                    return;
+                }
+
+                // The marker rect is the View's WINDOW rect (pos =
+                // absolute window origin, w/h = view size). Build the
+                // lookup key. The cache lives on the render thread (same
+                // thread as renderToTarget), so the lookup is
+                // unsynchronized. The size bucket keys on the view SIZE,
+                // not its window position — a View that moved but kept
+                // its content + size still hits.
+                ViewCacheKey key {};
+                key.nodeId         = p.nodeId;
+                key.contentVersion = p.contentVersion;
+                key.wBucket        = (p.rect.w > 0.f)
+                        ? static_cast<std::uint32_t>(std::lround(p.rect.w))
+                        : 0u;
+                key.hBucket        = (p.rect.h > 0.f)
+                        ? static_cast<std::uint32_t>(std::lround(p.rect.h))
+                        : 0u;
+                std::memcpy(&key.renderScaleBits, &renderScale_, sizeof(key.renderScaleBits));
+
+                ViewCacheEntry * hit = nullptr;
+                if(contentCacheState_ != nullptr){
+                    hit = contentCacheState_->cache.find(key);
+                }
+
+                if(hit != nullptr && hit->texture != nullptr){
+                    // HIT: blit the View-sized cached texture at the
+                    // View's CURRENT window rect (p.rect) — not the
+                    // stored capture position, since the View may have
+                    // moved while keeping the same content + size.
+                    // `captureSkipping_` then drops the wrapped ops until
+                    // the matching End.
+                    auto tint = OmegaGTE::FVec<4>::Create();
+                    tint[0][0] = 1.f; tint[1][0] = 1.f;
+                    tint[2][0] = 1.f; tint[3][0] = 1.f;
+                    emitBitmapPrimitive(p.rect,
+                                        0.f, 0.f, 1.f, 1.f,
+                                        tint,
+                                        hit->texture,
+                                        SharedHandle<OmegaGTE::GEFence>{});
+                    captureSkipping_ = true;
+                    return;
+                }
+
+                // MISS: open a View-sized cache target. The capture pass
+                // uses a window-sized viewport offset by -(view origin)
+                // so the wrapped ops (absolute window coords) land at the
+                // texture origin clipped to the view bounds.
+                const unsigned widthPx  = scaledExtent(p.rect.w, renderScale_);
+                const unsigned heightPx = scaledExtent(p.rect.h, renderScale_);
+                if(widthPx == 0 || heightPx == 0 ||
+                   !beginCacheTarget(widthPx, heightPx, p.rect.pos.x, p.rect.pos.y)){
+                    captureDepth_ = 0;
+                    return;
+                }
+                captureKeyNodeId_         = p.nodeId;
+                captureKeyContentVersion_ = p.contentVersion;
+                // Capture rect = the View's window rect. Used as the
+                // composite blit dest on End and stored on the cache
+                // entry.
+                captureRect_              = p.rect;
+                return;
+            }
+            case DrawOp::EndCacheCapture: {
+                if(captureDepth_ == 0){
+                    // Unmatched End (Begin disarmed or never fired).
+                    captureSkipping_ = false;
+                    return;
+                }
+                --captureDepth_;
+                if(captureDepth_ != 0){
+                    // Outer marker still active.
+                    return;
+                }
+
+                // Outermost End. Two branches: skipping (hit path,
+                // nothing to do beyond clearing the flag) versus
+                // capturing (miss path, close + insert + composite).
+                if(captureSkipping_){
+                    captureSkipping_ = false;
+                    return;
+                }
+
+                auto texture = endCacheTarget();
+                if(texture == nullptr){
+                    captureFence_.reset();
+                    return;
+                }
+
+                ViewCacheKey key {};
+                key.nodeId         = captureKeyNodeId_;
+                key.contentVersion = captureKeyContentVersion_;
+                key.wBucket        = (captureRect_.w > 0.f)
+                        ? static_cast<std::uint32_t>(std::lround(captureRect_.w))
+                        : 0u;
+                key.hBucket        = (captureRect_.h > 0.f)
+                        ? static_cast<std::uint32_t>(std::lround(captureRect_.h))
+                        : 0u;
+                std::memcpy(&key.renderScaleBits, &renderScale_, sizeof(key.renderScaleBits));
+
+                if(contentCacheState_ != nullptr){
+                    ViewCacheEntry entry {};
+                    entry.texture        = texture;
+                    entry.rasterizedSize = captureRect_;
+                    const std::size_t pxW = static_cast<std::size_t>(
+                            scaledExtent(captureRect_.w, renderScale_));
+                    const std::size_t pxH = static_cast<std::size_t>(
+                            scaledExtent(captureRect_.h, renderScale_));
+                    const std::size_t bytes = pxW * pxH * 4;
+                    contentCacheState_->cache.insert(key, std::move(entry), bytes);
+                }
+
+                auto tint = OmegaGTE::FVec<4>::Create();
+                tint[0][0] = 1.f; tint[1][0] = 1.f;
+                tint[2][0] = 1.f; tint[3][0] = 1.f;
+                emitBitmapPrimitive(captureRect_,
+                                    0.f, 0.f, 1.f, 1.f,
+                                    tint,
+                                    texture,
+                                    captureFence_);
+
+                captureFence_.reset();
+                captureKeyNodeId_         = 0;
+                captureKeyContentVersion_ = 0;
+                captureRect_              = Composition::Rect{};
+                return;
+            }
+#else
+            case DrawOp::BeginCacheCapture:
+            case DrawOp::EndCacheCapture:
+                // Content cache compiled out — markers are inert.
+                return;
+#endif
             default:
                 return;
         }

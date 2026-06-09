@@ -20,17 +20,33 @@ namespace OmegaWTK::Composition {
 
     void FrameRenderPass::applyScratchViewportAndScissor(SharedHandle<OmegaGTE::GECommandBuffer> & cb){
         OmegaGTE::GEViewport viewport {};
-        viewport.x = 0;
-        viewport.y = 0;
         viewport.nearDepth = 0.f;
         viewport.farDepth  = 1.f;
-        viewport.width  = static_cast<float>(scratchWidth_);
-        viewport.height = static_cast<float>(scratchHeight_);
-        OmegaGTE::GEScissorRect scissorRect {
-                viewport.x,
-                viewport.y,
-                viewport.width,
-                viewport.height};
+        OmegaGTE::GEScissorRect scissorRect {};
+        if(captureActive_){
+            // G.3.2-rev2 content-cache capture: window-sized viewport
+            // offset by -(viewOrigin × scale) so the View's
+            // window-coord ops land at the View-sized texture's origin;
+            // scissor clips to the texture (View) bounds.
+            viewport.x      = captureVpX_;
+            viewport.y      = captureVpY_;
+            viewport.width  = captureVpW_;
+            viewport.height = captureVpH_;
+            scissorRect.x      = 0;
+            scissorRect.y      = 0;
+            scissorRect.width  = captureScissorW_;
+            scissorRect.height = captureScissorH_;
+        }
+        else {
+            viewport.x      = 0;
+            viewport.y      = 0;
+            viewport.width  = static_cast<float>(scratchWidth_);
+            viewport.height = static_cast<float>(scratchHeight_);
+            scissorRect.x      = viewport.x;
+            scissorRect.y      = viewport.y;
+            scissorRect.width  = viewport.width;
+            scissorRect.height = viewport.height;
+        }
         cb->setViewports({viewport});
         cb->setScissorRects({scissorRect});
     }
@@ -269,6 +285,59 @@ namespace OmegaWTK::Composition {
         lastPipelineKind_ = PipelineKind::None;
     }
 
+    void FrameRenderPass::beginCapturePass(SharedHandle<OmegaGTE::GETextureRenderTarget> & target,
+                                           unsigned scissorW, unsigned scissorH,
+                                           float vpX, float vpY, float vpW, float vpH){
+        if(target == nullptr || scissorW == 0 || scissorH == 0){
+            return;
+        }
+        if(scratchActive_){
+            return;
+        }
+        if(!frameActive_ || frameCB_ == nullptr){
+            return;
+        }
+        auto & queue = owner_.commandQueue();
+        if(queue == nullptr){
+            return;
+        }
+
+        // Arm capture mode BEFORE applyScratchViewportAndScissor so it
+        // installs the offset viewport + texture-sized scissor.
+        captureActive_   = true;
+        captureVpX_      = vpX;
+        captureVpY_      = vpY;
+        captureVpW_      = vpW;
+        captureVpH_      = vpH;
+        captureScissorW_ = static_cast<float>(scissorW);
+        captureScissorH_ = static_cast<float>(scissorH);
+
+        // Suspend the frame's render pass (same as beginScratchPass).
+        frameCB_->finishRenderPass();
+        queue->submitCommandBuffer(frameCB_);
+        frameCB_ = nullptr;
+
+        scratchTarget_ = target;
+        // scratchWidth_/Height_ are unused while captureActive_ (the
+        // capture viewport/scissor override them), but set them to the
+        // scissor size for any incidental reader.
+        scratchWidth_  = scissorW;
+        scratchHeight_ = scissorH;
+        scratchCB_     = queue->getAvailableBuffer();
+
+        OmegaGTE::GERenderPassDescriptor desc {};
+        desc.tRenderTarget = target.get();
+        desc.colorAttachments.push_back(OmegaGTE::GERenderPassDescriptor::ColorAttachment(
+                OmegaGTE::GERenderPassDescriptor::ColorAttachment::ClearColor(0.f,0.f,0.f,0.f),
+                OmegaGTE::GERenderPassDescriptor::ColorAttachment::Clear));
+        desc.depthStencilAttachment.disabled = true;
+        scratchCB_->startRenderPass(desc);
+        applyScratchViewportAndScissor(scratchCB_);
+
+        scratchActive_ = true;
+        lastPipelineKind_ = PipelineKind::None;
+    }
+
     void FrameRenderPass::endScratchPass(){
         if(!scratchActive_ || scratchCB_ == nullptr || scratchTarget_ == nullptr){
             return;
@@ -283,6 +352,14 @@ namespace OmegaWTK::Composition {
         scratchWidth_  = 0;
         scratchHeight_ = 0;
         scratchActive_ = false;
+        // Disarm G.3.2-rev2 capture mode (no-op for a blur scratch).
+        captureActive_   = false;
+        captureVpX_      = 0.f;
+        captureVpY_      = 0.f;
+        captureVpW_      = 0.f;
+        captureVpH_      = 0.f;
+        captureScissorW_ = 0.f;
+        captureScissorH_ = 0.f;
         // Frame is left "suspended": frameActive_ is true but frameCB_ is
         // null. `resumeFrameAfterScratch()` rebuilds the CB.
         lastPipelineKind_ = PipelineKind::None;

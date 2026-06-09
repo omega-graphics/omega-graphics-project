@@ -285,10 +285,13 @@ target_include_directories(OmegaWTK_Composition
 target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon PRIVATE OmegaGTE)
 
 # UIView-Render-Redesign Phase G: when the content-cache gate is ON, define
-# OMEGAWTK_CONTENT_CACHE_ENABLED=1 for the Composition submodule. G.0 lands
-# the ContentCache type unconditionally; G.1+ wrap their render-path hooks
-# in `#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED` so the cache stays opt-in until
-# its validators pass.
+# OMEGAWTK_CONTENT_CACHE_ENABLED=1 for every submodule that participates in
+# the content-cache integration. G.0 lands the ContentCache type
+# unconditionally; G.1+ wrap their render-path hooks in
+# `#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED` so the cache stays opt-in until
+# its validators pass. G.3.1 widens this to OmegaWTK_UI because the
+# FrameBuilder paint walker emits the cache-capture marker DrawOps that
+# the Composition backend's renderToTarget switch then honors.
 if(OMEGAWTK_ENABLE_CONTENT_CACHE)
 	target_compile_definitions(OmegaWTK_Composition PRIVATE OMEGAWTK_CONTENT_CACHE_ENABLED=1)
 endif()
@@ -354,6 +357,13 @@ target_include_directories(OmegaWTK_UI
 	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
 	        $<TARGET_PROPERTY:OmegaVA,SOURCE_DIR>/src)
 target_link_libraries(OmegaWTK_UI PUBLIC OmegaCommon OmegaVA)
+
+# UIView-Render-Redesign Phase G.3.1: FrameBuilder emits cache-capture
+# marker DrawOps when the content cache is enabled — define the gate
+# here so the `#ifdef` in FrameBuilder.cpp actually fires.
+if(OMEGAWTK_ENABLE_CONTENT_CACHE)
+	target_compile_definitions(OmegaWTK_UI PRIVATE OMEGAWTK_CONTENT_CACHE_ENABLED=1)
+endif()
 
 add_library(OmegaWTK_Widgets STATIC ${WIDGETS_SRCS})
 target_include_directories(OmegaWTK_Widgets

@@ -180,15 +180,16 @@ namespace OmegaWTK {
         /// the self mask). Does NOT touch `contentVersion()` —
         /// that's a monotonic generation counter (G.3.0), not a flag.
         void clearDirtyBits();
-        /// UIView-Render-Redesign Phase G.3.0: monotonic generation
-        /// counter for this View's painted content. `markDirty(bits)`
-        /// increments it whenever `bits & Paint`; `clearDirtyBits()`
-        /// does NOT reset it. The G.3 content cache uses
-        /// `(nodeId, contentVersion)` as the per-View cache key —
-        /// repeated paints at the same `contentVersion` hit the same
-        /// cached texture; a Paint-dirty mark invalidates the cache
-        /// entry transparently because the next lookup carries a new
-        /// version number.
+        /// UIView-Render-Redesign Phase G.3.0 (semantic set by
+        /// G.3.2-rev2): monotonic per-View content-generation counter.
+        /// Any `markDirty(bits)` increments it (every dirty bit triggers
+        /// a repaint that can change this View's output, including a
+        /// Style-only hover). It reflects only this View's OWN content —
+        /// the increment does not propagate to ancestors.
+        /// `clearDirtyBits()` does NOT reset it. The per-View content
+        /// cache keys on `(nodeId, contentVersion, sizeBucket, scale)`,
+        /// so a hover that changes one View re-captures only that View
+        /// while siblings blit from cache.
         std::uint64_t contentVersion() const;
         /// @brief Checks to see if this View is the root View of a Widget.
         bool isRootView();

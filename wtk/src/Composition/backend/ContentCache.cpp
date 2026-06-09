@@ -52,11 +52,23 @@ namespace OmegaWTK::Composition {
             }
         }
 
+        void readEnvIfPresent(const char * name, std::uint32_t & target){
+            auto raw = OmegaCommon::getEnvVar(name);
+            if(!raw.has_value()){
+                return;
+            }
+            std::size_t parsed = 0;
+            if(parseSizeT(*raw, parsed)){
+                target = static_cast<std::uint32_t>(parsed);
+            }
+        }
+
         ContentCacheConfig buildConfig(){
             ContentCacheConfig cfg;
-            readEnvIfPresent("OMEGAWTK_CONTENT_CACHE_BYTES",       cfg.contentCacheBytes);
-            readEnvIfPresent("OMEGAWTK_TESS_CACHE_ENTRIES",        cfg.tessellationCacheEntries);
-            readEnvIfPresent("OMEGAWTK_TEXT_SHAPING_CACHE_ENTRIES",cfg.textShapingCacheEntries);
+            readEnvIfPresent("OMEGAWTK_CONTENT_CACHE_BYTES",        cfg.contentCacheBytes);
+            readEnvIfPresent("OMEGAWTK_TESS_CACHE_ENTRIES",         cfg.tessellationCacheEntries);
+            readEnvIfPresent("OMEGAWTK_TEXT_SHAPING_CACHE_ENTRIES", cfg.textShapingCacheEntries);
+            readEnvIfPresent("OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX",  cfg.cacheMinSizePx);
             return cfg;
         }
 

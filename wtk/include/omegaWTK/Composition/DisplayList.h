@@ -116,7 +116,21 @@ namespace OmegaWTK::Composition {
             PushClip,
             PopClip,
             PushTransform,
-            PopTransform
+            PopTransform,
+            /// UIView-Render-Redesign-Plan §G.3.1 content-cache capture
+            /// markers. `BeginCacheCapture` opens a render-into-texture
+            /// pass for the wrapped DrawOp range; `EndCacheCapture`
+            /// closes the pass, inserts the captured texture into the
+            /// per-`BackendRenderTargetContext` content cache, and emits
+            /// the captured texture back into the window via an internal
+            /// bitmap blit. The two markers are always emitted in
+            /// matching pairs by `FrameBuilder::paintSubtree` (G.3.1
+            /// emits them around the root paint walk only — G.3.2 will
+            /// add per-View granularity and the eligibility check).
+            /// Backend ignores both markers when content-cache support
+            /// is compiled out (`OMEGAWTK_CONTENT_CACHE_ENABLED`).
+            BeginCacheCapture,
+            EndCacheCapture
         } Type;
         Type type;
 
@@ -217,6 +231,24 @@ namespace OmegaWTK::Composition {
             /// from `SetTransform` because the semantics differ —
             /// scope-pushed vs. canvas-state-replaced — even though
             /// the payload is bit-identical.
+
+            /// G.3.1 cache-capture marker payload. `nodeId` and
+            /// `contentVersion` form the `ViewCacheKey` (G.3.0) the
+            /// backend uses when inserting the captured texture into
+            /// `ContentCacheState::cache`; `rect` is the rasterized
+            /// region (in canvas-space pixels) the capture covers, and
+            /// is stored alongside the texture on the cache entry so
+            /// the G.3.2 hit blit can size the source / dest rect
+            /// correctly. `EndCacheCapture` carries only `nodeId` for
+            /// the (defensive) match-check against the matching Begin.
+            struct {
+                std::uint64_t     nodeId         = 0;
+                std::uint64_t     contentVersion = 0;
+                Composition::Rect rect           {};
+            } beginCacheCaptureParams;
+            struct {
+                std::uint64_t nodeId = 0;
+            } endCacheCaptureParams;
         } params;
 
         DrawOp() = delete;
@@ -338,6 +370,27 @@ namespace OmegaWTK::Composition {
         }
         static DrawOp makePopTransform() {
             return DrawOp(StateOpTag{Type::PopTransform});
+        }
+
+        /// UIView-Render-Redesign-Plan §G.3.1 cache-capture markers.
+        /// Always emitted in matching pairs by
+        /// `FrameBuilder::paintSubtree` when the content cache
+        /// integration is on. The backend's `renderToTarget` switch
+        /// handles them by opening / closing a render-into-texture
+        /// scratch pass; when content-cache support is compiled out
+        /// the markers fall through the switch's default arm and are
+        /// no-ops.
+        static DrawOp makeBeginCacheCapture(std::uint64_t nodeId,
+                                            std::uint64_t contentVersion,
+                                            const Composition::Rect & rect) {
+            DrawOp op(StateOpTag{Type::BeginCacheCapture});
+            op.params.beginCacheCaptureParams = {nodeId, contentVersion, rect};
+            return op;
+        }
+        static DrawOp makeEndCacheCapture(std::uint64_t nodeId) {
+            DrawOp op(StateOpTag{Type::EndCacheCapture});
+            op.params.endCacheCaptureParams = {nodeId};
+            return op;
         }
 
     private:

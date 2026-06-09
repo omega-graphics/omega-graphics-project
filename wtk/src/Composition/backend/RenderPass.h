@@ -76,6 +76,24 @@ namespace OmegaWTK::Composition {
         unsigned scratchHeight_ = 0;
         bool scratchActive_ = false;
 
+        /// UIView-Render-Redesign Phase G.3.2-rev2 content-cache capture.
+        /// When `captureActive_` is true, a scratch pass is open on a
+        /// *View-sized* texture, but the GPU viewport is the *window*
+        /// size offset by `-(View.windowOrigin × scale)` and the scissor
+        /// is the View-sized texture rect. This lands the View's
+        /// absolute-window-coord draw ops at the texture origin (the
+        /// emit functions all author NDC against the window; the
+        /// offset viewport does the per-View translation with zero
+        /// emit-side changes), clipped to the View's bounds. All values
+        /// are in backing pixels.
+        bool  captureActive_  = false;
+        float captureVpX_     = 0.f;
+        float captureVpY_     = 0.f;
+        float captureVpW_     = 0.f;
+        float captureVpH_     = 0.f;
+        float captureScissorW_ = 0.f;
+        float captureScissorH_ = 0.f;
+
         /// Apply the current viewport-override (or the default backing-sized
         /// viewport) and matching scissor to `cb`. Used at every
         /// startRenderPass site in this class.
@@ -157,6 +175,21 @@ namespace OmegaWTK::Composition {
         /// active or when a scratch pass is already open.
         void beginScratchPass(SharedHandle<OmegaGTE::GETextureRenderTarget> & scratchTarget,
                               unsigned width, unsigned height);
+
+        /// UIView-Render-Redesign Phase G.3.2-rev2: open a content-cache
+        /// capture pass on a View-sized `target`. Same suspend / start
+        /// mechanism as `beginScratchPass`, but installs a custom
+        /// viewport (`vpX,vpY,vpW,vpH`, backing px — the window-sized
+        /// viewport offset by `-(viewOrigin × scale)`) and a
+        /// `(scissorW, scissorH)`-sized scissor (backing px = the
+        /// texture dims) so the View's window-coord ops land at the
+        /// texture origin clipped to the View. Closed by
+        /// `endScratchPass()` + `resumeFrameAfterScratch()` exactly like
+        /// a blur scratch pass. Must be called inside an active frame
+        /// with no scratch / capture already open.
+        void beginCapturePass(SharedHandle<OmegaGTE::GETextureRenderTarget> & target,
+                              unsigned scissorW, unsigned scissorH,
+                              float vpX, float vpY, float vpW, float vpH);
 
         /// End the scratch render pass and submit its command buffer. The
         /// frame is left in a "suspended" state — `frameActive_` stays true,

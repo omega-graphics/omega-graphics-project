@@ -19,6 +19,14 @@
 #include "omegaWTK/UI/View.h"
 #include "omegaWTK/UI/LayoutManager.h"   // Phase 4.7.2: Layout pass invokes node.layoutManager()->measure/arrange.
 
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+// G.3.2 paint walker needs `ContentCacheConfig` (env-driven cache
+// limits, in particular the min-size eligibility threshold).
+// (AnimationScheduler.h is already included above for the
+// hasAnyAnimationFor() check that powers eligibility rule #1.)
+#include "../Composition/backend/ContentCache.h"
+#endif
+
 namespace OmegaWTK {
 
 namespace {
@@ -354,6 +362,68 @@ void paintSubtree(View & node, Composition::PaintContext & pc){
     pc.offset = parentOffset;
 }
 
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+// UIView-Render-Redesign-Plan §G.3.2-rev2 — per-View view-sized cache.
+//
+// Same pre-order walk as `paintSubtree`, but each eligible View wraps
+// its OWN `paint(pc)` (not its subtree) in a `BeginCacheCapture` /
+// `EndCacheCapture` pair, then recurses into children. Because each
+// View wraps only its own paint, the markers never nest — the parent's
+// End fires before the first child's Begin. The backend resolves hit
+// vs miss at replay time: hit → blit the View-sized cached texture at
+// the View's window rect and skip the wrapped ops; miss → capture the
+// wrapped ops into a View-sized texture (window-sized viewport offset
+// by the View's origin), cache + composite.
+//
+// Eligibility (size + animation) is decided here; `DrawOp::NativeContent`
+// eligibility is deferred (no cheap View-level signal yet — see the
+// plan note). Painting is direct into `pc.displayList`; no side list
+// (a side list earlier masked the contentVersion freeze bug and is
+// treated with suspicion).
+void paintSubtreeWithCache(View & node,
+                           Composition::PaintContext & pc,
+                           AnimationScheduler * animScheduler,
+                           std::uint32_t minSizePx){
+    const auto nodeRect = node.getRect();
+    bool eligible = nodeRect.w >= static_cast<float>(minSizePx)
+                 && nodeRect.h >= static_cast<float>(minSizePx);
+    if(eligible && animScheduler != nullptr
+       && animScheduler->hasAnyAnimationFor(node.nodeId())){
+        eligible = false;
+    }
+
+    if(eligible){
+        // The View's window rect: pos = accumulated absolute window
+        // offset (pc.offset), size = the View's own rect dims. The
+        // backend uses pos for the capture-viewport offset + blit dest,
+        // size for the texture dims + size bucket.
+        const Composition::Rect windowRect{
+                Composition::Point2D{pc.offset.x, pc.offset.y},
+                nodeRect.w, nodeRect.h};
+        pc.displayList.append(Composition::DrawOp::makeBeginCacheCapture(
+                node.nodeId(), node.contentVersion(), windowRect));
+        node.paint(pc);
+        pc.displayList.append(Composition::DrawOp::makeEndCacheCapture(node.nodeId()));
+    }
+    else {
+        node.paint(pc);
+    }
+
+    const auto parentOffset = pc.offset;
+    const auto contentOff   = node.contentOffset();
+    for(auto * child : node.subviews()){
+        if(child == nullptr){
+            continue;
+        }
+        const auto & cr = child->getRect();
+        pc.offset.x = parentOffset.x + contentOff.x + cr.pos.x;
+        pc.offset.y = parentOffset.y + contentOff.y + cr.pos.y;
+        paintSubtreeWithCache(*child, pc, animScheduler, minSizePx);
+    }
+    pc.offset = parentOffset;
+}
+#endif
+
 } // namespace
 
 void FrameBuilder::buildFrame(View & root){
@@ -408,7 +478,30 @@ void FrameBuilder::buildFrame(View & root){
     pc.offset.y = rootRect.pos.y;
     {
         ScopedPhase paintPhase(this, FramePhase::Paint);
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+        // UIView-Render-Redesign-Plan §G.3.2-rev2 (2026-06-09): per-View
+        // view-sized cache. `paintSubtreeWithCache` wraps each eligible
+        // View's own paint in a Begin/End marker pair (view-sized
+        // capture on the backend); a hover that changes one View
+        // re-captures only that View while siblings blit from cache.
+        //
+        // First-paint warmup guard: on a brand-new window the native
+        // swap chain hasn't settled, and the begin/scratch/resume
+        // render-pass cycle the capture uses can produce a blank first
+        // frame on Metal. Skip the cache on paint #1 (direct render),
+        // engage from paint #2. Implemented by passing an
+        // unsatisfiable min-size on the first paint so no View is
+        // eligible — i.e. fall back to the plain `paintSubtree`.
+        if(paintsCompleted_ >= 1){
+            const auto & cfg = Composition::ContentCacheConfig::inst();
+            paintSubtreeWithCache(root, pc, animationScheduler(), cfg.cacheMinSizePx);
+        }
+        else {
+            paintSubtree(root, pc);
+        }
+#else
         paintSubtree(root, pc);
+#endif
     }
 
     PendingSubmission sub;
@@ -417,6 +510,12 @@ void FrameBuilder::buildFrame(View & root){
     pending_.push_back(std::move(sub));
 
     clearDirtySubtree(root);
+
+    // G.3.2 first-paint guard counter. Bumped after each Paint pass so
+    // the cache eligibility check can use `paintsCompleted_ >= 1` to
+    // skip the cache on the very first paint per window (see
+    // `paintsCompleted_` doc in FrameBuilder.h).
+    ++paintsCompleted_;
 }
 
 // Phase 4.7.5: `submitView`, the offset-accumulator API

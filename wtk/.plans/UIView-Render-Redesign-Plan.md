@@ -2431,7 +2431,48 @@ Internally sub-phased; each ships independently.
   ignores the cache. Verifies the version counter increments at all
   the expected sites.
 
-**G.3.1 — Render-into-cache-texture capture path [~200 LOC]**
+**G.3.1 — Render-into-cache-texture capture path [~200 LOC] [DONE 2026-06-07]**
+
+- Two new `DrawOp::Type` variants — `BeginCacheCapture(nodeId,
+  contentVersion, rect)` and `EndCacheCapture(nodeId)` — plus the
+  matching `Params` sub-structs and `makeBeginCacheCapture` /
+  `makeEndCacheCapture` factories on `DrawOp` (DisplayList.h).
+- `BackendRenderTargetContext` gains `beginCacheTarget(widthPx,
+  heightPx)` and `endCacheTarget()`. The implementation mirrors the
+  blur scratch path verbatim: acquire a BGRA8Unorm RenderTarget-usage
+  `GETexture` + `GETextureRenderTarget` from `TexturePool` /
+  `makeTexture`, suspend the window-target pass via
+  `FrameRenderPass::beginScratchPass`, and on close call
+  `endScratchPass` + `resumeFrameAfterScratch(captureFence)` so the
+  bitmap blit downstream waits on the capture pass's writes.
+- `renderToTarget` switch gains `BeginCacheCapture` / `EndCacheCapture`
+  cases under `#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED`. A
+  `captureDepth_` counter no-ops nested marker pairs so children
+  render into the outer capture's texture (G.3.1 ships as
+  **root-only capture** — the plan's "always re-paint and always
+  capture" + the "one extra capture/composite layer" note read
+  together as a single capture per frame). On the outer End: insert
+  `ViewCacheEntry { texture, rasterizedSize }` into
+  `contentCacheState_->cache` keyed by the marker's `(nodeId,
+  contentVersion, wBucket, hBucket, renderScaleBits)`, then
+  `emitBitmapPrimitive(captureRect, 0,0,1,1, white, texture, fence)`
+  composites the captured texture back into the resumed window pass.
+- `FrameBuilder::buildFrame` wraps the root paint walk in a single
+  `BeginCacheCapture` / `EndCacheCapture` pair under the macro. No
+  per-View marker emission yet — G.3.2 will move the markers down
+  into the per-View walker alongside its eligibility table.
+- `OMEGAWTK_CONTENT_CACHE_ENABLED` is now also defined on
+  `OmegaWTK_UI` when the CMake gate is ON (FrameBuilder.cpp lives
+  there) — the G.0 / G.1 / G.2 integrations were Composition-only
+  and didn't catch this widening.
+- Build verified clean with both `OMEGAWTK_ENABLE_CONTENT_CACHE=OFF`
+  (default — markers are inert in the renderToTarget switch, slot
+  unused) and `=ON` (markers fire, root capture round-trips).
+- **Visual verification pending.** Plan's success criterion is
+  "pixel-identical output" with the cache enabled. Validators
+  should run a `BasicAppTest` build with the gate ON and compare a
+  screenshot against the gate-OFF build; hand-off to the
+  user since `omega-debugviz` isn't trusted yet.
 - `BackendRenderTargetContext` gains
   `beginCacheTarget(size, renderScale) -> CacheTargetHandle` /
   `endCacheTarget(handle) -> Core::SharedPtr<GETexture>`.
@@ -2450,7 +2491,119 @@ Internally sub-phased; each ships independently.
   with an extra capture/composite layer; output should be
   pixel-identical.
 
-**G.3.2 — Blit-from-cache fast path + eligibility [~180 LOC]**
+**G.3.2 — Blit-from-cache fast path + eligibility [~180 LOC] [DONE 2026-06-09, rev. root-only]**
+
+**First attempt (per-View markers) backed out 2026-06-09.** The
+original G.3.2 emitted Begin/End markers around each View's own
+paint and let the backend resolve hit/miss per View. Visual test on
+`BasicAppTest` showed a blank window with the cache ON: the per-View
+model allocates one window-sized cache texture *per View on miss*
+(plan §G.3.2's per-View bucketed view-sized textures are deferred
+to G.5 / Phase F-G, since every emit function computes NDC against
+`renderTargetSize_` and would need a coordinate-translation pass to
+support per-View texture sizing). With ~20+ Views in the test tree
+that's ~100 MB of GPU memory held simultaneously inside one frame.
+The CB queue chokes (climbing `bufferCount` in the Metal trace),
+frames never present. Reverted to the root-only shape below.
+
+**Shipped shape:**
+
+- New `OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX` env var (default 64) on
+  `ContentCacheConfig`. Plumbed through the existing
+  `ContentCacheConfig::inst()` read-once-and-cache machinery.
+- `FrameBuilder::buildFrame` paints into a side `DisplayList` once
+  via the existing `paintSubtree` walker, then makes a single
+  per-frame eligibility decision at the root:
+  1. **Size.** Skip cache if either root dim is below
+     `cacheMinSizePx`.
+  2. **Animation.** Skip cache if
+     `AnimationScheduler::hasAnyAnimationFor(root.nodeId())` reports
+     active anims.
+  3. **NativeContent.** Skip cache if any op in the side list is
+     `DrawOp::NativeContent` (platform carve-outs can't live inside
+     a captured texture).
+
+  If eligible, the side list is emitted into the window DisplayList
+  wrapped in a single `BeginCacheCapture` / `EndCacheCapture` pair;
+  otherwise it's emitted inline.
+- Backend `renderToTarget` is now cache-lookup-aware.
+  `BeginCacheCapture`: build the `ViewCacheKey`, probe
+  `contentCacheState_->cache.find(key)`. **Hit** → emit
+  `emitBitmapPrimitive` of the cached texture and flip
+  `captureSkipping_=true`. **Miss** → open cache target via
+  `beginCacheTarget(backingWidth_, backingHeight_)`. A new skip-check
+  at the top of `renderToTarget` drops every op between Begin and
+  End on the hit path; the matching `EndCacheCapture` clears the
+  flag and is the only op allowed through while skipping.
+- `EndCacheCapture` branches the same way: skipping → clear flag;
+  capturing → existing `endCacheTarget` + insert + composite path.
+- `captureDepth_` retained as a defensive nest-safe stub.
+- Build verified clean with both `OMEGAWTK_ENABLE_CONTENT_CACHE=OFF`
+  (default) and `=ON`. `BasicAppTest` ON build links cleanly.
+**G.3.2-rev2 — per-View view-sized capture [DONE 2026-06-09]**
+
+Supersedes the root-only shape above. The root-only cache was a
+0%-hit-rate pessimization (every paint runs only when something is
+dirty → the root generation always moved → always a miss). This rev
+delivers the actual win: each View caches *its own paint* into a
+*view-sized* texture, so a hover that changes one button re-captures
+only that button while every other View blits from cache.
+
+Key realization that made it ~150 LOC instead of touching every
+emit function: **the GPU viewport, not coordinate translation, does
+the work.** Both NDC mechanisms in the backend — CPU NDC in
+`emitSdfPrimitive` / `emitBitmapPrimitive`, and the
+triangulation-engine viewport for the color / path mesh — produce
+NDC against the *window* size. The viewport maps NDC → target
+pixels. So to capture View V's window-region content into a
+V-sized texture, the capture pass uses a **window-sized viewport
+offset by `-(V.windowOrigin × scale)`** with a **V-sized scissor**.
+The View's absolute-window-coord ops land at the texture origin,
+clipped to V's bounds. Zero changes to any emit function or the
+triangulator.
+
+- `contentVersion` semantic reverted from the G.3.2 root-only fix:
+  bumps on **any** dirty bit (so a Style-only hover invalidates the
+  hovered View's own cache), but **no** ancestor propagation —
+  each View's generation reflects only its *own* content, which is
+  what own-paint caching keys on. (Propagation was a root-only
+  necessity; under per-View it would over-invalidate every ancestor
+  on any descendant change.)
+- `FrameRenderPass` gains a capture-viewport mode: `beginCapturePass`
+  opens a scratch pass on a V-sized target but installs the
+  offset window-sized viewport + V-sized scissor;
+  `applyScratchViewportAndScissor` honours it.
+- `beginCacheTarget(texW, texH, originX, originY)` allocates a
+  V-sized BGRA8 texture and opens the capture pass with the offset
+  viewport.
+- `renderToTarget`'s `BeginCacheCapture` / `EndCacheCapture` use the
+  marker's window rect for the texture size, viewport offset, and
+  blit dest. Hit → blit V-sized cached texture at V's window rect +
+  skip. Miss → capture into V-sized texture, insert, blit.
+- `FrameBuilder` walks per-View (`paintSubtreeWithCache`): each
+  eligible View wraps its *own* `paint()` in a Begin/End pair, then
+  recurses (markers never nest — own-paint only). Eligibility:
+  size ≥ `cacheMinSizePx`, no active animation. First-paint warmup
+  guard retained.
+- VRAM: ~20 small V-sized textures (≈ a few MB total) replace the
+  ~100 MB of window-sized-per-View that sank the first attempt.
+- **Portability flag:** negative viewport origin. Verified on Metal
+  (this host). D3D12 (`D3D12_VIEWPORT.TopLeftX`) and Vulkan
+  (`VkViewport.x`) both accept negative origins per spec, but this
+  is **unverified on hardware** — needs CI on those backends.
+- **Deferred eligibility:** `DrawOp::NativeContent` (plan rule #2).
+  No cheap View-level flag exists today; scanning ops needs a side
+  list (which earlier masked the contentVersion freeze bug, so it's
+  treated with suspicion). BasicAppTest has no native content;
+  Views that host native content must not be cached until a
+  View-level `hostsNativeContent()` signal lands.
+- **Visual verification PASSED (2026-06-09, Metal):** `BasicAppTest`
+  cache-ON renders pixel-correct on the first frame (no resize
+  needed) and **button hover updates live** — confirming the
+  per-View invalidation path: the hovered button is a cache miss
+  (its `contentVersion` bumped via the Style-dirty), re-captured
+  with the new color, while sibling Views blit from cache. No blank
+  frame, no runaway command-buffer growth.
 - Decision tree in the paint walker, per View:
   1. If `View` has an active animation (`AnimationScheduler` reports
      pending property anim or callback for this nodeId), **skip cache**

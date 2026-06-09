@@ -157,15 +157,18 @@ struct View::Impl {
     /// via the public `View::nodeId()`. Allocated at construction so
     /// `applyLayoutDelta` can register tweens without a lookup.
     std::uint64_t nodeId_;
-    /// UIView-Render-Redesign Phase G.3.0: monotonic generation counter
-    /// for the View's painted content. Incremented by `View::markDirty`
-    /// whenever the bits include `Paint`. NOT cleared by
-    /// `View::clearDirtyBits` — the counter is a generation number, not
-    /// a flag, and the G.3 content cache keys against
-    /// `(nodeId_, contentVersion_)` so an unchanged View at the same
-    /// version hits the cached texture across frames. Starts at 0; first
-    /// Paint-dirty mark moves it to 1, so a fresh-never-painted entry
-    /// is naturally distinguishable from a cleared-after-paint entry.
+    /// UIView-Render-Redesign Phase G.3.0 (semantic set by G.3.2-rev2,
+    /// 2026-06-09): monotonic per-View content-generation counter.
+    /// Incremented by `View::markDirty` on ANY dirty bit (Style /
+    /// Layout / Content / Paint — every one triggers a Paint pass that
+    /// can change this View's output). It reflects ONLY this View's own
+    /// content — markDirty does NOT propagate it to ancestors, because
+    /// the G.3.2-rev2 cache caches each View's own paint and a
+    /// descendant change must not invalidate an ancestor's own cached
+    /// background. NOT cleared by `View::clearDirtyBits` — it is a
+    /// generation number, not a per-frame flag. The per-View content
+    /// cache keys on `(nodeId_, contentVersion_, sizeBucket, scale)`.
+    /// Starts at 0.
     std::uint64_t contentVersion_ = 0;
     /// Phase 4.5: parent-owned child-layout strategy. nullptr = use the
     /// process-wide `AbsoluteLayout::instance()` default. View does NOT
