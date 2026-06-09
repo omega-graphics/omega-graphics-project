@@ -74,6 +74,15 @@ namespace OmegaWTK::Composition {
     // where the GTE math headers are already in scope.
     struct TessellationCacheState;
 
+    // Phase G.3.0: per-RTC primitive / content cache. Same PIMPL idiom
+    // as the tessellation cache — the inline state struct in
+    // `RenderTarget.cpp` owns the `ContentCache<ViewCacheKey,
+    // ViewCacheEntry>` (entry value carries a `SharedHandle<GETexture>`).
+    // G.3.0 lands the slot only; G.3.1 will introduce
+    // `beginCacheTarget` / `endCacheTarget` and start populating it,
+    // and G.3.2 will read from it in `FrameBuilder::buildFrame`.
+    struct ContentCacheState;
+
     enum class BackendSubmissionStatus : std::uint8_t {
         Completed,
         Error,
@@ -155,6 +164,16 @@ namespace OmegaWTK::Composition {
         /// `ContentCache<TessellationCacheKey, TETriangulationResult>`
         /// plus any per-cache configuration the integration uses.
         std::unique_ptr<TessellationCacheState> tessellationCacheState_;
+
+        /// Phase G.3.0: per-View primitive / content cache state
+        /// (per-RTC, dies with this context). Same allocation policy as
+        /// the tessellation cache — always allocated so the class layout
+        /// is stable across the macro toggle. G.3.0 ships the slot only;
+        /// `FrameBuilder::buildFrame` does not yet probe it (G.3.1 +
+        /// G.3.2 will). The state holds the
+        /// `ContentCache<ViewCacheKey, ViewCacheEntry>` capped by
+        /// `ContentCacheConfig::inst().contentCacheBytes`.
+        std::unique_ptr<ContentCacheState> contentCacheState_;
 
         /// Pure dimension math: sanitize the logical rect, clamp it to the
         /// engine's max texture dimension, and recompute backingWidth /

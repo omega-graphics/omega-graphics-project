@@ -50,6 +50,18 @@ void View::markDirty(uint8_t bits){
     // descents off `node.dirtyBits() | node.descendantDirty()` &
     // passBit (skip whole subtrees with no dirty bit in their subtree).
     impl_->dirtyBits_ |= bits;
+    // UIView-Render-Redesign Phase G.3.0: bump the content-version
+    // counter whenever the Paint bit is in this mark. The counter is
+    // monotonic (no rollover handling needed — a uint64 increment per
+    // Paint-dirty mark survives the heat death of the universe), and
+    // it's *intentionally* untouched by `clearDirtyBits`. The G.3
+    // content cache keys against `(nodeId, contentVersion)` so any
+    // Paint-dirty mark transparently misses the old cache entry on
+    // the next lookup; nothing in the cache machinery needs to be
+    // notified.
+    if((bits & View::Paint) != 0){
+        impl_->contentVersion_ += 1;
+    }
     auto * ancestor = impl_->parent_ptr;
     while(ancestor != nullptr){
         ancestor->impl_->descendantDirty_ |= bits;
@@ -73,8 +85,18 @@ void View::clearDirtyBits(){
     // frame's gating starts fresh. The walker calls `clearDirtyBits`
     // on every visited node, so by the end of a frame's clear pass
     // both masks are zero across the tree.
+    //
+    // G.3.0 contract: `contentVersion_` is INTENTIONALLY not cleared
+    // here. The counter is a monotonic generation number; the G.3
+    // content cache relies on it to detect "this View's content has
+    // not changed since the cache entry was captured" even though
+    // the dirty-bit mask gets cleared every frame.
     impl_->dirtyBits_       = 0;
     impl_->descendantDirty_ = 0;
+}
+
+std::uint64_t View::contentVersion() const{
+    return impl_->contentVersion_;
 }
 
 bool View::isRootView(){

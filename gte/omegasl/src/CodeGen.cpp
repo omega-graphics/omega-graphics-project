@@ -599,6 +599,149 @@ namespace omegasl {
         return true;
     }
 
+    namespace {
+        /// §5.5 Phase C — kind table for the HLSL pack/unpack normalized
+        /// lowering. `scale` is the integer max representable in the lane
+        /// (127 for snorm8, 255 for unorm8, 32767 for snorm16, 65535 for
+        /// unorm16); `bits` is the per-lane bit-width (8 or 16); `arity`
+        /// is the number of lanes; `signedLanes` distinguishes snorm from
+        /// unorm (snorm needs sign-extend on unpack + clamp-at-min).
+        struct PackKindInfo {
+            int arity;
+            int bits;
+            int scale;
+            bool signedLanes;
+        };
+        PackKindInfo packKindInfo(CodeGen::PackNormKind k) {
+            switch (k) {
+                case CodeGen::PackNormKind::S4: return {4, 8,   127, true};
+                case CodeGen::PackNormKind::U4: return {4, 8,   255, false};
+                case CodeGen::PackNormKind::S2: return {2, 16, 32767, true};
+                case CodeGen::PackNormKind::U2: return {2, 16, 65535, false};
+            }
+            return {4, 8, 127, true}; // unreachable; matches S4.
+        }
+        const char *floatTyForArity(int arity) {
+            switch (arity) { case 2: return "float2"; case 3: return "float3";
+                             case 4: return "float4"; default: return "float"; }
+        }
+        const char *intTyForArity(int arity, bool sgn) {
+            if (sgn) switch (arity) { case 2: return "int2"; case 3: return "int3";
+                                       case 4: return "int4"; default: return "int"; }
+            switch (arity) { case 2: return "uint2"; case 3: return "uint3";
+                             case 4: return "uint4"; default: return "uint"; }
+        }
+    }
+
+    bool CodeGen::emitHLSLPackNormalized(ast::CallExpr *call, PackNormKind kind,
+                                         std::ostream &out) {
+        if (call->args.size() != 1) return false;
+        auto info = packKindInfo(kind);
+        const char *fty = floatTyForArity(info.arity);
+        unsigned id = getDimensionsTempId++;
+        std::string v   = "_pn" + std::to_string(id) + "_v";
+        std::string lo  = "_pn" + std::to_string(id) + "_l";
+        /// Single-eval temp for the operand (matches §5.3 Phase C pattern).
+        queuePendingStatement(std::string(fty) + " " + v + " = "
+                              + renderExprToString(call->args[0]) + ";");
+        /// clamp → multiply → round → cast to the per-lane integer type.
+        /// snorm clamps to [-1, +1] and scales by 127/32767 into a signed
+        /// int lane; unorm clamps to [0, 1] and scales by 255/65535 into
+        /// an unsigned uint lane. The round-to-nearest is what the GLSL
+        /// spec mandates (`round(...)`), and HLSL's `round` matches its
+        /// banker's-rounding form on every backend we've measured here.
+        std::string clamped;
+        if (info.signedLanes) {
+            clamped = "clamp(" + v + ", -1.0, 1.0)";
+        } else {
+            clamped = "clamp(" + v + ",  0.0, 1.0)";
+        }
+        const char *ity = intTyForArity(info.arity, info.signedLanes);
+        std::string scale = std::to_string(info.scale) + ".0";
+        queuePendingStatement(std::string(ity) + " " + lo + " = "
+                              + ity + "(round(" + clamped + " * " + scale + "));");
+        /// Assemble the lanes into a single uint via mask-and-OR-shift.
+        /// snorm: cast each lane to uint (bit-preserving) and mask to the
+        /// per-lane width before shifting, so a negative lane's sign-
+        /// extended high bits don't bleed into a higher lane.
+        /// unorm: lanes are already uint and within range; the mask is
+        /// strictly defensive (round-to-255 always fits in 8 bits, but a
+        /// pathological GPU `round` could over-shoot).
+        std::string maskHex = (info.bits == 8) ? "0xFFu" : "0xFFFFu";
+        out << "(";
+        for (int k = 0; k < info.arity; ++k) {
+            if (k) out << " | ";
+            char comp = "xyzw"[k];
+            int shift = k * info.bits;
+            out << "((uint(" << lo << "." << comp << ") & " << maskHex << ")";
+            if (shift) out << " << " << shift;
+            out << ")";
+        }
+        out << ")";
+        return true;
+    }
+
+    bool CodeGen::emitHLSLUnpackNormalized(ast::CallExpr *call, PackNormKind kind,
+                                           std::ostream &out) {
+        if (call->args.size() != 1) return false;
+        auto info = packKindInfo(kind);
+        const char *fty = floatTyForArity(info.arity);
+        unsigned id = getDimensionsTempId++;
+        std::string u = "_un" + std::to_string(id) + "_u";
+        queuePendingStatement("uint " + u + " = " + renderExprToString(call->args[0]) + ";");
+        /// Per-lane extraction + signed/unsigned interpretation.
+        /// snorm: the lane is a signed K-bit integer; sign-extend via the
+        /// shift-left-then-arithmetic-shift-right trick
+        /// (`int(u << (32-bits-shift)) >> (32-bits)`) so the sign bit
+        /// replicates into the high 24 / 16 bits. The cast from uint to int
+        /// is bit-preserving in HLSL.
+        /// unorm: the lane is an unsigned K-bit integer; mask the relevant
+        /// bits and cast to uint (no-op).
+        std::string ctor = std::string(fty) + "(";
+        for (int k = 0; k < info.arity; ++k) {
+            if (k) ctor += ", ";
+            int shift = k * info.bits;
+            if (info.signedLanes) {
+                /// `int((u << leftShift)) >> arithmeticShift`. Lane k's
+                /// bits occupy positions [shift, shift+bits). Shifting
+                /// left by `32 - shift - bits` brings the lane's top bit
+                /// to bit 31; arithmetic shift-right by `32 - bits`
+                /// sign-extends.
+                int leftShift = 32 - shift - info.bits;
+                int rightShift = 32 - info.bits;
+                std::string laneExpr;
+                if (leftShift == 0) {
+                    laneExpr = "int(" + u + ") >> " + std::to_string(rightShift);
+                } else {
+                    laneExpr = "int(" + u + " << " + std::to_string(leftShift) + ") >> "
+                             + std::to_string(rightShift);
+                }
+                ctor += laneExpr;
+            } else {
+                /// Mask the K low bits after shifting.
+                std::string maskHex = (info.bits == 8) ? "0xFFu" : "0xFFFFu";
+                if (shift) {
+                    ctor += "((" + u + " >> " + std::to_string(shift) + ") & " + maskHex + ")";
+                } else {
+                    ctor += "(" + u + " & " + maskHex + ")";
+                }
+            }
+        }
+        ctor += ")";
+        /// Divide by the lane max to get [-1, 1] or [0, 1]. For snorm,
+        /// the unpacked floor `-128 / 127` etc. produces a value slightly
+        /// below -1, which the GLSL spec clamps at -1. Use `max(..., -1)`
+        /// (the upper bound +1 is unreachable since the per-lane range
+        /// already tops out at the max value).
+        std::string scale = std::to_string(info.scale) + ".0";
+        if (info.signedLanes) {
+            out << "max(" << ctor << " / " << scale << ", -1.0)";
+        } else {
+            out << "(" << ctor << " / " << scale << ")";
+        }
+        return true;
+    }
+
     bool CodeGen::emitVectorCompare(ast::CallExpr *call, OmegaCommon::StrRef name, std::ostream &out) {
         const char *op = nullptr;
         if (name == BUILTIN_LESSTHAN)              op = "<";

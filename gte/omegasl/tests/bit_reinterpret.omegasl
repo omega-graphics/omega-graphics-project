@@ -1,0 +1,85 @@
+// §5.5 Phase A — bit-pattern reinterpret: asint / asuint / asfloat.
+//   asint(x)   → int / intN   — bit-cast of float/int/uint scalar or vector.
+//   asuint(x)  → uint / uintN
+//   asfloat(x) → float / floatN
+// Per backend:
+//   HLSL — native `asint` / `asuint` / `asfloat` (pass-through).
+//   MSL  — `as_type<targetN>(operand)` template.
+//   GLSL — `floatBitsToInt` / `floatBitsToUint` / `intBitsToFloat` /
+//          `uintBitsToFloat` for the float<->int directions; constructor
+//          cast (`uvecN(x)` / `ivecN(x)`) for int<->uint; bare operand
+//          for same-target identity.
+//
+// Covers scalar + vec2/3/4, every source/target pair, including identity
+// (asint(intN), asfloat(floatN)) and same-signedness-family casts.
+
+struct Data { uint4 value; };
+
+buffer<Data> input  : 0;
+buffer<Data> output : 1;
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_scalar(uint3 tid : GlobalThreadID){
+    float f = (float)input[0].value[0];
+    int   i = (int)input[0].value[1];
+    uint  u = input[0].value[2];
+
+    // float <-> int / uint
+    int  a = asint(f);     // float -> int   (bits)
+    uint b = asuint(f);    // float -> uint  (bits)
+    float c = asfloat(i);  // int   -> float (bits)
+    float d = asfloat(u);  // uint  -> float (bits)
+
+    // int <-> uint (constructor cast on GLSL)
+    int  e = asint(u);     // uint  -> int   (bits)
+    uint g = asuint(i);    // int   -> uint  (bits)
+
+    // identity (no-op)
+    int  h = asint(i);     // int   -> int
+    uint k = asuint(u);    // uint  -> uint
+    float m = asfloat(f);  // float -> float
+
+    output[0].value = uint4(b, g, k, (uint)a + (uint)e + (uint)h);
+    output[1].value = uint4(asuint(c), asuint(d), asuint(m), 0u);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_vector(uint3 tid : GlobalThreadID){
+    uint4 u4 = input[0].value;
+    int4  i4 = int4((int)u4.x, (int)u4.y, (int)u4.z, (int)u4.w);
+    float4 f4 = float4((float)u4.x, (float)u4.y, (float)u4.z, (float)u4.w);
+
+    // float4 <-> int4 / uint4
+    int4  a4 = asint(f4);    // float4 -> int4
+    uint4 b4 = asuint(f4);   // float4 -> uint4
+    float4 c4 = asfloat(i4); // int4   -> float4
+    float4 d4 = asfloat(u4); // uint4  -> float4
+    int4  e4 = asint(u4);    // uint4  -> int4
+    uint4 g4 = asuint(i4);   // int4   -> uint4
+
+    // float2 / float3 / int3 / uint2 for vector-arity coverage
+    float2 f2 = float2(f4.x, f4.y);
+    int3   i3 = int3(i4.x, i4.y, i4.z);
+    uint2  u2 = uint2(u4.x, u4.y);
+    uint3  u3 = uint3(u4.x, u4.y, u4.z);
+
+    int2  a2 = asint(f2);
+    uint2 b2 = asuint(f2);
+    int3  e3 = asint(u3);    // uint3 -> int3
+    uint3 g3 = asuint(i3);   // int3  -> uint3
+
+    // identity vector forms
+    int4  h4 = asint(i4);
+    uint4 k4 = asuint(u4);
+    float4 m4 = asfloat(f4);
+
+    output[0].value = uint4(b4.x + g4.x + k4.x,
+                            b2.x + g3.x,
+                            asuint(c4.x),
+                            asuint(d4.x) + asuint(m4.x));
+    output[1].value = uint4((uint)a4.x + (uint)e4.x + (uint)h4.x,
+                            (uint)a2.x + (uint)e3.x,
+                            u2.x, 0u);
+}

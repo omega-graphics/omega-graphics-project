@@ -177,6 +177,25 @@ target_link_options("BitfieldOpsTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_bitfield_ops COMMAND BitfieldOpsTest)
 
+# OmegaSL §5.5 Phase B — half-float pack / unpack GPU integration test (shared,
+# backend-independent source under gte/tests/). Proves f16tof32 / f32tof16 /
+# packHalf2x16 / unpackHalf2x16 round-trip a binary16 value bit-identically
+# on real hardware across the three backend lowerings (HLSL native scalar +
+# manual packed via statement injection, MSL as_type<half2>, GLSL native
+# packed + scalar via the packed forms).
+add_metal_cli_test(
+    NAME
+    "PackOpsTest"
+    SOURCES
+    "../pack_ops_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("PackOpsTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_pack_ops COMMAND PackOpsTest)
+
 # OmegaSL §5.3 follow-up — integer / unsigned scalar+vector buffer-IO round-trip
 # (shared, backend-independent source under gte/tests/). Readback counterpart to
 # the writer's writeInt*/writeUint*; exercises the new GEBufferReader getInt*/

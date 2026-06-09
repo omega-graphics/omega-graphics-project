@@ -1,0 +1,70 @@
+// §5.5 Phase B — half-float pack / unpack.
+//   f16tof32(uint x)       → float    — extract binary16 from low 16 bits.
+//   f32tof16(float x)      → uint     — store binary16 in low 16 bits.
+//   packHalf2x16(float2 v) → uint     — pack 2 halves into a uint.
+//   unpackHalf2x16(uint u) → float2   — unpack uint into 2 floats.
+// Per backend:
+//   HLSL — f16tof32 / f32tof16 native; packHalf2x16 / unpackHalf2x16
+//          lowered inline via statement injection.
+//   MSL  — all four lower via `as_type<>` (no statement injection).
+//   GLSL — packHalf2x16 / unpackHalf2x16 native; f16tof32 / f32tof16
+//          lowered inline via the packed forms.
+//
+// Tests the full round trip: pack then unpack should recover the
+// fp16-representable original (within fp16 precision; the test values
+// chosen are all exactly representable: 0.5, 1.0, 2.0, 3.0).
+
+struct Data { uint4 value; };
+
+buffer<Data> input  : 0;
+buffer<Data> output : 1;
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_scalar_round_trip(uint3 tid : GlobalThreadID){
+    float f = (float)input[0].value[0];   // user-supplied float
+
+    // f32 -> f16 -> f32 round-trip via scalar form.
+    uint  packed = f32tof16(f);
+    float back   = f16tof32(packed);
+
+    // The packed uint should have zero in its high 16 bits.
+    output[0].value = uint4(packed, asuint(back), asuint(f), 0u);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_packed_round_trip(uint3 tid : GlobalThreadID){
+    float a = (float)input[0].value[0];
+    float b = (float)input[0].value[1];
+    float2 v = float2(a, b);
+
+    // pack 2 halves into a uint, then unpack back to a float2.
+    uint   p2 = packHalf2x16(v);
+    float2 u2 = unpackHalf2x16(p2);
+
+    output[0].value = uint4(p2,
+                            asuint(u2.x),
+                            asuint(u2.y),
+                            asuint(a) + asuint(b));
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_mixed_forms(uint3 tid : GlobalThreadID){
+    float a = (float)input[0].value[0];
+    float b = (float)input[0].value[1];
+
+    // Build a packed uint manually using f32tof16, then verify
+    // unpackHalf2x16 returns the same components.
+    uint manual = f32tof16(a) | (f32tof16(b) << 16);
+    float2 unpacked = unpackHalf2x16(manual);
+
+    // And the inverse: build with packHalf2x16, take scalar halves out.
+    uint   auto_packed = packHalf2x16(float2(a, b));
+    float  lo = f16tof32(auto_packed);
+    float  hi = f16tof32(auto_packed >> 16);
+
+    output[0].value = uint4(manual, auto_packed, asuint(lo), asuint(hi));
+    output[1].value = uint4(asuint(unpacked.x), asuint(unpacked.y), 0u, 0u);
+}

@@ -177,8 +177,19 @@ namespace OmegaWTK {
         uint8_t descendantDirty() const;
         /// Reset BOTH the self mask AND the propagated descendant
         /// mask to zero (Phase 4.7.3 — pre-4.7.3 this cleared only
-        /// the self mask).
+        /// the self mask). Does NOT touch `contentVersion()` —
+        /// that's a monotonic generation counter (G.3.0), not a flag.
         void clearDirtyBits();
+        /// UIView-Render-Redesign Phase G.3.0: monotonic generation
+        /// counter for this View's painted content. `markDirty(bits)`
+        /// increments it whenever `bits & Paint`; `clearDirtyBits()`
+        /// does NOT reset it. The G.3 content cache uses
+        /// `(nodeId, contentVersion)` as the per-View cache key —
+        /// repeated paints at the same `contentVersion` hit the same
+        /// cached texture; a Paint-dirty mark invalidates the cache
+        /// entry transparently because the next lookup carries a new
+        /// version number.
+        std::uint64_t contentVersion() const;
         /// @brief Checks to see if this View is the root View of a Widget.
         bool isRootView();
         /// Phase 4.5: parent-owned child-layout strategy. The manager

@@ -1,0 +1,28 @@
+// §5.5 Phase A — negative test for bit-pattern reinterpret. Multi-error:
+//   (1) asint with the wrong arg count (takes exactly 1).
+//   (2) asuint on a half operand — only 32-bit reinterpret is uniform
+//       across backends; 16-bit operands are rejected.
+//   (3) asfloat on a bool operand — not a 32-bit numeric type.
+//   (4) asint on a float2x2 matrix — only scalars and vectors are
+//       reinterpretable.
+
+struct Data { uint4 value; };
+
+buffer<Data> input  : 0;
+buffer<Data> output : 1;
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_bad(uint3 tid : GlobalThreadID){
+    float f = (float)input[0].value[0];
+    half  h = (half)f;
+    bool  b = (f > 0.0);
+    float2x2 m = float2x2(float2(1.0, 0.0), float2(0.0, 1.0));
+
+    int  bad1 = asint(f, f);    // (1) arg count
+    uint bad2 = asuint(h);      // (2) half operand
+    float bad3 = asfloat(b);    // (3) bool operand
+    int  bad4 = asint(m);       // (4) matrix operand
+
+    output[0].value = uint4(bad1, bad2, asuint(bad3), bad4);
+}

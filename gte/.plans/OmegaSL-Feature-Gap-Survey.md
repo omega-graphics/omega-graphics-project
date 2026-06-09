@@ -1745,7 +1745,7 @@ negative: `ddx` in a vertex shader / `ddy` of `int` / `fwidth` arg-count).
 * **GLSL precision hints** (`mediump`/`highp` on derivative output).
   Belongs with §11 precision modifiers.
 
-### 5.5 Pack / unpack
+### 5.5 Pack / unpack [COMPLETED — all three phases]
 
 | Function | HLSL | MSL | GLSL |
 |----------|------|-----|------|
@@ -1755,6 +1755,267 @@ negative: `ddx` in a vertex shader / `ddy` of `int` / `fwidth` arg-count).
 
 Bit-level reinterpretation; needed to decode vertex/mesh buffer formats that
 the CPU side packs into `uint` channels.
+
+**Scope, naming, and ordering** (per Alex):
+
+* **Naming.** Use the shorter / simpler spelling per row: HLSL names for the
+  bit-reinterpret family (`asint` / `asuint` / `asfloat` — these spellings
+  exist in HLSL verbatim; the GLSL `floatBitsToInt` / `intBitsToFloat`
+  variants are routed inside the GLSL backend), and GLSL names for the
+  pack/unpack families (`packHalf2x16` / `unpackHalf2x16` / `packSnorm4x8`
+  / `packUnorm4x8` / `packSnorm2x16` / `packUnorm2x16` and their
+  `unpack*` inverses — `pack_float_to_snorm4x8` is the longer MSL form).
+  HLSL also keeps its scalar half-float forms (`f16tof32` / `f32tof16`)
+  alongside the packed pair so the common scalar-decode path costs no
+  extra arithmetic on HLSL.
+* **Universal — no `#requires` gate.** Every operation is expressible on
+  every backend; the holes (no native packed-half on HLSL; no native
+  pack/unpack snorm/unorm on HLSL) are covered by per-backend inline
+  lowerings, same pattern as §5.3 bitfieldExtract/Insert.
+* **No stage restriction.** All three groups are valid in every stage
+  (matches §5.3; the §5.4 fragment-only restriction was derivative-
+  specific).
+* **Phasing.** Three phases, smallest first, each builds on the prior
+  phase's pattern for reviewability:
+  * **Phase A** — `asint` / `asuint` / `asfloat` bit-reinterpret. No
+    statement injection. Sema bucket `isBitReinterpret`; per-backend
+    routing in `tryEmitBuiltinCall` because GLSL spells the function
+    by operand type (`floatBitsToInt` vs `intBitsToFloat`).
+  * **Phase B** — half-float pack/unpack. Four builtins:
+    `packHalf2x16(float2)→uint`, `unpackHalf2x16(uint)→float2`,
+    `f16tof32(uint)→float`, `f32tof16(float)→uint`. HLSL has the
+    scalar pair native; the packed pair lowers inline via statement
+    injection. GLSL has the packed pair native; the scalar pair lowers
+    via `unpackHalf2x16` / `packHalf2x16` of a paired-zero. MSL uses
+    `as_type<half2>` / `as_type<uint>` plus `half`/`float` casts.
+  * **Phase C** — snorm / unorm pack family, all eight builtins
+    (`pack{Snorm,Unorm}{4x8,2x16}` + the matching `unpack*`). GLSL
+    native; MSL native (per-name `pack_float_to_*` / `unpack_*_to_float`
+    via `renameBuiltin`); HLSL lowered via shared
+    `CodeGen::emitHLSLPackNormalized` / `emitHLSLUnpackNormalized`
+    helpers using statement injection (single-eval temp + clamp +
+    multiply + round + mask + OR-shift, the GLSL-spec lowering host-
+    verified before coding — same discipline as §5.3 Phase C).
+
+Each phase adds its own `*.omegasl` compile test and an
+`invalid_*.omegasl` fail test under `gte/omegasl/tests/`, wired into
+`gte/omegasl/tests/CMakeLists.txt`. Phase B/C also pick up an
+`omegagte_pack_ops` GPU runtime test (modeled on
+`gte/tests/bitfield_ops_test.cpp`) that round-trips each lowering
+through a real Metal dispatch and asserts the readback matches a
+host-computed reference, so the HLSL lowering's bit-identity claim is
+proven before the doc records it (the §5.3 Phase C / §2.4 follow-up
+discipline — `-S` source inspection alone misses overload-ambiguity
+and trailing-padding bugs).
+
+**Phase A — `asint` / `asuint` / `asfloat` (landed).** All three are
+1-arg, accept any 32-bit numeric scalar or vector
+(`float`/`int`/`uint` and their `N`-component vector forms), and
+return a same-arity scalar/vector of the target type fixed by the
+builtin name (`asint`→`intN`, `asuint`→`uintN`, `asfloat`→`floatN`).
+16-bit and 64-bit operands are rejected — only the 32-bit reinterpret
+is uniform across backends. Implementation:
+
+* **AST**: `BUILTIN_ASINT` / `BUILTIN_ASUINT` / `BUILTIN_ASFLOAT` in
+  `AST.def`; added to `ast::isReservedBuiltinName`.
+* **Sema**: a new `isBitReinterpret` bucket in `performSemForExpr` —
+  `expectedArgs = 1`, operand-shape validated via `vectorComponentInfo`,
+  return type built via `vectorTypeForScalarArity(targetScalar, arity)`.
+  Stamps `args[0]->resolvedType` so the GLSL backend can pick the right
+  spelling.
+* **HLSL**: nothing to do — `asint` / `asuint` / `asfloat` are native HLSL
+  intrinsics on scalar AND vector operands (verified by reading the dxc
+  source), and the shared `renameBuiltin` pass-through + `(args)` print
+  emits them verbatim.
+* **MSL**: a single `tryEmitBuiltinCall` arm spelling
+  `as_type<TargetN>(operand)`, with TargetN computed from the builtin
+  name (`int`/`uint`/`float`) and operand arity (1/2/3/4). MSL accepts
+  identity (`as_type<int>(intN)`) as a no-op.
+* **GLSL**: a `tryEmitBuiltinCall` arm with a 3×3 dispatch table on the
+  (source, target) signedness-family pair: float↔int/uint use the four
+  named functions (`floatBitsToInt` / `floatBitsToUint` / `intBitsToFloat` /
+  `uintBitsToFloat` — the same name overloads on scalar and `vecN`); int↔uint
+  emit a constructor cast (`uvecN(x)` / `ivecN(x)` — per GLSL spec 4.1.3,
+  int↔uint conversion preserves the bit pattern when in range and
+  reinterprets otherwise, matching the `asint`/`asuint` cross-sign
+  contract); same-target identity emits the operand bare (GLSL has no
+  `intBitsToInt` / `floatBitsToFloat`).
+
+Tests: `bit_reinterpret.omegasl` (every source/target pair across
+scalar and float2/3/4, int2/3/4, uint2/3/4 — including identity and
+cross-sign on every arity), `invalid_bit_reinterpret.omegasl` (multi-
+error: arg-count, half operand, bool operand, matrix operand). Full
+103-test omegasl ctest suite green; Metal compiles end-to-end via the
+compile-test wrapper (it invokes `omegaslc -o .omegasllib`, which runs
+the full pipeline including the Metal toolchain on this host).
+HLSL/GLSL source emission verified by `-S` inspection across both
+scalar and vector forms. No runtime feature bit (universal on every
+backend, matching §5.3 Phase A and §5.4).
+
+**Phase B — half-float pack / unpack (landed).** Four 1-arg builtins,
+each with a fixed operand and fixed return type (no overloading):
+
+|     OmegaSL                | Operand   | Returns | HLSL                              | MSL                                  | GLSL                              |
+|----------------------------|-----------|---------|-----------------------------------|--------------------------------------|-----------------------------------|
+| `f16tof32(x)`              | `uint`    | `float` | `f16tof32(x)` native              | `float(as_type<half>(ushort(x)))`    | `unpackHalf2x16(x).x`             |
+| `f32tof16(x)`              | `float`   | `uint`  | `f32tof16(x)` native              | `uint(as_type<ushort>(half(x)))`     | `packHalf2x16(vec2(x, 0.0))`      |
+| `packHalf2x16(v)`          | `float2`  | `uint`  | inline lowering, see below        | `as_type<uint>(half2(v))`            | `packHalf2x16(v)` native          |
+| `unpackHalf2x16(u)`        | `uint`    | `float2`| inline lowering, see below        | `float2(as_type<half2>(u))`          | `unpackHalf2x16(u)` native        |
+
+Implementation:
+
+* **AST**: `BUILTIN_F16TOF32` / `BUILTIN_F32TOF16` / `BUILTIN_PACK_HALF_2X16`
+  / `BUILTIN_UNPACK_HALF_2X16` in `AST.def`; added to
+  `ast::isReservedBuiltinName`.
+* **Sema**: a new `isHalfPackUnpack` bucket in `performSemForExpr` —
+  `expectedArgs = 1`, fixed-shape per-builtin operand validation
+  (`uint` / `float` / `float2`), fixed return type per builtin name.
+  Stamps `args[0]->resolvedType` for the HLSL statement-injection
+  lowering on the packed pair.
+* **HLSL**: `f16tof32` / `f32tof16` are native (SM 5.0+) on scalar AND
+  vector operands and pass through the shared `renameBuiltin` /
+  `(args)` print path. `packHalf2x16` / `unpackHalf2x16` have no
+  native form; lowered via two shared helpers `hlslEmitPackHalf2x16`
+  / `hlslEmitUnpackHalf2x16` that queue a single-eval temp through
+  statement injection, then emit the canonical formula over the
+  scalar pair:
+  * `packHalf2x16(v)`   → `(f32tof16(_ph<id>.x) | (f32tof16(_ph<id>.y) << 16))`
+  * `unpackHalf2x16(u)` → `float2(f16tof32(_uh<id> & 0xFFFFu), f16tof32(_uh<id> >> 16))`
+  Adjacent `pack`/`unpack` calls in the same statement get distinct
+  temp ids and flush in dependency order (verified by `-S` inspection).
+* **MSL**: all four lower inline via `as_type<>` of the matching
+  half-typed value (no statement injection — each form is a single
+  sub-expression). The `ushort(x)` cast in `f16tof32` truncates `x`
+  to the low 16 bits naturally; `uint(as_type<ushort>(half(x)))` in
+  `f32tof16` zero-extends the high 16 bits on promotion (matching the
+  spec).
+* **GLSL**: `packHalf2x16` / `unpackHalf2x16` are native (GLSL 4.20+,
+  core in 4.50 — the preamble already targets `#version 450`) and
+  pass through the shared `(args)` print path without a rename. The
+  scalar pair lowers inline through the packed forms — `f16tof32(x)`
+  uses `unpackHalf2x16(x).x` (discarding the high half), and
+  `f32tof16(x)` uses `packHalf2x16(vec2(x, 0.0))` (the high half is
+  zero by construction).
+
+Tests:
+
+* **`half_pack.omegasl`** — three compute kernels exercising all four
+  builtins: scalar round-trip, packed round-trip, and the cross-form
+  consistency case (`f32tof16(a) | (f32tof16(b) << 16)` should equal
+  `packHalf2x16(float2(a, b))`, and `unpackHalf2x16` should be the
+  inverse). The mixed-forms kernel surfaces the HLSL statement-
+  injection adjacency case where two distinct temps must coexist in
+  the same scope.
+* **`invalid_half_pack.omegasl`** — multi-error fail test covering
+  arg-count and per-builtin operand-type rejection (scalar form
+  rejecting `float`/`uint` swap; packed form rejecting scalar
+  operand).
+* **`omegagte_pack_ops`** (`gte/tests/pack_ops_test.cpp` + Metal
+  wiring under `gte/tests/metal/CMakeLists.txt`) — GPU runtime test
+  modeled on `omegagte_bitfield_ops`. Round-trips four fp16-
+  representable inputs (`0.5`, `1.0`, `2.0`, `-3.0` — covers sign-
+  bit path, non-integer mantissa, and powers of two) through both
+  the scalar and packed forms on Metal hardware, asserting bit-
+  identity via on-GPU `asuint(recovered) == asuint(input)` so there
+  is no float epsilon to tune. Also verifies cross-form consistency
+  and the spec rule that `f32tof16(x) >> 16 == 0`. Host-side IEEE-754
+  binary16 encoder included for an extra spot-check of the low 16
+  bits of each `packedScalar` lane (catches a per-backend off-by-one
+  before the abstract round-trip flag surfaces it).
+
+Verification: full 105-test omegasl ctest suite green (Phase A's 103
+plus 2 new); full 8-test GTE Metal GPU suite green (including
+`omegagte_pack_ops`); HLSL/GLSL source verified by `-S` inspection
+including the adjacency case. No `#requires` feature bit (universal
+on every backend). D3D12/Vulkan runtime path is written from the
+shared source map but compiles only on those platforms (per
+[project-gte-backend-build-verification](memory/project-gte-backend-build-verification.md)).
+
+**Phase C — normalized 4x8 / 2x16 pack / unpack (landed).** Eight 1-arg
+builtins, two layouts × two signedness families × pack / unpack:
+
+|     OmegaSL                  | Operand   | Returns  | HLSL                                       | MSL                                  | GLSL                            |
+|------------------------------|-----------|----------|--------------------------------------------|--------------------------------------|---------------------------------|
+| `packSnorm4x8(v)`            | `float4`  | `uint`   | inline lowering (clamp/×127/round/mask/OR) | `pack_float_to_snorm4x8(v)` rename   | `packSnorm4x8(v)` native        |
+| `packUnorm4x8(v)`            | `float4`  | `uint`   | inline lowering (×255)                     | `pack_float_to_unorm4x8(v)` rename   | `packUnorm4x8(v)` native        |
+| `packSnorm2x16(v)`           | `float2`  | `uint`   | inline lowering (×32767)                   | `pack_float_to_snorm2x16(v)` rename  | `packSnorm2x16(v)` native       |
+| `packUnorm2x16(v)`           | `float2`  | `uint`   | inline lowering (×65535)                   | `pack_float_to_unorm2x16(v)` rename  | `packUnorm2x16(v)` native       |
+| `unpackSnorm4x8(u)`          | `uint`    | `float4` | inline lowering (sign-extend/÷127/clamp)   | `unpack_snorm4x8_to_float(u)` rename | `unpackSnorm4x8(u)` native      |
+| `unpackUnorm4x8(u)`          | `uint`    | `float4` | inline lowering (mask/÷255)                | `unpack_unorm4x8_to_float(u)` rename | `unpackUnorm4x8(u)` native      |
+| `unpackSnorm2x16(u)`         | `uint`    | `float2` | inline lowering (÷32767)                   | `unpack_snorm2x16_to_float(u)` rename| `unpackSnorm2x16(u)` native     |
+| `unpackUnorm2x16(u)`         | `uint`    | `float2` | inline lowering (÷65535)                   | `unpack_unorm2x16_to_float(u)` rename| `unpackUnorm2x16(u)` native     |
+
+Implementation:
+
+* **AST**: eight `BUILTIN_*` macros under §5.5 in `AST.def`; added to
+  `ast::isReservedBuiltinName`.
+* **Sema**: a new `isPackNorm` bucket in `performSemForExpr` —
+  `expectedArgs = 1`, fixed-shape operand validation (pack-4x8 takes
+  `float4`, pack-2x16 takes `float2`, every `unpack` takes `uint`),
+  fixed return type per builtin. Stamps `args[0]->resolvedType` for
+  the HLSL statement-injection lowering.
+* **HLSL**: shared `CodeGen::emitHLSLPackNormalized` /
+  `emitHLSLUnpackNormalized` helpers parameterized by a
+  `PackNormKind` enum (`S4`/`U4`/`S2`/`U2`) that encodes per-lane bit
+  width, scale (127/255/32767/65535), and signedness. The pack path
+  emits clamp → multiply → round → cast to per-lane integer → mask to
+  per-lane width → OR-shift assemble; the unpack path emits the
+  sign-extend trick `int(u << leftShift) >> rightShift` (snorm) or
+  mask + shift (unorm), divides by the scale, and `max(..., -1)`
+  clamps the snorm floor (the GLSL spec mandates clamping `-128/127`
+  etc. up to -1). Single-eval temp via the §5.3-style statement-
+  injection hook, so the helpers compose with adjacent calls.
+* **MSL**: eight per-name `renameBuiltin` entries pointing at the
+  native `pack_float_to_*` / `unpack_*_to_float` spellings. Each
+  signature shape matches OmegaSL's contract (T → uint / uint → T),
+  so no `tryEmitBuiltinCall` arm is needed.
+* **GLSL**: native — eight pass-throughs (the OmegaSL names already
+  match the GLSL spelling exactly, so no `renameBuiltin` entry and no
+  `tryEmitBuiltinCall` arm are needed; the shared `(args)` print path
+  emits them verbatim).
+
+Tests:
+
+* **`pack_norm.omegasl`** — four compute kernels, one per
+  (`snorm4x8`, `unorm4x8`, `snorm2x16`, `unorm2x16`) family, each
+  packing a boundary-stressing vector (0, ±1, ½, ¼) and round-
+  tripping through the unpack form.
+* **`invalid_pack_norm.omegasl`** — multi-error fail test: arg-count,
+  `float2` vs `float4` arity mismatch, `uint` vs `float` direction
+  mismatch on the pack form, and the inverse on the unpack form.
+* **`omegagte_pack_ops`** (extended with a second `packNormOps`
+  kernel + dispatch) — host-computes the expected packed uint for
+  each of the eight builtins using the GLSL/MSL spec formulas, passes
+  them alongside the inputs to the GPU, and asserts:
+  * The GPU's packed uints `==` the host-computed packed uints
+    (host vs GPU bit-equal — proves the HLSL clamp/round/mask/OR
+    chain matches spec, which `-S` source inspection alone cannot).
+  * The GPU's unpacked floats round-trip bit-identically to the
+    host's `unpack(pack(x))` reference (per-lane via on-GPU
+    `asuint(recovered) == asuint(expected)`).
+  Inputs are placed exactly on representable byte/short boundaries
+  (`0`, `±1`, `0.5`, `0.25`) so host and GPU rounding agree by
+  construction.
+
+Verification: full 107-test omegasl ctest suite green (Phase B's 105
+plus 2 new); full 8-test GTE Metal GPU suite green (including the
+extended `omegagte_pack_ops` covering Phases B and C); HLSL source
+verified by `-S` inspection across all eight lowerings (sign-extend
+shift math + mask widths checked per lane). No `#requires` feature
+bit (universal on every backend).
+
+**Out of scope (intentional follow-ups).**
+
+* **`pack_snorm4x8`-style MSL aliases.** OmegaSL exposes only the GLSL
+  names; an MSL-style alias group would be the same rename in reverse
+  and is rarely useful in portable code.
+* **`packDouble2x32` / `unpackDouble2x32`** (GLSL 4.00+, MSL nonexistent,
+  HLSL `asdouble` exists but only as a 2-uint→double bit cast). Belongs
+  with a future double-precision pass (out of §5.5 scope).
+* **Saturated-on-overflow integer constructors** (e.g. `uint4(saturate(...) * 255)`).
+  The `packUnorm4x8` lowering's defensive 0xFFu mask handles the
+  pathological-GPU-`round`-overshoot case at the per-lane level; a
+  dedicated builtin can land if a real use case appears.
 
 ### 5.6 Atomic operations
 

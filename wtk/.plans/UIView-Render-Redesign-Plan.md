@@ -2340,7 +2340,39 @@ phase (G.3). Each sub-phase is independently shippable.
   size bucket alone makes the cache safe — a real resize misses for
   the size that changed, hits for sizes that didn't.
 
-**G.2 — Text shaping cache [~150 LOC]**
+**G.2 — Text shaping cache [~150 LOC] [DONE 2026-06-07]**
+
+- `wtk/src/Composition/TextShapingCache.{h,cpp}` landed: process-wide
+  Meyers singleton `TextShapingCache::inst()`, internal `std::mutex`
+  (multi-window compositors can shape concurrently), `find` returns
+  `Core::Optional<ShapedTextRun>` (copy out under the lock), `insert`
+  takes the entry by value-move + a CPU-side byte cost estimate.
+- Key: `TextShapingCacheKey { textHash, layoutHash, fontId, textLength,
+  fontSize, wBucket, hBucket, renderScaleBits, colorRGBA }`. `hashUniString`
+  is FNV-1a over the UTF-16 buffer's bytes (uniquely identifying same as
+  UTF-32 code points, skips the surrogate-pair decode);
+  `hashLayoutDescriptor` mixes alignment / wrapping / lineLimit.
+- Entry cap from `ContentCacheConfig::inst().textShapingCacheEntries`
+  (default 4096; env `OMEGAWTK_TEXT_SHAPING_CACHE_ENTRIES`). Internal
+  byte cap is 4 MB (plan §G.2 calls for "a memory-bytes cap" without a
+  specific number — sized for typical shaped-run weight).
+- `DisplayList.cpp::shapeTextForDisplayList` integrates the cache when
+  `OMEGAWTK_CONTENT_CACHE_ENABLED` is defined: build the key, probe
+  the singleton. Hit → `refreshMsdfResidency` (atlas residency is
+  per-FontEngine state, may have been evicted between frames; plan §G.2
+  explicit decision) → return the cached run. Miss → existing
+  layout + sub-run + residency / rasterize path, then `insert` (copy
+  in so the caller still gets its return).
+- Build verified clean both with `OMEGAWTK_ENABLE_CONTENT_CACHE=OFF`
+  (default) and `=ON`.
+- Same divergence as G.1: the key includes `colorRGBA`. The plan
+  excludes it, but `FontEngine::rasterizeSubRunToTexture(sr, rect,
+  color, renderScale)` bakes the input color into the bitmap-fallback
+  texture; a same-text/different-color hit would render with the
+  wrong tint. MSDF sub-runs are color-independent (color is applied
+  in the fragment shader), so a future refactor could split MSDF /
+  bitmap caching and drop color from the MSDF half — out of scope for
+  G.2.
 
 - Key: `(text-string-hash, font-id, font-size, layoutDesc-hash, rect-w-bucket, rect-h-bucket, renderScale)`.
   - `text-string-hash`: FNV-1a over UTF-32 code points.
@@ -2361,7 +2393,31 @@ phase (G.3). Each sub-phase is independently shippable.
 
 Internally sub-phased; each ships independently.
 
-**G.3.0 — Per-View identity + content version [~120 LOC]**
+**G.3.0 — Per-View identity + content version [~120 LOC] [DONE 2026-06-07]**
+
+- `View::Impl::contentVersion_` (`uint64_t`, init 0) added; public
+  accessor `View::contentVersion() const`.
+- `View::markDirty(bits)` increments `contentVersion_` when
+  `bits & View::Paint` — branch in `View.Core.cpp`.
+- `View::clearDirtyBits()` documents and preserves the invariant:
+  the counter is a monotonic generation number, never reset.
+- `wtk/src/Composition/backend/ViewContentCache.h`: `ViewCacheKey
+  { nodeId, contentVersion, wBucket, hBucket, renderScaleBits }`,
+  `std::hash` specialization, and the entry value type
+  `ViewCacheEntry { SharedHandle<GETexture> texture,
+  Composition::Rect rasterizedSize }`.
+- `BackendRenderTargetContext` gains a `std::unique_ptr<ContentCacheState>`
+  PIMPL slot (same idiom as `tessellationCacheState_`).
+  `ContentCacheState` wraps `ContentCache<ViewCacheKey,
+  ViewCacheEntry>` capped by `ContentCacheConfig::inst()
+  .contentCacheBytes` (default 64 MB; env
+  `OMEGAWTK_CONTENT_CACHE_BYTES`). Slot is always allocated;
+  `FrameBuilder` does not yet probe it.
+- No integration with the paint walker — API surface only. G.3.1
+  introduces `beginCacheTarget` / `endCacheTarget` and starts
+  populating it; G.3.2 reads from it.
+- Build verified clean with `OMEGAWTK_ENABLE_CONTENT_CACHE` both ON
+  and OFF.
 - Add `View::contentVersion_` (`uint64_t`).
   `View::markDirty(uint8_t bits)` increments it when `bits & Paint`.
   `clearDirtyBits` does NOT clear it — the version is a monotonic

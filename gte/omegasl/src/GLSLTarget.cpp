@@ -1600,6 +1600,89 @@ namespace omegasl {
             }
             return true;
         }
+        /// §5.5 Phase B — half-float pack / unpack. GLSL has the packed
+        /// pair (`packHalf2x16` / `unpackHalf2x16`) native — those pass
+        /// through the shared `(args)` print path without a rename. The
+        /// scalar pair (`f16tof32` / `f32tof16`) has no GLSL equivalent
+        /// and lowers inline through the packed forms:
+        ///   f16tof32(x) → unpackHalf2x16(x).x — the high 16 bits become
+        ///                 the discarded `.y` (no statement injection
+        ///                 needed; `x` is referenced exactly once).
+        ///   f32tof16(x) → packHalf2x16(vec2(x, 0.0)) — the high 16 bits
+        ///                 are zero by construction.
+        if (name == BUILTIN_F16TOF32) {
+            if (_expr->args.size() != 1) return false;
+            out << "unpackHalf2x16(";
+            cg.generateExpr(_expr->args[0]);
+            out << ").x";
+            return true;
+        }
+        if (name == BUILTIN_F32TOF16) {
+            if (_expr->args.size() != 1) return false;
+            out << "packHalf2x16(vec2(";
+            cg.generateExpr(_expr->args[0]);
+            out << ", 0.0))";
+            return true;
+        }
+        /// §5.5 Phase A — bit-pattern reinterpret. GLSL has named
+        /// functions only for the float<->int / float<->uint directions
+        /// (`floatBitsToInt`, `floatBitsToUint`, `intBitsToFloat`,
+        /// `uintBitsToFloat`). int<->uint reinterpret uses a constructor
+        /// cast (per the GLSL spec, `uint(i)` / `int(u)` preserves the
+        /// bit pattern). Same-target identity emits the operand bare.
+        if (name == BUILTIN_ASINT || name == BUILTIN_ASUINT || name == BUILTIN_ASFLOAT) {
+            if (_expr->args.size() != 1) return false;
+            using namespace ast::builtins;
+            auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+            enum Kind { K_FLOAT, K_INT, K_UINT } src;
+            int arity;
+            if (ty == float_type)       { src = K_FLOAT; arity = 1; }
+            else if (ty == float2_type) { src = K_FLOAT; arity = 2; }
+            else if (ty == float3_type) { src = K_FLOAT; arity = 3; }
+            else if (ty == float4_type) { src = K_FLOAT; arity = 4; }
+            else if (ty == int_type)    { src = K_INT;   arity = 1; }
+            else if (ty == int2_type)   { src = K_INT;   arity = 2; }
+            else if (ty == int3_type)   { src = K_INT;   arity = 3; }
+            else if (ty == int4_type)   { src = K_INT;   arity = 4; }
+            else if (ty == uint_type)   { src = K_UINT;  arity = 1; }
+            else if (ty == uint2_type)  { src = K_UINT;  arity = 2; }
+            else if (ty == uint3_type)  { src = K_UINT;  arity = 3; }
+            else if (ty == uint4_type)  { src = K_UINT;  arity = 4; }
+            else return false; // defensive; Sema rejects upstream.
+            Kind dst = (name == BUILTIN_ASINT)  ? K_INT
+                     : (name == BUILTIN_ASUINT) ? K_UINT
+                                                : K_FLOAT;
+            if (src == dst) {
+                /// Same-target identity. Emit the operand bare — GLSL
+                /// has no `intBitsToInt` / `floatBitsToFloat`.
+                cg.generateExpr(_expr->args[0]);
+                return true;
+            }
+            const char *named = nullptr;
+            if (src == K_FLOAT && dst == K_INT)  named = "floatBitsToInt";
+            else if (src == K_FLOAT && dst == K_UINT) named = "floatBitsToUint";
+            else if (src == K_INT && dst == K_FLOAT)  named = "intBitsToFloat";
+            else if (src == K_UINT && dst == K_FLOAT) named = "uintBitsToFloat";
+            if (named) {
+                out << named << "(";
+                cg.generateExpr(_expr->args[0]);
+                out << ")";
+                return true;
+            }
+            /// int <-> uint: constructor cast. Per the GLSL spec
+            /// (4.1.3 "Integers"), int↔uint conversion preserves the
+            /// bit pattern when the value is in range; out-of-range
+            /// values reinterpret the bits, which is exactly the
+            /// `asint` / `asuint` cross-sign semantics.
+            const char *vty =
+                (dst == K_INT)
+                    ? (arity == 2 ? "ivec2" : arity == 3 ? "ivec3" : arity == 4 ? "ivec4" : "int")
+                    : (arity == 2 ? "uvec2" : arity == 3 ? "uvec3" : arity == 4 ? "uvec4" : "uint");
+            out << vty << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ")";
+            return true;
+        }
         /// §5.1: GLSL has no `saturate` — rewrite `saturate(x)` as
         /// `clamp(x, 0.0, 1.0)`. GLSL's `clamp(genType, float, float)`
         /// overload broadcasts the scalar bounds across vector x, so the

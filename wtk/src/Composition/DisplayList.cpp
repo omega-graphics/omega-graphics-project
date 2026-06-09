@@ -5,7 +5,40 @@
 #include <unordered_map>
 #include <utility>
 
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+#include "TextShapingCache.h"
+#include "backend/TessellationCache.h"   // packRGBA, bucketDim
+#endif
+
 namespace OmegaWTK::Composition {
+
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+namespace {
+
+    /// CPU-side byte cost estimate for telemetry. Does not include the
+    /// GPU texture pixels held alive by `BitmapBlit::texture` — those
+    /// live in GTE and are reference-counted independently.
+    std::size_t estimateBytes(const ShapedTextRun & run){
+        std::size_t bytes = sizeof(ShapedTextRun);
+        for(const auto & sr : run.msdfSubRuns){
+            bytes += sizeof(TextSubRun);
+            bytes += sr.glyphIds.size() * sizeof(std::uint32_t);
+            bytes += sr.positions.size() * sizeof(Composition::Point2D);
+        }
+        bytes += run.bitmapBlits.size() * sizeof(ShapedTextRun::BitmapBlit);
+        return bytes;
+    }
+
+    void refreshMsdfResidency(ShapedTextRun & run){
+        for(auto & sr : run.msdfSubRuns){
+            if(sr.resolvedFont != nullptr && !sr.glyphIds.empty()){
+                sr.resolvedFont->ensureGlyphsResident(sr.glyphIds);
+            }
+        }
+    }
+
+}
+#endif
 
 // Tier 4 §4.2: rehomed verbatim out of the deleted `Canvas.cpp`. Pure
 // shaping helper shared by every DisplayList-emitting paint path
@@ -28,6 +61,29 @@ ShapedTextRun shapeTextForDisplayList(
     if(engine == nullptr || shaper == nullptr){
         return out;
     }
+
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+    // Phase G.2: cache lookup. Build the key, probe the process-wide
+    // singleton. Hit → re-run `ensureGlyphsResident` on every MSDF
+    // sub-run (atlas residency is per-FontEngine state and may have
+    // been evicted between frames) and return the cached run.
+    TextShapingCacheKey cacheKey;
+    cacheKey.textHash        = hashUniString(text);
+    cacheKey.textLength      = static_cast<std::uint32_t>(text.length());
+    cacheKey.layoutHash      = hashLayoutDescriptor(layoutDesc);
+    cacheKey.fontId          = font.get();
+    cacheKey.fontSize        = font->desc.size;
+    cacheKey.wBucket         = bucketDim(rect.w);
+    cacheKey.hBucket         = bucketDim(rect.h);
+    cacheKey.renderScaleBits = floatBits(renderScale);
+    cacheKey.colorRGBA       = packRGBA(color.r, color.g, color.b, color.a);
+
+    if(auto cached = TextShapingCache::inst().find(cacheKey)){
+        refreshMsdfResidency(*cached);
+        return std::move(*cached);
+    }
+#endif
+
     const FontMetrics metrics = font->getMetrics();
     auto * fallback = engine->fallback();
     auto layoutResult = TextLayoutEngine::layout(
@@ -72,6 +128,16 @@ ShapedTextRun shapeTextForDisplayList(
             }
         }
     }
+
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+    // Cache the just-shaped run for the next frame. Copy in (not move)
+    // so the caller still gets the run it expects from the function
+    // return — the cache holds an independent copy.
+    if(!out.msdfSubRuns.empty() || !out.bitmapBlits.empty()){
+        TextShapingCache::inst().insert(std::move(cacheKey), out, estimateBytes(out));
+    }
+#endif
+
     return out;
 }
 

@@ -893,6 +893,18 @@ using namespace metal;
         /// enough and the operand-typed return contract holds.
         if (name == BUILTIN_COUNTBITS)   return "popcount";
         if (name == BUILTIN_REVERSEBITS) return "reverse_bits";
+        /// §5.5 Phase C — normalized pack / unpack. MSL has all eight
+        /// native but with the longer `pack_float_to_*` / `unpack_*_to_float`
+        /// spelling. The signature shape is identical (T → uint / uint → T),
+        /// so a plain rename is sufficient.
+        if (name == BUILTIN_PACK_SNORM_4X8)    return "pack_float_to_snorm4x8";
+        if (name == BUILTIN_UNPACK_SNORM_4X8)  return "unpack_snorm4x8_to_float";
+        if (name == BUILTIN_PACK_UNORM_4X8)    return "pack_float_to_unorm4x8";
+        if (name == BUILTIN_UNPACK_UNORM_4X8)  return "unpack_unorm4x8_to_float";
+        if (name == BUILTIN_PACK_SNORM_2X16)   return "pack_float_to_snorm2x16";
+        if (name == BUILTIN_UNPACK_SNORM_2X16) return "unpack_snorm2x16_to_float";
+        if (name == BUILTIN_PACK_UNORM_2X16)   return "pack_float_to_unorm2x16";
+        if (name == BUILTIN_UNPACK_UNORM_2X16) return "unpack_unorm2x16_to_float";
         /// §5.3 Phase B firstbithigh/firstbitlow are NOT plain renames on
         /// MSL — `clz`/`ctz` return zero-*counts*, not bit indices, and the
         /// normalized -1-on-zero result needs a conversion. Handled in
@@ -1065,6 +1077,70 @@ using namespace metal;
                 out << "), uint("; cg.generateExpr(_expr->args[3]);
                 out << "))";
             }
+            return true;
+        }
+        /// §5.5 Phase B — half-float pack / unpack. MSL has no native
+        /// `f16tof32` / `f32tof16` / `packHalf2x16` / `unpackHalf2x16`
+        /// intrinsic. Lower each through MSL's `as_type<>` template at the
+        /// matching half-typed value (the half spelling is `half` /
+        /// `half2`; the 16-bit integer spelling is `ushort`):
+        ///   f16tof32(uint x)       → float(as_type<half>(ushort(x)))
+        ///   f32tof16(float x)      → uint(as_type<ushort>(half(x)))
+        ///   packHalf2x16(float2 v) → as_type<uint>(half2(v))
+        ///   unpackHalf2x16(uint u) → float2(as_type<half2>(u))
+        /// Inline emission (no statement injection) — every form is a
+        /// single sub-expression.
+        if (name == BUILTIN_F16TOF32) {
+            if (_expr->args.size() != 1) return false;
+            out << "float(as_type<half>(ushort(";
+            cg.generateExpr(_expr->args[0]);
+            out << ")))";
+            return true;
+        }
+        if (name == BUILTIN_F32TOF16) {
+            if (_expr->args.size() != 1) return false;
+            out << "uint(as_type<ushort>(half(";
+            cg.generateExpr(_expr->args[0]);
+            out << ")))";
+            return true;
+        }
+        if (name == BUILTIN_PACK_HALF_2X16) {
+            if (_expr->args.size() != 1) return false;
+            out << "as_type<uint>(half2(";
+            cg.generateExpr(_expr->args[0]);
+            out << "))";
+            return true;
+        }
+        if (name == BUILTIN_UNPACK_HALF_2X16) {
+            if (_expr->args.size() != 1) return false;
+            out << "float2(as_type<half2>(";
+            cg.generateExpr(_expr->args[0]);
+            out << "))";
+            return true;
+        }
+        /// §5.5 Phase A — bit-pattern reinterpret. MSL spells all six
+        /// directions with a single template: `as_type<TargetN>(operand)`.
+        /// The target type is fixed by the builtin name (intN / uintN /
+        /// floatN); the arity matches the operand. Sema already validated
+        /// the operand is a 32-bit numeric scalar/vector and stamped its
+        /// resolved type. No special handling for identity (e.g.
+        /// `asint(intN)`) — `as_type<intN>(intN_v)` is a no-op in MSL.
+        if (name == BUILTIN_ASINT || name == BUILTIN_ASUINT || name == BUILTIN_ASFLOAT) {
+            if (_expr->args.size() != 1) return false;
+            using namespace ast::builtins;
+            auto *ty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+            int arity = 1;
+            if (ty == float2_type || ty == int2_type || ty == uint2_type) arity = 2;
+            else if (ty == float3_type || ty == int3_type || ty == uint3_type) arity = 3;
+            else if (ty == float4_type || ty == int4_type || ty == uint4_type) arity = 4;
+            const char *targetScalar = (name == BUILTIN_ASINT)  ? "int"
+                                     : (name == BUILTIN_ASUINT) ? "uint"
+                                                                : "float";
+            out << "as_type<" << targetScalar;
+            if (arity > 1) out << arity;
+            out << ">(";
+            cg.generateExpr(_expr->args[0]);
+            out << ")";
             return true;
         }
         /// §5.2 — Metal has no matrix `inverse`; lower to an injected

@@ -686,6 +686,16 @@ namespace omegasl::ast {
             BUILTIN_DDX_COARSE, BUILTIN_DDX_FINE,
             BUILTIN_DDY_COARSE, BUILTIN_DDY_FINE,
             BUILTIN_FWIDTH_COARSE, BUILTIN_FWIDTH_FINE,
+            /// §5.5 Phase A — bit-pattern reinterpret.
+            BUILTIN_ASINT, BUILTIN_ASUINT, BUILTIN_ASFLOAT,
+            /// §5.5 Phase B — half-float pack / unpack.
+            BUILTIN_F16TOF32, BUILTIN_F32TOF16,
+            BUILTIN_PACK_HALF_2X16, BUILTIN_UNPACK_HALF_2X16,
+            /// §5.5 Phase C — normalized 4x8 / 2x16 pack / unpack.
+            BUILTIN_PACK_SNORM_4X8, BUILTIN_UNPACK_SNORM_4X8,
+            BUILTIN_PACK_UNORM_4X8, BUILTIN_UNPACK_UNORM_4X8,
+            BUILTIN_PACK_SNORM_2X16, BUILTIN_UNPACK_SNORM_2X16,
+            BUILTIN_PACK_UNORM_2X16, BUILTIN_UNPACK_UNORM_2X16,
             /// Matrix intrinsics (string-matched in Sema).
             "transpose", "determinant",
             /// Compute barriers.

@@ -15,6 +15,7 @@
 #include "ResourceTrace.h"
 #include "ContentCache.h"
 #include "TessellationCache.h"
+#include "ViewContentCache.h"
 
 #include <algorithm>
 #include <cmath>
@@ -153,6 +154,24 @@ namespace OmegaWTK::Composition {
                     /*byteLimit*/0) {}
     };
 
+    // Phase G.3.0: per-View content-cache PIMPL. Defined here for the
+    // same reason as `TessellationCacheState`: the `ContentCache<…,
+    // ViewCacheEntry>` instantiation references `SharedHandle<GETexture>`
+    // and we keep the GTE surface scoped to this TU. Entry limit is left
+    // unbounded (0); the byte limit is the plan-locked
+    // `ContentCacheConfig::inst().contentCacheBytes` (default 64 MB,
+    // overridable via `OMEGAWTK_CONTENT_CACHE_BYTES`) since the entries
+    // hold GPU textures whose CPU-side struct cost is trivial but whose
+    // GPU footprint is what matters. G.3.0 ships the slot only — no
+    // `OnEvict` callback yet; G.5's persistent-handle work attaches one
+    // when the texture-pool round-trip should happen on eviction.
+    struct ContentCacheState {
+        ContentCache<ViewCacheKey, ViewCacheEntry> cache;
+        ContentCacheState()
+            : cache(/*entryLimit*/0,
+                    ContentCacheConfig::inst().contentCacheBytes) {}
+    };
+
 BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
         SharedHandle<OmegaGTE::GENativeRenderTarget> &renderTargetIn,
         SharedHandle<OmegaGTE::GECommandQueue> commandQueueIn,
@@ -176,6 +195,11 @@ BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
     // across both build modes; the macro only gates whether the hot path
     // inside `renderVectorPathSegmented` consults the cache.
     tessellationCacheState_ = std::make_unique<TessellationCacheState>();
+
+    // Phase G.3.0: allocate the content cache PIMPL eagerly, same
+    // policy as the tessellation cache. G.3.0 only lands the slot; the
+    // FrameBuilder integration in G.3.1 + G.3.2 will exercise it.
+    contentCacheState_ = std::make_unique<ContentCacheState>();
 
     traceResourceId = ResourceTrace::nextResourceId();
     ResourceTrace::emit("Create",

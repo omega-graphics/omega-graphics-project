@@ -1,0 +1,68 @@
+// §5.5 Phase C — normalized 4x8 / 2x16 pack / unpack.
+//   pack{Snorm,Unorm}{4x8,2x16}(float4|float2) → uint
+//   unpack{Snorm,Unorm}{4x8,2x16}(uint)        → float4|float2
+// Per backend:
+//   GLSL — all eight native; pass-through.
+//   MSL  — all eight native via the `pack_float_to_*` /
+//          `unpack_*_to_float` spelling; per-name renameBuiltin.
+//   HLSL — no native intrinsic; lowered via shared
+//          emitHLSLPackNormalized / emitHLSLUnpackNormalized helpers
+//          using statement injection.
+//
+// Test values are chosen on/near the boundaries so the snorm-clamp
+// and the per-lane masking are exercised: 0.0 (zero crossing), 1.0
+// (positive saturate), -1.0 (negative saturate, snorm only), and a
+// fractional 0.5 to catch rounding bugs.
+
+struct Data { uint4 value; };
+
+buffer<Data> input  : 0;
+buffer<Data> output : 1;
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_snorm4x8(uint3 tid : GlobalThreadID){
+    float4 v = float4(0.0, 1.0, -1.0, 0.5);
+
+    uint   p = packSnorm4x8(v);
+    float4 u = unpackSnorm4x8(p);
+
+    output[0].value = uint4(p,
+                            asuint(u.x), asuint(u.y), asuint(u.z));
+    output[1].value = uint4(asuint(u.w), 0u, 0u, 0u);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_unorm4x8(uint3 tid : GlobalThreadID){
+    float4 v = float4(0.0, 1.0, 0.5, 0.25);
+
+    uint   p = packUnorm4x8(v);
+    float4 u = unpackUnorm4x8(p);
+
+    output[0].value = uint4(p,
+                            asuint(u.x), asuint(u.y), asuint(u.z));
+    output[1].value = uint4(asuint(u.w), 0u, 0u, 0u);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_snorm2x16(uint3 tid : GlobalThreadID){
+    float2 v = float2(-1.0, 1.0);
+
+    uint   p = packSnorm2x16(v);
+    float2 u = unpackSnorm2x16(p);
+
+    output[0].value = uint4(p, asuint(u.x), asuint(u.y), 0u);
+}
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_unorm2x16(uint3 tid : GlobalThreadID){
+    float2 v = float2(0.0, 1.0);
+
+    uint   p = packUnorm2x16(v);
+    float2 u = unpackUnorm2x16(p);
+
+    output[0].value = uint4(p, asuint(u.x), asuint(u.y), 0u);
+}

@@ -1759,6 +1759,156 @@ namespace omegasl {
                     return firstArgType;
                 }
 
+                /// §5.5 Phase A — bit-pattern reinterpret: `asint(x)` /
+                /// `asuint(x)` / `asfloat(x)`. 1-arg; operand must be a
+                /// 32-bit numeric scalar or vector (`float`/`int`/`uint`
+                /// and their `N`-component vector forms — 16-bit and
+                /// 64-bit operands are rejected because only the 32-bit
+                /// reinterpret has a uniform spelling on every backend).
+                /// Return type is the same arity as the operand, with the
+                /// scalar component fixed by the builtin name. Stamp the
+                /// operand's resolved type so the GLSL backend can pick
+                /// the right `floatBitsToInt` / `intBitsToFloat` / …
+                /// spelling, and so MSL can spell the target type for its
+                /// `as_type<targetN>(operand)` template.
+                bool isBitReinterpret = (fname == BUILTIN_ASINT ||
+                                         fname == BUILTIN_ASUINT ||
+                                         fname == BUILTIN_ASFLOAT);
+                if(isBitReinterpret){
+                    expectedArgs = 1;
+                }
+                if(isBitReinterpret && firstArgType){
+                    auto a0 = resolveTypeWithExpr(firstArgType);
+                    auto info = vectorComponentInfo(a0);
+                    bool scalar32 = (a0 == ast::builtins::float_type ||
+                                     a0 == ast::builtins::int_type ||
+                                     a0 == ast::builtins::uint_type);
+                    bool vec32 = (info.scalar == ast::builtins::float_type ||
+                                  info.scalar == ast::builtins::int_type ||
+                                  info.scalar == ast::builtins::uint_type);
+                    if(!scalar32 && !vec32){
+                        reportBoolErr("`" + std::string(fname) + "` requires a 32-bit numeric scalar or vector operand (float / int / uint and their N-component vector forms).");
+                        return nullptr;
+                    }
+                    _expr->args[0]->resolvedType = firstArgType;
+                    int arity = scalar32 ? 1 : info.arity;
+                    ast::Type *targetScalar =
+                        (fname == BUILTIN_ASINT)   ? ast::builtins::int_type :
+                        (fname == BUILTIN_ASUINT)  ? ast::builtins::uint_type
+                                                   : ast::builtins::float_type;
+                    return ast::TypeExpr::Create(
+                        vectorTypeForScalarArity(targetScalar, arity));
+                }
+
+                /// §5.5 Phase B — half-float pack / unpack. Four 1-arg
+                /// builtins, each with a fixed operand and fixed return
+                /// type (no overloading / arity choice — scalar-only on
+                /// the f16tof32/f32tof16 pair, float2/uint on the packed
+                /// pair):
+                ///   f16tof32(uint)        → float
+                ///   f32tof16(float)       → uint
+                ///   packHalf2x16(float2)  → uint
+                ///   unpackHalf2x16(uint)  → float2
+                /// The operand's resolved type is stamped so HLSL's
+                /// statement-injection lowering for the packed pair (which
+                /// needs the operand spelling for its single-eval temp)
+                /// can read it.
+                bool isHalfScalarUnpack = (fname == BUILTIN_F16TOF32);
+                bool isHalfScalarPack   = (fname == BUILTIN_F32TOF16);
+                bool isHalfPackedUnpack = (fname == BUILTIN_UNPACK_HALF_2X16);
+                bool isHalfPackedPack   = (fname == BUILTIN_PACK_HALF_2X16);
+                bool isHalfPackUnpack = isHalfScalarUnpack || isHalfScalarPack
+                                     || isHalfPackedUnpack || isHalfPackedPack;
+                if(isHalfPackUnpack){
+                    expectedArgs = 1;
+                }
+                if(isHalfPackUnpack && firstArgType){
+                    auto a0 = resolveTypeWithExpr(firstArgType);
+                    ast::Type *expected = nullptr;
+                    ast::Type *result = nullptr;
+                    if(isHalfScalarUnpack){
+                        expected = ast::builtins::uint_type;
+                        result   = ast::builtins::float_type;
+                    } else if(isHalfScalarPack){
+                        expected = ast::builtins::float_type;
+                        result   = ast::builtins::uint_type;
+                    } else if(isHalfPackedUnpack){
+                        expected = ast::builtins::uint_type;
+                        result   = ast::builtins::float2_type;
+                    } else { /* isHalfPackedPack */
+                        expected = ast::builtins::float2_type;
+                        result   = ast::builtins::uint_type;
+                    }
+                    if(a0 != expected){
+                        const char *expectedName =
+                            (expected == ast::builtins::uint_type)   ? "uint"   :
+                            (expected == ast::builtins::float_type)  ? "float"  :
+                                                                       "float2";
+                        reportBoolErr(std::string("`") + std::string(fname)
+                                      + "` requires a `" + expectedName + "` operand.");
+                        return nullptr;
+                    }
+                    _expr->args[0]->resolvedType = firstArgType;
+                    return ast::TypeExpr::Create(result);
+                }
+
+                /// §5.5 Phase C — normalized 4x8 / 2x16 pack / unpack.
+                /// Eight 1-arg builtins with fixed operand and return
+                /// types (no overloading — pack-4x8 takes float4, pack-
+                /// 2x16 takes float2, all unpacks take uint):
+                ///   packSnorm4x8(float4)   → uint
+                ///   packUnorm4x8(float4)   → uint
+                ///   packSnorm2x16(float2)  → uint
+                ///   packUnorm2x16(float2)  → uint
+                ///   unpackSnorm4x8(uint)   → float4
+                ///   unpackUnorm4x8(uint)   → float4
+                ///   unpackSnorm2x16(uint)  → float2
+                ///   unpackUnorm2x16(uint)  → float2
+                /// Same operand-resolved-type stamp as Phase B so the
+                /// HLSL statement-injection lowering can spell the temp.
+                bool isPackNorm4x8   = (fname == BUILTIN_PACK_SNORM_4X8   ||
+                                        fname == BUILTIN_PACK_UNORM_4X8);
+                bool isPackNorm2x16  = (fname == BUILTIN_PACK_SNORM_2X16  ||
+                                        fname == BUILTIN_PACK_UNORM_2X16);
+                bool isUnpackNorm4x8  = (fname == BUILTIN_UNPACK_SNORM_4X8 ||
+                                        fname == BUILTIN_UNPACK_UNORM_4X8);
+                bool isUnpackNorm2x16 = (fname == BUILTIN_UNPACK_SNORM_2X16 ||
+                                        fname == BUILTIN_UNPACK_UNORM_2X16);
+                bool isPackNorm = isPackNorm4x8 || isPackNorm2x16 ||
+                                  isUnpackNorm4x8 || isUnpackNorm2x16;
+                if(isPackNorm){
+                    expectedArgs = 1;
+                }
+                if(isPackNorm && firstArgType){
+                    auto a0 = resolveTypeWithExpr(firstArgType);
+                    ast::Type *expected = nullptr;
+                    ast::Type *result = nullptr;
+                    if(isPackNorm4x8){
+                        expected = ast::builtins::float4_type;
+                        result   = ast::builtins::uint_type;
+                    } else if(isPackNorm2x16){
+                        expected = ast::builtins::float2_type;
+                        result   = ast::builtins::uint_type;
+                    } else if(isUnpackNorm4x8){
+                        expected = ast::builtins::uint_type;
+                        result   = ast::builtins::float4_type;
+                    } else { /* isUnpackNorm2x16 */
+                        expected = ast::builtins::uint_type;
+                        result   = ast::builtins::float2_type;
+                    }
+                    if(a0 != expected){
+                        const char *expectedName =
+                            (expected == ast::builtins::uint_type)   ? "uint"   :
+                            (expected == ast::builtins::float2_type) ? "float2" :
+                                                                       "float4";
+                        reportBoolErr(std::string("`") + std::string(fname)
+                                      + "` requires a `" + expectedName + "` operand.");
+                        return nullptr;
+                    }
+                    _expr->args[0]->resolvedType = firstArgType;
+                    return ast::TypeExpr::Create(result);
+                }
+
                 if(returnsScalar && firstArgType){
                     return ast::TypeExpr::Create(ast::builtins::float_type);
                 }

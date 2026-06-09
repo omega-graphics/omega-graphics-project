@@ -671,12 +671,69 @@ namespace omegasl {
         return true;
     }
 
+    /// §5.5 Phase B — HLSL has no `packHalf2x16`/`unpackHalf2x16` intrinsic.
+    /// Lower each to the canonical formula over the scalar `f32tof16` /
+    /// `f16tof32` builtins (which ARE native on HLSL). Single-eval the
+    /// operand into a temp via statement injection so a side-effectful
+    /// operand evaluates exactly once (same machinery as countbits /
+    /// fwidth / inverse / frexp / getDimensions).
+    ///   packHalf2x16(v)   → (f32tof16(_t.x) | (f32tof16(_t.y) << 16))
+    ///   unpackHalf2x16(u) → float2(f16tof32(_t & 0xFFFFu), f16tof32(_t >> 16))
+    /// The temp's type matches the operand's source type (float2 / uint).
+    static bool hlslEmitPackHalf2x16(CodeGen &cg, ast::CallExpr *_expr,
+                                     std::ostream &out){
+        if(_expr->args.size() != 1) return false;
+        std::string argStr = cg.renderExprToString(_expr->args[0]);
+        unsigned id = cg.getDimensionsTempId++;
+        std::string t = "_ph" + std::to_string(id);
+        cg.queuePendingStatement("float2 " + t + " = " + argStr + ";");
+        out << "(f32tof16(" << t << ".x) | (f32tof16(" << t << ".y) << 16))";
+        return true;
+    }
+    static bool hlslEmitUnpackHalf2x16(CodeGen &cg, ast::CallExpr *_expr,
+                                       std::ostream &out){
+        if(_expr->args.size() != 1) return false;
+        std::string argStr = cg.renderExprToString(_expr->args[0]);
+        unsigned id = cg.getDimensionsTempId++;
+        std::string t = "_uh" + std::to_string(id);
+        cg.queuePendingStatement("uint " + t + " = " + argStr + ";");
+        out << "float2(f16tof32(" << t << " & 0xFFFFu), f16tof32(" << t << " >> 16))";
+        return true;
+    }
+
     bool HLSLTarget::tryEmitBuiltinCall(CodeGen &cg, ast::CallExpr *_expr,
                                         OmegaCommon::StrRef name, std::ostream &out) {
         /// §5.3 — HLSL's countbits / reversebits are scalar-uint only;
         /// lower signed-cast + vector component-expansion here.
         if (name == BUILTIN_COUNTBITS)   return hlslEmitIntUnary(cg, _expr, "countbits", out);
         if (name == BUILTIN_REVERSEBITS) return hlslEmitIntUnary(cg, _expr, "reversebits", out);
+        /// §5.5 Phase B — packed half pack/unpack. HLSL has no native form;
+        /// lower via the scalar `f32tof16` / `f16tof32` intrinsics which are
+        /// SM 5.0+. f16tof32 / f32tof16 themselves are native names and
+        /// pass through the shared `renameBuiltin` print path.
+        if (name == BUILTIN_PACK_HALF_2X16)   return hlslEmitPackHalf2x16(cg, _expr, out);
+        if (name == BUILTIN_UNPACK_HALF_2X16) return hlslEmitUnpackHalf2x16(cg, _expr, out);
+        /// §5.5 Phase C — normalized pack / unpack. HLSL has no native
+        /// intrinsic; route to the shared `emitHLSLPackNormalized` /
+        /// `emitHLSLUnpackNormalized` helpers which queue a single-eval
+        /// temp via statement injection and emit the clamp/scale/round/
+        /// mask/OR-shift formula matching the GLSL/MSL spec.
+        if (name == BUILTIN_PACK_SNORM_4X8)
+            return cg.emitHLSLPackNormalized(_expr, CodeGen::PackNormKind::S4, out);
+        if (name == BUILTIN_PACK_UNORM_4X8)
+            return cg.emitHLSLPackNormalized(_expr, CodeGen::PackNormKind::U4, out);
+        if (name == BUILTIN_PACK_SNORM_2X16)
+            return cg.emitHLSLPackNormalized(_expr, CodeGen::PackNormKind::S2, out);
+        if (name == BUILTIN_PACK_UNORM_2X16)
+            return cg.emitHLSLPackNormalized(_expr, CodeGen::PackNormKind::U2, out);
+        if (name == BUILTIN_UNPACK_SNORM_4X8)
+            return cg.emitHLSLUnpackNormalized(_expr, CodeGen::PackNormKind::S4, out);
+        if (name == BUILTIN_UNPACK_UNORM_4X8)
+            return cg.emitHLSLUnpackNormalized(_expr, CodeGen::PackNormKind::U4, out);
+        if (name == BUILTIN_UNPACK_SNORM_2X16)
+            return cg.emitHLSLUnpackNormalized(_expr, CodeGen::PackNormKind::S2, out);
+        if (name == BUILTIN_UNPACK_UNORM_2X16)
+            return cg.emitHLSLUnpackNormalized(_expr, CodeGen::PackNormKind::U2, out);
         /// §5.4 — HLSL has no `fwidth_coarse`/`fwidth_fine` intrinsic
         /// (only `fwidth`); lower inline to the canonical formula. The
         /// other seven derivative names are HLSL-native and pass through

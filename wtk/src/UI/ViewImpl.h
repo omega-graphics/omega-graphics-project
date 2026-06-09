@@ -157,6 +157,16 @@ struct View::Impl {
     /// via the public `View::nodeId()`. Allocated at construction so
     /// `applyLayoutDelta` can register tweens without a lookup.
     std::uint64_t nodeId_;
+    /// UIView-Render-Redesign Phase G.3.0: monotonic generation counter
+    /// for the View's painted content. Incremented by `View::markDirty`
+    /// whenever the bits include `Paint`. NOT cleared by
+    /// `View::clearDirtyBits` — the counter is a generation number, not
+    /// a flag, and the G.3 content cache keys against
+    /// `(nodeId_, contentVersion_)` so an unchanged View at the same
+    /// version hits the cached texture across frames. Starts at 0; first
+    /// Paint-dirty mark moves it to 1, so a fresh-never-painted entry
+    /// is naturally distinguishable from a cleared-after-paint entry.
+    std::uint64_t contentVersion_ = 0;
     /// Phase 4.5: parent-owned child-layout strategy. nullptr = use the
     /// process-wide `AbsoluteLayout::instance()` default. View does NOT
     /// own this pointer — caller is responsible for the manager's

@@ -263,6 +263,113 @@ typedef int ASTType;
 #define BUILTIN_FWIDTH_COARSE "fwidth_coarse"
 #define BUILTIN_FWIDTH_FINE "fwidth_fine"
 
+/// §5.5 Phase A — bit-pattern reinterpret. All three are 1-arg, accept a
+/// 32-bit numeric scalar/vector operand (float / int / uint, scalar or
+/// vector form), and return a same-arity scalar/vector of the fixed
+/// target type. 16-bit and 64-bit operands are rejected — only 32-bit
+/// reinterpret is uniform across backends (HLSL `asint(half)` doesn't
+/// exist; MSL `as_type<uint>(half)` would change width). Same-signedness
+/// passes through as an identity / constructor cast.
+///   asint   → int / intN
+///   asuint  → uint / uintN
+///   asfloat → float / floatN
+/// Per backend:
+///   HLSL — native `asint` / `asuint` / `asfloat` (passes through
+///          `tryEmitBuiltinCall` — pinned there rather than as a plain
+///          rename because the same name shape lands consistently with
+///          the GLSL / MSL handlers below).
+///   MSL  — `as_type<targetN>(operand)` (single template — same name
+///          regardless of operand signedness / float-ness).
+///   GLSL — name varies by operand type:
+///            float→int  `floatBitsToInt(x)`
+///            float→uint `floatBitsToUint(x)`
+///            int  →float`intBitsToFloat(x)`
+///            uint →float`uintBitsToFloat(x)`
+///            int  →uint `uvecN(x)` (constructor — GLSL preserves bits)
+///            uint →int  `ivecN(x)` (constructor — GLSL preserves bits)
+///            same-target identity emits the operand bare.
+#define BUILTIN_ASINT "asint"
+#define BUILTIN_ASUINT "asuint"
+#define BUILTIN_ASFLOAT "asfloat"
+
+/// §5.5 Phase B — half-float pack / unpack. Two shapes:
+///
+///   Scalar (HLSL-named):
+///     f16tof32(uint x)  → float    — interpret the low 16 bits of `x`
+///                                    as an IEEE-754 binary16 and promote
+///                                    to float. The high 16 bits are
+///                                    ignored.
+///     f32tof16(float x) → uint     — convert `x` to binary16 and store
+///                                    the 16-bit pattern in the low 16
+///                                    bits of the result; the high 16
+///                                    bits are zero.
+///
+///   Packed (GLSL-named):
+///     packHalf2x16(float2 v) → uint
+///                              — convert v.x to binary16 into the low 16
+///                                bits and v.y into the high 16 bits.
+///     unpackHalf2x16(uint u) → float2
+///                              — inverse of packHalf2x16.
+///
+/// Per backend:
+///   HLSL — f16tof32 / f32tof16 are native (scalar + vector overloads, SM
+///          5.0+); pass through `renameBuiltin`. packHalf2x16 /
+///          unpackHalf2x16 have no native form and are lowered inline via
+///          statement injection (single-eval temp + the scalar formula:
+///          pack `(f32tof16(t.x) | (f32tof16(t.y) << 16))`, unpack
+///          `float2(f16tof32(t & 0xFFFFu), f16tof32(t >> 16))`).
+///   MSL  — no native packed form; all four lower to `as_type` of the
+///          matching half-typed value (single template, no statement
+///          injection needed):
+///          f16tof32(x)        → float(as_type<half>(ushort(x)))
+///          f32tof16(x)        → uint(as_type<ushort>(half(x)))
+///          packHalf2x16(v)    → as_type<uint>(half2(v))
+///          unpackHalf2x16(u)  → float2(as_type<half2>(u))
+///   GLSL — packHalf2x16 / unpackHalf2x16 are native; pass through. The
+///          scalar pair lowers inline using the packed pair:
+///          f16tof32(x)  → unpackHalf2x16(x).x
+///          f32tof16(x)  → packHalf2x16(vec2(x, 0.0))
+#define BUILTIN_F16TOF32 "f16tof32"
+#define BUILTIN_F32TOF16 "f32tof16"
+#define BUILTIN_PACK_HALF_2X16 "packHalf2x16"
+#define BUILTIN_UNPACK_HALF_2X16 "unpackHalf2x16"
+
+/// §5.5 Phase C — normalized (snorm / unorm) 4x8 and 2x16 pack / unpack.
+/// Eight 1-arg builtins. The "snorm" forms map components in [-1, 1] to
+/// signed fixed-point bytes/shorts; the "unorm" forms map components in
+/// [0, 1] to unsigned fixed-point bytes/shorts. All eight return a uint
+/// (pack) or a `float4`/`float2` (unpack). Per the GLSL 4.5 spec:
+///
+///   packSnorm4x8(v)   → round(clamp(v_i, -1, +1) * 127), packed as 4 int8s
+///   packUnorm4x8(v)   → round(clamp(v_i,  0,  1) * 255), packed as 4 uint8s
+///   packSnorm2x16(v)  → round(clamp(v_i, -1, +1) * 32767), packed as 2 int16s
+///   packUnorm2x16(v)  → round(clamp(v_i,  0,  1) * 65535), packed as 2 uint16s
+///   unpack* — interpret the uint as the matching N×K layout and produce
+///             `clamp(f / max, -1, 1)` (snorm) or `f / max` (unorm).
+///
+/// Per backend:
+///   GLSL — all eight native (`packSnorm4x8` etc.); pass through.
+///   MSL  — all eight native, but with the `pack_float_to_*` /
+///          `unpack_*_to_float` spelling; per-name `renameBuiltin`
+///          rewrites.
+///   HLSL — NO named intrinsic. Lowered via shared `CodeGen::emitHLSL
+///          PackNormalized` / `emitHLSLUnpackNormalized` helpers using
+///          statement injection (single-eval temp → clamp → multiply by
+///          the scale → round → mask → OR-shift assemble). The HLSL
+///          lowerings are host-verified bit-identical to the GLSL/MSL
+///          spec (same discipline as §5.3 Phase C's manual bitfield
+///          extract/insert), proven on the `omegagte_pack_ops` runtime
+///          test via on-GPU `==` comparison against host-computed
+///          reference bytes.
+#define BUILTIN_PACK_SNORM_4X8 "packSnorm4x8"
+#define BUILTIN_UNPACK_SNORM_4X8 "unpackSnorm4x8"
+#define BUILTIN_PACK_UNORM_4X8 "packUnorm4x8"
+#define BUILTIN_UNPACK_UNORM_4X8 "unpackUnorm4x8"
+#define BUILTIN_PACK_SNORM_2X16 "packSnorm2x16"
+#define BUILTIN_UNPACK_SNORM_2X16 "unpackSnorm2x16"
+#define BUILTIN_PACK_UNORM_2X16 "packUnorm2x16"
+#define BUILTIN_UNPACK_UNORM_2X16 "unpackUnorm2x16"
+
 /// §5.1.0 — `mod` / `mad` are accepted as aliases of the canonical
 /// `fmod` / `fma` spellings (see `ast::canonicalBuiltinAlias`). They
 /// carry no separate semantics: `mod` is truncation-modulus like `fmod`

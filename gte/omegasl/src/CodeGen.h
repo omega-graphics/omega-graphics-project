@@ -419,6 +419,26 @@ namespace omegasl {
         bool emitHLSLBitfieldExtract(ast::CallExpr *call, std::ostream &out);
         bool emitHLSLBitfieldInsert(ast::CallExpr *call, std::ostream &out);
 
+        /// §5.5 Phase C — HLSL manual lowering of the normalized pack /
+        /// unpack family (HLSL has no native intrinsic for any of the eight).
+        /// `kind` selects the layout / signedness / scale:
+        ///   PackKind::S4 — packSnorm4x8   (4 × signed 8-bit,  scale 127)
+        ///   PackKind::U4 — packUnorm4x8   (4 × unsigned 8-bit, scale 255)
+        ///   PackKind::S2 — packSnorm2x16  (2 × signed 16-bit, scale 32767)
+        ///   PackKind::U2 — packUnorm2x16  (2 × unsigned 16-bit, scale 65535)
+        /// The pack helper emits clamp → multiply → round → mask → OR-shift;
+        /// the unpack helper emits shift → sign-extend (snorm) or mask
+        /// (unorm) → divide → clamp-at-min (snorm). Single-eval temp via
+        /// statement injection so a side-effectful operand evaluates once.
+        /// The emitted expression is bit-identical to the GLSL 4.5 spec
+        /// (host-verified before coding, then proven on real GPU by the
+        /// `omegagte_pack_ops` runtime test).
+        enum class PackNormKind { S4, U4, S2, U2 };
+        bool emitHLSLPackNormalized(ast::CallExpr *call, PackNormKind kind,
+                                    std::ostream &out);
+        bool emitHLSLUnpackNormalized(ast::CallExpr *call, PackNormKind kind,
+                                      std::ostream &out);
+
         /// Current block-nesting depth, in indentation levels (one
         /// level == 4 spaces after Phase 7.5 unification). Each
         /// `generateBlock` call increments at entry and decrements at

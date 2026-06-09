@@ -1,0 +1,31 @@
+// §5.5 Phase C — negative test for normalized pack/unpack. Multi-error:
+//   (1) packSnorm4x8 with the wrong arg count (takes exactly 1).
+//   (2) packSnorm4x8 on a float2 — operand must be float4.
+//   (3) packSnorm2x16 on a float4 — operand must be float2.
+//   (4) packUnorm4x8 on a uint — operand must be float4.
+//   (5) unpackSnorm4x8 on a float operand — operand must be uint.
+//   (6) unpackUnorm2x16 on a float2 operand — operand must be uint.
+
+struct Data { uint4 value; };
+
+buffer<Data> input  : 0;
+buffer<Data> output : 1;
+
+[in input, out output]
+compute(x=1,y=1,z=1)
+void test_bad(uint3 tid : GlobalThreadID){
+    float4 v4 = float4(0.0, 1.0, -1.0, 0.5);
+    float2 v2 = float2(0.0, 1.0);
+    float  f  = (float)input[0].value[0];
+    uint   u  = input[0].value[1];
+
+    uint  bad1 = packSnorm4x8(v4, v4);          // (1) arg count
+    uint  bad2 = packSnorm4x8(v2);              // (2) wrong arity
+    uint  bad3 = packSnorm2x16(v4);             // (3) wrong arity
+    uint  bad4 = packUnorm4x8(u);               // (4) uint operand
+    float4 bad5 = unpackSnorm4x8(f);            // (5) float operand
+    float2 bad6 = unpackUnorm2x16(v2);          // (6) float2 operand
+
+    output[0].value = uint4(bad1, bad2, bad3, bad4);
+    output[1].value = uint4(asuint(bad5.x), asuint(bad6.x), 0u, 0u);
+}
