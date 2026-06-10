@@ -168,6 +168,24 @@ namespace OmegaWTK {
         /// is distinct from each node's own `dirtyBits()` — gating
         /// uses the union of the two.
         void markDirty(uint8_t bits);
+        /// UIView-Render-Redesign Phase G.3.3: same dirty-bit marking
+        /// and ancestor `descendantDirty` propagation as `markDirty`,
+        /// but DOES NOT bump `contentVersion()`. Used by the window
+        /// resize repaint path (`WidgetTreeHost::forceFullRepaint`):
+        /// every node needs its Style / Layout / Paint passes to re-run
+        /// so the relayout settles and the tree re-paints at the new
+        /// window resolution, but a resize does not by itself change a
+        /// View's *own* painted content — a View whose pixel size is
+        /// unchanged draws exactly the same thing. The per-View content
+        /// cache keys on `(nodeId, contentVersion, sizeBucket, scale)`,
+        /// so the cache's size bucket already invalidates exactly the
+        /// Views whose size changed (miss -> recapture) while
+        /// size-unchanged Views hit and re-blit at their new position.
+        /// Bumping `contentVersion` here would defeat that — it would
+        /// force a cache miss on every View on every resize tick. Use
+        /// `markDirty` (which bumps) for genuine content changes; use
+        /// this for resize/relayout-driven repaints.
+        void markDirtyNoContentBump(uint8_t bits);
         /// Current self-only dirty mask (combination of DirtyBit
         /// values). Excludes the propagated descendant mask.
         uint8_t dirtyBits() const;

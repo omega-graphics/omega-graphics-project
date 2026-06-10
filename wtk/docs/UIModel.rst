@@ -1011,6 +1011,147 @@ per-View arrangement.
 
 ----
 
+Content Caches (Phase G)
+------------------------
+
+Three caches sit on the per-frame paint and render path so that an
+unchanged piece of work — a shape that did not move, a label whose text
+did not change, a widget whose pixels did not change — is reused instead
+of recomputed. They are the performance layer described by the
+UIView-Render-Redesign plan's Phase G; correctness does not depend on
+them (with every cache disabled the frame is simply rebuilt from
+scratch each time).
+
+The whole subsystem is behind one build flag. The CMake option
+``OMEGAWTK_ENABLE_CONTENT_CACHE`` (default ``OFF``) defines the
+``OMEGAWTK_CONTENT_CACHE_ENABLED`` macro on the WTK libraries; the cache
+*types* always compile, but the lookup / insert hooks in the hot paths
+— and the telemetry described below — are only present when the flag is
+``ON``. A build with the flag off behaves exactly as it did before
+Phase G.
+
+All three caches share one generic container,
+``Composition::ContentCache<Key, Value>`` (an LRU map with a per-entry
+byte cost, an optional entry-count cap, an optional byte budget, and a
+set of telemetry counters). Their per-process tuning lives on
+``Composition::ContentCacheConfig::inst()``, whose fields are resolved
+once from environment variables on first access and then fixed for the
+process lifetime.
+
+The tessellation cache
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Caches the triangulated mesh (``OmegaGTE::TETriangulationResult``) of a
+vector path so a repaint that crosses an unchanged shape skips
+``triangulateSync``. It lives on each window's
+``BackendRenderTargetContext`` and dies with that context. The lookup
+and insert happen at the top of
+``BackendRenderTargetContext::renderVectorPathSegmented``: a hit reuses
+the mesh and jumps straight to ``drawTriangulatedResult``; a miss
+triangulates, draws, then inserts.
+
+The key is the path's FNV-1a byte hash plus stroke width, contour/fill
+flags, the render-target size bucket, and the stroke/fill RGBA (the
+colors are baked into the mesh's per-vertex attachments, so two
+same-geometry-different-color shapes must not collide). The size bucket
+is ``lround`` of the render-target dimensions, so sub-pixel jitter
+during a live resize stays in one bucket while a real size change
+misses. Capacity is an entry count (default 1024,
+``OMEGAWTK_TESS_CACHE_ENTRIES``); there is no byte cap because the
+cached meshes are small relative to the entry count.
+
+The text-shaping cache
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Caches a shaped run (``Composition::ShapedTextRun``) so a repaint that
+crosses an unchanged label skips the whole
+``TextLayoutEngine::layout`` → residency → rasterization pipeline. It is
+a **process-wide** singleton (``Composition::TextShapingCache::inst()``)
+rather than per-window: fonts are globally shared and the same label
+text (button captions, title bars, dialog strings) recurs verbatim
+across windows, so a per-window cache would miss those reuses for no
+gain. A single mutex guards both ``find`` and ``insert`` so compositor
+threads from different windows can share it safely. The lookup happens
+at the top of ``Composition::shapeTextForDisplayList``; on a hit, MSDF
+sub-runs still re-run ``ensureGlyphsResident`` because atlas residency
+is per-``FontEngine`` state and may have been evicted between frames.
+
+The key combines an FNV-1a hash of the text, a hash of the layout
+descriptor (alignment, wrapping, line limit), the ``Font *`` identity,
+the text length, the font size, the rect size bucket, the render-scale
+bits, and the packed input color (the bitmap-fallback rasterizer bakes
+the color into the texture). Capacity is both an entry count (default
+4096, ``OMEGAWTK_TEXT_SHAPING_CACHE_ENTRIES``) and an internal byte
+cap. Lifetime is the process (the ``FontEngine``'s).
+
+The per-View content cache
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The load-bearing cache: it caches the rasterized GPU texture of a
+View's *own* paint, so a full repaint can blit an unchanged widget's
+texture instead of re-issuing its draw ops. It lives on each window's
+``BackendRenderTargetContext`` and dies with that context. Capacity is
+a byte budget (default 64 MB, ``OMEGAWTK_CONTENT_CACHE_BYTES``) holding
+the GPU textures alive; the entry count is unbounded.
+
+The Paint walker (``paintSubtreeWithCache`` in ``FrameBuilder``) wraps
+each *eligible* View's own ``paint`` in a ``BeginCacheCapture`` /
+``EndCacheCapture`` marker pair and recurses into children (the markers
+never nest — a parent's End fires before its first child's Begin). The
+backend resolves hit versus miss when it replays those markers: a hit
+blits the View-sized cached texture at the View's *current* window rect
+(so a View that only moved re-blits at its new position) and skips the
+wrapped ops; a miss captures the wrapped ops into a View-sized texture,
+inserts it, and composites it. A View is eligible when it is at least
+``OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX`` (default 64) on both axes and has
+no active animation; Views hosting platform native content are not yet
+cached.
+
+The key is ``ViewCacheKey { nodeId, contentVersion, wBucket, hBucket,
+renderScaleBits }``. ``nodeId`` is the View's stable identity;
+``contentVersion`` is a monotonic per-View counter bumped by
+``View::markDirty`` on **any** dirty bit (so a Style-only hover
+invalidates that View's own cache); ``wBucket`` / ``hBucket`` are
+``lround`` of the View size. Two consequences are worth knowing:
+
+- A change to a View's painted content (hover, state, model) bumps
+  ``contentVersion`` and misses; siblings keep their entries.
+- On a window resize, the repaint deliberately marks the dirty bits
+  through ``View::markDirtyNoContentBump`` (Phase G.3.3), which leaves
+  ``contentVersion`` alone. The size bucket then does the invalidation
+  by itself: a View whose pixel size changed lands in a new bucket and
+  recaptures, while a View whose size is unchanged keeps its key and
+  re-blits at its new position. Bumping ``contentVersion`` on resize
+  would instead miss on every View on every tick and defeat the cache.
+
+Reading the telemetry
+^^^^^^^^^^^^^^^^^^^^^^
+
+Set ``OMEGAWTK_CONTENT_CACHE_STATS=1`` (in an ``OMEGAWTK_ENABLE_CONTENT_CACHE=ON``
+build) to print a stats block to **stderr** every 60 presented frames.
+The print happens in ``BackendRenderTargetContext::endFrame`` — the
+per-window, once-per-frame boundary — so a multi-window app emits one
+block per window, tagged with that window's render-target id:
+
+.. code-block:: text
+
+   [ContentCacheStats] rtc=3 frame=60
+     tessellation hits=120 miss=8 evict=0 entries=8 bytes=4096 peakBytes=4096 hit=93.8%
+     content      hits=57 miss=20 evict=0 entries=20 bytes=5242880 peakBytes=5242880 hit=74.0%
+     textShaping  hits=240 miss=6 evict=0 entries=6 bytes=12288 peakBytes=12288 hit=97.6%
+
+The tessellation and content lines are that window's per-context caches;
+the textShaping line is the shared process-wide cache (so it repeats
+across windows). Each counter is **cumulative since process start** —
+``ContentCache`` never resets them in production — so ``hit`` is the
+lifetime hit-rate average, not a per-interval rate. The fields map
+directly to ``Composition::ContentCacheStats``: ``hits``, ``misses``,
+``evictions``, ``entries`` (live entry count), ``currentBytes`` (live
+byte cost), and ``peakBytes`` (high-water mark across the cache's
+lifetime).
+
+----
+
 Where the Old Concepts Went
 ---------------------------
 

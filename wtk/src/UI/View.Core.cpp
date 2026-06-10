@@ -41,7 +41,7 @@ Composition::Rect & View::getRect(){
 // tree; UIView DisplayLists flow into it via
 // `FrameBuilder::buildFrame` → `endFrame` → `proxy.submitDisplayList`.
 
-void View::markDirty(uint8_t bits){
+void View::markDirtyNoContentBump(uint8_t bits){
     // Phase 4.7.3: self mask gets `bits`, ancestor chain gets `bits`
     // OR-ed into their descendant-dirty masks so the root mask is the
     // union of every dirty bit in the subtree. `FrameBuilder::buildFrame`
@@ -49,7 +49,27 @@ void View::markDirty(uint8_t bits){
     // root.descendantDirty()` (run the pass), and prunes subtree
     // descents off `node.dirtyBits() | node.descendantDirty()` &
     // passBit (skip whole subtrees with no dirty bit in their subtree).
+    //
+    // UIView-Render-Redesign Phase G.3.3: this variant deliberately
+    // leaves `contentVersion_` untouched (see `markDirty` below for the
+    // bump). The resize repaint path uses it so the relayout / repaint
+    // passes re-run without invalidating the per-View content cache; the
+    // cache's size bucket invalidates the Views whose size actually
+    // changed on its own. See the `View.h` doc comment for the full
+    // rationale.
     impl_->dirtyBits_ |= bits;
+    auto * ancestor = impl_->parent_ptr;
+    while(ancestor != nullptr){
+        ancestor->impl_->descendantDirty_ |= bits;
+        ancestor = ancestor->impl_->parent_ptr;
+    }
+}
+
+void View::markDirty(uint8_t bits){
+    // Mark the dirty bits + propagate the descendant mask (shared with
+    // `markDirtyNoContentBump`), then bump this View's content
+    // generation.
+    markDirtyNoContentBump(bits);
     // UIView-Render-Redesign Phase G.3.0 (semantic set by G.3.2-rev2,
     // 2026-06-09): bump THIS view's content-generation counter on ANY
     // dirty bit.
@@ -69,18 +89,14 @@ void View::markDirty(uint8_t bits){
     // intervening G.3.2 root-only version DID propagate, because it
     // keyed the whole-window capture on the root's generation; rev2
     // drops that whole-window capture, so the propagation goes with it.)
-    // `descendantDirty_` is still propagated — that's the separate Phase
-    // 4.7.3 dirty-gating mask, unrelated to the content generation.
+    // `descendantDirty_` is still propagated by `markDirtyNoContentBump`
+    // — that's the separate Phase 4.7.3 dirty-gating mask, unrelated to
+    // the content generation.
     //
     // The counter is monotonic (uint64, never rolls over in practice)
     // and is *intentionally* untouched by `clearDirtyBits` — it is a
     // generation number, not a per-frame flag.
     impl_->contentVersion_ += 1;
-    auto * ancestor = impl_->parent_ptr;
-    while(ancestor != nullptr){
-        ancestor->impl_->descendantDirty_ |= bits;
-        ancestor = ancestor->impl_->parent_ptr;
-    }
 }
 
 uint8_t View::dirtyBits() const{

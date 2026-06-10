@@ -303,6 +303,14 @@ namespace OmegaWTK::Composition {
         /// per-frame capture overhead exceeds the savings of skipping
         /// the View's own paint emission.
         std::uint32_t cacheMinSizePx = 64;
+        /// G.4 telemetry toggle. When true, the per-window frame loop
+        /// (`BackendRenderTargetContext::endFrame`) prints a periodic
+        /// stats line — per cache: hits, misses, evictions, entries,
+        /// currentBytes, hit-rate — to stderr every 60 frames. Default
+        /// off; enable with `OMEGAWTK_CONTENT_CACHE_STATS=1`. Only has
+        /// an effect in a build with `OMEGAWTK_ENABLE_CONTENT_CACHE=ON`
+        /// (the print site is compiled under that gate).
+        bool cacheStatsEnabled = false;
 
         static const ContentCacheConfig & inst();
     };

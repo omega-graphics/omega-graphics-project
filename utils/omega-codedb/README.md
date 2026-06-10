@@ -21,10 +21,11 @@ unrelated pieces share a single folder, at specific files). Areas answer the que
 *"where do I go to work on X?"*
 
 **Symbols** are the actual things defined in the code — every C++ class, struct, enum,
-union, namespace, and type alias, plus every OmegaSL shader and shader struct. The tool
-discovers these automatically by reading the source, and remembers which file and line
-each one lives on, and which area it belongs to. Symbols answer the question *"where is
-this exact thing defined?"*
+union, namespace, and type alias, the member functions (methods) of every class and
+struct, plus every OmegaSL shader and shader struct. The tool discovers these
+automatically by reading the source, and remembers which file and line each one lives
+on, which area it belongs to, and (for a method) which class owns it. Symbols answer the
+question *"where is this exact thing defined?"*
 
 You don't have to choose between the two. A typical session starts broad ("which area?")
 and narrows to exact ("which file and line?").
@@ -68,7 +69,8 @@ all three graphics backends, one lookup shows you every place that needs touchin
 | Command | What it does |
 | --- | --- |
 | `where <topic>` | Rank the areas most relevant to a free-text topic. Your starting point when you don't know where something lives. |
-| `find <name>` | Locate a symbol (class, struct, enum, namespace, type alias, or OmegaSL shader/struct) by name, with its file, line, and area. |
+| `find <name>` | Locate a symbol (class, struct, enum, namespace, type alias, method, or OmegaSL shader/struct) by name, with its file, line, and area. A method is shown as `Owner::method`. |
+| `methods <Class>` | List the member functions of a class or struct, with the file, line, and area of each. Accepts a bare name (`methods GECommandQueue`) or a `::`-qualified one (`methods Outer::Inner`). |
 | `show <area>` | List the files and symbols inside one area. |
 | `areas` | List every curated area. Add `--module gte` (or `wtk`, `common`, …) to focus on one module. |
 | `stats` | Show how much of the repo is covered, broken down by area and by kind of symbol. Useful for spotting gaps in the map. |
@@ -81,7 +83,8 @@ A few handy options:
 - `--limit N` — cap how many results `where`, `find`, and `show` print.
 - `--kind <prefix>` — on `find`, restrict to one kind of symbol. For example,
   `find reverse --kind osl-shader` returns only shaders whose name contains "reverse",
-  and `find Pipeline --kind class` returns only classes.
+  `find Pipeline --kind class` returns only classes, and `find submit --kind method`
+  returns only methods.
 
 Matching is forgiving: an exact name beats a name that merely starts with your query,
 which beats a word inside a camel-cased name, which beats a plain substring. So you can
@@ -149,21 +152,29 @@ how many, if any, didn't land in an area at all).
 
 When you run a command, the tool walks the source tree once, reads each C++ and OmegaSL
 file, and pulls out the things worth navigating to — the type and namespace definitions,
-and the shader entry points. Comments and strings are blanked out first so a keyword that
-only appears in a comment is never mistaken for a real definition. Each discovered symbol
-is matched to its area, and the result is cached under `.cache/` so the next command is
-near-instant. The cache is keyed on each file's size and modification time, so only the
-files you've actually changed get re-read. A full cold scan of the whole repository takes
-about half a second; a warm lookup is faster than the time it takes Python to start.
+the methods of each class and struct, and the shader entry points. C++ is read by a small
+scope-aware tokeniser that keeps track of which class or namespace it is inside, which is
+how it can attribute a method to its owning type; OmegaSL is read with lightweight
+patterns, since shaders are flat and self-contained. Comments, strings, and preprocessor
+directives are blanked out first so a keyword that only appears in a comment, a literal,
+or a `#define` is never mistaken for a real definition. Each discovered symbol is matched
+to its area, and the result is cached under `.cache/` so the next command is near-instant.
+The cache is keyed on each file's size and modification time, so only the files you've
+actually changed get re-read. A full cold scan of the whole repository takes about half a
+second; a warm lookup is faster than the time it takes Python to start.
 
 The `.cache/` folder is local and disposable — it is ignored by git and can be deleted at
 any time; it will simply be rebuilt on the next run.
 
 ## What it does and doesn't cover
 
-It indexes the *definitions of types and shaders* — the anchors you navigate **to**. It
-deliberately does not try to index every free function, method, or variable: those are far
-more numerous and far noisier to detect reliably, and for finding a function by name a
-plain text search is usually good enough. If you know the exact symbol you want and it's a
-type or a shader, `find` will take you straight there. If you only know the topic, `where`
-will point you at the right neighbourhood, and `show` will lay out what's in it.
+It indexes the *definitions of types and shaders* — the anchors you navigate **to** — and
+the *member functions* of those types. It does not index free (non-member) functions or
+variables: those are far more numerous and far noisier to detect reliably, and for finding
+a free function by name a plain text search is usually good enough. Methods are included
+because they are reliably attributable to an owning class, which both keeps them findable
+(`find submitCommandBuffer`, shown as `GECommandQueue::submitCommandBuffer`) and lets you
+list a whole class's interface at once (`methods GECommandQueue`). If you know the exact
+symbol you want and it's a type, a method, or a shader, `find` will take you straight
+there. If you only know the topic, `where` will point you at the right neighbourhood, and
+`show` will lay out what's in it.

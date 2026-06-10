@@ -2620,30 +2620,112 @@ triangulator.
 - The eligibility numbers above are env-tunable
   (`OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX` defaults to 64).
 
-**G.3.3 — Phase F surgical follow-up: size-diff invalidation [~100 LOC]**
-- Replaces today's `WidgetTreeHost::forceFullRepaint` blanket
-  `Style|Layout|Paint`-on-every-node with a smarter walker:
-  - Style + Layout dirty bits still get marked on every node (the
-    Style/Layout passes are cheap relative to Paint and already gated
-    by their own subtree pruning).
-  - Paint dirty gets marked only on Views whose absolute pixel rect
-    actually changed. The walker compares each View's pre-resize and
-    post-resize `getRect()` (after `runWidgetLayout` has settled).
-- `Widget::handleHostResize` is the natural place — after
-  `runWidgetLayout` returns, walk the view tree once with the
-  pre-resize rect snapshots and mark Paint only where changed.
-- Effect: with G.3.2 in place, an HStack of four shapes whose
-  cross-axis size didn't change keeps all four shapes' cached
-  content; only the parent's blit position updates. The HStack
-  layout itself runs (Layout dirty) but consults cached textures
-  (Paint not dirty for the children).
+**G.3.3 — Phase F surgical follow-up: size-diff invalidation [DONE 2026-06-09, content-neutral marking]**
 
-**G.4 — Documentation + telemetry [~80 LOC]**
-- Section in `wtk/docs/UIModel.rst` explaining the three caches,
-  their keys, their lifetimes, and how to read the telemetry.
-- `OMEGAWTK_CONTENT_CACHE_STATS=1` env var prints periodic cache
-  stats (per cache: hits, misses, evictions, currentBytes,
-  hitRatePercent) to stderr at frame-end every 60 frames.
+Shipped a simpler mechanism than this sub-phase originally described
+(see "Why the original mechanism changed" below — the locked decision
+predated G.3.2-rev2 and is no longer implementable as written).
+
+**Shipped shape:**
+
+- New `View::markDirtyNoContentBump(bits)` (`View.Core.cpp`): the same
+  dirty-bit marking + ancestor `descendantDirty` propagation as
+  `markDirty`, but it leaves `contentVersion_` untouched. `markDirty`
+  now delegates to it and then bumps the counter — no behavior change
+  for any existing caller.
+- `WidgetTreeHost::forceFullRepaint`'s `markFullRepaintRecurse` marks
+  `Style|Layout|Paint` on every node via `markDirtyNoContentBump`
+  instead of `markDirty`. Every node's Style/Layout/Paint passes still
+  re-run (the relayout settles and the tree re-paints at the new window
+  resolution), but no View's `contentVersion` moves on resize.
+- The per-View content cache's size bucket
+  (`ViewCacheKey.wBucket/hBucket = lround(view size)`,
+  `RenderTarget.cpp` `BeginCacheCapture`) then does the size-diff
+  invalidation by itself: a View whose pixel size changed lands in a
+  new bucket → cache miss → recapture at the new size; a View whose
+  size is unchanged keeps its key → cache hit → re-blit at its
+  (possibly new) window position (a hit blits at the View's *current*
+  window rect, not the stored capture position).
+- Build verified clean with both `OMEGAWTK_ENABLE_CONTENT_CACHE=OFF`
+  (default) and `=ON`; `BasicAppTest` ON build links cleanly. With the
+  cache OFF nothing reads `contentVersion`, so output is byte-identical
+  to the pre-G.3.3 blanket repaint.
+- **Visual verification PASSED (2026-06-09, Metal):** cache-ON
+  `BasicAppTest` renders pixel-correct (all four shapes, title,
+  description, and the four buttons) with no blank frame and no
+  command-buffer growth. Resize behaviour accepted by the developer.
+
+**Effect (unchanged from the original goal):** an HStack of four shapes
+whose size didn't change keeps all four shapes' cached content; only
+the parent's blit position updates. The HStack layout still runs (the
+Layout pass) but the children consult cached textures.
+
+**Why the original mechanism changed.** The original plan (locked
+decision #1, 2026-06-05) kept `Style|Layout` on every node and marked
+`Paint` only on size-changed Views, because at lock time
+`contentVersion` bumped on `Paint` *only* — so marking Style|Layout was
+cache-neutral and the selective Paint mark was what invalidated.
+G.3.2-rev2 (2026-06-09) changed `markDirty` to bump `contentVersion` on
+*any* bit (so a Style-only hover invalidates its own cache). Under that
+semantic the original "Style|Layout on every node" would bump every
+View's `contentVersion` on every resize tick → a 0%-hit cache,
+defeating the very cache this sub-phase protects. Two further
+mismatches: (1) the recursive deep-tree layout actually settles in the
+View **Layout** pass inside `buildFrame`, not after `runWidgetLayout`
+(which arranges only one level via the root `LayoutManager`), so the
+planned "compare pre/post `getRect()` after `runWidgetLayout`" walk
+would compare stale deep rects; (2) an exact-rect comparison would
+over-invalidate on the sub-bucket live-resize jitter the size bucket is
+designed to absorb. Content-neutral marking sidesteps all three: the
+size bucket already encodes the only thing that changes a View's
+rasterized output on resize, so it becomes the single source of
+invalidation.
+
+**Original plan (historical, superseded):**
+- Replace `WidgetTreeHost::forceFullRepaint`'s blanket
+  `Style|Layout|Paint`-on-every-node with a smarter walker: Style +
+  Layout on every node; Paint only on Views whose pre/post `getRect()`
+  differs, compared in `Widget::handleHostResize` after
+  `runWidgetLayout` settles.
+
+**G.4 — Documentation + telemetry [DONE 2026-06-09]**
+
+- New "Content Caches (Phase G)" section in `wtk/docs/UIModel.rst`
+  (between "Compositor" and "Where the Old Concepts Went"): the build
+  gate, the shared `ContentCache` container + `ContentCacheConfig`, one
+  subsection per cache (tessellation / text-shaping / per-View content)
+  covering value type, owner + lifetime, lookup site, key fields, and
+  capacity, the contentVersion + G.3.3 size-bucket invalidation
+  behaviour, and a "Reading the telemetry" subsection with a sample
+  stderr block.
+- Telemetry: `ContentCacheConfig::cacheStatsEnabled` reads
+  `OMEGAWTK_CONTENT_CACHE_STATS` via the existing read-once-and-cache
+  machinery (`ContentCache.cpp` `readEnvBoolIfPresent`, enabled on a
+  non-zero integer). `BackendRenderTargetContext::reportContentCacheStats`
+  prints one block per cache to stderr every 60 presented frames from
+  `endFrame` (the per-window, once-per-frame boundary the Compositor
+  drives). Per block: `hits`, `miss`, `evict`, `entries`,
+  `currentBytes`, `peakBytes`, `hit%` (cumulative since process start;
+  hit% is the lifetime average). The per-RTC tessellation + content
+  caches read `.stats()`; the process-wide text-shaping cache reads
+  `TextShapingCache::inst().snapshot()`. Block is tagged with the RTC's
+  `traceResourceId` so multi-window output is distinguishable.
+- Implementation notes / divergences from the one-line plan sketch:
+  - Print site is `BackendRenderTargetContext::endFrame` (backend), not
+    `FrameBuilder::endFrame` (UI). The two per-RTC caches live on the
+    backend context and the text-shaping singleton is reachable from
+    Composition, so the backend is the only site with direct access to
+    all three without a new cross-boundary stats API.
+  - The whole stats path is compiled under `OMEGAWTK_CONTENT_CACHE_ENABLED`
+    (the counters are meaningless without the cache); `frameCounter_` is
+    an always-present `[[maybe_unused]]` member so the class layout is
+    stable across the macro toggle (same convention as the cache-state
+    slots). `peakBytes` was added to the printed fields beyond the
+    plan's list — it's a free high-water mark already in
+    `ContentCacheStats`.
+- Build verified clean with both `OMEGAWTK_ENABLE_CONTENT_CACHE=OFF`
+  (default — stats path compiled out, `frameCounter_` inert) and `=ON`;
+  `BasicAppTest` links cleanly both ways.
 
 **G.5 — Persistent buffer / texture handles: write-over instead of recreate**
 

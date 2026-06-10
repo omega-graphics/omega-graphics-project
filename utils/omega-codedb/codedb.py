@@ -23,6 +23,7 @@ Usage examples:
     python3 codedb.py where "composition backend"
     python3 codedb.py find GECommandQueue
     python3 codedb.py find compute --kind osl-shader
+    python3 codedb.py methods GECommandQueue # list a class's member functions
     python3 codedb.py show "OmegaGTE Source"
     python3 codedb.py stats
     python3 codedb.py index --rebuild       # force a full re-scan
@@ -48,7 +49,7 @@ SELF_DIR = Path(__file__).resolve().parent
 PROJECT_FILE = SELF_DIR / "OMEGA-Project.json"
 CACHE_DIR = SELF_DIR / ".cache"
 CACHE_FILE = CACHE_DIR / "symbol-index.json"
-CACHE_VERSION = 2  # bump when the on-disk cache schema changes
+CACHE_VERSION = 3  # bump when the on-disk cache schema changes (3: per-symbol owner)
 
 # Files we treat as indexable source, grouped by how we parse them.
 CXX_EXTS = {".h", ".hpp", ".hh", ".hxx", ".inl", ".cpp", ".cc", ".cxx", ".c", ".mm", ".m"}
@@ -187,10 +188,11 @@ def area_for_path(rel_path: str, areas: List[Area]) -> Optional[Area]:
 @dataclass
 class Symbol:
     name: str
-    kind: str          # namespace|class|struct|union|enum|using|typedef|osl-struct|osl-shader:<stage>
+    kind: str          # namespace|class|struct|union|enum|using|typedef|method|osl-struct|osl-shader:<stage>
     file: str          # repo-relative
     line: int
     area: str = ""     # filled in after indexing
+    owner: str = ""    # for methods: the ::-joined enclosing class chain (e.g. "Outer::Inner")
 
 
 # --- comment / literal scrubbing ------------------------------------------- #
@@ -221,38 +223,394 @@ def line_of(text: str, pos: int) -> int:
 
 
 # --- C/C++ ----------------------------------------------------------------- #
-# Optional all-caps attribute macros (OMEGAGTE_EXPORT, OMEGACOMMON_NODISCARD,
-# ...) may sit between the keyword and the type name; we skip over them.
-_ATTR = r'(?:[A-Z_][A-Z0-9_]*\s+)*'
+# A hand-rolled token walk replaces the old flat regexes (the tokeniser and
+# scope-stack approach are ported from utils/repo-uml). The flat regexes could
+# locate a type's definition but had no notion of *scope*, so they could never
+# say which class a method belonged to. The token walk keeps a stack of
+# namespace/class scopes; that stack is exactly what lets us tag every member
+# function with its owning class.
+#
+# What it emits — the same coverage the old regexes had, plus methods:
+#   class | struct | union | enum   type definitions (require a body `{`)
+#   namespace                       named namespaces (anonymous ones are skipped)
+#   using | typedef                 type aliases
+#   method                          member functions declared inside a class or
+#                                   struct body, with `owner` set to the
+#                                   `::`-joined enclosing class chain.
 
-CXX_TYPE_RE = re.compile(
-    r'\b(class|struct|union|enum)\b'
-    r'(?:\s+class|\s+struct)?'                 # enum class / enum struct
-    r'\s+' + _ATTR +
-    r'([A-Za-z_]\w*)'                          # 2: name
-    r'(?:\s+final)?'
-    r'\s*(?:: *[^;{}]*)?'                      # optional base-clause
-    r'\s*\{',                                  # must be a definition, not a fwd decl
+# `operator<sym>` is matched as ONE token so an overloaded operator's name
+# survives — the bare punctuation chars (`==`, `+`, ...) are otherwise dropped by
+# the tokeniser. This alternative must come first so `operator<<` wins over a
+# lone `<`. We also keep `~` so destructors (`~Widget`) are distinguishable from
+# constructors.
+_CXX_TOKEN_RE = re.compile(
+    r'operator\s*(?:'
+        r'\(\s*\)'                              # operator()
+        r'|\[\s*\]'                             # operator[]
+        r'|new\s*\[\s*\]|delete\s*\[\s*\]'      # operator new[] / delete[]
+        r'|new\b|delete\b'                      # operator new / delete
+        r'|""\s*[A-Za-z_]\w*'                   # operator""_suffix (user literal)
+        r'|[-+*/%^&|~!=<>]+'                    # operator== / += / << / -> / ...
+        r'|\s+[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*'   # conversion: operator Foo
+    r')'
+    r'|::'
+    r'|[A-Za-z_]\w*'
+    r'|[{}()\[\];:,<>~=]'
 )
 
-CXX_NS_RE = re.compile(r'\bnamespace\s+([A-Za-z_][\w]*(?:\s*::\s*[A-Za-z_]\w*)*)\s*\{')
-CXX_USING_RE = re.compile(r'\busing\s+([A-Za-z_]\w*)\s*=')
-CXX_TYPEDEF_RE = re.compile(r'\btypedef\b[^;{}]*?\b([A-Za-z_]\w*)\s*;')
+_IDENT_RE = re.compile(r'^[A-Za-z_]\w*$')
+
+# Tokens that can sit immediately before a `(` but never name a method: type and
+# storage keywords (guards against a function-pointer member `void (*cb)(int);`
+# whose first `(` follows the return type) and control-flow / declaration words.
+_CXX_NON_NAME = frozenset({
+    "void", "bool", "char", "short", "int", "long", "float", "double",
+    "signed", "unsigned", "wchar_t", "char16_t", "char32_t", "auto",
+    "const", "volatile", "constexpr", "inline", "static", "virtual",
+    "explicit", "friend", "typename", "decltype", "noexcept", "throw",
+    "return", "if", "for", "while", "switch", "case", "sizeof", "alignof",
+    "alignas", "new", "delete", "and", "or", "not", "static_assert",
+})
+
+# An all-caps name in front of a `(` at class scope is almost always a function
+# macro (OMEGA_DISABLE_COPY(Foo)), not a real method.
+_MACRO_NAME_RE = re.compile(r'^[A-Z][A-Z0-9_]*$')
 
 
-def extract_cxx(text: str) -> List[Tuple[str, str, int]]:
-    out: List[Tuple[str, str, int]] = []
-    clean = scrub(text)
-    for m in CXX_TYPE_RE.finditer(clean):
-        kw = m.group(1)
-        out.append((m.group(2), kw, line_of(clean, m.start())))
-    for m in CXX_NS_RE.finditer(clean):
-        name = re.sub(r'\s*::\s*', "::", m.group(1))
-        out.append((name, "namespace", line_of(clean, m.start())))
-    for m in CXX_USING_RE.finditer(clean):
-        out.append((m.group(1), "using", line_of(clean, m.start())))
-    for m in CXX_TYPEDEF_RE.finditer(clean):
-        out.append((m.group(1), "typedef", line_of(clean, m.start())))
+class _Scope:
+    """One lexical scope on the parse stack. `name` is the class name when
+    `kind == "class"`, else None."""
+    __slots__ = ("kind", "name")
+
+    def __init__(self, kind: str, name: Optional[str] = None):
+        self.kind = kind
+        self.name = name
+
+
+def _blank_preproc(text: str) -> str:
+    """Blank whole preprocessor-directive lines (keeping the newline so line
+    numbers stay correct). Stops a `#define FOO {`-style directive from
+    unbalancing the brace tracking the token walk relies on."""
+    out: List[str] = []
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith("#"):
+            out.append("\n" if line.endswith("\n") else "")
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+def _is_ident(tok: str) -> bool:
+    return bool(_IDENT_RE.match(tok))
+
+
+def _skip_balanced(tokens: List[Tuple[str, int]], open_idx: int,
+                   open_t: str, close_t: str) -> int:
+    """`tokens[open_idx]` is `open_t`; return the index just past its match."""
+    depth = 0
+    k = open_idx
+    n = len(tokens)
+    while k < n:
+        t = tokens[k][0]
+        if t == open_t:
+            depth += 1
+        elif t == close_t:
+            depth -= 1
+            if depth == 0:
+                return k + 1
+        k += 1
+    return k
+
+
+def _scan_to(tokens: List[Tuple[str, int]], start: int, stops) -> int:
+    """Index of the first token in `stops` at/after `start` (or len if none)."""
+    n = len(tokens)
+    k = start
+    while k < n and tokens[k][0] not in stops:
+        k += 1
+    return k
+
+
+def _skip_params(tokens: List[Tuple[str, int]], open_idx: int) -> int:
+    """Skip a member's parameter list `( ... )`, returning the index past the
+    closing `)`. Bounded: if a `}` that closes an *enclosing* scope is hit
+    before the parens balance (the closing `)` was lost — e.g. a scrubber edge
+    case mangled the source), bail at that `}` instead of running to EOF, so a
+    single stray paren can't silently drop every symbol after it in the file."""
+    pdepth = 0
+    bdepth = 0
+    k = open_idx
+    n = len(tokens)
+    while k < n:
+        t = tokens[k][0]
+        if t == "(":
+            pdepth += 1
+        elif t == ")":
+            pdepth -= 1
+            if pdepth == 0:
+                return k + 1
+        elif t == "{":
+            bdepth += 1
+        elif t == "}":
+            if bdepth == 0:
+                return k                    # closes an outer scope -> give up here
+            bdepth -= 1
+        k += 1
+    return k
+
+
+def _close_paren(toks: List[str], k: int) -> int:
+    """Index past the `)` matching the `(` at `toks[k]` (plain-string list)."""
+    depth = 0
+    while k < len(toks):
+        if toks[k] == "(":
+            depth += 1
+        elif toks[k] == ")":
+            depth -= 1
+            if depth == 0:
+                return k + 1
+        k += 1
+    return k
+
+
+def _classify_clause(clause: List[str]) -> "Optional[Tuple[Optional[str], str]]":
+    """Classify the tokens between a record keyword and its body `{`.
+
+    Returns None when the clause is really a variable declaration with a
+    brace-initialiser (`struct stat st = {0};` -> `struct stat st { ... }`),
+    which is NOT a type definition. Otherwise returns (name, owner): `name` is
+    the simple type name (None for an anonymous aggregate) and `owner` is the
+    `::`-joined qualifier of an out-of-line nested definition
+    (`struct AppWindow::Impl {` -> name "Impl", owner "AppWindow")."""
+    # Cut at the first top-level ':' (base-clause / enum underlying type).
+    depth = 0
+    stop = len(clause)
+    for idx, tok in enumerate(clause):
+        if tok in ("<", "("):
+            depth += 1
+        elif tok in (">", ")") and depth > 0:
+            depth -= 1
+        elif tok == ":" and depth == 0:
+            stop = idx
+            break
+    clause = clause[:stop]
+    # Drop a trailing template-argument list (explicit specialisation).
+    depth = 0
+    cut = len(clause)
+    for idx, tok in enumerate(clause):
+        if tok == "<":
+            if depth == 0:
+                cut = idx
+            depth += 1
+        elif tok == ">" and depth > 0:
+            depth -= 1
+    clause = clause[:cut]
+    # Split into qualified-name segments: identifiers joined by `::` stay in one
+    # segment; two *adjacent* identifiers (`Type var` or `ATTR Name`) split. We
+    # do NOT strip all-caps tokens here — an all-caps token may be the type name
+    # itself (`struct CD3DX12_BOX`); whether it's an attribute is decided below
+    # by position (only segments *before* the name may be attribute macros).
+    segs: List[List[str]] = []
+    cur: List[str] = []
+    prev_ident = False
+    i = 0
+    while i < len(clause):
+        t = clause[i]
+        if t in ("final", "alignas"):
+            if i + 1 < len(clause) and clause[i + 1] == "(":
+                i = _close_paren(clause, i + 1)
+            else:
+                i += 1
+            prev_ident = False
+            continue
+        if t == "::":
+            prev_ident = False
+        elif t == "(":
+            i = _close_paren(clause, i)       # attribute-macro args, e.g. ALIGN(16)
+            prev_ident = True                 # the next identifier starts a new segment
+            continue
+        elif _is_ident(t):
+            if prev_ident:
+                segs.append(cur)
+                cur = [t]
+            else:
+                cur.append(t)
+            prev_ident = True
+        else:
+            prev_ident = False
+        i += 1
+    if cur:
+        segs.append(cur)
+    if not segs:
+        return (None, "")                   # anonymous aggregate definition
+    # Every segment before the name must be a lone all-caps attribute macro; a
+    # real second identifier (`stat st`) means this is a variable declaration.
+    for seg in segs[:-1]:
+        if not (len(seg) == 1 and _MACRO_NAME_RE.match(seg[0])):
+            return None
+    last = segs[-1]
+    return (last[-1], "::".join(last[:-1]))
+
+
+def _operator_name(tok: str) -> str:
+    """Normalise an `operator...` token into a stable display name."""
+    rest = tok[len("operator"):].strip()
+    rest = re.sub(r"\s+", " ", rest)
+    if rest and (rest[0].isalnum() or rest[0] == "_"):
+        return "operator " + rest          # operator Foo / operator new / operator delete
+    return "operator" + rest.replace(" ", "")  # operator== / operator() / operator[]
+
+
+def _read_method_name(tokens: List[Tuple[str, int]], paren_idx: int
+                      ) -> Optional[Tuple[str, int]]:
+    """At a `(` sitting directly in a class body, recover the (name, offset) of
+    the member function it belongs to, or None if this `(` is not a method."""
+    if paren_idx == 0:
+        return None
+    prev, prev_off = tokens[paren_idx - 1]
+    if prev.startswith("operator") and (len(prev) == 8 or not (prev[8].isalnum() or prev[8] == "_")):
+        return _operator_name(prev), prev_off
+    if not _is_ident(prev):
+        return None                         # e.g. `)` from a function-pointer member
+    if prev in _CXX_NON_NAME or _MACRO_NAME_RE.match(prev):
+        return None                         # return-type keyword, or a function macro
+    if paren_idx >= 2 and tokens[paren_idx - 2][0] == "~":
+        return "~" + prev, tokens[paren_idx - 2][1]
+    return prev, prev_off
+
+
+def _class_chain(stack: List[_Scope]) -> List[str]:
+    return [s.name for s in stack if s.kind == "class" and s.name]
+
+
+def extract_cxx(text: str) -> List[Tuple[str, str, int, str]]:
+    clean = scrub(_blank_preproc(text))
+    tokens: List[Tuple[str, int]] = [(m.group(0), m.start()) for m in _CXX_TOKEN_RE.finditer(clean)]
+    out: List[Tuple[str, str, int, str]] = []
+    stack: List[_Scope] = []
+    n = len(tokens)
+    i = 0
+    while i < n:
+        tok = tokens[i][0]
+
+        # template<...> — skip the parameter list wholesale.
+        if tok == "template" and i + 1 < n and tokens[i + 1][0] == "<":
+            i = _skip_balanced(tokens, i + 1, "<", ">")
+            continue
+
+        # [[attribute]] — skip so its contents never look like a member.
+        if tok == "[" and i + 1 < n and tokens[i + 1][0] == "[":
+            i = _skip_balanced(tokens, i, "[", "]")
+            continue
+
+        if tok == "namespace":
+            j = _scan_to(tokens, i + 1, ("{", ";"))
+            if j < n and tokens[j][0] == "{":
+                names = [t for (t, _) in tokens[i + 1:j] if _is_ident(t)]
+                if names:
+                    out.append(("::".join(names), "namespace", line_of(clean, tokens[i][1]), ""))
+                stack.append(_Scope("namespace"))
+                i = j + 1
+            else:
+                i = j + 1
+            continue
+
+        if tok == "using":
+            j = i + 1
+            if j < n and tokens[j][0] == "namespace":
+                i = _scan_to(tokens, j, (";",)) + 1          # using-directive
+                continue
+            if j < n and _is_ident(tokens[j][0]):
+                nxt = tokens[j + 1][0] if j + 1 < n else ";"
+                if nxt not in ("::", ";", ",", ")", ">"):     # `using Foo = ...` alias
+                    out.append((tokens[j][0], "using", line_of(clean, tokens[i][1]), ""))
+            i = _scan_to(tokens, i + 1, (";",)) + 1
+            continue
+
+        if tok == "typedef":
+            j = _scan_to(tokens, i + 1, (";", "{"))
+            if j < n and tokens[j][0] == "{":
+                i += 1                                        # `typedef struct {...} X;` — let the type handler run
+                continue
+            if j < n and tokens[j][0] == ";" and j - 1 > i and _is_ident(tokens[j - 1][0]):
+                out.append((tokens[j - 1][0], "typedef", line_of(clean, tokens[i][1]), ""))
+            i = j + 1
+            continue
+
+        # `friend void f();` / `friend class X;` — not a member of this class.
+        if tok == "friend":
+            end = _scan_to(tokens, i + 1, (";", "{"))
+            i = end if (end < n and tokens[end][0] == "{") else end + 1
+            continue
+
+        if tok == "enum":
+            j = i + 1
+            if j < n and tokens[j][0] in ("class", "struct"):
+                j += 1
+            end = _scan_to(tokens, j, ("{", ";"))
+            if end < n and tokens[end][0] == "{":
+                info = _classify_clause([t for (t, _) in tokens[j:end]])
+                if info and info[0]:
+                    name, owner = info
+                    out.append((name, "enum", line_of(clean, tokens[i][1]), owner))
+                stack.append(_Scope("other"))                 # enum body holds no methods
+                i = end + 1
+            else:
+                i = end + 1
+            continue
+
+        if tok in ("class", "struct", "union"):
+            end = _scan_to(tokens, i + 1, ("{", ";"))
+            if end < n and tokens[end][0] == "{":
+                info = _classify_clause([t for (t, _) in tokens[i + 1:end]])
+                if info is None:
+                    i = end                                   # `struct Foo bar {..}` decl: treat `{` as a block
+                    continue
+                name, owner = info
+                if name:
+                    out.append((name, tok, line_of(clean, tokens[i][1]), owner))
+                # class/struct bodies can hold methods; union bodies we skip.
+                kind = "class" if tok in ("class", "struct") else "other"
+                chain = "::".join(filter(None, (owner, name))) if kind == "class" else None
+                stack.append(_Scope(kind, chain))
+                i = end + 1
+            else:
+                i = end + 1                                   # forward decl / elaborated use
+            continue
+
+        if tok == "{":
+            stack.append(_Scope("other"))
+            i += 1
+            continue
+
+        if tok == "}":
+            if stack:
+                stack.pop()
+            i += 1
+            continue
+
+        # An `=` at class scope starts a member initialiser (or `= default/0`);
+        # skip it so a call in the initialiser isn't mistaken for a method.
+        if tok == "=" and stack and stack[-1].kind == "class":
+            i = _scan_to(tokens, i + 1, (";", ",", "}"))
+            continue
+
+        if tok == "(":
+            if stack and stack[-1].kind == "class":
+                hit = _read_method_name(tokens, i)
+                if hit:
+                    mname, moff = hit
+                    out.append((mname, "method", line_of(clean, moff),
+                                "::".join(_class_chain(stack))))
+                i = _skip_params(tokens, i)
+                if i < n and tokens[i][0] == ":":             # constructor init-list
+                    i = _scan_to(tokens, i + 1, ("{", ";"))
+            else:
+                i += 1                                        # non-class scope: ignore
+            continue
+
+        i += 1
+
     return out
 
 
@@ -266,18 +624,18 @@ OSL_SHADER_RE = re.compile(
 )
 
 
-def extract_osl(text: str) -> List[Tuple[str, str, int]]:
-    out: List[Tuple[str, str, int]] = []
+def extract_osl(text: str) -> List[Tuple[str, str, int, str]]:
+    out: List[Tuple[str, str, int, str]] = []
     clean = scrub(text)
     for m in OSL_STRUCT_RE.finditer(clean):
-        out.append((m.group(1), "osl-struct", line_of(clean, m.start())))
+        out.append((m.group(1), "osl-struct", line_of(clean, m.start()), ""))
     for m in OSL_SHADER_RE.finditer(clean):
         stage = m.group(1)
-        out.append((m.group(2), f"osl-shader:{stage}", line_of(clean, m.start())))
+        out.append((m.group(2), f"osl-shader:{stage}", line_of(clean, m.start()), ""))
     return out
 
 
-def extract_file(path: Path, ext: str) -> List[Tuple[str, str, int]]:
+def extract_file(path: Path, ext: str) -> List[Tuple[str, str, int, str]]:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -355,7 +713,7 @@ def build_index(rebuild: bool = False, quiet: bool = True) -> Index:
             per_file[rel] = prev
             continue
         ext = os.path.splitext(path)[1].lower()
-        syms = [[n, k, ln] for (n, k, ln) in extract_file(path, ext)]
+        syms = [[n, k, ln, o] for (n, k, ln, o) in extract_file(path, ext)]
         per_file[rel] = {"sig": sig, "syms": syms}
         reparsed += 1
 
@@ -368,8 +726,11 @@ def build_index(rebuild: bool = False, quiet: bool = True) -> Index:
     for rel, info in per_file.items():
         area = area_for_path(rel, areas)
         area_name = area.name if area else "(unpartitioned)"
-        for name, kind, line in info["syms"]:
-            symbols.append(Symbol(name=name, kind=kind, file=rel, line=line, area=area_name))
+        for row in info["syms"]:
+            name, kind, line = row[0], row[1], row[2]
+            owner = row[3] if len(row) > 3 else ""
+            symbols.append(Symbol(name=name, kind=kind, file=rel, line=line,
+                                  area=area_name, owner=owner))
     return Index(symbols=symbols, files=sorted(per_file.keys()), built_at=time.time())
 
 
@@ -549,7 +910,8 @@ def cmd_find(args) -> None:
     matches = matches[: args.limit]
 
     results = [
-        {"name": s.name, "kind": s.kind, "file": s.file, "line": s.line, "area": s.area}
+        {"name": s.name, "kind": s.kind, "file": s.file, "line": s.line,
+         "area": s.area, "owner": s.owner}
         for _, s in matches
     ]
 
@@ -557,11 +919,63 @@ def cmd_find(args) -> None:
         if not rs:
             eprint(f"no symbol matched {args.query!r}")
             return
-        w = max(len(r["name"]) for r in rs)
-        for r in rs:
-            print(f"{r['name']:<{w}}  {r['kind']:<16}  {r['file']}:{r['line']}  [{r['area']}]")
+        disp = [(f"{r['owner']}::{r['name']}" if r["owner"] else r["name"]) for r in rs]
+        w = max(len(d) for d in disp)
+        for d, r in zip(disp, rs):
+            print(f"{d:<{w}}  {r['kind']:<16}  {r['file']}:{r['line']}  [{r['area']}]")
 
     emit(results, args.json, human)
+
+
+def cmd_methods(args) -> None:
+    if not args.query.strip():
+        die("methods needs a class name")
+    idx = build_index(quiet=True)
+    q = args.query.strip().lower()
+
+    def owner_matches(owner: str, exact: bool) -> bool:
+        ol = owner.lower()
+        if exact:
+            return ol == q or ol.rsplit("::", 1)[-1] == q
+        return q in ol
+
+    methods = [s for s in idx.symbols if s.kind == "method" and owner_matches(s.owner, True)]
+    if not methods:  # fall back to a forgiving substring match on the owner chain
+        methods = [s for s in idx.symbols if s.kind == "method" and owner_matches(s.owner, False)]
+    methods.sort(key=lambda s: (s.owner, s.file, s.line))
+
+    grouped: Dict[str, List[Symbol]] = {}
+    for s in methods:
+        grouped.setdefault(s.owner, []).append(s)
+
+    result = {
+        "query": args.query,
+        "owners": [
+            {
+                "owner": owner,
+                "count": len(ms),
+                "methods": [
+                    {"name": s.name, "file": s.file, "line": s.line, "area": s.area}
+                    for s in ms[: args.limit]
+                ],
+            }
+            for owner, ms in grouped.items()
+        ],
+    }
+
+    def human(r):
+        if not r["owners"]:
+            eprint(f"no methods found for class {args.query!r}")
+            return
+        for grp in r["owners"]:
+            print(f"{grp['owner']}  ({grp['count']} methods)")
+            w = max((len(m["name"]) for m in grp["methods"]), default=0)
+            for m in grp["methods"]:
+                print(f"    {m['name']:<{w}}  {m['file']}:{m['line']}  [{m['area']}]")
+            if grp["count"] > args.limit:
+                print(f"    ... and {grp['count'] - args.limit} more (use --json for all)")
+
+    emit(result, args.json, human)
 
 
 def cmd_show(args) -> None:
@@ -597,7 +1011,8 @@ def cmd_show(args) -> None:
         "symbol_count": len(syms),
         "by_kind": by_kind,
         "files": files,
-        "symbols": [{"name": s.name, "kind": s.kind, "file": s.file, "line": s.line} for s in syms],
+        "symbols": [{"name": s.name, "kind": s.kind, "file": s.file, "line": s.line,
+                     "owner": s.owner} for s in syms],
     }
 
     def human(r):
@@ -608,7 +1023,8 @@ def cmd_show(args) -> None:
         print(f"  {r['file_count']} files, {r['symbol_count']} symbols  "
               f"({', '.join(f'{k}:{v}' for k, v in sorted(r['by_kind'].items()))})")
         for s in r["symbols"][: args.limit]:
-            print(f"    {s['name']:<28} {s['kind']:<14} {s['file']}:{s['line']}")
+            disp = f"{s['owner']}::{s['name']}" if s.get("owner") else s["name"]
+            print(f"    {disp:<28} {s['kind']:<14} {s['file']}:{s['line']}")
         if r["symbol_count"] > args.limit:
             print(f"    ... and {r['symbol_count'] - args.limit} more (use --json for all)")
 
@@ -683,11 +1099,16 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--limit", type=int, default=8)
     w.set_defaults(func=cmd_where)
 
-    f = sub.add_parser("find", parents=[common], help="locate a symbol (class/struct/shader/...) by name")
+    f = sub.add_parser("find", parents=[common], help="locate a symbol (class/struct/shader/method/...) by name")
     f.add_argument("query")
-    f.add_argument("--kind", help="restrict to a kind prefix (class, struct, osl-shader, ...)")
+    f.add_argument("--kind", help="restrict to a kind prefix (class, struct, method, osl-shader, ...)")
     f.add_argument("--limit", type=int, default=25)
     f.set_defaults(func=cmd_find)
+
+    m = sub.add_parser("methods", parents=[common], help="list the member functions of a class/struct")
+    m.add_argument("query", help="class name (bare or ::-qualified)")
+    m.add_argument("--limit", type=int, default=200)
+    m.set_defaults(func=cmd_methods)
 
     s = sub.add_parser("show", parents=[common], help="list files + symbols in one area")
     s.add_argument("area")

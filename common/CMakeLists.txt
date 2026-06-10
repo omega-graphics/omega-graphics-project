@@ -500,7 +500,13 @@ endif()
 
 if(WIN32)
 	target_sources("OmegaCommon" PRIVATE "src/win/fs-win.cpp"  "src/win/net-win.cpp" "src/win/multithread-win.cpp")
-	target_compile_definitions("OmegaCommon" PRIVATE "OMEGACOMMON__BUILD__")
+	# Phase 1 of the binary split: this single DLL still compiles BOTH the
+	# Core TUs and the Img TUs (src/img/*), so it must export both symbol
+	# sets. Define both per-binary build flags so OMEGACOMMON_CORE_EXPORT and
+	# OMEGACOMMON_IMG_EXPORT each resolve to dllexport here. When Img splits
+	# into its own OmegaCommonImg DLL (Phase 2), OMEGACOMMON_IMG__BUILD__
+	# moves to that target and this one keeps only OMEGACOMMON_CORE__BUILD__.
+	target_compile_definitions("OmegaCommon" PRIVATE "OMEGACOMMON_CORE__BUILD__" "OMEGACOMMON_IMG__BUILD__")
 	target_link_libraries("OmegaCommon" PRIVATE ws2_32 advapi32 crypt32 user32)
 	# ICU DLLs are now staged into ${CMAKE_BINARY_DIR}/bin/ via the
 	# add_omega_graphics_module(SHARED EMBEDDED_LIBS ...) handling above.

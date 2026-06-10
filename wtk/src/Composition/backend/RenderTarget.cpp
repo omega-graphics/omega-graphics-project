@@ -16,12 +16,14 @@
 #include "ContentCache.h"
 #include "TessellationCache.h"
 #include "ViewContentCache.h"
+#include "../TextShapingCache.h"   // G.4: process-wide cache stats snapshot
 
 #include <algorithm>
 #include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <exception>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -428,7 +430,65 @@ void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float cl
 
 void BackendRenderTargetContext::endFrame() {
     frameRenderPass_.end();
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+    // Phase G.4: one presented frame closed. Drive the periodic
+    // content-cache telemetry (no-op unless OMEGAWTK_CONTENT_CACHE_STATS
+    // is set). `endFrame` is the per-window, once-per-frame boundary the
+    // Compositor calls after recording every slice (Compositor.cpp).
+    ++frameCounter_;
+    reportContentCacheStats();
+#endif
 }
+
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+void BackendRenderTargetContext::reportContentCacheStats() {
+    if(!ContentCacheConfig::inst().cacheStatsEnabled){
+        return;
+    }
+    // Every 60th presented frame. `frameCounter_` is pre-incremented in
+    // endFrame, so the first report lands on frame 60.
+    if(frameCounter_ == 0 || (frameCounter_ % 60) != 0){
+        return;
+    }
+
+    auto hitRate = [](const ContentCacheStats & s) -> double {
+        const std::uint64_t total = s.hits + s.misses;
+        if(total == 0){
+            return 0.0;
+        }
+        return 100.0 * static_cast<double>(s.hits) / static_cast<double>(total);
+    };
+
+    // Per-RTC caches (tessellation G.1, per-View content G.3) live on
+    // this context; the text-shaping cache (G.2) is process-wide, copied
+    // out under its own lock via snapshot(). Counters are cumulative
+    // since process start (the cache never calls resetCounters in
+    // production), so hit-rate is the lifetime average, not a per-window
+    // rate.
+    const ContentCacheStats & tess    = tessellationCacheState_->cache.stats();
+    const ContentCacheStats & content = contentCacheState_->cache.stats();
+    const ContentCacheStats   text    = TextShapingCache::inst().snapshot().stats;
+
+    auto line = [&](std::ostream & os, const char * name, const ContentCacheStats & s){
+        os << "  " << name
+           << " hits=" << s.hits
+           << " miss=" << s.misses
+           << " evict=" << s.evictions
+           << " entries=" << s.entries
+           << " bytes=" << s.currentBytes
+           << " peakBytes=" << s.peakBytes
+           << " hit=" << std::fixed << std::setprecision(1) << hitRate(s) << "%\n";
+    };
+
+    std::ostringstream os;
+    os << "[ContentCacheStats] rtc=" << traceResourceId
+       << " frame=" << frameCounter_ << "\n";
+    line(os, "tessellation", tess);
+    line(os, "content     ", content);
+    line(os, "textShaping ", text);
+    std::cerr << os.str();
+}
+#endif
 
 void BackendRenderTargetContext::resetElementState() {
     currentTransform = OmegaGTE::FMatrix<4,4>::Identity();

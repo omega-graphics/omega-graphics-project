@@ -63,12 +63,29 @@ namespace OmegaWTK::Composition {
             }
         }
 
+        // Boolean toggle env var. Enabled when present and parsing to a
+        // non-zero integer (so `=1` enables, `=0` / unset / garbage stays
+        // at the default). Mirrors the numeric readers above rather than
+        // matching free-form "true"/"yes" spellings — the documented
+        // contract is `OMEGAWTK_CONTENT_CACHE_STATS=1`.
+        void readEnvBoolIfPresent(const char * name, bool & target){
+            auto raw = OmegaCommon::getEnvVar(name);
+            if(!raw.has_value()){
+                return;
+            }
+            std::size_t parsed = 0;
+            if(parseSizeT(*raw, parsed)){
+                target = (parsed != 0);
+            }
+        }
+
         ContentCacheConfig buildConfig(){
             ContentCacheConfig cfg;
             readEnvIfPresent("OMEGAWTK_CONTENT_CACHE_BYTES",        cfg.contentCacheBytes);
             readEnvIfPresent("OMEGAWTK_TESS_CACHE_ENTRIES",         cfg.tessellationCacheEntries);
             readEnvIfPresent("OMEGAWTK_TEXT_SHAPING_CACHE_ENTRIES", cfg.textShapingCacheEntries);
             readEnvIfPresent("OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX",  cfg.cacheMinSizePx);
+            readEnvBoolIfPresent("OMEGAWTK_CONTENT_CACHE_STATS",    cfg.cacheStatsEnabled);
             return cfg;
         }
 

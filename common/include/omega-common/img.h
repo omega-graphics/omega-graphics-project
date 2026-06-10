@@ -10,6 +10,21 @@
 #include "omega-common/fs.h"
 #include "omega-common/assets.h"
 
+// Img is its own split binary (OmegaCommonImg); its public symbols are
+// exported with OMEGACOMMON_IMG_EXPORT, gated on OMEGACOMMON_IMG__BUILD__.
+// Empty (default visibility) on non-Windows targets.
+#ifdef _WIN32
+#ifdef OMEGACOMMON_IMG__BUILD__
+#define OMEGACOMMON_IMG_EXPORT __declspec(dllexport)
+#else
+#define OMEGACOMMON_IMG_EXPORT __declspec(dllimport)
+#endif
+#else
+
+#define OMEGACOMMON_IMG_EXPORT
+
+#endif
+
 namespace OmegaCommon::Img {
 
     struct Profile {
@@ -63,7 +78,7 @@ namespace OmegaCommon::Img {
     /// Also supports a non-owning `view()` for cases where the bytes
     /// are borrowed from another owner (e.g. a Media Foundation sample
     /// buffer being adapted into a `BitmapImage` for the video sink).
-    class OMEGACOMMON_EXPORT PixelStorage {
+    class OMEGACOMMON_IMG_EXPORT PixelStorage {
     public:
         using Deleter = void(*)(Byte *);
 
@@ -152,7 +167,7 @@ namespace OmegaCommon::Img {
     /// Decoded image. Move-only; owns its pixel buffer through
     /// `pixels`. The legacy raw-pointer `data` field has been replaced
     /// by `data()`/`byteSize()` accessors that forward to `pixels`.
-    struct OMEGACOMMON_EXPORT BitmapImage {
+    struct OMEGACOMMON_IMG_EXPORT BitmapImage {
         Profile profile;
         PixelStorage pixels;
         Header header;
@@ -175,10 +190,10 @@ namespace OmegaCommon::Img {
         OMEGACOMMON_NODISCARD bool empty() const noexcept { return pixels.empty(); }
     };
 
-    OMEGACOMMON_EXPORT Result<BitmapImage, std::string> loadFromFile(FS::Path path);
-    OMEGACOMMON_EXPORT Result<BitmapImage, std::string> loadFromAssets(AssetBundle & bundle, FS::Path path);
-    OMEGACOMMON_EXPORT Result<BitmapImage, std::string> loadFromBuffer(Byte * bufferData, std::size_t bufferSize, Format f);
-    OMEGACOMMON_EXPORT Result<BitmapImage, std::string> loadFromURL(StrRef url, Format format);
+    OMEGACOMMON_IMG_EXPORT Result<BitmapImage, std::string> loadFromFile(FS::Path path);
+    OMEGACOMMON_IMG_EXPORT Result<BitmapImage, std::string> loadFromAssets(AssetBundle & bundle, FS::Path path);
+    OMEGACOMMON_IMG_EXPORT Result<BitmapImage, std::string> loadFromBuffer(Byte * bufferData, std::size_t bufferSize, Format f);
+    OMEGACOMMON_IMG_EXPORT Result<BitmapImage, std::string> loadFromURL(StrRef url, Format format);
 
 }
 

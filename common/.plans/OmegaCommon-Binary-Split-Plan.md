@@ -39,7 +39,7 @@ the ASIO binary is the target the async work lands in.
 | 1 | Target name format | `OmegaCommonCore`, `OmegaCommonImg`, `OmegaCommonASIO` (no dot) | Honors the user's stated naming. Plain concatenated names avoid any loader / install-tooling quirks around dotted DLL filenames; resulting DLL/dylib filenames are `OmegaCommonCore.dll` etc. |
 | 2 | Public header layout | Unchanged — img.h / io.h / websocket.h stay under `include/omega-common/` | Avoids consumer #include churn. The split is binary, not API. |
 | 3 | Namespace | Unchanged — everything stays in `OmegaCommon::` | Same as above. |
-| 4 | Export macro | A single `OMEGACOMMON_EXPORT` shared by all three binaries (the existing macro, unchanged) | The split is binary-only; all public headers keep the one macro they use today, so there is zero header churn and nothing to alias or retarget. Each binary defines `OMEGACOMMON__BUILD__` while compiling its own TUs. |
+| 4 | Export macros | One per binary: `OMEGACOMMON_CORE_EXPORT`, `OMEGACOMMON_IMG_EXPORT`, `OMEGACOMMON_ASIO_EXPORT` | Each binary marks only its own symbols, so on Windows an Img/ASIO TU including a Core header correctly sees Core's symbols as `dllimport` — no accidental re-export, no need to export-all. The existing `OMEGACOMMON_EXPORT` macro stays as a **compat alias** for `OMEGACOMMON_CORE_EXPORT` so non-Core headers can be retargeted without a flag-day rename. |
 | 5 | Dependency direction | Img → Core; ASIO → Core; Core depends on neither | Only physically possible direction — Core has no img / async knowledge. |
 | 6 | Tools (omega-ebin, omega-wrapgen, omega-assetc, parse-test) | Link `OmegaCommonCore` only | None of them touch image codec or async I/O. |
 | 7 | Versioning | Single `OMEGACOMMON_VERSION` covers all three | Avoids three independently-drifting version numbers for what is logically one project. |
@@ -111,38 +111,57 @@ has somewhere to land.
 
 ## Public header changes
 
-Per Decision #4, there is a single export macro shared by all three
-binaries: the existing `OMEGACOMMON_EXPORT`. No new macros are
-introduced, no public header's `OMEGACOMMON_EXPORT` uses change, and
-there is nothing to alias. The only edit is to the macro's own
-definition in `utils.h`.
+Per Decision #4, three new export macros are introduced. The existing
+`OMEGACOMMON_EXPORT` keeps working as a compat alias for the Core
+macro so we never need a flag-day rename.
 
-### `include/omega-common/utils.h` (home of the export macro)
+### `include/omega-common/utils.h` (Core's home for the macro pattern)
 
 ```cpp
-// Single export macro shared by every OmegaCommon binary. Whichever
-// binary is currently compiling defines OMEGACOMMON__BUILD__, so its
-// own TUs emit dllexport; consumers see dllimport. On non-Windows
-// targets it is empty (default visibility).
+// Per-binary export macros. Each split binary defines its own
+// OMEGACOMMON_<BIN>__BUILD__ at compile time; consumers see dllimport.
+// On non-Windows targets these are all empty (default visibility).
 
 #ifdef _WIN32
-  #ifdef OMEGACOMMON__BUILD__
-    #define OMEGACOMMON_EXPORT __declspec(dllexport)
+  #ifdef OMEGACOMMON_CORE__BUILD__
+    #define OMEGACOMMON_CORE_EXPORT __declspec(dllexport)
   #else
-    #define OMEGACOMMON_EXPORT __declspec(dllimport)
+    #define OMEGACOMMON_CORE_EXPORT __declspec(dllimport)
   #endif
 #else
-  #define OMEGACOMMON_EXPORT
+  #define OMEGACOMMON_CORE_EXPORT
+#endif
+
+// Compat: OMEGACOMMON_EXPORT continues to mean "exported from Core"
+// for headers that haven't been retargeted yet (or never will be).
+#define OMEGACOMMON_EXPORT OMEGACOMMON_CORE_EXPORT
+```
+
+### `include/omega-common/img.h`
+
+Add at top:
+
+```cpp
+#ifdef _WIN32
+  #ifdef OMEGACOMMON_IMG__BUILD__
+    #define OMEGACOMMON_IMG_EXPORT __declspec(dllexport)
+  #else
+    #define OMEGACOMMON_IMG_EXPORT __declspec(dllimport)
+  #endif
+#else
+  #define OMEGACOMMON_IMG_EXPORT
 #endif
 ```
 
-### `include/omega-common/img.h`, `io.h`, and `websocket.h`
+Then rewrite the existing `OMEGACOMMON_EXPORT` uses in img.h to
+`OMEGACOMMON_IMG_EXPORT`. (Currently 6 occurrences: `PixelStorage`,
+`BitmapImage`, and the four `loadFrom*` free functions.)
 
-No change. These headers keep using `OMEGACOMMON_EXPORT` exactly as
-they do today (img.h's 6 uses — `PixelStorage`, `BitmapImage`, and the
-four `loadFrom*` free functions — stay as-is). They inherit the macro
-from `utils.h`, so there is no per-header macro block and no separate
-visibility.h.
+### `include/omega-common/io.h` and `include/omega-common/websocket.h`
+
+Use `OMEGACOMMON_ASIO_EXPORT`, mirroring the same pattern. Defined
+inline at the top of each header (no separate visibility.h —
+the existing per-header pattern in OmegaCommon stays).
 
 ## CMake changes (`common/CMakeLists.txt`)
 
@@ -165,7 +184,7 @@ add_omega_graphics_module("OmegaCommonCore" SHARED
 
 target_include_directories("OmegaCommonCore" PRIVATE "${OMEGACOMMON_RAPIDJSON_INCLUDE_DIR}")
 target_link_libraries("OmegaCommonCore" PRIVATE pcre2-8 ssl crypto icuuc icudata icui18n)
-target_compile_definitions("OmegaCommonCore" PRIVATE OMEGACOMMON__BUILD__)
+target_compile_definitions("OmegaCommonCore" PRIVATE OMEGACOMMON_CORE__BUILD__)
 add_dependencies("OmegaCommonCore" icu)
 
 # Platform sources + system libs for Core (curl/WinHTTP, etc.) — same
@@ -182,7 +201,7 @@ add_omega_graphics_module("OmegaCommonImg" SHARED
 target_link_libraries("OmegaCommonImg"
     PUBLIC  "OmegaCommonCore"
     PRIVATE png turbojpeg tiff z)
-target_compile_definitions("OmegaCommonImg" PRIVATE OMEGACOMMON__BUILD__)
+target_compile_definitions("OmegaCommonImg" PRIVATE OMEGACOMMON_IMG__BUILD__)
 add_dependencies("OmegaCommonImg" libpng libjpeg-turbo libtiff zlib)
 
 # --- OmegaCommonASIO ---
@@ -193,7 +212,7 @@ add_omega_graphics_module("OmegaCommonASIO" SHARED
     HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 target_link_libraries("OmegaCommonASIO" PUBLIC "OmegaCommonCore")
-target_compile_definitions("OmegaCommonASIO" PRIVATE OMEGACOMMON__BUILD__)
+target_compile_definitions("OmegaCommonASIO" PRIVATE OMEGACOMMON_ASIO__BUILD__)
 # Boost include path + defines applied by the Async plan, not here.
 ```
 
@@ -231,22 +250,24 @@ Img binaries existing and tested in isolation.
 
 ## Implementation phases
 
-### Phase 1 — Confirm the single export macro + build flag (~10 LOC)
+### Phase 1 — Per-binary export macros, single binary intact (~60 LOC)
 
-With one shared `OMEGACOMMON_EXPORT` (Decision #4) there are no new
-macros to introduce — this phase just confirms the existing pattern is
-what the split relies on.
-
-- `1a` Confirm `utils.h` defines `OMEGACOMMON_EXPORT` gated on
-  `OMEGACOMMON__BUILD__` (the single-macro form shown above). No new
-  macro, no alias.
-- `1b` `img.h` — no change; it already uses `OMEGACOMMON_EXPORT`.
-- `1c` `io.h` / `websocket.h` — created by the Async plan and use
-  `OMEGACOMMON_EXPORT` from the start; nothing to pre-stage.
-- `1d` CMake: confirm the existing single `OmegaCommon` target defines
-  `OMEGACOMMON__BUILD__` (no rename — every split binary will define the
-  same flag). Still a single binary, still called `OmegaCommon`. **No
-  consumer change yet.**
+- `1a` Edit `utils.h` to define the new `OMEGACOMMON_CORE_EXPORT` macro
+  and alias the legacy `OMEGACOMMON_EXPORT` to it.
+- `1b` Edit `img.h` to define `OMEGACOMMON_IMG_EXPORT` and rewrite its
+  6 export-macro uses.
+- `1c` Pre-stage `io.h` / `websocket.h` export macros (the Async plan
+  Phase 1c creates the headers themselves; this phase just confirms the
+  macro pattern is in place beforehand).
+- `1d` CMake: on the existing single `OmegaCommon` target, replace the
+  `OMEGACOMMON__BUILD__` compile-definition with **both**
+  `OMEGACOMMON_CORE__BUILD__` and `OMEGACOMMON_IMG__BUILD__`. The lone DLL
+  still compiles the Img TUs (`src/img/*`) alongside Core, so both symbol
+  sets must resolve to `dllexport` here — defining only the Core flag would
+  mark the freshly-retargeted `OMEGACOMMON_IMG_EXPORT` symbols `dllimport`
+  while building them (Windows: C4273, dropped exports). At Phase 2,
+  `OMEGACOMMON_IMG__BUILD__` moves to the new `OmegaCommonImg` target. Still
+  a single binary, still called `OmegaCommon`. **No consumer change yet.**
 - Verifies: clean build on Linux + Windows. Symbol table of the lone
   DLL unchanged.
 
@@ -279,7 +300,7 @@ Small-feature exception applies (<300 LOC). No sub-bullets needed.
   with a single stub TU `src/asio/asio_stub.cpp` that defines nothing
   (so the linker has something to produce a DLL from).
 - `3b` `target_link_libraries(OmegaCommonASIO PUBLIC OmegaCommonCore)`.
-- `3c` `target_compile_definitions(OmegaCommonASIO PRIVATE OMEGACOMMON__BUILD__)`.
+- `3c` `target_compile_definitions(OmegaCommonASIO PRIVATE OMEGACOMMON_ASIO__BUILD__)`.
 - No Boost yet — that's Async plan Phase 1b.
 - Verifies: empty DLL builds clean on all platforms.
 
@@ -312,7 +333,7 @@ Small-feature exception applies (<300 LOC). No sub-bullets needed.
 | Risk | Mitigation |
 |------|------------|
 | Phase 2 flag-day touches three top-level modules in one commit | Land Phase 2 with the consumer updates in a single PR. Don't try to half-migrate. |
-| Single `OMEGACOMMON_EXPORT` + single `OMEGACOMMON__BUILD__`: when an Img/ASIO TU includes a Core header on Windows, `OMEGACOMMON__BUILD__` is defined for that compile, so Core's symbols are marked `dllexport` instead of `dllimport` (risk of LNK4217 / accidental re-export from the wrong DLL). | Non-Windows is unaffected — the macro is empty there. For Windows, the clean fix is to keep the one macro as a no-op and let CMake auto-export via per-target `WINDOWS_EXPORT_ALL_SYMBOLS`; otherwise confirm at the Phase 2 Windows hand-off whether the mismatch actually surfaces (pure consumers, which never define the flag, are always correct). |
+| The `OMEGACOMMON_EXPORT → OMEGACOMMON_CORE_EXPORT` alias means non-Core headers using the legacy macro silently get dllimport-from-Core symbols | Phase 1b rewrites img.h's uses immediately. The Async plan headers use the new ASIO macro from the start. The alias is for **transitional** use only — by end of Phase 2, no non-Core public header uses the bare `OMEGACOMMON_EXPORT`. |
 | Image consumer count higher than the audit caught | Phase 4 explicit audit pass covers this. |
 
 ## Out of scope

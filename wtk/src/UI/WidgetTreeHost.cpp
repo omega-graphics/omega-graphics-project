@@ -447,8 +447,23 @@ namespace OmegaWTK {
         constexpr std::uint8_t kFullRepaintBits =
             View::Style | View::Layout | View::Paint;
 
+        // UIView-Render-Redesign Phase G.3.3: mark via
+        // `markDirtyNoContentBump`, NOT `markDirty`. The resize repaint
+        // must re-run every node's Style / Layout / Paint pass (the
+        // platform stretches the old surface, so content must redraw at
+        // the new resolution), but it must NOT bump each View's
+        // `contentVersion`. The per-View content cache (G.3.2-rev2) keys
+        // on `(nodeId, contentVersion, sizeBucket, scale)` and bumps
+        // `contentVersion` on ANY `markDirty` bit — so a plain
+        // `markDirty(Style|Layout|Paint)` here would invalidate every
+        // cached View texture on every resize tick, defeating the cache.
+        // Leaving `contentVersion` alone lets the cache's size bucket do
+        // the size-diff invalidation by itself: a View whose pixel size
+        // changed lands in a new size bucket -> cache miss -> recapture
+        // at the new size, while a View whose size is unchanged hits and
+        // re-blits at its (possibly new) window position.
         void markFullRepaintRecurse(View & view){
-            view.markDirty(kFullRepaintBits);
+            view.markDirtyNoContentBump(kFullRepaintBits);
             for(auto * sv : view.subviews()){
                 if(sv != nullptr){
                     markFullRepaintRecurse(*sv);

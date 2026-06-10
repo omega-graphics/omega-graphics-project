@@ -21,7 +21,8 @@
 
     This repo is 100k+ lines across many modules. Before grepping the whole tree, use omega-codedb to locate the right area, file, or symbol. It is zero-dependency Python (stdlib only) and needs no build.
         python3 utils/omega-codedb/codedb.py where "<topic>"   # which area owns a topic (e.g. "vulkan compositor")
-        python3 utils/omega-codedb/codedb.py find <Symbol>     # exact file:line + area for a class/struct/enum/namespace or OmegaSL shader
+        python3 utils/omega-codedb/codedb.py find <Symbol>     # exact file:line + area for a class/struct/enum/namespace/method or OmegaSL shader
+        python3 utils/omega-codedb/codedb.py methods <Class>   # list the member functions of a class/struct (file:line + area each)
         python3 utils/omega-codedb/codedb.py show "<Area>"     # files + symbols inside one area
         python3 utils/omega-codedb/codedb.py areas [--module gte]
         python3 utils/omega-codedb/codedb.py index --rebuild   # refresh the symbol index after adding/moving files

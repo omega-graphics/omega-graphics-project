@@ -205,6 +205,24 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GETextureRenderTarget> captureTarget_;
         SharedHandle<OmegaGTE::GEFence>            captureFence_;
 
+        /// Phase G.4 telemetry: per-window presented-frame counter. Used
+        /// only to drive the every-60-frames content-cache stats line
+        /// (see `reportContentCacheStats`); `[[maybe_unused]]` because
+        /// nothing increments it in an `OMEGAWTK_ENABLE_CONTENT_CACHE=OFF`
+        /// build, where the stats path is compiled out. Kept as an
+        /// always-present member so the class layout is identical across
+        /// the macro toggle (same convention as the cache-state slots).
+        [[maybe_unused]] std::uint64_t frameCounter_ = 0;
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+        /// Phase G.4: print one telemetry line per cache (tessellation,
+        /// per-View content, process-wide text-shaping) to stderr on
+        /// every 60th presented frame, gated by the
+        /// `OMEGAWTK_CONTENT_CACHE_STATS` env toggle. Called from
+        /// `endFrame`. Compiled only when the content-cache subsystem is
+        /// enabled — the counters it reads are meaningless without it.
+        void reportContentCacheStats();
+#endif
+
         /// Open a transient render-to-texture pass for a content-cache
         /// capture (G.3.2-rev2). The texture is sized to the View's
         /// backing pixel rect `(widthPx, heightPx)`; the capture pass

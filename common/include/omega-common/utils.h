@@ -27,17 +27,24 @@
 #ifndef OMEGA_COMMON_COMMON_UTILS_H
 #define OMEGA_COMMON_COMMON_UTILS_H
 
+// Per-binary export macros. Each split binary defines its own
+// OMEGACOMMON_<BIN>__BUILD__ at compile time; consumers see dllimport.
+// On non-Windows targets these are all empty (default visibility).
 #ifdef _WIN32
-#ifdef OMEGACOMMON__BUILD__
-#define OMEGACOMMON_EXPORT __declspec(dllexport)
-#else 
-#define OMEGACOMMON_EXPORT __declspec(dllimport)
+#ifdef OMEGACOMMON_CORE__BUILD__
+#define OMEGACOMMON_CORE_EXPORT __declspec(dllexport)
+#else
+#define OMEGACOMMON_CORE_EXPORT __declspec(dllimport)
 #endif
-#else 
+#else
 
-#define OMEGACOMMON_EXPORT
+#define OMEGACOMMON_CORE_EXPORT
 
 #endif
+
+// Compat: OMEGACOMMON_EXPORT continues to mean "exported from Core" for
+// headers that haven't been retargeted yet (or never will be).
+#define OMEGACOMMON_EXPORT OMEGACOMMON_CORE_EXPORT
 
 #define OMEGACOMMON_CLASS_ID CLASS_ID
 
