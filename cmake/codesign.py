@@ -76,6 +76,21 @@ parser.add_argument("--framework",dest="framework",action="store_const",const=Tr
 parser.add_argument("--strip-build-rpaths",dest="strip_build_rpaths",type=str,default=None)
 args = parser.parse_known_args()
 
+def _clean_cstemp(root):
+    """Remove leftover *.cstemp files. codesign writes the new signature to a
+    <name>.cstemp beside the target and atomically renames it into place; an
+    interrupted/raced sign leaves the temp behind. A stray .cstemp in
+    Contents/MacOS/ then makes the next verify fail ("not signed at all"
+    subcomponent), so sweep them before re-signing."""
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for fn in filenames:
+            if fn.endswith(".cstemp"):
+                try:
+                    os.remove(os.path.join(dirpath, fn))
+                except OSError:
+                    pass
+
+
 if(args[0].framework):
     AppleFramework.main(args[1])
 
@@ -83,6 +98,7 @@ if(args[0].framework):
 # any build-tree rpath before the bundle is sealed. Re-seal any nested framework
 # whose binary changed so its CodeResources stay consistent, then sign the app.
 if(args[0].strip_build_rpaths):
+    _clean_cstemp(args[0].code)
     _touched_frameworks = strip_build_rpaths(args[0].code, args[0].strip_build_rpaths)
     for _fw in _touched_frameworks:
         os.system("codesign --force -s " + args[0].sig + " " + _fw)

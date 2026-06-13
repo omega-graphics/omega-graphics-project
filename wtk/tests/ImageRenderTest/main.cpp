@@ -41,12 +41,28 @@ int omegaWTKMain(AppInst *app) {
     auto window = make<AppWindow>(windowRect, new TestWindowDelegate());
     window->setTitle("ImageRenderTest");
 
-    // Resolve "test.png" against the EXE's directory rather than CWD.
-    // The POST_BUILD copy in CMakeLists.txt stages the file alongside
-    // the binary; this lookup matches that staging regardless of the
-    // launch CWD. `append` uses the platform separator internally.
+    // Resolve "test.png" against the bundle's resource dir rather than CWD.
+    // On macOS the file is staged into Contents/Resources/ (beside
+    // default.pak); staging it in Contents/MacOS/ next to the binary makes
+    // codesign reject the bundle ("not signed at all" subcomponent). On
+    // Win/Linux it sits next to the binary. Mirrors AppInst's default.pak
+    // resolution. The POST_BUILD copy in CMakeLists.txt stages it to match.
     OmegaCommon::FS::Path imgPath = AppInst::executableDir();
+#if defined(TARGET_MACOS)
+    // .../Contents/MacOS -> .../Contents/Resources/test.png
+    {
+        auto &exeDir = imgPath.str();
+        auto parentSlash = exeDir.rfind('/');
+        if(parentSlash != std::string::npos){
+            imgPath = OmegaCommon::FS::Path(
+                exeDir.substr(0, parentSlash) + "/Resources/" + IMAGE_RENDER_TEST_PNG_PATH);
+        } else {
+            imgPath.append(IMAGE_RENDER_TEST_PNG_PATH);
+        }
+    }
+#else
     imgPath.append(IMAGE_RENDER_TEST_PNG_PATH);
+#endif
 
     // Load the PNG. Failure is a fatal diagnostic — bail with a clear
     // message so the user notices it in the console instead of seeing

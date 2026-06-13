@@ -146,6 +146,13 @@ if(XCODE)
 else()
 
     macro(code_sign_bundle _NAME IS_APP VERSION OUTPUT_DIR EMBED_LIBS)
+        # Any extra args are real bundle-content files (embedded dylibs,
+        # frameworks, resources) the signature must track. The __unsigned
+        # aggregator is a phony target, so a custom command cannot see
+        # timestamp changes through it — without these explicit file deps the
+        # seal goes stale whenever a lib/framework re-embeds without the exe
+        # relinking.
+        set(_EXTRA_SIGN_DEPS ${ARGN})
         if(TARGET ${_NAME})
             if(${IS_APP})
                 set(_OUT "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/_CodeSignature")
@@ -155,17 +162,33 @@ else()
 				set(_CODE "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework/Versions/${VERSION}")
             endif()
             
+            # Track signing with a stamp FILE, not the _CodeSignature dir.
+            # Ninja can't reliably up-to-date-check a directory output, so a
+            # dir-output codesign re-runs every build; because codesign --force
+            # rewrites the (framework) binary's signature in place, that churns
+            # the binary's mtime and cascades into needless relinks + codesign
+            # races (stray .cstemp files, stale seals). A stamp file re-runs
+            # codesign only when a real input (exe / embedded artifact) changes.
+            set(_STAMP_DIR "${CMAKE_BINARY_DIR}/CMakeFiles/codesign-stamps")
+            file(MAKE_DIRECTORY "${_STAMP_DIR}")
             if(${IS_APP})
-                add_custom_command(OUTPUT "${_OUT}"
+                set(_STAMP "${_STAMP_DIR}/${_NAME}.app.codesign.stamp")
+            else()
+                set(_STAMP "${_STAMP_DIR}/${_NAME}.framework.codesign.stamp")
+            endif()
+
+            if(${IS_APP})
+                add_custom_command(OUTPUT "${_STAMP}"
                 COMMAND ${PYEXEC} ${CODESIGN_SCRIPT}
                 --sig ${CODE_SIGNATURE} --code ${_CODE}
                 --strip-build-rpaths ${CMAKE_BINARY_DIR}
-                DEPENDS "${_NAME}${UNSIGNED_TARGET_SUFFIX};${_NAME}"
+                COMMAND ${CMAKE_COMMAND} -E touch "${_STAMP}"
+                DEPENDS "${_NAME}${UNSIGNED_TARGET_SUFFIX};${_NAME}" ${_EXTRA_SIGN_DEPS}
 				COMMENT "Code Signing App Bundle ${_NAME}.app")
             else()
                
 				if(EMBED_LIBS)
-	                add_custom_command(OUTPUT "${OUTPUT_DIR}/_CodeSignature"
+	                add_custom_command(OUTPUT "${_STAMP}"
 	                COMMAND ${PYEXEC} ${CODESIGN_SCRIPT} --sig ${CODE_SIGNATURE} 
 	                --code ${_CODE} 
 	                --framework
@@ -173,23 +196,25 @@ else()
 	                --name ${_NAME}
 	                --current_version ${VERSION}
 					--symlink-other-dirs Libraries
+	                COMMAND ${CMAKE_COMMAND} -E touch "${_STAMP}"
 	                DEPENDS "${_NAME}${UNSIGNED_TARGET_SUFFIX};${_NAME}"
 					COMMENT "Code Signing Framework Bundle ${_NAME}.framework"
 	                )
 				else()
-	                add_custom_command(OUTPUT "${OUTPUT_DIR}/_CodeSignature"
+	                add_custom_command(OUTPUT "${_STAMP}"
 	                COMMAND ${PYEXEC} ${CODESIGN_SCRIPT} --sig ${CODE_SIGNATURE} 
 	                --code ${_CODE} 
 	                --framework
 	                -F "${FRAMEWORK_OUTPUT_DIR}/${_NAME}.framework"
 	                --name ${_NAME}
 	                --current_version ${VERSION}
+	                COMMAND ${CMAKE_COMMAND} -E touch "${_STAMP}"
 	                DEPENDS "${_NAME}${UNSIGNED_TARGET_SUFFIX};${_NAME}"
 					COMMENT "Code Signing Framework Bundle ${_NAME}.framework"
 	                )
 				endif()
             endif()
-            add_custom_target("${_NAME}__codesign" DEPENDS "${OUTPUT_DIR}/_CodeSignature")
+            add_custom_target("${_NAME}__codesign" DEPENDS "${_STAMP}")
         endif()
     endmacro(code_sign_bundle)  
     
@@ -360,7 +385,19 @@ function(add_app_bundle)
 	set(_NAME ${_ARG_NAME})
 
     file(MAKE_DIRECTORY "${APP_BUNDLE_OUTPUT_DIR}/${_ARG_NAME}.app/Contents/MacOS")
-    file(COPY ${_ARG_PLIST} DESTINATION ${APP_BUNDLE_OUTPUT_DIR}/${_ARG_NAME}.app/Contents)
+    # Stage the bundle plist as Contents/Info.plist (NOT the source filename).
+    # A caller that names it <App>_Info.plist (e.g. add_kreate_game) would
+    # otherwise leave a stray, unsigned *_Info.plist in Contents/ that codesign
+    # rejects ("not signed at all" subcomponent). Build-time (not configure-time
+    # file(COPY)) so it is recreated on every build and tracked by the signature.
+    set(_INFO_PLIST_OUT "${APP_BUNDLE_OUTPUT_DIR}/${_ARG_NAME}.app/Contents/Info.plist")
+    add_custom_command(
+        OUTPUT "${_INFO_PLIST_OUT}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_BUNDLE_OUTPUT_DIR}/${_ARG_NAME}.app/Contents"
+        COMMAND ${CMAKE_COMMAND} -E copy "${_ARG_PLIST}" "${_INFO_PLIST_OUT}"
+        DEPENDS "${_ARG_PLIST}"
+        COMMENT "Staging Info.plist for ${_ARG_NAME}.app")
+    add_custom_target("${_NAME}__plist" DEPENDS "${_INFO_PLIST_OUT}")
 
     add_executable("${_ARG_NAME}" ${_ARG_SOURCES})
     set_target_properties("${_ARG_NAME}"
@@ -390,6 +427,7 @@ function(add_app_bundle)
 	set(UNSIGNED_TARGET "${_NAME}${UNSIGNED_TARGET_SUFFIX}")
 	add_custom_target(${UNSIGNED_TARGET})
 	add_dependencies(${UNSIGNED_TARGET} ${_ARG_NAME})
+	add_dependencies(${UNSIGNED_TARGET} "${_NAME}__plist")
 
 	set(ALL_RES_FINAL )
 
@@ -413,7 +451,11 @@ function(add_app_bundle)
 	#     set_target_properties()
 	# set_source_files_properties(${_ARG_RESOURCES} MACOSX_PACKAGE_LOCATION "Resources")
 
-	add_custom_target(${_NAME}.app)
+	# ALL so a plain `cmake --build build` signs the bundle. Without it the
+	# exe + embeds (which ARE in `all`) update but the codesign target is
+	# never reached, leaving every app with a stale/missing signature until
+	# someone builds the `<name>.app` target explicitly.
+	add_custom_target(${_NAME}.app ALL)
 
 	if(XCODE)
 		if(_ARG_EMBEDDED_FRAMEWORKS)
@@ -466,7 +508,12 @@ function(add_app_bundle)
 			add_dependencies(${UNSIGNED_TARGET} "${_NAME}__lib_embed")
 		endif()
 
-			code_sign_bundle(${_NAME} TRUE "VERSION" "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents" ${EMBED_LIBS})
+			# Pass the real bundle-content files so the signature re-runs
+			# whenever a resource, embedded framework, or embedded lib changes
+			# — not only when the exe relinks. Without this a full parallel
+			# build re-embeds artifacts but leaves the seal stale.
+			set(_BUNDLE_SIGN_DEPS ${_INFO_PLIST_OUT} ${ALL_RES_FINAL} ${__outputted_frameworks} ${__outputted_libraries})
+			code_sign_bundle(${_NAME} TRUE "VERSION" "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents" ${EMBED_LIBS} ${_BUNDLE_SIGN_DEPS})
 			add_dependencies(${_NAME}.app "${_NAME}__codesign")
 
 			# Ensure a plain `${_NAME}` build also stages runtime bundle artifacts.

@@ -38,18 +38,28 @@ OmegaWTKApp(
     "org.omegagraphics.ImageRenderTest"
     SOURCES
     ImageRenderTest/main.cpp)
-# Stage the test PNG next to the built binary so the test loads it via
-# the relative `"test.png"` fallback in main.cpp regardless of which
-# source tree (or none) is reachable from the run host. The previous
-# CMake compile-def baked an absolute source-tree path into the EXE,
-# which breaks Linux + Windows CI runs that build out-of-tree or ship
-# the binary somewhere the source doesn't follow. copy_if_different
-# avoids re-stamping the build timestamp on no-op rebuilds.
-add_custom_command(TARGET ImageRenderTest POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/ImageRenderTest/test.png"
-        "$<TARGET_FILE_DIR:ImageRenderTest>/test.png"
-    COMMENT "Staging ImageRenderTest/test.png next to ImageRenderTest binary")
+# Stage the test PNG so main.cpp loads it via AppInst::executableDir()
+# regardless of launch CWD. On macOS it MUST go in Contents/Resources/
+# (beside default.pak), NOT Contents/MacOS/ next to the binary — codesign
+# rejects any non-code file in the MacOS/ dir, which left the whole app
+# bundle unsigned. On Win/Linux it ships next to the binary. main.cpp
+# mirrors this split when resolving the path. copy_if_different avoids
+# re-stamping the build timestamp on no-op rebuilds.
+if(TARGET_MACOS)
+    add_custom_command(TARGET ImageRenderTest POST_BUILD
+        # Remove any stale copy left in Contents/MacOS/ by older builds.
+        COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_FILE_DIR:ImageRenderTest>/test.png"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/ImageRenderTest/test.png"
+            "$<TARGET_FILE_DIR:ImageRenderTest>/../Resources/test.png"
+        COMMENT "Staging ImageRenderTest/test.png into Contents/Resources")
+else()
+    add_custom_command(TARGET ImageRenderTest POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/ImageRenderTest/test.png"
+            "$<TARGET_FILE_DIR:ImageRenderTest>/test.png"
+        COMMENT "Staging ImageRenderTest/test.png next to ImageRenderTest binary")
+endif()
 
 OmegaWTKApp(
     NAME
