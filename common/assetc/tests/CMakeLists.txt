@@ -3,8 +3,8 @@ enable_testing()
 add_executable(omega-assetbundle-verifier AssetBundleVerifier.cpp)
 set_target_properties(omega-assetbundle-verifier PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-add_dependencies(omega-assetbundle-verifier OmegaCommon)
-target_link_libraries(omega-assetbundle-verifier PRIVATE OmegaCommon)
+add_dependencies(omega-assetbundle-verifier OmegaCommonCore)
+target_link_libraries(omega-assetbundle-verifier PRIVATE OmegaCommonCore)
 
 set(ASSETC_TEST_COMMAND
 	${PYEXEC} ${CMAKE_CURRENT_SOURCE_DIR}/RunTests.py

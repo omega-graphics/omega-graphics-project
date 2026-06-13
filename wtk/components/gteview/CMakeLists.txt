@@ -49,7 +49,7 @@ add_library(OmegaWTK.gteview SHARED ${GTEVIEW_SRCS})
 target_include_directories(OmegaWTK.gteview
     PUBLIC  ${GTEVIEW_PUBLIC_INCLUDE_DIR}
             ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
-            $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+            $<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
             $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
     PRIVATE ${NATIVE_PRIVATE_INCLUDE_DIR})
 
@@ -103,7 +103,7 @@ if(TARGET_MACOS)
     add_dependencies(OmegaWTK.gteview OmegaGTE.framework)
     target_link_frameworks(OmegaWTK.gteview OmegaGTE)
 else()
-    target_link_libraries(OmegaWTK.gteview PUBLIC OmegaGTE OmegaCommon)
+    target_link_libraries(OmegaWTK.gteview PUBLIC OmegaGTE OmegaCommonCore)
 endif()
 
 # Register this component for the framework's EMBEDDED_LIBS list (macOS) and

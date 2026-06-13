@@ -245,17 +245,17 @@ set(OMEGAWTK_PUBLIC_INCLUDE_DIR "${OMEGAWTK_SOURCE_DIR}/include")
 add_library(OmegaWTK_Core STATIC ${CORE_SRCS})
 target_include_directories(OmegaWTK_Core
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
-	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	       $<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
 	PRIVATE "${OMEGAWTK_SOURCE_DIR}/tools/assetc"
 	        $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
-target_link_libraries(OmegaWTK_Core PUBLIC OmegaCommon xml2)
+target_link_libraries(OmegaWTK_Core PUBLIC OmegaCommonCore xml2)
 
 add_library(OmegaWTK_Native STATIC ${NATIVE_SRCS})
 target_include_directories(OmegaWTK_Native
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
-	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	       $<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
 	PRIVATE ${NATIVE_PRIVATE_INCLUDE_DIR})
-target_link_libraries(OmegaWTK_Native PUBLIC OmegaCommon)
+target_link_libraries(OmegaWTK_Native PUBLIC OmegaCommonCore)
 if(TARGET_LINUX)
 	target_include_directories(OmegaWTK_Native PUBLIC ${GTK3_INCLUDE_DIRS})
 	target_compile_options(OmegaWTK_Native PUBLIC ${GTK3_CFLAGS_OTHER})
@@ -279,10 +279,10 @@ endif()
 add_library(OmegaWTK_Composition STATIC ${COMPOSITION_SRCS})
 target_include_directories(OmegaWTK_Composition
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
-	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	       $<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
 	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
 	        ${NATIVE_PRIVATE_INCLUDE_DIR})
-target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommon PRIVATE OmegaGTE)
+target_link_libraries(OmegaWTK_Composition PUBLIC OmegaCommonCore OmegaCommonImg PRIVATE OmegaGTE)
 
 # UIView-Render-Redesign Phase G: when the content-cache gate is ON, define
 # OMEGAWTK_CONTENT_CACHE_ENABLED=1 for every submodule that participates in
@@ -348,7 +348,7 @@ endif()
 add_library(OmegaWTK_UI STATIC ${UI_SRCS})
 target_include_directories(OmegaWTK_UI
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
-	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	       $<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
 	       $<TARGET_PROPERTY:OmegaVA,INCLUDE_DIRECTORIES>
 	# VideoView.cpp dtor of SharedHandle<AudioVideoProcessor> needs the
 	# backend AudioVideoProcessor full type; va/src is the private home
@@ -356,7 +356,7 @@ target_include_directories(OmegaWTK_UI
 	# WTK public header pulls them.
 	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>
 	        $<TARGET_PROPERTY:OmegaVA,SOURCE_DIR>/src)
-target_link_libraries(OmegaWTK_UI PUBLIC OmegaCommon OmegaVA)
+target_link_libraries(OmegaWTK_UI PUBLIC OmegaCommonCore OmegaCommonImg OmegaVA)
 
 # UIView-Render-Redesign Phase G.3.1: FrameBuilder emits cache-capture
 # marker DrawOps when the content cache is enabled — define the gate
@@ -368,9 +368,9 @@ endif()
 add_library(OmegaWTK_Widgets STATIC ${WIDGETS_SRCS})
 target_include_directories(OmegaWTK_Widgets
 	PUBLIC ${OMEGAWTK_PUBLIC_INCLUDE_DIR}
-	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	       $<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
 	PRIVATE $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
-target_link_libraries(OmegaWTK_Widgets PUBLIC OmegaCommon)
+target_link_libraries(OmegaWTK_Widgets PUBLIC OmegaCommonCore OmegaCommonImg)
 
 set(OMEGAWTK_SUBMODULE_LIBS OmegaWTK_Core OmegaWTK_Native OmegaWTK_Composition OmegaWTK_UI OmegaWTK_Widgets)
 
@@ -503,7 +503,7 @@ if(TARGET_MACOS)
 	add_dependencies("OmegaWTK" "OmegaWTK_ThirdPartyInstallNames")
 endif()
 target_include_directories("OmegaWTK" PUBLIC
-	$<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	$<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
 	$<TARGET_PROPERTY:OmegaVA,INCLUDE_DIRECTORIES>)
 if(TARGET_MACOS)
 	target_link_system_frameworks("OmegaWTK" Metal Cocoa QuartzCore AVFoundation VideoToolbox AudioToolbox CoreMedia CoreAudio UserNotifications)
@@ -511,7 +511,7 @@ if(TARGET_MACOS)
 else()
 	target_link_libraries("OmegaWTK" PRIVATE OmegaGTE)
 endif()
-target_link_libraries("OmegaWTK" PUBLIC "OmegaCommon" "OmegaVA" xml2)
+target_link_libraries("OmegaWTK" PUBLIC "OmegaCommonCore" "OmegaCommonImg" "OmegaVA" xml2)
 
 if(TARGET_WIN32)
 	target_compile_definitions("OmegaWTK" PRIVATE WINDOWS_PRIVATE)

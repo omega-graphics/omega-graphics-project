@@ -86,7 +86,21 @@ function(OmegaWTKApp)
             RESOURCES ${OMEGAWTK_SOURCE_DIR}/target/macos/MainMenu.nib ${_ARG_BUNDLE_ICON} ${_pak_output}
             DEPS OmegaWTK.framework OmegaGTE.framework ${_ARG_DEPS}
             EMBEDDED_FRAMEWORKS OmegaWTK OmegaGTE
-            EMBEDDED_LIBS OmegaVA
+            # Sibling dylibs the app exe + the embedded OmegaWTK/OmegaGTE
+            # frameworks load at runtime. Copied into <App>.app/Contents/
+            # Libraries/ so the bundle is self-contained — resolved via the
+            # @executable_path/../Libraries rpath that add_app_bundle sets,
+            # instead of referencing the build tree's lib/ dir. OmegaCommonImg
+            # depends on OmegaCommonCore, and OmegaGTE/OmegaWTK/OmegaVA all
+            # need Core (plus Img where the image codec is used).
+            #
+            # ${ICU_RUNTIME} (libicuuc/icudata/icui18n.dylib) is Core's own
+            # runtime dependency — Core links ICU and loads it via @rpath at
+            # startup. It is embedded next to Core here (already install-name
+            # fixed to @rpath/@loader_path in common/CMakeLists.txt), so the
+            # bundled Core finds ICU inside Contents/Libraries rather than the
+            # build tree's icu/lib.
+            EMBEDDED_LIBS OmegaCommonCore OmegaCommonImg OmegaVA ${ICU_RUNTIME}
             SOURCES ${_ARG_SOURCES})
         add_dependencies(${_ARG_NAME} OmegaWTK.framework ${_ARG_NAME}_DefaultPak)
         target_link_frameworks(${_ARG_NAME} OmegaGTE OmegaWTK)

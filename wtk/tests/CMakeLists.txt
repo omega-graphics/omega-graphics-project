@@ -70,7 +70,7 @@ add_executable(TextLayoutEngineTest TextLayoutEngineTest/main.cpp)
 target_link_libraries(TextLayoutEngineTest PRIVATE
     OmegaWTK_Composition
     OmegaWTK_Core
-    OmegaCommon)
+    OmegaCommonCore)
 
 OmegaWTKApp(
     NAME

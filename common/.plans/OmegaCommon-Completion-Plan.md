@@ -37,6 +37,7 @@ The new library work proposed here is:
 | **Regex (`regex.h`)** | Completed | PCRE2-backed regex with compile, match, search, findAll, replace, split, and escape. PCRE2 built as a static library via `add_third_party`. |
 | **Crypto (`crypto.h`)** | Completed | Full crypto framework: RNG, digest, HMAC, constant-time compare, AES-256-GCM, HKDF, PBKDF2, Ed25519 signatures, X.509 PKI (certificates, stores, verification), TLS (client/server contexts, streams). OpenSSL `libcrypto` + `libssl` built via `add_third_party`. |
 | **Third-party dependency bootstrap** | Completed | `common/AUTOMDEPS` fetches PCRE2 and OpenSSL sources. Both are now built and linked via `CMakeLists.txt`. |
+| **Binary layout** | Completed (macOS verified; Windows pending) | Split from a single `OmegaCommon` shared lib into `OmegaCommonCore` (utils/fs/net/json/crypto/…), `OmegaCommonImg` (image codec), and an empty `OmegaCommonASIO` reservation, per `OmegaCommon-Binary-Split-Plan.md` (Phases 1–4). Public headers and the `OmegaCommon::` namespace are unchanged; consumers link `OmegaCommonCore` plus `OmegaCommonImg` only where the image codec is used (gte-Vulkan, va, wtk Composition/UI/Widgets). `OmegaCommonASIO` is a stub the Async-WebSocket plan fills. |
 
 ### ADT Status
 

@@ -88,7 +88,7 @@ target_include_directories(VulkanQueueFamiliesTest PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/include")
 target_compile_definitions(VulkanQueueFamiliesTest PRIVATE ${PUBLIC_DEFS})
-target_link_libraries(VulkanQueueFamiliesTest PRIVATE OmegaCommon)
+target_link_libraries(VulkanQueueFamiliesTest PRIVATE OmegaCommonCore)
 add_test(NAME omegagte_vulkan_queue_families COMMAND VulkanQueueFamiliesTest)
 
 # CommandQueue-Typed-Pool Phase 2 — backend-independent integration test

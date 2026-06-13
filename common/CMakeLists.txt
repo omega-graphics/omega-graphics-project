@@ -21,7 +21,9 @@ unset(OMEGACOMMON_AUTOMDEPS_CMAKE_CANDIDATES)
 file(GLOB COMMON_SRCS         CONFIGURE_DEPENDS "src/*.cpp")
 file(GLOB COMMON_UNICODE_SRCS CONFIGURE_DEPENDS "src/unicode/*.cpp")
 file(GLOB COMMON_IMG_SRCS     CONFIGURE_DEPENDS "src/img/*.cpp")
-list(APPEND COMMON_SRCS ${COMMON_UNICODE_SRCS} ${COMMON_IMG_SRCS})
+# COMMON_IMG_SRCS is built into the separate OmegaCommonImg binary (Binary-Split
+# Plan Phase 2), so it is NOT appended to Core's sources here.
+list(APPEND COMMON_SRCS ${COMMON_UNICODE_SRCS})
 
 configure_file("src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 
@@ -453,7 +455,7 @@ add_dependencies(OmegaCommonThirdParty icu zlib libpng libjpeg-turbo libtiff)
 
 # === End image-codec + ICU third-party deps ===
 
-add_omega_graphics_module("OmegaCommon" SHARED
+add_omega_graphics_module("OmegaCommonCore" SHARED
 	SOURCES ${COMMON_SRCS}
 	HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include"
 	EMBEDDED_LIBS ${ICU_RUNTIME})
@@ -465,7 +467,7 @@ add_omega_graphics_module("OmegaCommon" SHARED
 # load time. Mirrors the OmegaWTK_ThirdPartyInstallNames aggregator that
 # used to live in wtk/CMakeLists.txt before ICU embedding moved here.
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
-	add_dependencies(OmegaCommon
+	add_dependencies(OmegaCommonCore
 		libicuuc.dylib_install_name
 		libicudata.dylib_install_name
 		libicui18n.dylib_install_name
@@ -480,52 +482,71 @@ if(DEFINED OMEGACOMMON_RAPIDJSON_ROOT)
 else()
 	set(OMEGACOMMON_RAPIDJSON_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/rapidjson/include")
 endif()
-target_include_directories("OmegaCommon" PRIVATE "${OMEGACOMMON_RAPIDJSON_INCLUDE_DIR}")
+target_include_directories("OmegaCommonCore" PRIVATE "${OMEGACOMMON_RAPIDJSON_INCLUDE_DIR}")
 
-target_link_libraries("OmegaCommon" PRIVATE pcre2-8 ssl crypto icuuc icudata icui18n png turbojpeg tiff z)
+target_link_libraries("OmegaCommonCore" PRIVATE pcre2-8 ssl crypto icuuc icudata icui18n)
 # UniString.cpp uses ICU's u_strFromUTF8 / u_strFromUTF32; the public unicode.h
-# only exposes std types, so ICU stays PRIVATE. Same shape for the image deps:
-# img.h doesn't leak libpng/libjpeg-turbo/libtiff/zlib types — they're impl
-# detail of OmegaCommon::Img — and Phase 1b made them static archives so they
-# bake into libOmegaCommon at link time.
-add_dependencies("OmegaCommon" icu libpng libjpeg-turbo libtiff zlib)
+# only exposes std types, so ICU stays PRIVATE. The image deps
+# (libpng/turbojpeg/libtiff/zlib) move with the Img sources into the separate
+# OmegaCommonImg binary (Binary-Split Plan Phase 2) — see the Img module below.
+add_dependencies("OmegaCommonCore" icu)
 if(NOT WIN32)
 	if(OMEGACOMMON_CURL_TARGET)
-		target_link_libraries("OmegaCommon" PRIVATE ${OMEGACOMMON_CURL_TARGET})
+		target_link_libraries("OmegaCommonCore" PRIVATE ${OMEGACOMMON_CURL_TARGET})
 	else()
-		target_include_directories("OmegaCommon" PRIVATE ${OMEGACOMMON_CURL_INCLUDE_DIRS})
-		target_link_libraries("OmegaCommon" PRIVATE ${OMEGACOMMON_CURL_LIBRARIES})
+		target_include_directories("OmegaCommonCore" PRIVATE ${OMEGACOMMON_CURL_INCLUDE_DIRS})
+		target_link_libraries("OmegaCommonCore" PRIVATE ${OMEGACOMMON_CURL_LIBRARIES})
 	endif()
 endif()
 
 if(WIN32)
-	target_sources("OmegaCommon" PRIVATE "src/win/fs-win.cpp"  "src/win/net-win.cpp" "src/win/multithread-win.cpp")
-	# Phase 1 of the binary split: this single DLL still compiles BOTH the
-	# Core TUs and the Img TUs (src/img/*), so it must export both symbol
-	# sets. Define both per-binary build flags so OMEGACOMMON_CORE_EXPORT and
-	# OMEGACOMMON_IMG_EXPORT each resolve to dllexport here. When Img splits
-	# into its own OmegaCommonImg DLL (Phase 2), OMEGACOMMON_IMG__BUILD__
-	# moves to that target and this one keeps only OMEGACOMMON_CORE__BUILD__.
-	target_compile_definitions("OmegaCommon" PRIVATE "OMEGACOMMON_CORE__BUILD__" "OMEGACOMMON_IMG__BUILD__")
-	target_link_libraries("OmegaCommon" PRIVATE ws2_32 advapi32 crypt32 user32)
+	target_sources("OmegaCommonCore" PRIVATE "src/win/fs-win.cpp"  "src/win/net-win.cpp" "src/win/multithread-win.cpp")
+	# Core exports only its own symbols now that Img is a separate binary
+	# (Binary-Split Plan Phase 2); OMEGACOMMON_IMG__BUILD__ moved to the
+	# OmegaCommonImg target below.
+	target_compile_definitions("OmegaCommonCore" PRIVATE "OMEGACOMMON_CORE__BUILD__")
+	target_link_libraries("OmegaCommonCore" PRIVATE ws2_32 advapi32 crypt32 user32)
 	# ICU DLLs are now staged into ${CMAKE_BINARY_DIR}/bin/ via the
 	# add_omega_graphics_module(SHARED EMBEDDED_LIBS ...) handling above.
-	# (libpng/libjpeg-turbo/libtiff/zlib are static archives folded into
-	# libOmegaCommon directly per Phase 1b — no runtime copy needed.)
+	# (The libpng/turbojpeg/libtiff/zlib static archives moved to
+	# OmegaCommonImg — see the Img module below.)
 elseif(APPLE)
-	target_sources("OmegaCommon" PRIVATE "src/macos/fs-cocoa.mm" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
-	target_link_system_frameworks("OmegaCommon" "Foundation")
+	target_sources("OmegaCommonCore" PRIVATE "src/macos/fs-cocoa.mm" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
+	target_link_system_frameworks("OmegaCommonCore" "Foundation")
 elseif(UNIX)
 	
-	target_sources("OmegaCommon" PRIVATE "src/unix/fs-unixother.cpp" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
-	target_link_libraries("OmegaCommon" PRIVATE dl pthread)
+	target_sources("OmegaCommonCore" PRIVATE "src/unix/fs-unixother.cpp" "src/posix/net-curl.cpp" "src/unix/multithread-unix.cpp")
+	target_link_libraries("OmegaCommonCore" PRIVATE dl pthread)
 endif()
+
+# === OmegaCommonImg — image codec split (Binary-Split Plan Phase 2) ===
+# Its own SHARED binary so Core-only consumers (e.g. aqua) don't drag in
+# libpng/turbojpeg/libtiff/zlib. PUBLIC-links Core; the image deps are
+# static archives folded into libOmegaCommonImg at link time (PRIVATE).
+add_omega_graphics_module("OmegaCommonImg" SHARED
+	SOURCES ${COMMON_IMG_SRCS}
+	HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+target_link_libraries("OmegaCommonImg" PUBLIC "OmegaCommonCore" PRIVATE png turbojpeg tiff z)
+target_compile_definitions("OmegaCommonImg" PRIVATE "OMEGACOMMON_IMG__BUILD__")
+add_dependencies("OmegaCommonImg" libpng libjpeg-turbo libtiff zlib)
+
+# === OmegaCommonASIO — async I/O + WebSocket reservation (Phase 3) ===
+# Empty stub for now; the OmegaCommon-Async-WebSocket plan fills
+# src/asio/io.cpp + src/asio/websocket.cpp and wires Boost. PUBLIC-links
+# Core so Beast's ssl_stream picks up the static ssl/crypto transitively.
+add_omega_graphics_module("OmegaCommonASIO" SHARED
+	SOURCES "src/asio/asio_stub.cpp"
+	HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+target_link_libraries("OmegaCommonASIO" PUBLIC "OmegaCommonCore")
+target_compile_definitions("OmegaCommonASIO" PRIVATE "OMEGACOMMON_ASIO__BUILD__")
 
 file(GLOB WRAPGEN_SRCS "wrapgen/*.cpp")
 
-add_omega_graphics_tool("omega-wrapgen" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/main/main.cpp")
+add_omega_graphics_tool("omega-wrapgen" LIBS "OmegaCommonCore" SOURCES ${WRAPGEN_SRCS} "wrapgen/main/main.cpp")
 
-add_omega_graphics_tool("omega-assetc" LIBS "OmegaCommon" SOURCES assetc/assetc.h assetc/main.cpp)
+add_omega_graphics_tool("omega-assetc" LIBS "OmegaCommonCore" SOURCES assetc/assetc.h assetc/main.cpp)
 add_custom_command(TARGET omega-assetc POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 		"${CMAKE_CURRENT_SOURCE_DIR}/assetc/AssetTypes.json"
@@ -537,9 +558,9 @@ if(NOT CMAKE_CROSSCOMPILING)
 	add_subdirectory(assetc/tests)
 endif()
 
-# add_omega_graphics_tool("lex-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/lex-test.cpp")
+# add_omega_graphics_tool("lex-test" LIBS "OmegaCommonCore" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/lex-test.cpp")
 
-add_omega_graphics_tool("parse-test" LIBS "OmegaCommon" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/parse-test.cpp")
+add_omega_graphics_tool("parse-test" LIBS "OmegaCommonCore" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/parse-test.cpp")
 
 add_custom_target(wrapgen-tests
     COMMAND ${PYEXEC} ${CMAKE_CURRENT_SOURCE_DIR}/wrapgen/tests/run_tests.py
@@ -552,4 +573,4 @@ add_custom_target(wrapgen-tests
 
 file(GLOB EBIN_SRCS "embedbin/*.cpp")
 
-add_omega_graphics_tool("omega-ebin" LIBS "OmegaCommon" SOURCES ${EBIN_SRCS})
+add_omega_graphics_tool("omega-ebin" LIBS "OmegaCommonCore" SOURCES ${EBIN_SRCS})

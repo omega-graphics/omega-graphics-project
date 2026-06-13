@@ -10,11 +10,11 @@ add_omega_graphics_module(AQUA SHARED
     HEADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include
     SOURCES
         ${AQUA_SRCS_TOPLEVEL}
-    DEPENDS OmegaCommon OmegaGTE
+    DEPENDS OmegaCommonCore OmegaGTE
 )
 
 target_include_directories("AQUA" PUBLIC
-	$<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	$<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
     $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 target_compile_definitions(AQUA PRIVATE AQUA__BUILD__)
 

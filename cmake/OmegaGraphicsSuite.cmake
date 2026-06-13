@@ -157,8 +157,9 @@ else()
             
             if(${IS_APP})
                 add_custom_command(OUTPUT "${_OUT}"
-                COMMAND ${PYEXEC} ${CODESIGN_SCRIPT} 
+                COMMAND ${PYEXEC} ${CODESIGN_SCRIPT}
                 --sig ${CODE_SIGNATURE} --code ${_CODE}
+                --strip-build-rpaths ${CMAKE_BINARY_DIR}
                 DEPENDS "${_NAME}${UNSIGNED_TARGET_SUFFIX};${_NAME}"
 				COMMENT "Code Signing App Bundle ${_NAME}.app")
             else()
@@ -368,6 +369,11 @@ function(add_app_bundle)
 			MACOS_RPATH TRUE
 			SUFFIX ""
 			PREFIX ""
+			# Link the in-build app exe with the bundle-relative INSTALL_RPATH
+			# below (@executable_path/..) instead of CMake's automatic build-tree
+			# library dirs, so no absolute build/lib rpath is baked in. Everything
+			# the app loads is embedded in the .app.
+			BUILD_WITH_INSTALL_RPATH TRUE
     RUNTIME_OUTPUT_DIRECTORY "${APP_BUNDLE_OUTPUT_DIR}/${_ARG_NAME}.app/Contents/MacOS")
 
 	# Bundle-relative rpaths for embedded artifacts. Without these, the
@@ -420,12 +426,20 @@ function(add_app_bundle)
 		endif()
 		foreach(f ${_ARG_EMBEDDED_FRAMEWORKS})
 			set(__outputted_frameworks ${__outputted_frameworks} "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Frameworks/${f}.framework")
-			add_dependencies(${_NAME} ${f})
+			# The framework's Versions/Current + top-level symlinks (and its
+			# signature) are produced by ${f}__codesign, NOT by building ${f}
+			# itself. cp -R must wait for that step, otherwise it can copy the
+			# framework before the symlinks exist and embed a broken bundle.
+			set(_FW_EMBED_DEPS ${f})
+			if(TARGET ${f}__codesign)
+				list(APPEND _FW_EMBED_DEPS ${f}__codesign)
+			endif()
+			add_dependencies(${_NAME} ${_FW_EMBED_DEPS})
 			add_custom_command(
 					OUTPUT "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Frameworks/${f}.framework"
 					COMMAND ${CMAKE_COMMAND} -E rm -rf "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Frameworks/${f}.framework"
 					COMMAND cp -R "${FRAMEWORK_OUTPUT_DIR}/${f}.framework"  "${APP_BUNDLE_OUTPUT_DIR}/${_NAME}.app/Contents/Frameworks/${f}.framework"
-					DEPENDS ${f}
+					DEPENDS ${_FW_EMBED_DEPS}
 					COMMENT "Embedding Framework ${f} in App Bundle ${_NAME}")
 		endforeach()
 			add_custom_target("${_NAME}__framework_embed" DEPENDS ${__outputted_frameworks})

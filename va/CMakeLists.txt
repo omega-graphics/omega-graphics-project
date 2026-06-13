@@ -168,10 +168,10 @@ set_target_properties(OmegaVA PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(OmegaVA
 	PUBLIC ${OMEGAVA_SOURCE_DIR}/include
-	       $<TARGET_PROPERTY:OmegaCommon,INCLUDE_DIRECTORIES>
+	       $<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
 	       $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 
-target_link_libraries(OmegaVA PUBLIC OmegaCommon OmegaGTE)
+target_link_libraries(OmegaVA PUBLIC OmegaCommonCore OmegaCommonImg OmegaGTE)
 if(TARGET_MACOS)
 	target_link_system_frameworks(OmegaVA
 		Foundation

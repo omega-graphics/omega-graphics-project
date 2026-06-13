@@ -234,19 +234,24 @@ block retargets to `OmegaCommonCore` (it's the binary that embeds ICU).
 
 ## Consumer impact (other modules)
 
-Audit from `grep`-of-record (already done — see implementation):
+Audit from `grep`-of-record (as implemented — `OmegaCommon::Img` usage
+verified per-target, not assumed):
 
-| Consumer | Current link | Post-split link |
-|----------|--------------|-----------------|
-| `gte` (OmegaGTE) | `OmegaCommon` PUBLIC | `OmegaCommonCore` PUBLIC + `OmegaCommonImg` PUBLIC (uses image loading for textures — confirmed by `OmegaCommon::Img` reference in gte/CMakeLists.txt comment) |
-| `wtk` (OmegaWTK_Core / _Native / _Composition) | `OmegaCommon` PUBLIC | `OmegaCommonCore` PUBLIC + `OmegaCommonImg` PUBLIC (uses image loading for asset thumbnails / bitmap surfaces) |
-| `aqua` | `OmegaCommon` PUBLIC | `OmegaCommonCore` PUBLIC (no image / async usage) |
-| `kreate` | not currently linking OmegaCommon directly — confirm during Phase 4 | TBD per audit |
-| `ide` | not currently linking OmegaCommon directly — confirm during Phase 4 | TBD per audit |
-| `autom` | not a consumer (it sits below common in the build) | unchanged |
+| Consumer | Post-split link | Img wiring rationale |
+|----------|-----------------|----------------------|
+| `gte` (OmegaGTE) | `OmegaCommonCore` PUBLIC; `OmegaCommonImg` **PRIVATE, inside `if(TARGET_VULKAN)`** | Img is used only in `src/vulkan/GEVulkanTextureAsset.cpp` — an impl detail, not GTE's public API, and not compiled on Metal/D3D12. PRIVATE+Vulkan-gated keeps the Metal/macOS framework Img-free. |
+| `wtk` `_Composition` / `_UI` / `_Widgets` + umbrella `OmegaWTK` | `OmegaCommonCore` PUBLIC + `OmegaCommonImg` PUBLIC | `Composition/DisplayList.h`, `UI/UIView.h`, `Widgets/Primatives.h` expose `OmegaCommon::Img::BitmapImage` in **public** headers → must propagate Img. |
+| `wtk` `_Core` / `_Native` | `OmegaCommonCore` PUBLIC | No Img in their sources/headers. |
+| `va` (OmegaVA) | `OmegaCommonCore` PUBLIC + `OmegaCommonImg` PUBLIC | **Missed by the original table.** `include/omegaVA/AudioVideoProcessorContext.h` exposes Img publicly; ffmpeg/wmf/avf capture use it. |
+| `aqua` | `OmegaCommonCore` (Core only) | No image / async usage (gets Img transitively only via its OmegaGTE dep, which is correct). |
+| Tests / components (`gte/tests/*`, `aqua/tests/*`, `wtk/tests/*`, `assetc/tests`, `gteview`) | `OmegaCommonCore`; `+OmegaCommonImg` only for `MediaCodecTest` (direct `OmegaCommon::Img` use) | Image-using app tests (ImageRenderTest) get Img transitively via the `OmegaWTK` umbrella. |
+| `kreate` / `ide` | unchanged | Phase 4 audit confirmed **no direct** `OmegaCommon` link refs; they inherit the rename transitively via OmegaGTE / OmegaWTK. |
+| `autom` | unchanged | Not a consumer (sits below common in the build). |
 
-Consumer updates land in Phase 4 of this plan, gated on the Core and
-Img binaries existing and tested in isolation.
+Also retargeted: the macOS metal-test bundle embed (`libOmegaCommon.dylib`
+→ `libOmegaCommonCore.dylib`) and the top-level `omega_graphics_add_subdir` /
+`omega_graphics_project` names were **left as `OmegaCommon`** (they name the
+CMake *project*, which umbrellas all three library targets — not a link target).
 
 ## Implementation phases
 

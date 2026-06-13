@@ -89,7 +89,7 @@ endif()
 
 # omegaslc: the OmegaSL shader compiler. Declared via add_omega_graphics_tool,
 # which on cross-compile builds it as a host superbuild automatically.
-add_omega_graphics_tool("omegaslc" SOURCES ${OMEGASL_SRCS} LIBS "OmegaCommon")
+add_omega_graphics_tool("omegaslc" SOURCES ${OMEGASL_SRCS} LIBS "OmegaCommonCore")
 target_include_directories("omegaslc" PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_definitions("omegaslc" PUBLIC ${PUBLIC_DEFS})
 
@@ -133,7 +133,7 @@ endif()
 
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
 
-add_omega_graphics_module("OmegaGTE" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAGTE_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" DEPENDS "OmegaCommon" SOURCES ${MAIN_SRCS})
+add_omega_graphics_module("OmegaGTE" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAGTE_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" DEPENDS "OmegaCommonCore" SOURCES ${MAIN_SRCS})
 target_compile_definitions("OmegaGTE" PRIVATE OMEGAGTE__BUILD__)
 target_compile_definitions("OmegaGTE" PUBLIC ${PUBLIC_DEFS})
 
@@ -150,7 +150,7 @@ option(OMEGAGTE_DEBUG "Enable the OmegaGTE debug layer by default" ${OMEGAGTE_DE
 if(OMEGAGTE_DEBUG)
     target_compile_definitions("OmegaGTE" PUBLIC OMEGAGTE_DEBUG)
 endif()
-target_link_libraries("OmegaGTE" PUBLIC "OmegaCommon")
+target_link_libraries("OmegaGTE" PUBLIC "OmegaCommonCore")
 
 # Shared mesh-parser dependencies (src/common/MeshParser.cpp) — compiled on
 # every backend now that the parser handles FBX (which Metal's Model I/O can't
@@ -192,11 +192,13 @@ if(TARGET_VULKAN)
 	# cgltf is single-header; the implementation TU lives in
 	# src/common/MeshParser.cpp behind a CGLTF_IMPLEMENTATION define.
 	# OBJ is parsed inline in MeshParser.cpp (no external dep).
-	# Vulkan asset loaders consume the shared parser; image decoding
-	# for GEVulkanTextureAsset goes through OmegaCommon::Img (libpng /
-	# turbojpeg / libtiff already linked transitively via OmegaCommon),
-	# so no extra image-codec deps are required here.
+	# Vulkan asset loaders consume the shared parser; image decoding for
+	# GEVulkanTextureAsset goes through OmegaCommon::Img. Post binary-split
+	# that codec lives in its own OmegaCommonImg binary, so the Vulkan backend
+	# links it explicitly — PRIVATE, since Img is an impl detail of
+	# GEVulkanTextureAsset.cpp and not part of OmegaGTE's public API.
 	target_include_directories("OmegaGTE" PRIVATE "${THIRD_PARTY_DIR}/cgltf")
+	target_link_libraries("OmegaGTE" PRIVATE OmegaCommonImg)
 endif()
 if(TARGET_DIRECTX)
 	set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps)

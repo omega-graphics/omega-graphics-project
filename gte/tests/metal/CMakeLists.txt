@@ -34,8 +34,8 @@ function(add_metal_test)
     add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_BUNDLE_FRAMEWORKS}"
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/Frameworks/OmegaGTE.framework" "${_BUNDLE_FRAMEWORKS}/OmegaGTE.framework"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/lib/libOmegaCommon.dylib" "${_BUNDLE_FRAMEWORKS}/libOmegaCommon.dylib"
-        COMMENT "Embedding OmegaGTE.framework and OmegaCommon into ${_ARG_NAME}.app"
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/lib/libOmegaCommonCore.dylib" "${_BUNDLE_FRAMEWORKS}/libOmegaCommonCore.dylib"
+        COMMENT "Embedding OmegaGTE.framework and OmegaCommonCore into ${_ARG_NAME}.app"
     )
 endfunction()
 

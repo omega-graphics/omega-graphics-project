@@ -55,7 +55,7 @@ endfunction()
 add_aqua_test(
     NAME    aqua_math_test
     SOURCES aqua_math_test.cpp
-    LIBS    OmegaCommon)
+    LIBS    OmegaCommonCore)
 
 # Integration test through the public AQUA surface. Links the AQUA library
 # (which has no link-time GTE dependency — the math is header-only), driving the
@@ -63,7 +63,7 @@ add_aqua_test(
 add_aqua_test(
     NAME    aqua_dynamics_test
     SOURCES aqua_dynamics_test.cpp
-    LIBS    AQUA OmegaCommon)
+    LIBS    AQUA OmegaCommonCore)
 
 # Phase 1.1 rigid-body completion validation: AABB math + oriented-box bound,
 # full-tensor parity, conserved-quantity accessors, adaptive-iteration drift
@@ -73,7 +73,7 @@ add_aqua_test(
 add_aqua_test(
     NAME    aqua_rigid_body_test
     SOURCES aqua_rigid_body_test.cpp
-    LIBS    AQUA OmegaCommon)
+    LIBS    AQUA OmegaCommonCore)
 
 # Phase 2 collision-shapes + broadphase validation: shape factories +
 # inertia-from-shape closure, brute-force oracle parity (static + moving),
@@ -83,7 +83,7 @@ add_aqua_test(
 add_aqua_test(
     NAME    aqua_broadphase_test
     SOURCES aqua_broadphase_test.cpp
-    LIBS    AQUA OmegaCommon)
+    LIBS    AQUA OmegaCommonCore)
 
 # Phase 3 narrowphase + contact-solver validation: settling stack, incline
 # friction (stay + slide), sphere bounce restitution, GJK/EPA hull pair,
@@ -93,4 +93,4 @@ add_aqua_test(
 add_aqua_test(
     NAME    aqua_contact_test
     SOURCES aqua_contact_test.cpp
-    LIBS    AQUA OmegaCommon)
+    LIBS    AQUA OmegaCommonCore)

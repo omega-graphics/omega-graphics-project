@@ -8,7 +8,7 @@ add_executable(omegagte_std140_layout_test std140_layout_test.cpp)
 target_include_directories(omegagte_std140_layout_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../common/include")
-target_link_libraries(omegagte_std140_layout_test PRIVATE OmegaCommon)
+target_link_libraries(omegagte_std140_layout_test PRIVATE OmegaCommonCore)
 add_test(NAME omegagte_std140_layout COMMAND omegagte_std140_layout_test)
 
 # Extension 8 §8.5/§8.6 — backend-independent unit test for the runtime
@@ -20,7 +20,7 @@ target_include_directories(omegagte_sampler_validation_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../common/include")
 target_compile_definitions(omegagte_sampler_validation_test PRIVATE ${PUBLIC_DEFS})
-target_link_libraries(omegagte_sampler_validation_test PRIVATE OmegaCommon)
+target_link_libraries(omegagte_sampler_validation_test PRIVATE OmegaCommonCore)
 add_test(NAME omegagte_sampler_validation COMMAND omegagte_sampler_validation_test)
 
 if(TARGET_DIRECTX)
