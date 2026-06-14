@@ -5,6 +5,8 @@
 #include <memory>
 #include "GED3D12.h"
 #include <cstdint>
+#include <vector>
+#include <utility>
 
 #ifndef OMEGAGTE_GED3D12COMMANDQUEUE_H
 #define OMEGAGTE_GED3D12COMMANDQUEUE_H
@@ -32,6 +34,16 @@ _NAMESPACE_BEGIN_
         bool firstRenderPass = true;
         bool closed = false;
         std::uint64_t traceResourceId = 0;
+
+        /// G.5.1 D3D12 completion-wiring follow-up — the WTK side sets this
+        /// on the final frame command buffer (via `setCompletionHandler`)
+        /// right before submit so its pooled scratch buffers can be recycled
+        /// once the GPU finishes the frame. The owning queue moves the
+        /// handler out at submit time (`stageCompletionHandlerFrom`) and
+        /// fires it from `pollCompletions` when the queue's `retentionFence`
+        /// reaches the value signaled for this buffer's `ExecuteCommandLists`.
+        /// Empty when no handler is registered (the common non-frame CB case).
+        GECommandBufferCompletionHandler completionHandler;
 
         friend class GED3D12CommandQueue;
 
@@ -174,6 +186,10 @@ _NAMESPACE_BEGIN_
 
         GED3D12CommandBuffer(ID3D12GraphicsCommandList6 *commandList,ID3D12CommandAllocator *commandAllocator,GED3D12CommandQueue *parentQueue);
         void reset() override;
+        /// Store a callback fired (exactly once) by the owning queue when this
+        /// command buffer's GPU work completes. Matches the Metal contract;
+        /// see `completionHandler` above for the D3D12 fence-poll mechanism.
+        void setCompletionHandler(const GECommandBufferCompletionHandler & handler) override;
 
         ~GED3D12CommandBuffer() override;
     };
@@ -217,6 +233,29 @@ _NAMESPACE_BEGIN_
         // into the engine retention queue under `gate`, then clear the local
         // pending vectors.
         void flushPendingRetentionUnder(const Retention::FenceGate &gate);
+
+        // G.5.1 D3D12 completion-wiring follow-up. Mirrors the pendingSlots →
+        // stampPendingSlots lifecycle: a command buffer's completion handler
+        // is *staged* at submit time (its list is queued but not yet executed)
+        // and *gated* to a concrete retentionFence value once the
+        // ExecuteCommandLists that runs it is issued. `pollCompletions` fires
+        // and drops every gated handler whose value the GPU has reached.
+        // All three are touched only on the queue's owning (compositor) thread
+        // — the same thread that submits, commits, and calls getAvailableBuffer
+        // — so no locking is needed; the cross-thread hand-off the plan warns
+        // about only applies to the waiter-thread alternative, not this poll.
+        std::vector<GECommandBufferCompletionHandler>                            stagedCompletionHandlers_;
+        std::vector<std::pair<std::uint64_t, GECommandBufferCompletionHandler>>  gatedCompletionHandlers_;
+        // Move `cb`'s registered completion handler (if any) into the staged
+        // list and clear it off the buffer. No-op when `cb` has no handler.
+        void stageCompletionHandlerFrom(GED3D12CommandBuffer *cb);
+        // Promote every staged handler to gated at `signalValue` (the
+        // retentionFence value just signaled for the Execute that ran them).
+        void gateStagedCompletions(std::uint64_t signalValue);
+        // Fire + drop every gated handler whose retentionFence value the GPU
+        // has reached. Cheap (one GetCompletedValue); safe to call at any
+        // drain point. Reports Error to fired handlers if the device was lost.
+        void pollCompletions();
 
         ComPtr<ID3D12Fence> fence;
 

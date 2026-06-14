@@ -2014,6 +2014,75 @@ GED3D12CommandBuffer::~GED3D12CommandBuffer() {
                                                "CommandBuffer", traceResourceId, commandList.Get());
 }
 
+void GED3D12CommandBuffer::setCompletionHandler(const GECommandBufferCompletionHandler & handler) {
+    completionHandler = handler;
+}
+
+void GED3D12CommandQueue::stageCompletionHandlerFrom(GED3D12CommandBuffer *cb) {
+    // G.5.1 D3D12 follow-up. Move the handler out of the command buffer so the
+    // wrapper can be recycled/destroyed without taking the callback with it;
+    // the queue now owns firing it. No-op for the common (non-frame) CB that
+    // never had a handler registered.
+    if (cb != nullptr && cb->completionHandler) {
+        stagedCompletionHandlers_.push_back(std::move(cb->completionHandler));
+        cb->completionHandler = nullptr;
+    }
+}
+
+void GED3D12CommandQueue::gateStagedCompletions(std::uint64_t signalValue) {
+    // Bind every staged handler to the retentionFence value just signaled for
+    // the ExecuteCommandLists that ran its command list. Once
+    // GetCompletedValue() reaches `signalValue` the GPU is done with that
+    // submission and pollCompletions can fire the handler.
+    for (auto & handler : stagedCompletionHandlers_) {
+        gatedCompletionHandlers_.emplace_back(signalValue, std::move(handler));
+    }
+    stagedCompletionHandlers_.clear();
+}
+
+void GED3D12CommandQueue::pollCompletions() {
+    if (gatedCompletionHandlers_.empty()) {
+        return;
+    }
+    const std::uint64_t completed = retentionFence ? retentionFence->GetCompletedValue() : 0;
+    // Collect the ready handlers and compact the survivors in one stable pass,
+    // then fire outside the loop so a handler can't observe a half-mutated
+    // container (the WTK handler only flips an atomic, but this keeps the
+    // mechanism re-entrancy-safe regardless of what a future handler does).
+    std::vector<GECommandBufferCompletionHandler> ready;
+    std::size_t writeIdx = 0;
+    for (std::size_t readIdx = 0; readIdx < gatedCompletionHandlers_.size(); ++readIdx) {
+        auto & entry = gatedCompletionHandlers_[readIdx];
+        if (entry.first <= completed) {
+            if (entry.second) {
+                ready.push_back(std::move(entry.second));
+            }
+        } else {
+            if (writeIdx != readIdx) {
+                gatedCompletionHandlers_[writeIdx] = std::move(gatedCompletionHandlers_[readIdx]);
+            }
+            ++writeIdx;
+        }
+    }
+    gatedCompletionHandlers_.resize(writeIdx);
+    if (ready.empty()) {
+        return;
+    }
+    // D3D12 has no per-command-buffer success/fail status the way Metal does;
+    // a failed GPU execution surfaces as device removal. Report Error to the
+    // handlers fired this pass if the device was lost, else Completed. GPU
+    // timestamps are left at their defaults (0.0) — not wired on D3D12 yet
+    // ("if available" in the plan); the WTK recycler ignores them.
+    GECommandBufferCompletionInfo info {};
+    const bool deviceRemoved = engine != nullptr && engine->d3d12_device != nullptr
+                               && engine->d3d12_device->GetDeviceRemovedReason() != S_OK;
+    info.status = deviceRemoved ? GECommandBufferCompletionInfo::CompletionStatus::Error
+                                : GECommandBufferCompletionInfo::CompletionStatus::Completed;
+    for (auto & handler : ready) {
+        handler(info);
+    }
+}
+
 void GED3D12CommandQueue::notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer,
                                               SharedHandle<GEFence> &waitFence) {
     multiQueueSync = true;
@@ -2040,6 +2109,11 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
     ResourceTracking::Tracker::instance().emit(submitEvent);
     retainedCommandBuffers.push_back(commandBuffer);
     commandLists.push_back(d3d12_buffer->commandList.Get());
+    // G.5.1 D3D12 follow-up — stage this buffer's completion handler (if WTK
+    // registered one). Its list is now queued in `commandLists`; the handler
+    // is gated to a fence value when that batch is flushed via
+    // ExecuteCommandLists (commitToGPU, or a two-arg submit's flush).
+    stageCompletionHandlerFrom(d3d12_buffer);
     // CommandQueue-Typed-Pool Phase 3 — mark the pool slot busy at
     // submit time with a UINT64_MAX sentinel so the recycler in
     // getAvailableBuffer() won't hand the same slot back before
@@ -2087,9 +2161,18 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
         // we just submitted. The single-buffer Execute below stamps its
         // own slot separately.
         stampPendingSlots(nextSubmitValue);
+        // G.5.1 D3D12 follow-up — the lists just flushed include any earlier
+        // single-arg-submitted buffers (e.g. the frame CB) whose handlers were
+        // staged; gate them to this signal value.
+        gateStagedCompletions(nextSubmitValue);
         flushPendingRetentionUnder(pendingGate);
     }
 
+    // G.5.1 D3D12 follow-up — stage this buffer's own handler before its
+    // dedicated Execute so it gates to the signal value below, not the flush
+    // above. (WTK only sets handlers on the frame CB, so this is normally a
+    // no-op for the two-arg / scratch path, but keep the contract general.)
+    stageCompletionHandlerFrom(d3d12_buffer);
     d3d12_buffer->commandList->Close();
     commandQueue->ExecuteCommandLists(1, (ID3D12CommandList *const *)d3d12_buffer->commandList.GetAddressOf());
     {
@@ -2104,6 +2187,7 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
             && d3d12_buffer->poolSlot < poolSubmissionIndex.size()) {
             poolSubmissionIndex[d3d12_buffer->poolSlot] = nextSubmitValue;
         }
+        gateStagedCompletions(nextSubmitValue);
         engine->retentionQueue.retainShared(SharedHandle<GECommandBuffer>(commandBuffer), {bufGate});
     }
     const auto signalValue = fence->nextSignalValue++;
@@ -2114,6 +2198,8 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
     // Phase 3 — the same fence advance that retires retention queue
     // entries also retires transient-ring slots stamped on prior submits.
     if (transientRing) transientRing->retire();
+    // G.5.1 D3D12 follow-up — fire any handlers the GPU has already retired.
+    pollCompletions();
 }
 
 void GED3D12CommandQueue::signalFence(SharedHandle<GEFence> &fence) {
@@ -2180,11 +2266,22 @@ void GED3D12CommandQueue::commitToGPU() {
             // leak into the next commitToGPU and over-stamp unrelated work).
             pendingSlots.clear();
         }
+        // G.5.1 D3D12 follow-up — gate handlers staged by single-arg submits.
+        // Non-empty branch: nextSubmitValue is the value just signaled for the
+        // frame's Execute. Empty branch: there was no GPU work this commit, so
+        // nextSubmitValue is the last signaled value and these handlers retire
+        // on the next poll (normally there are none — a staged handler implies
+        // its list was in `commandLists`, which makes the branch non-empty).
+        gateStagedCompletions(nextSubmitValue);
     }
     engine->retentionQueue.drainCompleted();
     // Phase 3 — the same fence advance that retires retention queue
     // entries also retires transient-ring slots stamped on prior submits.
     if (transientRing) transientRing->retire();
+    // G.5.1 D3D12 follow-up — fire any handlers the GPU has already retired.
+    // Called every present()→commitToGPU, so the WTK BufferPool batches gated
+    // here are recycled within a couple of frames (pending stays bounded).
+    pollCompletions();
 };
 
 void GED3D12CommandQueue::commitToGPUAndWait() {
@@ -2212,9 +2309,18 @@ void GED3D12CommandQueue::commitToGPUAndWait() {
     // Phase 3 — the same fence advance that retires retention queue
     // entries also retires transient-ring slots stamped on prior submits.
     if (transientRing) transientRing->retire();
+    // G.5.1 D3D12 follow-up — the GPU is idle here, so every gated handler's
+    // fence value has been reached; fire them all now.
+    pollCompletions();
 }
 
 SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer() {
+    // G.5.1 D3D12 follow-up — fire any frame-completion handlers the GPU has
+    // retired. This runs at the start of every frame (FrameRenderPass::begin),
+    // just before the WTK compositor's drainCompletedBufferReleases, so the
+    // prior frames' `done` flags are flipped in time for their pooled buffers
+    // to be recycled here.
+    pollCompletions();
     // CommandQueue-Typed-Pool Phase 3 — growable pool with per-slot
     // in-flight tracking via the existing retentionFence. Walk the pool
     // from currentBufferIndex for locality; recycle the first slot whose
@@ -2288,6 +2394,14 @@ ID3D12GraphicsCommandList6 *GED3D12CommandQueue::getLastCommandList() {
 GED3D12CommandQueue::~GED3D12CommandQueue() {
     ResourceTracking::Tracker::instance().emit(ResourceTracking::EventType::Destroy, ResourceTracking::Backend::D3D12,
                                                "CommandQueue", traceResourceId, commandQueue.Get());
+    // G.5.1 D3D12 follow-up — any staged/gated completion handlers that never
+    // fired are dropped here (their std::functions destruct, releasing the
+    // captured shared_ptr<atomic<bool>>). We intentionally do NOT fire them:
+    // a handler must only fire once the GPU has reached its fence value, and
+    // we don't force a GPU drain in this destructor. The WTK side does not
+    // depend on the teardown firing — BackendRenderTargetContext's destructor
+    // returns every still-pending PendingReleaseBatch directly to the
+    // BufferPool (which outlives the per-window context), so no buffer leaks.
     CloseHandle(cpuEvent);
 }
 

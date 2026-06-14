@@ -2838,7 +2838,7 @@ foundation; the persistent-handle reuse moves to **G.5.1b** (below).
   `build.ninja` was confirmed to carry `OMEGAWTK_CONTENT_CACHE_ENABLED`
   — verify that after toggling, don't trust the cache var alone.)
 
-***Follow-up — D3D12 / Vulkan completion wiring for recycling [needs CI, not started]***
+***Follow-up — D3D12 / Vulkan completion wiring for recycling [D3D12 DONE + CI-verified 2026-06-14; Vulkan not started]***
 
 The recycling foundation works on every backend whose
 `GECommandBuffer::setCompletionHandler` actually fires its callback on
@@ -2869,6 +2869,53 @@ CI.
   thread, but any D3D12 completion plumbing added here must itself be
   thread-safe and must not capture the soon-dead command-buffer
   wrapper by raw pointer.
+
+  **Shipped shape (D3D12, poll-only, 2026-06-14).** Of the two options
+  above I took the **`GetCompletedValue()` poll on the existing
+  `retentionFence`** rather than the `SetEventOnCompletion` + waiter
+  thread. Rationale: the queue already does
+  `Signal(retentionFence, ++nextSubmitValue)` after every
+  `ExecuteCommandLists` (it drives the pool recycler + retention queue),
+  so a frame's completion is already expressed on that fence — no new
+  fence, no new thread, and **thread-safe by construction** (every
+  stage/gate/poll touches the new containers only on the queue's owning
+  compositor thread, the same one that submits/commits/`getAvailableBuffer`s;
+  the plan's cross-thread warning only applies to the waiter-thread
+  variant). Mechanics, mirroring the existing `pendingSlots →
+  stampPendingSlots` lifecycle:
+  - `GED3D12CommandBuffer` gains a `completionHandler` member +
+    `setCompletionHandler` override (mirrors Metal).
+  - A handler is **staged** when its buffer is submitted (single-arg
+    `submitCommandBuffer` — its list is now queued in `commandLists`),
+    then **gated** to the concrete `retentionFence` value at the
+    `ExecuteCommandLists` that flushes that batch (`commitToGPU`, or a
+    two-arg submit's flush). Invariant: a staged handler's list is always
+    present in `commandLists` until a flush gates it, so every flush is
+    paired with a `gateStagedCompletions`.
+  - `pollCompletions()` fires + drops every gated handler whose value the
+    GPU has reached, with a populated `GECommandBufferCompletionInfo`
+    (status = `Error` iff `GetDeviceRemovedReason() != S_OK`, else
+    `Completed`; GPU timestamps left at 0.0 — "if available", not wired,
+    and the WTK recycler ignores them). It runs at the top of
+    `getAvailableBuffer` (frame start, just before the compositor's
+    `drainCompletedBufferReleases`), and at the end of `commitToGPU` /
+    `commitToGPUAndWait` / the two-arg submit. Fire-once + clear-after-fire
+    + clear-off-the-buffer satisfy the Metal contract.
+  - Idle caveat: with no thread, handlers fire only at those drain points,
+    so a fully idle app (no frames, no commit) won't recycle until the next
+    frame or teardown. Benign — idle = no allocation pressure, and the WTK
+    `BackendRenderTargetContext` destructor already returns every pending
+    `PendingReleaseBatch` straight to the (longer-lived) `BufferPool`. The
+    queue destructor therefore **drops** unfired handlers rather than firing
+    them (firing pre-GPU-completion would race; WTK doesn't depend on
+    teardown firing).
+  - Files: `gte/src/d3d12/GED3D12CommandQueue.{h,cpp}` only. No WTK-side
+    change (the foundation is backend-agnostic). Authored on the Linux/WSL
+    host (D3D12 is Windows-only, not compilable there); **built + verified
+    under CI on 2026-06-14** — the `bufferPool` telemetry shows the same
+    recycling signature already confirmed on Metal (miss plateaus at warmup,
+    hit-rate climbs, `pending` bounded), so the poll-on-`retentionFence`
+    callback fires correctly on D3D12.
 - **Vulkan (`GEVulkanCommandBuffer::setCompletionHandler`).** Submit
   the CB with a `VkFence` (the codebase already creates per-submit
   fences for the immediate-upload paths — reuse that shape), then fire
