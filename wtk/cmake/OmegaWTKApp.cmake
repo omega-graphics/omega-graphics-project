@@ -79,10 +79,18 @@ function(OmegaWTKApp)
         set(BUNDLE_ID ${_ARG_BUNDLE_ID})
         set(APPNAME ${_ARG_NAME})
         set(BUNDLE_ICON ${_ARG_BUNDLE_ICON})
-        configure_file(${OMEGAWTK_SOURCE_DIR}/target/macos/Info.plist.in ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
+        # Per-app plist filename — NOT a bare Info.plist. Every OmegaWTKApp()
+        # in a given tests/CMakeLists shares one CMAKE_CURRENT_BINARY_DIR, so a
+        # shared output name collides: configure_file (configure time) would let
+        # the LAST app's values win, and add_app_bundle would then stamp that one
+        # file into every bundle's Contents/Info.plist — leaving every app but the
+        # last with a CFBundleExecutable naming a binary that isn't there, which
+        # codesign passes but LLDB/LaunchServices reject ("not a valid executable").
+        # Mirrors the per-app naming the kreate game path already uses.
+        configure_file(${OMEGAWTK_SOURCE_DIR}/target/macos/Info.plist.in ${CMAKE_CURRENT_BINARY_DIR}/${_ARG_NAME}_Info.plist @ONLY)
         add_app_bundle(
             NAME ${_ARG_NAME}
-            PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
+            PLIST "${CMAKE_CURRENT_BINARY_DIR}/${_ARG_NAME}_Info.plist"
             RESOURCES ${OMEGAWTK_SOURCE_DIR}/target/macos/MainMenu.nib ${_ARG_BUNDLE_ICON} ${_pak_output}
             DEPS OmegaWTK.framework OmegaGTE.framework ${_ARG_DEPS}
             EMBEDDED_FRAMEWORKS OmegaWTK OmegaGTE
