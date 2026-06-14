@@ -277,6 +277,19 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
         }
     }
     deferredBufferReleases.clear();
+    // Phase G.5.1: return the completion-gated batches too. Release to the
+    // pool (which outlives this per-window context) rather than letting the
+    // handles free here — on backends where the GPU completion never fired
+    // the buffers may still be in flight, and the pool keeps them alive
+    // (same keep-alive contract as the deferred list above).
+    for(auto & batch : pendingReleaseBatches_){
+        for(auto & entry : batch.buffers){
+            if(bufferPool() != nullptr && entry.first){
+                bufferPool()->release(std::move(entry.first), entry.second);
+            }
+        }
+    }
+    pendingReleaseBatches_.clear();
     if(fencePool() != nullptr && fence){
         fencePool()->release(std::move(fence));
     }
@@ -422,6 +435,11 @@ void BackendRenderTargetContext::beginFrame(float clearR, float clearG, float cl
     // GEVulkanNativeRenderTarget::resizeSwapChain path landed); the
     // Metal default override is a no-op since CAMetalLayer auto-resizes.
     applyPendingSwapChainResize();
+    // Phase G.5.1: return buffers whose owning frame has completed on the
+    // GPU back to the pool, so this frame's `acquire`s hit instead of
+    // allocating. Drained here (compositor thread) — never from the GPU
+    // completion callback — to keep all `BufferPool` access single-threaded.
+    drainCompletedBufferReleases();
     frameRenderPass_.begin(clearR, clearG, clearB, clearA);
     // §2.14 Pass 1 retired `pendingNativeContent_` — see the
     // header's comment at the former
@@ -486,6 +504,22 @@ void BackendRenderTargetContext::reportContentCacheStats() {
     line(os, "tessellation", tess);
     line(os, "content     ", content);
     line(os, "textShaping ", text);
+    // Phase G.5.1: the per-RTC buffer pool. Its hit rate is the direct
+    // signal that the completion-gated recycling is working — before the
+    // fix it sat near 0% (every draw allocated, nothing was ever
+    // returned); after warmup it should climb as freed buffers come back
+    // for reuse. `pending` counts batches still waiting on GPU completion.
+    if(auto * pool = bufferPool()){
+        const BufferPool::Stats ps = pool->stats();
+        const std::uint64_t total = ps.poolHits + ps.poolMisses;
+        const double rate = total == 0 ? 0.0
+                : 100.0 * static_cast<double>(ps.poolHits) / static_cast<double>(total);
+        os << "  bufferPool   hits=" << ps.poolHits
+           << " miss=" << ps.poolMisses
+           << " pooledBytes=" << ps.totalPooledBytes
+           << " pending=" << pendingReleaseBatches_.size()
+           << " hit=" << std::fixed << std::setprecision(1) << rate << "%\n";
+    }
     std::cerr << os.str();
 }
 #endif
@@ -1529,6 +1563,50 @@ void BackendRenderTargetContext::resetElementState() {
                     bufferPool()->release(std::move(entry.first), entry.second);
             }
             deferredBufferReleases.clear();
+        }
+    }
+
+    void BackendRenderTargetContext::enqueueFrameBufferReleases(
+            SharedHandle<OmegaGTE::GECommandBuffer> & cb){
+        // Phase G.5.1: nothing acquired this frame → nothing to gate.
+        if(deferredBufferReleases.empty() || cb == nullptr){
+            return;
+        }
+        // Heap-owned flag so the completion callback can outlive this
+        // context: the callback captures only this `shared_ptr`, never
+        // `this` or the pool. Flipped on GPU completion; read on the
+        // compositor thread in `drainCompletedBufferReleases`.
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        cb->setCompletionHandler([done](const OmegaGTE::GECommandBufferCompletionInfo &){
+            done->store(true, std::memory_order_release);
+        });
+        PendingReleaseBatch batch;
+        batch.buffers = std::move(deferredBufferReleases);
+        batch.done    = std::move(done);
+        deferredBufferReleases.clear();
+        pendingReleaseBatches_.push_back(std::move(batch));
+    }
+
+    void BackendRenderTargetContext::drainCompletedBufferReleases(){
+        // Front-to-back: command buffers complete in submission order on
+        // the single render queue, so the front batch is the oldest. Stop
+        // at the first batch whose GPU work has not finished. On backends
+        // whose `setCompletionHandler` is the base no-op (D3D12 / Vulkan
+        // today) the flag never flips, so batches accumulate until
+        // teardown — the pre-G.5.1 behavior, no recycling but no leak past
+        // the context's lifetime.
+        auto * pool = bufferPool();
+        while(!pendingReleaseBatches_.empty() &&
+              pendingReleaseBatches_.front().done->load(std::memory_order_acquire)){
+            auto batch = std::move(pendingReleaseBatches_.front());
+            pendingReleaseBatches_.pop_front();
+            if(pool != nullptr){
+                for(auto & entry : batch.buffers){
+                    if(entry.first){
+                        pool->release(std::move(entry.first), entry.second);
+                    }
+                }
+            }
         }
     }
 

@@ -352,6 +352,12 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
     public:
         GEMetalBufferWriter() = default;
         void setOutputBuffer(SharedHandle<GEBuffer> &buffer) override {
+            // G.5.3: release any prior binding first so re-pointing the
+            // writer (the persistent-buffer reuse pattern) is safe. On
+            // Metal this is just a binding reset — `contents` is
+            // persistent — but the call keeps the lifecycle uniform with
+            // the D3D12 / Vulkan backends.
+            clearOutputBuffer();
             buffer_= (GEMetalBuffer *)buffer.get();
             currentOffset = 0;
             _data_ptr = (MTLByte *)[NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,buffer_->metalBuffer.handle()) contents];;
@@ -527,6 +533,21 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             _data_ptr = nullptr;
             clearBlocks();
         }
+        void clearOutputBuffer() override {
+            // G.5.3: Metal buffers expose a persistent `contents`
+            // pointer, so there is no Map to release — dropping the
+            // binding + rewinding the cursor is enough. Unlike `flush`,
+            // the staged `blocks` are left untouched (`structBegin` frees
+            // them); this method only detaches the buffer binding.
+            buffer_ = nil;
+            _data_ptr = nullptr;
+            currentOffset = 0;
+        }
+        void resetCursor() override {
+            // G.5.3: rewind to the start of the (still-bound, still-mapped)
+            // buffer so the next struct overwrites in place.
+            currentOffset = 0;
+        }
     };
 
     SharedHandle<GEBufferWriter> GEBufferWriter::Create() {
@@ -574,6 +595,10 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
     public:
         GEMetalBufferReader() = default;
         void setInputBuffer(SharedHandle<GEBuffer> &buffer) override {
+            // G.5.3: release any prior binding first so re-pointing the
+            // reader is safe (no map leak on backends that map; a binding
+            // reset on Metal).
+            clearInputBuffer();
             currentOffset = 0;
             buffer_= (GEMetalBuffer *)buffer.get();
             _data_ptr = (MTLByte *)[NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,buffer_->metalBuffer.handle()) contents];
@@ -781,6 +806,15 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         void reset() override {
             _data_ptr = nullptr;
             buffer_ = nullptr;
+            structRelativeOffset = 0;
+        }
+        void clearInputBuffer() override {
+            // G.5.3: persistent `contents` — no Unmap; drop the binding
+            // and rewind. (`reset()` is the equivalent end-of-read
+            // teardown retained for existing callers.)
+            _data_ptr = nullptr;
+            buffer_ = nullptr;
+            currentOffset = 0;
             structRelativeOffset = 0;
         }
     };

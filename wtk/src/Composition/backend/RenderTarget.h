@@ -33,6 +33,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 
@@ -147,6 +148,28 @@ namespace OmegaWTK::Composition {
         FrameRenderPass frameRenderPass_;
         SharedHandle<BackendCanvasEffectProcessor> imageProcessor;
         OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> deferredBufferReleases;
+
+        /// UIView-Render-Redesign Phase G.5.1 (recycling foundation):
+        /// a frame's per-draw scratch buffers (`deferredBufferReleases`)
+        /// must not return to `BufferPool` until the GPU has finished
+        /// reading them — the per-frame submit is asynchronous
+        /// (`commitToGPU` does not wait), so an immediate release would
+        /// race the in-flight GPU read. Each frame's batch carries a
+        /// `done` flag flipped by the frame command buffer's GPU
+        /// completion handler; `beginFrame` drains every completed batch
+        /// back to the pool on the compositor thread. The completion
+        /// callback only stores into the (heap-owned, shared) atomic, so
+        /// it captures neither `this` nor the pool — safe if the context
+        /// or pool is torn down before the GPU finishes. Backends whose
+        /// `GECommandBuffer::setCompletionHandler` is the base no-op
+        /// (D3D12 / Vulkan today) never flip the flag, so their batches
+        /// hold the buffers until teardown — identical to the pre-G.5.1
+        /// behavior, no regression.
+        struct PendingReleaseBatch {
+            OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> buffers;
+            std::shared_ptr<std::atomic<bool>> done;
+        };
+        std::deque<PendingReleaseBatch> pendingReleaseBatches_;
         OmegaGTE::FMatrix<4,4> currentTransform = OmegaGTE::FMatrix<4,4>::Identity();
         float currentOpacity = 1.f;
         /// Per-blurred-layer scratch surfaces, keyed by Layer*. Created on
@@ -444,6 +467,18 @@ namespace OmegaWTK::Composition {
         const Composition::Rect & renderTargetSize() const { return renderTargetSize_; }
         SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> & tessellationContext(){ return tessellationContext_; }
         void releaseDeferredBuffers();
+        /// Phase G.5.1: move the buffers accrued this frame into a
+        /// completion-gated batch and register `cb`'s GPU-completion
+        /// callback to mark it releasable. Called by `FrameRenderPass::end`
+        /// on the final frame command buffer, just before it is submitted
+        /// (every earlier scratch / capture command buffer runs before it
+        /// on the same in-order queue, so its completion implies all the
+        /// frame's buffer reads are done).
+        void enqueueFrameBufferReleases(SharedHandle<OmegaGTE::GECommandBuffer> & cb);
+        /// Phase G.5.1: return every GPU-completed batch's buffers to the
+        /// `BufferPool`. Runs on the compositor thread at `beginFrame`, so
+        /// all pool access stays single-threaded.
+        void drainCompletedBufferReleases();
 
         // §2.14 Pass 1 retired the carve-out drain accessors —
         // `pendingNativeContent()` / `clearPendingNativeContent()` —

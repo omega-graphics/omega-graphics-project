@@ -111,6 +111,24 @@ struct OMEGAGTE_EXPORT GEBufferWriter {
     virtual void structEnd() = 0;
     virtual void sendToBuffer() = 0;
     virtual void flush() = 0;
+    /// Release the currently-bound output buffer, unmapping it on
+    /// backends that hold a CPU mapping (D3D12 `ID3D12Resource::Unmap`,
+    /// Vulkan `vmaUnmapMemory`; a binding-only release on Metal, whose
+    /// `contents` pointer is persistent) and clearing the internal
+    /// binding + cursor so the writer can be safely re-pointed. Idempotent:
+    /// a no-op when nothing is bound. `setOutputBuffer` now calls this on
+    /// any prior binding, so the usual acquire-write-`flush` flow is
+    /// unaffected; it is exposed for the persistent-buffer reuse pattern
+    /// (Phase G.5.1), where a cache entry detaches the writer without the
+    /// full `flush` semantics. Unlike `flush`, it does NOT free staged
+    /// struct data.
+    virtual void clearOutputBuffer() = 0;
+    /// Rewind the write cursor to byte 0 without unmapping or
+    /// re-acquiring the buffer — the "write new data on top of the same
+    /// persistent buffer" path (Phase G.5.1). The caller is responsible
+    /// for fully overwriting any region a downstream shader reads;
+    /// trailing bytes left by an earlier, larger write are NOT zeroed.
+    virtual void resetCursor() = 0;
     static SharedHandle<GEBufferWriter> Create();
     virtual ~GEBufferWriter() = default;
 };
@@ -170,6 +188,16 @@ struct OMEGAGTE_EXPORT GEBufferReader {
     virtual void getUint4x3(UMatrix<4,3> & m) = 0;
     virtual void structEnd() = 0;
     virtual void reset() = 0;
+    /// Readback analog of `GEBufferWriter::clearOutputBuffer`: release
+    /// the currently-bound input buffer, unmapping it on backends that
+    /// hold a CPU mapping and clearing the internal binding + cursor so
+    /// the reader can be safely re-pointed. Idempotent when nothing is
+    /// bound. `setInputBuffer` now calls this on any prior binding, so a
+    /// reader can be re-pointed at a new (or the same) buffer across
+    /// frames without leaking map state (Phase G.5.x persistent-handle
+    /// reuse). `reset()` remains the equivalent end-of-read teardown for
+    /// existing callers.
+    virtual void clearInputBuffer() = 0;
     static SharedHandle<GEBufferReader> Create();
     virtual ~GEBufferReader() = default;
 };

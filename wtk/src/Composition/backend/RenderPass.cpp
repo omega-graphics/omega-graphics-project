@@ -111,6 +111,12 @@ namespace OmegaWTK::Composition {
         }
         auto & queue = owner_.commandQueue();
         frameCB_->finishRenderPass();
+        // Phase G.5.1: gate this frame's pooled scratch buffers on the
+        // final frame command buffer's GPU completion before it is
+        // submitted. Earlier scratch / capture command buffers run before
+        // `frameCB_` on the same in-order queue, so its completion implies
+        // every buffer this frame touched is safe to recycle.
+        owner_.enqueueFrameBufferReleases(frameCB_);
         if(queue != nullptr){
             queue->submitCommandBuffer(frameCB_);
         }

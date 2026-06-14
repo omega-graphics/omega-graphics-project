@@ -19,7 +19,11 @@ def _replace_symlink(target, link_path):
     `target` MUST be relative to the directory that contains link_path so the
     framework stays self-contained when the whole .framework is copied into an
     app bundle (cp -R preserves the relative link verbatim)."""
+    # Idempotent: if the correct symlink is already in place, leave it alone so
+    # the framework's mtime/signature does not churn on every build.
     if os.path.islink(link_path):
+        if os.readlink(link_path) == target:
+            return
         os.remove(link_path)
     elif os.path.exists(link_path):
         if os.path.isdir(link_path):

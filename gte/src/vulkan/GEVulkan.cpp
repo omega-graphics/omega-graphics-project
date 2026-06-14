@@ -665,6 +665,10 @@ _NAMESPACE_BEGIN_
         OmegaCommon::Vector<DataBlock> blocks;
     public:
         void setOutputBuffer(SharedHandle<GEBuffer> &buffer) override {
+            // G.5.3: unmap any prior binding first so re-pointing the
+            // writer (the persistent-buffer reuse pattern) does not leak
+            // a VMA mapping.
+            clearOutputBuffer();
             _buffer = (GEVulkanBuffer *)buffer.get();
             layoutStd = (_buffer->role == BufferDescriptor::Uniform)
                             ? BufferLayoutStd::Std140 : BufferLayoutStd::Std430;
@@ -817,6 +821,24 @@ _NAMESPACE_BEGIN_
             vmaUnmapMemory(_buffer->engine->memAllocator,_buffer->alloc);
             _buffer = nullptr;
         }
+        void clearOutputBuffer() override {
+            // G.5.3: release a prior VMA mapping so the writer can be
+            // re-pointed safely (persistent-buffer reuse). Idempotent —
+            // a no-op when nothing is bound, so `setOutputBuffer` can
+            // call it unconditionally.
+            if(_buffer == nullptr) return;
+            if(mem_map != nullptr){
+                vmaUnmapMemory(_buffer->engine->memAllocator,_buffer->alloc);
+            }
+            _buffer = nullptr;
+            mem_map = nullptr;
+            currentOffset = 0;
+        }
+        void resetCursor() override {
+            // G.5.3: rewind to byte 0 of the still-mapped buffer to
+            // overwrite its contents in place — no Unmap, no re-Map.
+            currentOffset = 0;
+        }
     };
 
     SharedHandle<GEBufferWriter> GEBufferWriter::Create() {
@@ -841,6 +863,9 @@ _NAMESPACE_BEGIN_
         }
     public:
         void setInputBuffer(SharedHandle<GEBuffer> &buffer) override {
+            // G.5.3: unmap any prior binding first so re-pointing the
+            // reader does not leak a VMA mapping.
+            clearInputBuffer();
             _buffer = (GEVulkanBuffer *)buffer.get();
             layoutStd = (_buffer->role == BufferDescriptor::Uniform)
                             ? BufferLayoutStd::Std140 : BufferLayoutStd::Std430;
@@ -1018,6 +1043,19 @@ _NAMESPACE_BEGIN_
         void reset() override {
             vmaUnmapMemory(_buffer->engine->memAllocator,_buffer->alloc);
             _buffer = nullptr;
+        }
+        void clearInputBuffer() override {
+            // G.5.3: release a prior VMA mapping so the reader can be
+            // re-pointed safely. Idempotent (guards on the null binding,
+            // unlike `reset()` which assumes a live buffer). `reset()`
+            // remains the existing end-of-read teardown.
+            if(_buffer == nullptr) return;
+            if(mem_map != nullptr){
+                vmaUnmapMemory(_buffer->engine->memAllocator,_buffer->alloc);
+            }
+            _buffer = nullptr;
+            mem_map = nullptr;
+            currentOffset = 0;
         }
     };
 

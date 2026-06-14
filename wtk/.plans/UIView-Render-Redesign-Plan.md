@@ -2620,7 +2620,7 @@ triangulator.
 - The eligibility numbers above are env-tunable
   (`OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX` defaults to 64).
 
-**G.3.3 — Phase F surgical follow-up: size-diff invalidation [DONE 2026-06-09, content-neutral marking]**
+**G.3.3 — Phase F surgical follow-up: size-diff invalidation [DONE 2026-06-14, content-neutral marking]**
 
 Shipped a simpler mechanism than this sub-phase originally described
 (see "Why the original mechanism changed" below — the locked decision
@@ -2650,7 +2650,7 @@ predated G.3.2-rev2 and is no longer implementable as written).
   (default) and `=ON`; `BasicAppTest` ON build links cleanly. With the
   cache OFF nothing reads `contentVersion`, so output is byte-identical
   to the pre-G.3.3 blanket repaint.
-- **Visual verification PASSED (2026-06-09, Metal):** cache-ON
+- **Visual verification PASSED (2026-06-14, Metal):** cache-ON
   `BasicAppTest` renders pixel-correct (all four shapes, title,
   description, and the four buttons) with no blank frame and no
   command-buffer growth. Resize behaviour accepted by the developer.
@@ -2688,7 +2688,7 @@ invalidation.
   differs, compared in `Widget::handleHostResize` after
   `runWidgetLayout` settles.
 
-**G.4 — Documentation + telemetry [DONE 2026-06-09]**
+**G.4 — Documentation + telemetry [DONE 2026-06-14]**
 
 - New "Content Caches (Phase G)" section in `wtk/docs/UIModel.rst`
   (between "Compositor" and "Where the Old Concepts Went"): the build
@@ -2764,8 +2764,134 @@ size doesn't; the rasterized texture content changes, the bucket
 dims don't. Re-allocating the GPU object on top of an unchanged size
 class is pure churn.
 
-**G.5.1 — Persistent vertex / params buffer handles on cache
-entries [~200 LOC]**
+**G.5.1 — BufferPool recycling foundation [DONE 2026-06-14, re-scoped]**
+
+**Re-scoped after pre-flight (developer, 2026-06-14).** Reading the
+buffer subsystem before writing the persistent-handle code surfaced
+three facts the original sketch (kept below) was built on top of, none
+of which held:
+
+1. **`BackendRenderTargetContext::releaseDeferredBuffers()` is dead** —
+   it has no callers anywhere. Every draw's vertex / params buffer is
+   pushed into `deferredBufferReleases` and only freed in the
+   destructor. So mid-session the pool *never* received returns →
+   `acquire` almost always missed → a fresh buffer was allocated per
+   draw and held alive for the whole context lifetime (slow growth,
+   masked by the on-demand paint model). The plan's "acquire, write,
+   defer-release, next frame acquires a new pool entry" round-trip
+   never happened.
+2. **The per-frame submit path is asynchronous** (`commit()` →
+   `commitToGPU()` = Metal `[cb commit]` with `addCompletedHandler`,
+   no wait). Frames pipeline; the CPU records frame N+1 while frame N's
+   GPU work is in flight.
+3. ⇒ **Persistent-buffer overwrite would introduce a GPU read/write
+   race that does not exist today** (nothing is ever reused now).
+   "Re-`setOutputBuffer` and overwrite" on a buffer the previous
+   frame's GPU read is still consuming = corruption without
+   completion fencing.
+
+   (Plus: `drawTriangulatedResult` bakes `currentTransform` /
+   `currentOpacity` into the vertices, so "byte-identical mesh → skip
+   rewrite" really means "same mesh AND transform AND opacity"; and the
+   tessellation path has no `paramsBuf` — that lives in the SDF/bitmap
+   emitter path.)
+
+The developer chose to **fix the recycling foundation first** and defer
+the persistent-per-entry overwrite. This sub-phase now delivers the
+foundation; the persistent-handle reuse moves to **G.5.1b** (below).
+
+**Shipped shape (recycling foundation):**
+
+- Per-frame, completion-gated release of pooled buffers. Each frame's
+  `deferredBufferReleases` is moved into a `PendingReleaseBatch`
+  carrying a heap-owned `shared_ptr<std::atomic<bool>> done`, and the
+  final frame command buffer's `GECommandBuffer::setCompletionHandler`
+  flips `done` on real GPU completion (`FrameRenderPass::end` →
+  `BackendRenderTargetContext::enqueueFrameBufferReleases`). Earlier
+  scratch / capture command buffers run before the final frame CB on
+  the same in-order queue, so its completion implies every buffer the
+  frame touched is safe to recycle.
+- `beginFrame` calls `drainCompletedBufferReleases()`, which returns
+  every completed batch's buffers to `BufferPool` on the compositor
+  thread (single-threaded pool access). The completion callback
+  captures only the `shared_ptr<atomic>` — never `this` or the pool —
+  so a teardown before GPU completion is safe; the destructor drains
+  any still-pending batches back to the pool.
+- Telemetry: a `bufferPool` line added to the G.4
+  `OMEGAWTK_CONTENT_CACHE_STATS` block (hits / miss / pooledBytes /
+  pending / hit-rate).
+- **Verified at runtime (Metal, cache-ON, `ContainerClampAnimationTest`,
+  420+ frames):** `bufferPool` misses plateau at the warmup count (66)
+  while hits climb to a **98%+ hit rate**, `pending` stays bounded at 2
+  (the in-flight frames). Before the fix, misses grew unboundedly and
+  the pool never recycled. No crash / GPU race across the run.
+- **Backend caveat:** `GECommandBuffer::setCompletionHandler` is
+  implemented on Metal but is the base no-op on D3D12 / Vulkan today —
+  there the `done` flag never flips, so batches hold their buffers
+  until teardown (identical to the pre-G.5.1 behavior — **no
+  regression, but no recycling either**). Wiring D3D12
+  (`ID3D12Fence` + event) and Vulkan (`VkFence`) completion is a
+  flagged follow-up that needs CI to verify.
+- (Process note: a suppressed `cmake -B build -D…=ON` reconfigure can
+  silently fail to regenerate `build.ninja` with the macro. The
+  cache-ON paths were only genuinely compiled + runtime-exercised once
+  `build.ninja` was confirmed to carry `OMEGAWTK_CONTENT_CACHE_ENABLED`
+  — verify that after toggling, don't trust the cache var alone.)
+
+***Follow-up — D3D12 / Vulkan completion wiring for recycling [needs CI, not started]***
+
+The recycling foundation works on every backend whose
+`GECommandBuffer::setCompletionHandler` actually fires its callback on
+GPU completion. **Today only Metal does** (`GEMetalCommandBuffer`
+routes it through the existing `addCompletedHandler` block); D3D12 and
+Vulkan inherit the base `GECommandBuffer::setCompletionHandler` no-op
+(`GERenderTarget.h`), so on those backends a frame's
+`PendingReleaseBatch.done` flag never flips, `drainCompletedBufferReleases`
+never returns its buffers, and the pool does not recycle — buffers are
+held until context teardown (the pre-G.5.1 behavior: **no regression,
+but no recycling win either**). This work closes that gap. It cannot be
+written or verified on the macOS host (D3D12/Vulkan are write-only
+here, per `gte` backend-build notes) — it lands and is validated under
+CI.
+
+- **D3D12 (`GED3D12CommandBuffer::setCompletionHandler`).** Store the
+  handler on the command buffer (mirror the Metal member). On commit,
+  `ID3D12CommandQueue::Signal(fence, ++value)` after the CB's
+  `ExecuteCommandLists`, then drive the callback when the fence reaches
+  `value` — either `ID3D12Fence::SetEventOnCompletion(value, hEvent)`
+  serviced by a small completion/waiter thread, or a poll of
+  `GetCompletedValue()` on a known drain point. Invoke the stored
+  handler exactly once with a populated `GECommandBufferCompletionInfo`
+  (status + GPU timestamps if available), matching the Metal contract,
+  and clear it after firing (the WTK side re-sets it every frame).
+  Beware the cross-thread hand-off: the WTK `done` flag is a
+  `shared_ptr<std::atomic<bool>>` and is safe to flip from the waiter
+  thread, but any D3D12 completion plumbing added here must itself be
+  thread-safe and must not capture the soon-dead command-buffer
+  wrapper by raw pointer.
+- **Vulkan (`GEVulkanCommandBuffer::setCompletionHandler`).** Submit
+  the CB with a `VkFence` (the codebase already creates per-submit
+  fences for the immediate-upload paths — reuse that shape), then fire
+  the stored handler when the fence signals. A dedicated wait thread
+  (`vkWaitForFences`) or a per-frame `vkGetFenceStatus` poll at a drain
+  point both work; pick whichever matches the existing present/submit
+  threading. Same one-shot + clear-after-fire + thread-safety contract
+  as D3D12.
+- **No WTK-side change needed** — `enqueueFrameBufferReleases` /
+  `drainCompletedBufferReleases` and the `PendingReleaseBatch` flag are
+  already backend-agnostic; they start recycling automatically once the
+  backend's completion callback fires.
+- **Acceptance (per backend, under CI):** with
+  `OMEGAWTK_CONTENT_CACHE_STATS=1` on a continuously-rendering app
+  (e.g. `ContainerClampAnimationTest`), the `bufferPool` telemetry line
+  shows the same signature already verified on Metal — `miss` plateaus
+  at the warmup count while `hits` climb to a high hit rate, and
+  `pending` stays bounded (does not grow unboundedly). Unbounded
+  `pending` growth = the completion callback is not firing.
+
+**G.5.1b — Persistent vertex / params buffer handles on cache entries
+[DEFERRED]** *(original G.5.1 sketch, now unblocked by the recycling
+foundation + the G.5.3 writer hygiene):*
 
 - The G.1 tessellation cache entry grows from
   `TETriangulationResult` to
@@ -2777,12 +2903,16 @@ entries [~200 LOC]**
   On a hit, the renderer's `drawTriangulatedResult` path reuses the
   entry's `vertexBuf` / `paramsBuf` directly when the required
   vertex / params byte count rounds to the same bucket size; if
-  the mesh data is byte-identical to last frame the buffer's
-  current GPU contents are kept and only the bind happens.
-  Different-data-same-size hits re-`setOutputBuffer` and overwrite
-  (see G.5.3). Different-size misses release the entry's buffers
-  back to `BufferPool` and acquire fresh ones — same path as
-  today, just keyed off bucket-size delta instead of always.
+  the mesh data is byte-identical to last frame (same mesh **and**
+  transform **and** opacity — those are baked into the vertices) the
+  buffer's current GPU contents are kept and only the bind happens.
+  Different-data-same-size hits `resetCursor` + overwrite (G.5.3).
+  Different-size misses release the entry's buffers back to
+  `BufferPool` and acquire fresh ones. **Requires** the
+  completion-gated reuse machinery from the foundation above so an
+  overwrite cannot race an in-flight GPU read (e.g. only overwrite
+  once the entry's prior `done` has fired, else allocate a fresh
+  buffer that frame).
 - The G.3 content-cache entry holds the per-blit `DrawOp::Bitmap`'s
   vertex buffer (a fullscreen-quad of 6 verts) once. That buffer is
   written at `endCacheTarget` time and reused for every subsequent
@@ -2790,12 +2920,11 @@ entries [~200 LOC]**
   vertex buffer at all.
 - The non-cache hot-path emitters in `RenderTarget.cpp` that
   currently fall through `makeBuffer` on `bufferPool() == nullptr`
-  (`:602`, `:623`, `:760`, `:778`, `:1043`, `:1068`) get a thin
-  per-call-site scratch handle that's reused across frames the same
-  way — the fallback path was an oversight, not an optimization.
+  get a thin per-call-site scratch handle that's reused across frames
+  the same way.
 - Telemetry: extend `BufferPool::Stats` with `persistentReuses` so
-  the G.4 stats line shows pool hits vs persistent reuses (the
-  latter is the new optimal path).
+  the stats line shows pool hits vs persistent reuses (the latter
+  being the new optimal path).
 
 **G.5.2 — Persistent texture handles on content-cache entries [~150 LOC]**
 
@@ -2824,31 +2953,57 @@ entries [~200 LOC]**
   re-allocates on resize.
 
 **G.5.3 — GTE BufferWriter / BufferReader hygiene for overwrite
-[~80 LOC]**
+[DONE 2026-06-14]**
 
-- `GEBufferWriter::setOutputBuffer` currently Maps the new buffer
-  without Unmapping any previously-bound one (see
-  `GED3D12.cpp:922-935`, Metal `:354`, Vulkan `:667`). For the
-  one-writer-many-buffers pattern this leaks Map state; for the
-  G.5.1 reuse pattern it leaves a stale persistent mapping that
-  the next overwrite could collide with. Add a sibling
-  `clearOutputBuffer()` (or have `setOutputBuffer` Unmap the
-  previous binding internally) so the writer is safe to point at a
-  new buffer or re-point at the same one. Vulkan / Metal / D3D12
-  parallel updates land in one PR.
-- `GEBufferReader` gets the analogous fix on the readback path.
-- Add `GEBufferWriter::resetCursor()` (renames internal
-  `currentOffset = 0` into a public API) so a cache entry can
-  ask the writer to start a fresh overwrite at byte 0 without
-  having to drop and re-acquire the writer instance. This is the
-  "even better: just write new data on top" path the developer
-  flagged — no buffer clear, no allocation, just rewind and
-  overwrite. Document that the caller is responsible for fully
-  overwriting any region a downstream shader reads (no implicit
-  zero of trailing bytes).
-- No public-API breakage: `setOutputBuffer` keeps its current
-  signature; the new methods are additive. Existing callers that
-  acquire-write-release continue to work unchanged.
+Shipped both the leak fix and the rewind API, across all three
+backends, with the public interface extended additively.
+
+**Shipped shape:**
+
+- `GEBufferWriter` (public `gte/include/omegaGTE/GTEShader.h`) gains two
+  pure-virtual methods:
+  - `clearOutputBuffer()` — release the currently-bound output buffer
+    (D3D12 `ID3D12Resource::Unmap`, Vulkan `vmaUnmapMemory`, Metal a
+    binding-only release since `contents` is persistent), null the
+    binding + rewind the cursor. **Idempotent** (guards on the null
+    binding) so it is safe to call unconditionally and twice.
+  - `resetCursor()` — `currentOffset = 0` with no Unmap / re-Map: the
+    "write new data on top of the same persistent buffer" path for
+    G.5.1. Doc'd that the caller must fully overwrite any region a
+    downstream shader reads (no implicit zero of trailing bytes).
+- `GEBufferReader` gains the symmetric `clearInputBuffer()` (same
+  idempotent unmap-and-detach on the readback path). `reset()` is left
+  unchanged as the existing end-of-read teardown.
+- **Both `setOutputBuffer` and `setInputBuffer` now self-heal**: they
+  call `clearOutputBuffer()` / `clearInputBuffer()` at the top, so
+  re-pointing a writer/reader at a new (or the same) buffer no longer
+  leaks a Map. This satisfies the plan's "(or have setOutputBuffer
+  Unmap the previous binding internally)" alternative *and* exposes the
+  explicit methods. The usual acquire-write-`flush` flow is unaffected
+  (after `flush`/`reset` the binding is already null → the self-heal
+  call is a no-op).
+- All three backends updated in lockstep: Metal (`GEMetal.mm`), D3D12
+  (`GED3D12.cpp`), Vulkan (`GEVulkan.cpp`). `flush()` and `reset()`
+  bodies were deliberately left untouched.
+- **No public-API breakage:** `setOutputBuffer` / `setInputBuffer`
+  keep their signatures; the three methods are additive pure virtuals
+  (only the 3 backends implement the interface — verified no test/mock
+  subclasses exist, so adding pure virtuals is safe; consumers that
+  hold `SharedHandle<GEBufferWriter/Reader>` recompile against the new
+  vtable).
+- No caller changes here — G.5.3 lands the enabling API only. G.5.1 /
+  G.5.2 (the WTK cache entries that *use* `resetCursor` /
+  `clearOutputBuffer`) come next in the sequence.
+
+**Verification:**
+- `OmegaGTE` (Metal) + the full `BasicAppTest` (GTE→WTK→app consumer
+  chain, picking up the vtable change) build and link clean.
+- Metal buffer round-trip tests **pass at runtime**: `IntVectorIOTest`,
+  `MatrixOpsTest`, `PackOpsTest` (the latter two run two writer/reader
+  cycles each, exercising the self-heal re-point path). D3D12 / Vulkan
+  are **write-only on this macOS host** (no Windows SDK / no
+  `vk_mem_alloc.h` on the LSP path) — those backends were edited by
+  mirroring the Metal lifecycle and need CI to compile-verify.
 
 **G.5.4 — Fixed-tile texture + stretch during resize drag [~120 LOC]**
 

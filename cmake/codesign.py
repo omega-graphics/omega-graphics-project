@@ -91,6 +91,18 @@ def _clean_cstemp(root):
                     pass
 
 
+def _sign_if_needed(code, sig):
+    """Sign only when not already validly signed. codesign --force rewrites the
+    binary's signature every time it runs; because the frameworks/dylibs here
+    are embedded in and linked by each other, an unconditional re-sign cascades
+    into endless relinks/re-embeds (no fixed point). Verifying first makes a
+    rebuild with no real change a no-op."""
+    verify = subprocess.run(["codesign", "--verify", "--deep", "--strict", code],
+                            capture_output=True)
+    if verify.returncode != 0:
+        os.system("codesign --force -s " + sig + " --verbose=3 " + code)
+
+
 if(args[0].framework):
     AppleFramework.main(args[1])
 
@@ -103,7 +115,7 @@ if(args[0].strip_build_rpaths):
     for _fw in _touched_frameworks:
         os.system("codesign --force -s " + args[0].sig + " " + _fw)
 
-os.system("codesign --force  -s " + args[0].sig + " --verbose=3 " + args[0].code)
+_sign_if_needed(args[0].code, args[0].sig)
 # output_file = os.path.join(args.output_dir,os.path.basename(args.code))
 # if(output_file):
 #     os.remove(output_file)

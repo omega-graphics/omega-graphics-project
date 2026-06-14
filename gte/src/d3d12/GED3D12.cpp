@@ -920,6 +920,11 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         BufferLayoutStd layoutStd = BufferLayoutStd::Std430;
     public:
         void setOutputBuffer(SharedHandle<GEBuffer> &buffer) override {
+            // G.5.3: Unmap any prior binding first so re-pointing the
+            // writer (the persistent-buffer reuse pattern) does not leak
+            // a Map. No-op on the usual acquire-write-`flush` flow, where
+            // `flush` already nulled `_buffer`.
+            clearOutputBuffer();
             _buffer = (GED3D12Buffer *)buffer.get();
             layoutStd = (_buffer->role == BufferDescriptor::Uniform)
                             ? BufferLayoutStd::Std140 : BufferLayoutStd::Std430;
@@ -1111,6 +1116,24 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             // std::cout << "LastOffset:" << currentOffset << std::endl;
             currentOffset = 0;
         }
+        void clearOutputBuffer() override {
+            // G.5.3: release a prior mapping so the writer can be
+            // re-pointed safely (persistent-buffer reuse). Idempotent —
+            // a no-op when nothing is bound, so `setOutputBuffer` can
+            // call it unconditionally.
+            if(_buffer == nullptr) return;
+            if(_data_buffer != nullptr){
+                _buffer->buffer->Unmap(0,nullptr);
+            }
+            _buffer = nullptr;
+            _data_buffer = nullptr;
+            currentOffset = 0;
+        }
+        void resetCursor() override {
+            // G.5.3: rewind to byte 0 of the still-mapped buffer to
+            // overwrite its contents in place — no Unmap, no re-Map.
+            currentOffset = 0;
+        }
         ~GED3D12BufferWriter() override = default;
     };
 
@@ -1132,6 +1155,9 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         }
     public:
         void setInputBuffer(SharedHandle<GEBuffer> &buffer) override {
+            // G.5.3: Unmap any prior binding first so re-pointing the
+            // reader does not leak a Map.
+            clearInputBuffer();
             currentOffset = 0;
             _buffer = (GED3D12Buffer *)buffer.get();
             layoutStd = (_buffer->role == BufferDescriptor::Uniform)
@@ -1290,6 +1316,19 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             currentOffset = 0;
             _buffer->buffer->Unmap(0,nullptr);
             _buffer = nullptr;
+        }
+        void clearInputBuffer() override {
+            // G.5.3: release a prior mapping so the reader can be
+            // re-pointed safely. Idempotent (guards on the null binding,
+            // unlike `reset()` which assumes a live buffer). `reset()`
+            // remains the existing end-of-read teardown.
+            if(_buffer == nullptr) return;
+            if(_data_buffer != nullptr){
+                _buffer->buffer->Unmap(0,nullptr);
+            }
+            _data_buffer = nullptr;
+            _buffer = nullptr;
+            currentOffset = 0;
         }
         ~GED3D12BufferReader() override = default;
     };
