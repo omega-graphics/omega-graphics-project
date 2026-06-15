@@ -109,6 +109,15 @@ void GEVulkanNativeRenderTarget::present() {
         return;
     }
 
+    // One acquire / one present per frame. If this frame never started a
+    // swapchain render pass it holds no acquired image — presenting here would
+    // re-present a stale image (or present one that was never acquired). Skip;
+    // the displayed frame persists until the next one that actually renders.
+    if(!imageAcquired){
+        commandQueue->clearSubmittedTraceCommandBufferIds();
+        return;
+    }
+
     const auto presentedCommandBufferId = commandQueue->lastSubmittedCommandBufferTraceId();
 
     VkPresentInfoKHR presentInfoKhr {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
@@ -121,6 +130,9 @@ void GEVulkanNativeRenderTarget::present() {
 
 
     commandQueue->commitToGPUPresent(&presentInfoKhr);
+    // The image has been handed back to the swapchain; the next frame must
+    // acquire a fresh one (enforces one acquire per frame, no nesting).
+    imageAcquired = false;
     ResourceTracking::Event presentEvent {};
     presentEvent.backend = ResourceTracking::Backend::Vulkan;
     presentEvent.eventType = ResourceTracking::EventType::Present;
@@ -252,6 +264,9 @@ void GEVulkanNativeRenderTarget::resizeSwapChain(unsigned int width, unsigned in
     swapchainKHR = newSwapchain;
     extent = newExtent;
     currentFrameIndex = 0;
+    // Fresh swapchain — any image the old one had handed out is gone; the next
+    // frame must acquire from the new swapchain.
+    imageAcquired = false;
 
     // Repopulate the per-image views.
     std::uint32_t imgCount = 0;

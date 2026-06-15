@@ -385,6 +385,18 @@ _NAMESPACE_BEGIN_
 
         VkEvent event = VK_NULL_HANDLE;
 
+        /// Texture-fence ordering guard. CPU-side mirror of the producer
+        /// having recorded a `vkCmdSetEvent` (the "signal") that a later
+        /// `vkCmdWaitEvents` ("wait") has not yet consumed. The two-arg
+        /// `submitCommandBuffer(cb, fence)` sets it true; `notifyCommandBuffer`
+        /// only records the wait when it is true, then clears it. This mirrors
+        /// the `lastSignaledValue > 0` guard in the D3D12 backend and the
+        /// `waitValue > 0` guard in Metal: when the producing render is skipped
+        /// (e.g. a content-cache hit reuses an already-rendered texture), the
+        /// event is never set, so the wait must NOT be recorded — waiting on a
+        /// never-set VkEvent is the spec violation that crashes Vulkan.
+        bool eventSignalRecorded = false;
+
         void setName(OmegaCommon::StrRef name) override {
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
             nameInfoExt.pNext = nullptr;

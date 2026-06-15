@@ -603,39 +603,57 @@ _NAMESPACE_BEGIN_
                 return;
             }
 
-            auto resetRes = vkResetFences(parentQueue->engine->device,1,&nativeTarget->frameIsReadyFence);
-            if(resetRes != VK_SUCCESS){
-                std::cerr << "Vulkan reset acquire fence failed (" << resetRes << ")" << std::endl;
-                return;
-            }
-            auto acquireRes = vkAcquireNextImageKHR(parentQueue->engine->device,
-                                                    nativeTarget->swapchainKHR,
-                                                    UINT64_MAX,
-                                                    VK_NULL_HANDLE,
-                                                    nativeTarget->frameIsReadyFence,
-                                                    &nativeTarget->currentFrameIndex);
-            if(acquireRes == VK_ERROR_OUT_OF_DATE_KHR){
-                return;
-            }
-            if(acquireRes != VK_SUCCESS && acquireRes != VK_SUBOPTIMAL_KHR){
-                std::cerr << "Vulkan acquire image failed (" << acquireRes << ")" << std::endl;
-                return;
-            }
+            // One acquire per frame. The image is acquired on the frame's first
+            // swapchain pass; a split/restarted pass (resumeFrameAfterScratch's
+            // LoadPreserve composite) REUSES it. A second acquire while the
+            // image is still held is the swapchain-01802 violation that stalls
+            // the compositor. present() clears `imageAcquired` once the image
+            // returns to the swapchain.
+            const bool justAcquired = !nativeTarget->imageAcquired;
+            if(justAcquired){
+                auto resetRes = vkResetFences(parentQueue->engine->device,1,&nativeTarget->frameIsReadyFence);
+                if(resetRes != VK_SUCCESS){
+                    std::cerr << "Vulkan reset acquire fence failed (" << resetRes << ")" << std::endl;
+                    return;
+                }
+                auto acquireRes = vkAcquireNextImageKHR(parentQueue->engine->device,
+                                                        nativeTarget->swapchainKHR,
+                                                        UINT64_MAX,
+                                                        VK_NULL_HANDLE,
+                                                        nativeTarget->frameIsReadyFence,
+                                                        &nativeTarget->currentFrameIndex);
+                if(acquireRes == VK_ERROR_OUT_OF_DATE_KHR){
+                    return;
+                }
+                if(acquireRes != VK_SUCCESS && acquireRes != VK_SUBOPTIMAL_KHR){
+                    std::cerr << "Vulkan acquire image failed (" << acquireRes << ")" << std::endl;
+                    return;
+                }
 
-            auto waitRes = vkWaitForFences(parentQueue->engine->device,1,&nativeTarget->frameIsReadyFence,VK_TRUE,UINT64_MAX);
-            if(waitRes != VK_SUCCESS){
-                std::cerr << "Vulkan wait acquire fence failed (" << waitRes << ")" << std::endl;
-                return;
-            }
+                auto waitRes = vkWaitForFences(parentQueue->engine->device,1,&nativeTarget->frameIsReadyFence,VK_TRUE,UINT64_MAX);
+                if(waitRes != VK_SUCCESS){
+                    std::cerr << "Vulkan wait acquire fence failed (" << waitRes << ")" << std::endl;
+                    return;
+                }
 
-            if(nativeTarget->currentFrameIndex >= nativeTarget->frameViews.size()){
-                nativeTarget->currentFrameIndex = 0;
+                if(nativeTarget->currentFrameIndex >= nativeTarget->frameViews.size()){
+                    nativeTarget->currentFrameIndex = 0;
+                }
+                nativeTarget->imageAcquired = true;
             }
 
             // Attachment 0 falls back to native swapchain image when attachment 0's texture is null.
             if(desc.colorAttachments[0].texture == nullptr){
                 attachmentDescription.format = nativeTarget->format;
-                attachmentDescription.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                // First pass on a freshly-acquired image: discard prior contents
+                // (UNDEFINED → forces CLEAR below). A reused image (frame split
+                // for a scratch composite) is already mid-frame and lives in
+                // PRESENT_SRC from the prior subpass — keep that layout so a
+                // LoadPreserve attachment actually preserves the in-progress
+                // frame instead of clearing the base render.
+                attachmentDescription.initialLayout = justAcquired
+                        ? VK_IMAGE_LAYOUT_UNDEFINED
+                        : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
                 attachmentDescription.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
                 if(attachmentDescription.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD &&
                    attachmentDescription.initialLayout == VK_IMAGE_LAYOUT_UNDEFINED){
@@ -2575,10 +2593,25 @@ _NAMESPACE_BEGIN_
         vkResetCommandBuffer(commandBuffer,VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
     };
 
+    void GEVulkanCommandBuffer::setCompletionHandler(const GECommandBufferCompletionHandler & handler){
+        completionHandler = handler;
+    }
+
     void GEVulkanCommandQueue::notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &waitFence){
         auto buffer = (GEVulkanCommandBuffer *)commandBuffer.get();
         auto fence = (GEVulkanFence *)waitFence.get();
         if(buffer == nullptr || fence == nullptr || fence->event == VK_NULL_HANDLE){
+            return;
+        }
+        // Ordering guard (mirrors D3D12 `lastSignaledValue > 0` / Metal
+        // `waitValue > 0`): only wait if the producer actually recorded a
+        // vkCmdSetEvent for this event. When the producing render was skipped
+        // — e.g. a content-cache hit reuses an already-rendered texture, so no
+        // submitCommandBuffer(cb, fence) ran this cycle — the event was never
+        // set, and recording vkCmdWaitEvents on a never-set VkEvent is the spec
+        // violation (VUID-vkCmdWaitEvents-srcStageMask-parameter) that crashed
+        // Vulkan once the content cache was enabled. Nothing to wait for here.
+        if(!fence->eventSignalRecorded){
             return;
         }
         vkCmdWaitEvents(buffer->commandBuffer,
@@ -2590,6 +2623,14 @@ _NAMESPACE_BEGIN_
             0,nullptr,
             0,nullptr);
         vkCmdResetEvent(buffer->commandBuffer,fence->event,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        // The set has now been consumed by this wait; the next cycle must
+        // observe a fresh producer signal before another wait is recorded.
+        fence->eventSignalRecorded = false;
+        // Keep the fence (and its VkEvent) alive until this command buffer's
+        // submit retires on the GPU — the wait command above binds the event
+        // to `buffer`, so the event must outlive the submission. The wrapper is
+        // retained under the submit's gate in flushPendingRetentionUnder.
+        buffer->trackedFences.push_back(waitFence);
     }
 
     void GEVulkanCommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer){
@@ -2605,6 +2646,13 @@ _NAMESPACE_BEGIN_
         submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(buffer->commandBuffer);
         ResourceTracking::Tracker::instance().emit(submitEvent);
         commandQueue.push_back(buffer->commandBuffer);
+        // G.5.1 Vulkan follow-up — stage this buffer's completion handler (if
+        // WTK registered one). Its VkCommandBuffer is now queued in
+        // `commandQueue`; the handler is gated to a retentionTimeline value
+        // when that batch is flushed via vkQueueSubmit (commitToGPU /
+        // commitToGPUPresent / commitToGPUAndWait). No-op for the common
+        // non-frame CB with no handler.
+        stageCompletionHandlerFrom(buffer);
         // CommandQueue-Typed-Pool Phase 3 — mark the pool slot busy
         // immediately at submit time with a sentinel (UINT64_MAX) so the
         // recycler in getAvailableBuffer() doesn't hand the same buffer
@@ -2635,8 +2683,19 @@ _NAMESPACE_BEGIN_
         ResourceTracking::Tracker::instance().emit(submitEvent);
         if(fence != nullptr && fence->event != VK_NULL_HANDLE){
             vkCmdSetEvent(buffer->commandBuffer,fence->event,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            // Mark the CPU-side signal so a later notifyCommandBuffer knows the
+            // event will actually be set and may safely record its wait.
+            fence->eventSignalRecorded = true;
+            // Keep the fence (and its VkEvent) alive until this producer
+            // submit retires — the set command binds the event to `buffer`.
+            buffer->trackedFences.push_back(signalFence);
         }
         commandQueue.push_back(buffer->commandBuffer);
+        // G.5.1 Vulkan follow-up — stage this buffer's completion handler, same
+        // as the unsignaled overload above. WTK only registers handlers on the
+        // frame CB (submitted via the single-arg path), so this is normally a
+        // no-op here, but keep the contract general.
+        stageCompletionHandlerFrom(buffer);
         // CommandQueue-Typed-Pool Phase 3 — same slot busy-stamp as the
         // unsignaled submit overload above. See that comment for why.
         if (buffer->poolSlot != UINT32_MAX
@@ -2664,6 +2723,14 @@ _NAMESPACE_BEGIN_
        //      simultaneously in-flight buffers, which is almost certainly
        //      a leak somewhere in the user's submit/commit pairing.
        constexpr std::uint32_t kPoolCeiling = 256;
+
+       // G.5.1 Vulkan follow-up — fire any frame-completion handlers the GPU
+       // has already retired before this frame acquires a buffer, so the
+       // compositor's drainCompletedBufferReleases (which runs just after, at
+       // beginFrame) sees the freshly-flipped `done` flags and recycles the
+       // pooled scratch buffers. Cheap + safe: single GetSemaphoreCounterValue
+       // on the same compositor thread, early-out when nothing is gated.
+       pollCompletions();
 
        if(commandBuffers.empty()){
            return nullptr;
@@ -2747,6 +2814,75 @@ _NAMESPACE_BEGIN_
            }
        }
        pendingSlots.clear();
+   }
+
+   void GEVulkanCommandQueue::stageCompletionHandlerFrom(GEVulkanCommandBuffer *cb){
+       // G.5.1 Vulkan follow-up. Move the handler out of the command buffer so
+       // the wrapper can be recycled/destroyed without taking the callback with
+       // it; the queue now owns firing it. No-op for the common (non-frame) CB
+       // that never had a handler registered.
+       if (cb != nullptr && cb->completionHandler) {
+           stagedCompletionHandlers_.push_back(std::move(cb->completionHandler));
+           cb->completionHandler = nullptr;
+       }
+   }
+
+   void GEVulkanCommandQueue::gateStagedCompletions(std::uint64_t signalValue){
+       // Bind every staged handler to the retentionTimeline value just signaled
+       // for the vkQueueSubmit that ran its command buffer. Once
+       // vkGetSemaphoreCounterValue reaches `signalValue` the GPU is done with
+       // that submission and pollCompletions can fire the handler.
+       for (auto & handler : stagedCompletionHandlers_) {
+           gatedCompletionHandlers_.emplace_back(signalValue, std::move(handler));
+       }
+       stagedCompletionHandlers_.clear();
+   }
+
+   void GEVulkanCommandQueue::pollCompletions(){
+       if (gatedCompletionHandlers_.empty()) {
+           return;
+       }
+       std::uint64_t completed = 0;
+       if (engine != nullptr && engine->device != VK_NULL_HANDLE &&
+           retentionTimeline != VK_NULL_HANDLE) {
+           // Failure leaves completed = 0 — no handler fires this pass, the same
+           // defensive read getAvailableBuffer's recycler already relies on.
+           vkGetSemaphoreCounterValue(engine->device, retentionTimeline, &completed);
+       }
+       // Collect the ready handlers and compact the survivors in one stable
+       // pass, then fire outside the loop so a handler can't observe a
+       // half-mutated container (the WTK handler only flips an atomic, but this
+       // keeps the mechanism re-entrancy-safe regardless of what a future
+       // handler does).
+       std::vector<GECommandBufferCompletionHandler> ready;
+       std::size_t writeIdx = 0;
+       for (std::size_t readIdx = 0; readIdx < gatedCompletionHandlers_.size(); ++readIdx) {
+           auto & entry = gatedCompletionHandlers_[readIdx];
+           if (entry.first <= completed) {
+               if (entry.second) {
+                   ready.push_back(std::move(entry.second));
+               }
+           } else {
+               if (writeIdx != readIdx) {
+                   gatedCompletionHandlers_[writeIdx] = std::move(gatedCompletionHandlers_[readIdx]);
+               }
+               ++writeIdx;
+           }
+       }
+       gatedCompletionHandlers_.resize(writeIdx);
+       if (ready.empty()) {
+           return;
+       }
+       // Vulkan has no per-command-buffer success/fail status on this path; a
+       // failed GPU execution surfaces as device loss on a later call. Report
+       // Completed and leave the GPU timestamps at their defaults (0.0) — not
+       // wired ("if available" in the plan); the WTK recycler ignores both
+       // fields. Matches the Metal / D3D12 fire-once + clear-after-fire contract.
+       GECommandBufferCompletionInfo info {};
+       info.status = GECommandBufferCompletionInfo::CompletionStatus::Completed;
+       for (auto & handler : ready) {
+           handler(info);
+       }
    }
 
    Retention::FenceGate GEVulkanCommandQueue::gateForNextSubmit(){
@@ -2880,6 +3016,11 @@ _NAMESPACE_BEGIN_
            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
            commandQueue.clear();
            pendingRetainedBuffers.clear();
+           // G.5.1 Vulkan follow-up — abandon this batch's staged handlers
+           // alongside its retained buffers (the GPU never ran the work, so
+           // WTK's pooled buffers stay in pendingReleaseBatches_ and return to
+           // the pool at context teardown — the no-recycling fallback, no leak).
+           stagedCompletionHandlers_.clear();
            pendingSlots.clear();
            submittedTraceCommandBufferIds.clear();
            return;
@@ -2891,10 +3032,18 @@ _NAMESPACE_BEGIN_
        // soon as vkGetSemaphoreCounterValue(retentionTimeline) reaches
        // nextSubmitValue.
        stampPendingSlots(nextSubmitValue);
+       // G.5.1 Vulkan follow-up — bind every staged completion handler to this
+       // submit's signal value; pollCompletions fires them once the GPU reaches
+       // it. A staged handler always implies a non-empty commandQueue (both are
+       // set in submitCommandBuffer), so this gates exactly the buffers just
+       // flushed.
+       gateStagedCompletions(nextSubmitValue);
 
        commandQueue.clear();
        flushPendingRetentionUnder(gate);
        engine->retentionQueue.drainCompleted();
+       // G.5.1 Vulkan follow-up — fire any handlers the GPU has already retired.
+       pollCompletions();
    };
 
    void GEVulkanCommandQueue::commitToGPUPresent(VkPresentInfoKHR *info){
@@ -2956,6 +3105,9 @@ _NAMESPACE_BEGIN_
                 std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
                 commandQueue.clear();
                 pendingRetainedBuffers.clear();
+                // G.5.1 Vulkan follow-up — abandon staged handlers with the
+                // retained buffers (see commitToGPU for the rationale).
+                stagedCompletionHandlers_.clear();
                 pendingSlots.clear();
                 submittedTraceCommandBufferIds.clear();
                 return;
@@ -2967,6 +3119,11 @@ _NAMESPACE_BEGIN_
             // slots are also reachable via the fence wait, but the
             // submission-index path is the canonical signal.
             stampPendingSlots(nextSubmitValue);
+            // G.5.1 Vulkan follow-up — gate this batch's staged completion
+            // handlers to the submit value; the vkWaitForFences below makes the
+            // GPU finish, so the pollCompletions at the end of this function
+            // fires them this same call (the next frame's drain then recycles).
+            gateStagedCompletions(nextSubmitValue);
             auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
             if(waitRes != VK_SUCCESS){
                 std::cerr << "Failed waiting for submitted command buffers (" << waitRes << ")" << std::endl;
@@ -3009,6 +3166,12 @@ _NAMESPACE_BEGIN_
             completeEvent.nativeHandle = reinterpret_cast<std::uint64_t>(vkQueue);
             ResourceTracking::Tracker::instance().emit(completeEvent);
         }
+        // G.5.1 Vulkan follow-up — fire any frame-completion handlers the GPU
+        // has retired (the non-empty branch's vkWaitForFences / the decoupled
+        // branch's vkQueueWaitIdle have already drained this frame's work), so
+        // the next beginFrame's drainCompletedBufferReleases recycles its pooled
+        // scratch buffers. pending stays bounded at the in-flight frame count.
+        pollCompletions();
 
    }
 
@@ -3065,6 +3228,9 @@ _NAMESPACE_BEGIN_
            std::cerr << "Failed to Submit Command Buffers to GPU (" << res << ")" << std::endl;
            commandQueue.clear();
            pendingRetainedBuffers.clear();
+           // G.5.1 Vulkan follow-up — abandon staged handlers with the
+           // retained buffers (see commitToGPU for the rationale).
+           stagedCompletionHandlers_.clear();
            pendingSlots.clear();
            submittedTraceCommandBufferIds.clear();
            return;
@@ -3074,6 +3240,10 @@ _NAMESPACE_BEGIN_
        // synchronous wait below. After vkWaitForFences returns success
        // every slot stamped here is already recyclable.
        stampPendingSlots(nextSubmitValue);
+       // G.5.1 Vulkan follow-up — gate staged handlers to this submit value;
+       // the vkWaitForFences below guarantees the GPU has reached it by the
+       // time the pollCompletions at the end of this function runs.
+       gateStagedCompletions(nextSubmitValue);
 
        commandQueue.clear();
        auto waitRes = vkWaitForFences(engine->device,1,&submitFence,VK_TRUE,UINT64_MAX);
@@ -3097,6 +3267,11 @@ _NAMESPACE_BEGIN_
            ResourceTracking::Tracker::instance().emit(completeEvent);
        }
        submittedTraceCommandBufferIds.clear();
+       // G.5.1 Vulkan follow-up — the vkWaitForFences above has retired this
+       // batch, so fire its gated completion handlers now (used by blit /
+       // upload paths such as BitmapTextureCache; the frame path goes through
+       // commitToGPU + commitToGPUPresent).
+       pollCompletions();
 
 
    }
@@ -3241,6 +3416,13 @@ _NAMESPACE_BEGIN_
    void GEVulkanCommandQueue::releaseNative(){
        if(nativeReleased_) return;
        nativeReleased_ = true;
+       // G.5.1 Vulkan follow-up — drop any staged / gated completion handlers
+       // without firing them: firing pre-GPU-completion would race, and WTK
+       // doesn't depend on teardown firing (its BackendRenderTargetContext
+       // destructor returns every pending PendingReleaseBatch straight to the
+       // longer-lived BufferPool). Matches the D3D12 queue's teardown contract.
+       stagedCompletionHandlers_.clear();
+       gatedCompletionHandlers_.clear();
        // Pending retention entries are owned by engine->retentionQueue; the
        // engine's drainAll() at shutdown is responsible for releasing them.
        // Don't destroy retentionTimeline until those entries (which capture

@@ -2936,6 +2936,72 @@ CI.
   `pending` stays bounded (does not grow unboundedly). Unbounded
   `pending` growth = the completion callback is not firing.
 
+  **Shipped shape (Vulkan, poll-on-`retentionTimeline`, 2026-06-14/15).**
+  Took the same poll-on-the-existing-timeline approach as D3D12 rather than
+  the `vkWaitForFences` wait-thread sketch above: the queue already does a
+  monotonic `retentionTimeline` (timeline semaphore) signal at every
+  `vkQueueSubmit` (it drives the pool recycler), so a frame's completion is
+  already expressed there — no new fence, no new thread, thread-safe by
+  construction (all stage/gate/poll touch the new containers only on the
+  compositor thread). `GEVulkanCommandBuffer` gains a `completionHandler` +
+  `setCompletionHandler` override; both `submitCommandBuffer` overloads
+  *stage* it (Vulkan defers the real submit), each commit path
+  (`commitToGPU` / `commitToGPUPresent` non-empty branch / `commitToGPUAndWait`)
+  *gates* staged handlers to the `++nextSubmitValue` it just signaled, and
+  `pollCompletions` (top of `getAvailableBuffer` + end of every commit path)
+  fires + drops handlers whose value `vkGetSemaphoreCounterValue` has reached.
+  Files: `gte/src/vulkan/GEVulkanCommandQueue.{h,cpp}` only. **Compile-clean
+  on the native Vulkan target; isolation-verified NOT to be the cause of the
+  crash below (identical errors with the change stashed at HEAD).**
+
+***Follow-up bug — Vulkan texture-fence `VkEvent` crash (surfaced by
+enabling the content cache on Vulkan for the first time) [FIXED 2026-06-15]***
+
+Turning `OMEGAWTK_ENABLE_CONTENT_CACHE=ON` on Linux/Vulkan for the first
+time (the cache was previously only runtime-verified on Metal) drove the
+`GEVulkanFence` texture-fence sync — `submitCommandBuffer(cb, fence)` →
+`vkCmdSetEvent`, `notifyCommandBuffer` → `vkCmdWaitEvents` — hard enough to
+surface a latent crash (`SIGSEGV`). Two root causes, both because Vulkan was
+the lone backend NOT mirroring the robust Metal/D3D12 pattern:
+- **Ordering:** Metal (`waitValue > 0`) and D3D12 (`lastSignaledValue > 0`)
+  *guard* the wait on the producer actually having signalled. Vulkan
+  recorded `vkCmdWaitEvents` unconditionally — so on a content-cache **hit**
+  (producing render skipped → no `vkCmdSetEvent`) it waited on a never-set
+  `VkEvent` (`VUID-vkCmdWaitEvents-srcStageMask` / "VkEvent … never set").
+  Fix: `GEVulkanFence::eventSignalRecorded` CPU flag, set by the two-arg
+  `submitCommandBuffer`, checked (and cleared) by `notifyCommandBuffer` —
+  the direct mirror of the sibling-backend guard.
+- **Lifetime (the segfault):** `GEVulkanFence::~GEVulkanFence` destroys its
+  `VkEvent` inline with no GPU-completion gating, so a `FencePool`-recycled
+  fence could free an event a still-in-flight command buffer had recorded a
+  set/wait against ("bound VkEvent was destroyed" → invalid CB → crash).
+  Fix: `GEVulkanCommandBuffer::trackedFences` — the CB now holds the fences
+  it referenced, and the existing retain-the-wrapper-under-the-submit-gate
+  path keeps the event alive until the submission retires.
+- Files: `gte/src/vulkan/GEVulkan.h`, `gte/src/vulkan/GEVulkanCommandQueue.{h,cpp}`.
+  **Verified at runtime:** `ContainerClampAnimationTest`, cache-ON,
+  `OMEGAWTK_CONTENT_CACHE_STATS=1` — exit 139→124 (no more core dump), all
+  `vkCmdWaitEvents` / "never set" / "VkEvent destroyed" validation errors
+  6/3/3 → 0/0/0, app survives the full run.
+- **Recommended follow-up (not done):** the binary `VkEvent` is still the
+  outlier primitive; replacing it with a monotonic timeline `VkSemaphore` +
+  CPU `lastSignaledValue` (exactly the Metal/D3D12 value model, and the same
+  primitive `retentionTimeline` already uses) would retire the last fragility.
+
+***Still blocking the `bufferPool` telemetry acceptance above [OPEN]***
+
+With the `VkEvent` crash fixed the app no longer dies, but cache-ON Vulkan
+renders only ~4 frames then stalls on a swapchain double-acquire
+(`VUID-vkAcquireNextImageKHR-swapchain-01802`, "already acquired 1 image…
+timeout must not be UINT64_MAX", `GEVulkanCommandQueue.cpp:611`), never
+reaching the 60-frame telemetry trigger. Pre-existing and separate (identical
+acquire-fail count with the completion change stashed). Hypothesis: a
+fully-cached frame (`FrameBuilder::endFrame: slices=0 … willDeposit=0`)
+acquires a swapchain image but skips present, leaking the acquired image.
+This is the remaining gate on locally observing the Vulkan recycling
+signature; until then the completion wiring is **implemented +
+compile/isolation-verified, runtime-telemetry-pending**.
+
 **G.5.1b — Persistent vertex / params buffer handles on cache entries
 [DEFERRED]** *(original G.5.1 sketch, now unblocked by the recycling
 foundation + the G.5.3 writer hygiene):*

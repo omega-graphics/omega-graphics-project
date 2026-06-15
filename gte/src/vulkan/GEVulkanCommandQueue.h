@@ -2,6 +2,7 @@
 #include "omegaGTE/GECommandQueue.h"
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #ifndef OMEGAGTE_VULKAN_GEVULKANCOMMANDQUEUE_H
 #define OMEGAGTE_VULKAN_GEVULKANCOMMANDQUEUE_H
@@ -27,6 +28,16 @@ _NAMESPACE_BEGIN_
         /// shouldn't fire in normal use.
         std::uint32_t poolSlot = UINT32_MAX;
 
+        /// G.5.1 Vulkan completion-wiring follow-up — the WTK side sets this
+        /// on the final frame command buffer (via `setCompletionHandler`)
+        /// right before submit so its pooled scratch buffers can be recycled
+        /// once the GPU finishes the frame. The owning queue moves the handler
+        /// out at submit time (`stageCompletionHandlerFrom`) and fires it from
+        /// `pollCompletions` when the queue's `retentionTimeline` reaches the
+        /// value signaled for this buffer's `vkQueueSubmit`. Empty when no
+        /// handler is registered (the common non-frame CB case).
+        GECommandBufferCompletionHandler completionHandler;
+
         GEVulkanRenderPipelineState *renderPipelineState = nullptr;
         GEVulkanComputePipelineState *computePipelineState = nullptr;
         VkRenderPass activeRenderPass = VK_NULL_HANDLE;
@@ -40,6 +51,16 @@ _NAMESPACE_BEGIN_
         // pendingGates so its destructor can defer vmaDestroyBuffer/Image.
         OmegaCommon::Vector<SharedHandle<GEBuffer>>  trackedBuffers;
         OmegaCommon::Vector<SharedHandle<GETexture>> trackedTextures;
+        // Texture-fence lifetime: a fence whose VkEvent this command buffer
+        // recorded a vkCmdSetEvent / vkCmdWaitEvents against. Held here so the
+        // fence (and its event) cannot be destroyed — e.g. recycled by the WTK
+        // FencePool or dropped on pool overflow — while this command buffer's
+        // submit is still in flight on the GPU. The wrapper itself is retained
+        // under the submit's fence gate (flushPendingRetentionUnder), so these
+        // handles, and thus the events they own, outlive the submission. Fixes
+        // the "command buffer invalid because bound VkEvent was destroyed"
+        // crash the content cache surfaced on Vulkan.
+        OmegaCommon::Vector<SharedHandle<GEFence>>    trackedFences;
         void trackBuffer(const SharedHandle<GEBuffer> &b);
         void trackTexture(const SharedHandle<GETexture> &t);
         friend class GEVulkanCommandQueue;
@@ -238,6 +259,10 @@ _NAMESPACE_BEGIN_
                          size_t offset, size_t size) override;
         void finishBlitPass() override;
         void reset() override;
+        /// Store a callback fired (exactly once) by the owning queue when this
+        /// command buffer's GPU work completes. Matches the Metal contract;
+        /// see `completionHandler` above for the Vulkan timeline-poll mechanism.
+        void setCompletionHandler(const GECommandBufferCompletionHandler & handler) override;
 
         void setName(OmegaCommon::StrRef name) override;
 
@@ -322,6 +347,34 @@ _NAMESPACE_BEGIN_
         /// MUST be called inside any commit path that successfully
         /// submitted, paired with the corresponding `commandQueue.clear()`.
         void stampPendingSlots(std::uint64_t signalValue);
+
+        // G.5.1 Vulkan completion-wiring follow-up. Mirrors D3D12's
+        // poll-on-retentionFence design (and the local pendingSlots →
+        // stampPendingSlots lifecycle): a command buffer's completion handler
+        // is *staged* at submit time (its VkCommandBuffer is queued into
+        // `commandQueue` but not yet flushed to vkQueueSubmit) and *gated* to a
+        // concrete `retentionTimeline` value once the vkQueueSubmit that runs
+        // it is issued. `pollCompletions` fires + drops every gated handler
+        // whose value the GPU has reached. All three containers are touched
+        // only on the queue's owning (compositor) thread — the same thread
+        // that submits, commits, and calls getAvailableBuffer — so no locking
+        // is needed; this is the per-frame poll variant, not the dedicated
+        // wait-thread alternative the plan also sketched. The staged list
+        // shares its lifetime with `pendingRetainedBuffers`: both are populated
+        // by submitCommandBuffer and consumed (gated/flushed) by a commit.
+        std::vector<GECommandBufferCompletionHandler>                            stagedCompletionHandlers_;
+        std::vector<std::pair<std::uint64_t, GECommandBufferCompletionHandler>>  gatedCompletionHandlers_;
+        // Move `cb`'s registered completion handler (if any) into the staged
+        // list and clear it off the buffer. No-op when `cb` has no handler.
+        void stageCompletionHandlerFrom(GEVulkanCommandBuffer *cb);
+        // Promote every staged handler to gated at `signalValue` (the
+        // retentionTimeline value just signaled for the vkQueueSubmit that ran
+        // their command buffers).
+        void gateStagedCompletions(std::uint64_t signalValue);
+        // Fire + drop every gated handler whose retentionTimeline value the GPU
+        // has reached. Cheap (one vkGetSemaphoreCounterValue); safe to call at
+        // any drain point.
+        void pollCompletions();
 
         Retention::FenceGate gateForNextSubmit();
         // Build a VkTimelineSemaphoreSubmitInfo signaling ++nextSubmitValue,

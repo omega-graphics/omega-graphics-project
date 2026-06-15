@@ -23,6 +23,19 @@ public:
 
     unsigned currentFrameIndex;
 
+    /// True once this frame has acquired a swapchain image and before it has
+    /// been presented. The image is acquired lazily on the frame's FIRST
+    /// swapchain `startRenderPass`; a frame that splits its render pass — e.g.
+    /// the texture-fence `resumeFrameAfterScratch` path restarts the swapchain
+    /// pass with LoadPreserve to composite a layer scratch — must REUSE that
+    /// image, not acquire a second one. With a 2-image swapchain
+    /// (minImageCount 2) only one image may be held at a time, so a second
+    /// acquire mid-frame is the `VUID-vkAcquireNextImageKHR-swapchain-01802`
+    /// "already acquired 1 image" violation that stalls the compositor. This
+    /// flag enforces one acquire (one logical swapchain render pass) per frame;
+    /// `present()` clears it after the image returns to the swapchain.
+    bool imageAcquired = false;
+
     VkFormat format;
 
     VkExtent2D extent;
