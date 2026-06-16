@@ -1619,8 +1619,18 @@ void GED3D12CommandBuffer::setViewports(std::vector<GEViewport> viewports) {
             auto res_desc = currentTarget.native->renderTargets[currentTarget.native->frameIndex]->GetDesc();
             rect.pos.x = 0;
             rect.pos.y = 0;
-            rect.w = (float)res_desc.Width;
-            rect.h = (float)res_desc.Height;
+            // Phase F-G: the render area is the LIVE source region — SetSourceSize
+            // presents [0,0,sourceWidth_,sourceHeight_], not the (possibly larger,
+            // bucketed) back-buffer. The Y-flip below MUST use the source height,
+            // or content bottom-aligns against the larger buffer and lands outside
+            // the presented region. sourceWidth_/Height_ track the exact buffer
+            // size in the legacy (non-bucketed) path, so this is a no-op there.
+            rect.w = (float)(currentTarget.native->sourceWidth_ > 0
+                                 ? currentTarget.native->sourceWidth_
+                                 : (unsigned)res_desc.Width);
+            rect.h = (float)(currentTarget.native->sourceHeight_ > 0
+                                 ? currentTarget.native->sourceHeight_
+                                 : (unsigned)res_desc.Height);
         } else {
             rect.pos.x = 0;
             rect.pos.y = 0;
@@ -1649,8 +1659,18 @@ void GED3D12CommandBuffer::setScissorRects(std::vector<GEScissorRect> scissorRec
             auto res_desc = currentTarget.native->renderTargets[currentTarget.native->frameIndex]->GetDesc();
             rect.pos.x = 0;
             rect.pos.y = 0;
-            rect.w = (float)res_desc.Width;
-            rect.h = (float)res_desc.Height;
+            // Phase F-G: the render area is the LIVE source region — SetSourceSize
+            // presents [0,0,sourceWidth_,sourceHeight_], not the (possibly larger,
+            // bucketed) back-buffer. The Y-flip below MUST use the source height,
+            // or content bottom-aligns against the larger buffer and lands outside
+            // the presented region. sourceWidth_/Height_ track the exact buffer
+            // size in the legacy (non-bucketed) path, so this is a no-op there.
+            rect.w = (float)(currentTarget.native->sourceWidth_ > 0
+                                 ? currentTarget.native->sourceWidth_
+                                 : (unsigned)res_desc.Width);
+            rect.h = (float)(currentTarget.native->sourceHeight_ > 0
+                                 ? currentTarget.native->sourceHeight_
+                                 : (unsigned)res_desc.Height);
         } else {
             rect.pos.x = 0;
             rect.pos.y = 0;

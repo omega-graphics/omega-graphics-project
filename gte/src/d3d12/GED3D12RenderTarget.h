@@ -20,6 +20,14 @@ _NAMESPACE_BEGIN_
         // RTV view.
         DXGI_FORMAT bufferDxgiFormat_;
         DXGI_FORMAT rtvDxgiFormat_;
+
+        // Phase F-G (UIView-Render-Redesign): full ResizeBuffers + RTV
+        // recreation to `bufferW x bufferH` — the expensive
+        // commitToGPUAndWait + DXGI realloc. The bucketed `resizeSwapChain`
+        // calls this only when the live size crosses a bucket boundary;
+        // otherwise it presents a sub-region via `SetSourceSize` with no
+        // realloc. Returns false if the back-buffers could not be recreated.
+        bool reallocBackBuffers(unsigned bufferW, unsigned bufferH);
     public:
         HWND hwnd;
         void *getSwapChain() override;
@@ -33,6 +41,19 @@ _NAMESPACE_BEGIN_
         ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
         unsigned frameIndex;
         std::vector<ID3D12Resource *> renderTargets;
+
+        // Phase F-G: the LIVE (window) backing dims the OS presents — the
+        // [0,0,sourceWidth_,sourceHeight_] source region set via
+        // IDXGISwapChain2::SetSourceSize. The back-buffer itself is allocated
+        // at a >= power-of-two bucket and is grow-only, so most resize ticks
+        // are a cheap SetSourceSize rather than a ResizeBuffers GPU stall.
+        // These also drive the viewport / scissor Y-flip in
+        // GED3D12CommandBuffer so content top-aligns into the presented source
+        // region. In the legacy (non-bucketed) path they track the exact
+        // back-buffer size, so the flip is unchanged there. Seeded from the
+        // creation back-buffer size; kept in step by resizeSwapChain.
+        unsigned sourceWidth_  = 0;
+        unsigned sourceHeight_ = 0;
         GED3D12NativeRenderTarget(IDXGISwapChain3 * swapChain,
                                  ID3D12DescriptorHeap * descriptorHeapForRenderTarget,
                                  ID3D12DescriptorHeap * dsvDescHeap,

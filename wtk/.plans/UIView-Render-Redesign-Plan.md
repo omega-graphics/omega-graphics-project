@@ -3525,7 +3525,46 @@ stretch the persistent texture on present).
 
 ##### Phase F-G (follow-up) — Bucketed render-target + image allocation: render-into-region, never reallocate per resize tick
 
-**Goal:** stop reallocating the render-target backing texture, the
+> **STATUS / SCOPE (2026-06-16, re-scoped after pre-flight + prior-art
+> research — the original three-pool plan below is SUPERSEDED).** A
+> pre-flight against the current code found the original premise stale and
+> the scope already covered elsewhere:
+> - **The "render-target backing texture / effect-path scratch" pool
+>   churn this phase was written to fix no longer exists.** Phase 4.2
+>   collapsed the old `BackingTextureSet` into native-target sizing and
+>   Phase A-1 made the common path render directly to the platform
+>   drawable, so there is no per-resize `targetTexture`/`effectTexture`
+>   `TexturePool` round-trip anymore. `rebuildBackingTarget` only resets
+>   the tessellation context. The blur scratch (`LayerBlurScratch`) is
+>   already `TexturePool`-pooled and sized to *layer* bounds (no-op when
+>   unchanged), not per-resize-tick.
+> - **The G.3.1 content-cache texture pool is already handled by G.5.2
+>   (gated exact-fit recycling) + G.5.4 (resize-drag stretch).** Re-bucketing
+>   it now would *undo* G.5.2's exact-fit hardening (its blit samples UV
+>   0..1, so an oversized texture compresses the content). Out of scope.
+> - **The one real per-resize-tick GPU-object recreation that remains is
+>   the swap chain itself** — `resizeSwapChain` → D3D12 `ResizeBuffers` /
+>   Vulkan `vkRecreateSwapchainKHR`, each carrying a full GPU stall.
+>   (Metal `CAMetalLayer` auto-resizes — N/A.)
+>
+> Developer decision: scope this follow-up to **the drawable/swap chain
+> only**. See the rewritten **Per-backend changes** below. Prior-art
+> research (Chromium, Unreal, MS DXGI docs) is summarized there.
+>
+> **Implementation status:**
+> - **F-G.1 — D3D12 bucketed swap chain via `SetSourceSize`** — code
+>   complete 2026-06-16, default ON (`OMEGAWTK_BUCKETED_SWAPCHAIN`).
+>   Write-only on the macOS dev host (D3D12 needs the Windows SDK); awaits
+>   a Windows build + visual resize verification by the developer.
+> - **F-G.2 — Vulkan** — deferred to a *validated* follow-up. Vulkan/X11
+>   forces the swap-chain extent to the window and has no `SetSourceSize`,
+>   so the mechanism depends on whether the compositor returns
+>   `VK_SUBOPTIMAL_KHR` (scalable → win) or `VK_ERROR_OUT_OF_DATE_KHR`
+>   (must recreate → no win) for a window-size mismatch. That must be
+>   measured on the Linux host before a mechanism is chosen.
+
+**Goal (ORIGINAL — superseded, kept for history):** stop reallocating the
+render-target backing texture, the
 Phase G content-cache textures, and the effect-path scratch textures
 on every resize tick. Allocate each at a power-of-two bucket (or
 fixed-tile) size ≥ the requested logical size, drive the render pass
@@ -3570,47 +3609,249 @@ to an *allocation* concept.
   logical `(w, h)`. `TexturePool`'s 1.5× tolerance becomes redundant
   and is removed.
 
-**Render-into-region contract:** the backend gains two fields —
-`backingTextureSize_` (bucket dims, feeds allocations) and
-`backingLiveSize_` (live dims, feeds viewport / scissor / clear).
-`recomputeBackingDimensions` updates both; the common-case tick
-updates only `backingLiveSize_` and skips the allocation path
-entirely. Pixels outside the live rect are undefined and never read
-— the present blit and the cache blit both consume the live
-sub-rect.
+**Render-into-region contract (ORIGINAL — partially superseded by F-G.1's
+shipped form):** the original plan put two new fields on
+`BackendRenderTargetContext` (`backingTextureSize_` bucket dims /
+`backingLiveSize_` live dims). As shipped, the bucket/live split lives
+**inside the GTE D3D12 native target** (`sourceWidth_`/`sourceHeight_` =
+live; the back-buffer resource desc = bucket) — WTK is unchanged and
+keeps passing live dims. The contract still holds: the common-case tick
+updates only the live source (via `SetSourceSize`) and skips the
+allocation path entirely; pixels outside the live rect are undefined and
+never read (DXGI presents only the `[0,0,live]` source region).
 
-**Per-pool changes:**
+**Per-pool changes (ORIGINAL three-pool scope — SUPERSEDED; see STATUS
+block above for why the effect-path and content-cache pools are out of
+scope):**
 
-- **Effect-path `TexturePool`** (still used when `effectQueue` is
-  non-empty per Phase A-1). Switch acquire key to bucketed dims; drop
-  the 1.5× branch. Existing `applyViewportAndScissor` becomes correct
-  once `backingLiveSize_` is the source of truth.
-- **G.3.1 content-cache texture pool.** Allocate the transient cache
-  texture at `bucketDim` of the View's rasterized rect; store
-  `(textureHandle, bucketSize, liveRasterizedSize)` in the cache
-  entry. G.3.2's blit emits `DrawOp::Bitmap` with src = live sub-rect
-  of the bucket texture, dst = View's current rect. A 1-pixel resize
-  inside the same bucket is Paint-dirty (per G.3.3) but rewrites the
-  bucket texture in place rather than freeing and reallocating.
-  `OMEGAWTK_CONTENT_CACHE_BYTES` accounting switches to
-  bucket-rounded bytes (a 1080p widget at `renderScale 2.0` rounds to
-  ~32 MB — half the 64 MB default), and a new
-  `OMEGAWTK_CONTENT_CACHE_MAX_BUCKET` (default 4096) caps the largest
-  bucket the cache will accept; above the cap, fall back to
-  non-cached paint.
-- **Swapchain / native drawable.** Phase A-1 made the common
-  no-effect path render directly to the platform-managed drawable.
-  Metal's `CAMetalLayer` auto-resizes cheaply — no change. D3D12
-  (`ResizeBuffers`) and Vulkan (`vkRecreateSwapchainKHR`) carry a
-  sync flush per call; on those backends, allocate an offscreen
-  bucket-sized `GETextureRenderTarget` from the per-RTC pool, render
-  into it, and emit one fullscreen-quad blit of the live sub-rect to
-  the platform drawable at present time. The blit cost is one draw
-  call per frame — far cheaper than per-tick swapchain recreation.
-  Gated by `OMEGAWTK_BUCKETED_SWAPCHAIN` (default ON for D3D12 /
-  Vulkan, N/A for Metal) so the reversal of Phase A-1's "no
-  offscreen, no blit" contract is explicit and scoped to the
-  resize-storm window.
+- ~~**Effect-path `TexturePool`** — switch acquire key to bucketed dims;
+  drop the 1.5× branch.~~ *Out of scope: already pooled and sized to layer
+  bounds, not per-resize-tick.*
+- ~~**G.3.1 content-cache texture pool** — allocate at `bucketDim`, blit
+  the live sub-rect.~~ *Out of scope: superseded by G.5.2 (gated exact-fit
+  recycling) + G.5.4 (resize-drag stretch); re-bucketing would undo
+  G.5.2's exact-fit hardening.*
+- The original swap-chain bullet (offscreen bucket target + manual
+  fullscreen-quad blit at present) is **superseded on D3D12** by the
+  native `SetSourceSize` mechanism below — DXGI presents the live
+  sub-region of a bucketed back-buffer with no offscreen and no manual
+  blit. See prior art.
+
+**Prior art (research, 2026-06-16):**
+
+- **Chromium** (DirectComposition path) presents a *sub-region* of a
+  fixed/over-allocated swap chain via `IDXGISwapChain2::SetSourceSize`
+  plus a DComp visual transform to scale, and **debounces** swap-chain
+  recreation (~30 frames after the on-screen size settles) instead of
+  recreating per tick.
+- **Unreal** keeps the swap chain tracking the window (flushed
+  `ResizeBuffers` via `ConditionalResetSwapChain`, recreate only when
+  DXGI-invalidated) but renders the scene into **pooled, bucketed
+  intermediate render targets** and upscales to the back-buffer — the
+  pool, not the swap chain, absorbs the size churn.
+- **MS DXGI** — [`IDXGISwapChain2::SetSourceSize`](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgiswapchain2-setsourcesize):
+  "specify the portion of the swap chain from which the OS presents …
+  an effective resize without calling the more-expensive `ResizeBuffers`.
+  The source rectangle is always [0, 0, Width, Height]." The canonical
+  [render-to-sub-region-and-scale recipe](https://learn.microsoft.com/en-us/windows/uwp/gaming/multisampling--scaling--and-overlay-swap-chains)
+  is: create the swap chain large, `SetSourceSize(live)` each frame, set
+  the viewport to match.
+
+**Per-backend changes (SHIPPED SCOPE — swap chain only):**
+
+- **D3D12 (F-G.1, shipped) — `SetSourceSize` + bucketed back-buffer.**
+  The back-buffer is allocated at a power-of-two bucket ≥ the live size
+  (`bucketDim`, grow-only, clamped to [256, 8192]; above the cap an exact
+  alloc). Each resize tick within the current bucket is a cheap
+  `swapChain->SetSourceSize(liveW, liveH)` — DXGI presents `[0,0,live]`
+  and `DXGI_SCALING_STRETCH` (already set at creation,
+  [GED3D12.cpp](../../gte/src/d3d12/GED3D12.cpp)) scales it to the window;
+  because source size == the window's physical client size the result is
+  1:1 (crisp, no blur). The expensive `commitToGPUAndWait` +
+  `ResizeBuffers` path (`reallocBackBuffers`) fires **only** when the live
+  size grows past the current buffer (a bucket crossing). Three
+  back-buffer-size dependencies had to follow the *live source* size, not
+  the bucketed buffer, or content would misalign / fall outside the
+  presented region (all verified during pre-flight): (1) the
+  viewport/scissor Y-flip in `GED3D12CommandBuffer::setViewports` /
+  `setScissorRects` (the flip is `srcH - (y + h)`); (2) the tessellation
+  NDC viewport in `D3D12NativeRenderTargetTEContext::getEffectiveViewport`;
+  (3) the seed in the `GED3D12NativeRenderTarget` ctor. These read new
+  public `sourceWidth_`/`sourceHeight_` fields that track the presented
+  region (and equal the exact buffer size in the legacy path, so it is a
+  no-op there). Gated by `OMEGAWTK_BUCKETED_SWAPCHAIN` (default ON; set to
+  `0`/`off`/`false` for the legacy exact-size `ResizeBuffers`-per-tick
+  path). Entirely self-contained in the GTE D3D12 backend — **no WTK
+  change** (WTK already passes live dims and drives the viewport from
+  them). *Known limitation:* MSAA-on-native (`SampleDesc.Count > 1`) would
+  also need its resolve source bucketed; unused today (swap chain is
+  Count == 1).
+- **Vulkan (F-G.2) — validated follow-up, NOT YET IMPLEMENTED.** There
+  is no `SetSourceSize` analog and the mechanism is materially different
+  from D3D12 — gated on a runtime capability query plus a per-compositor
+  measurement. Full research in **F-G.2 — Vulkan research** below.
+- **Metal — N/A.** `CAMetalLayer` auto-resizes off layer bounds;
+  `resizeSwapChain` is already a no-op default.
+
+###### F-G.2 — Vulkan research (2026-06-16, research only — NOT implemented)
+
+**The core asymmetry vs D3D12.** D3D12's win rests on `SetSourceSize`,
+which presents a **sub-rectangle** `[0,0,live]` of a larger (bucketed)
+back-buffer at native resolution, scaled to the window. **Vulkan has no
+sub-rect-source present.** `vkQueuePresentKHR` always presents the
+*whole* swapchain image; `VK_KHR_incremental_present`
+(`VkPresentRegionsKHR`) only hints *damaged* regions — it changes neither
+the presented extent nor the scale. So the clean "crisp + zero-recreate"
+D3D12 path cannot be copied 1:1. Every Vulkan option below is a
+compromise on one of {crispness, steady-state cost, recreation stalls,
+driver portability}.
+
+**Gating measurement #1 — SUBOPTIMAL vs OUT_OF_DATE (do this first).**
+The whole "just keep presenting the stale-extent swapchain and let the
+compositor scale" idea hinges on a window resize returning
+`VK_SUBOPTIMAL_KHR` (keep going) rather than `VK_ERROR_OUT_OF_DATE_KHR`
+(must recreate). Research finding: **this is unreliable.** On current
+Mesa, `vkAcquireNextImageKHR` on resize returns `VK_SUBOPTIMAL_KHR` *or*
+`VK_ERROR_OUT_OF_DATE_KHR` **randomly**; `SUBOPTIMAL` only appears on
+X11 / XCB / XWayland, while native Wayland has its own "buffer not
+resized" behavior. The existing `GEVulkanNativeRenderTarget::resizeSwapchain`
+comment ("permanently OUT_OF_DATE") matches this. **Conclusion: naive
+deferral (present SUBOPTIMAL, recreate lazily) does NOT robustly avoid
+the per-tick `vkCreateSwapchainKHR` stall** — OUT_OF_DATE will fire
+mid-drag on common drivers and force recreation anyway. Measure on the
+dev compositor (`vkAcquireNextImageKHR` return code logged across a live
+drag) before committing to any deferral-based design.
+
+**The real enabler — `VK_EXT_swapchain_maintenance1` present scaling**
+(+ `VK_EXT_surface_maintenance1` for the capability query). This is the
+modern, purpose-built answer. `VkSwapchainPresentScalingCreateInfoEXT`
+(chained at `vkCreateSwapchainKHR`) sets `scalingBehavior` —
+`VK_PRESENT_SCALING_ONE_TO_ONE_BIT_EXT` /
+`VK_PRESENT_SCALING_STRETCH_BIT_EXT` /
+`VK_PRESENT_SCALING_ASPECT_RATIO_STRETCH_BIT_EXT` — plus
+`presentGravityX/Y`. Its explicit design goal (Khronos): let the app
+"specify a scaling behavior for when the swapchain extents do not match
+the surface's … **instead of receiving `VK_ERROR_OUT_OF_DATE_KHR`**."
+That is exactly the "hold a fixed swapchain extent while the window
+resizes, compositor scales" capability the deferral idea needed but
+couldn't get reliably from raw SUBOPTIMAL. Constraints:
+- The legal swapchain-vs-surface size range is bounded by
+  `VkSurfacePresentScalingCapabilitiesEXT.minScaledImageExtent` /
+  `maxScaledImageExtent`, and the chosen `scalingBehavior` must be in
+  `supportedPresentScaling`. Query via `vkGetPhysicalDeviceSurfaceCapabilities2KHR`
+  with `VkSurfacePresentModeEXT` chained into `VkPhysicalDeviceSurfaceInfo2KHR`,
+  reading back `VkSurfacePresentScalingCapabilitiesEXT`.
+- **Whole-image scale, not a sub-rect.** Scaling stretches the *entire*
+  swapchain image to the surface — there is no `[0,0,live]` source rect.
+  So with a fixed extent ≠ surface you either render the full fixed-extent
+  image every frame (steady-state overdraw, like the "bucket the
+  back-buffer" option rejected for D3D12) or accept a stretched (blurry)
+  present while the extent mismatches.
+- **Bonus features in the same extension that help recreation hygiene
+  regardless of scaling:** `VkSwapchainPresentFenceInfoEXT` (a per-present
+  fence — signals when present semaphores / the *old* swapchain may be
+  destroyed; directly fixes the "when is it safe to free the retired
+  swapchain" problem the official `swapchain_recreation` sample calls
+  hard); `vkReleaseSwapchainImagesEXT` (release acquired images without
+  presenting — clean recreation transitions); present-mode switching
+  without recreation; deferred per-image memory allocation.
+- **Availability (2024–2026):** broad but with caveats. Promoted to
+  `VK_KHR_swapchain_maintenance1` / `VK_KHR_surface_maintenance1` in
+  Mesa 26.0 (RADV/NVK/ANV/Venus/etc.); NVIDIA Windows ≥ 573.38 (Jun
+  2025) and Linux ≥ 580.x; AMD Adrenalin ≥ 25.10.2. **The `EXT` form is
+  older and wider.** BUT the *scaling* sub-feature specifically has
+  reported driver gaps (e.g. NVIDIA not observing
+  `VK_PRESENT_SCALING_ONE_TO_ONE_BIT_EXT`), so it MUST be capability-
+  queried per surface and validated, with a fallback when unsupported.
+
+**Portable fallback (no extension) — offscreen draw-image + blit
+(vkguide / Unreal pattern).** Render the whole frame into a persistent
+offscreen `VkImage` allocated once at a fixed/bucket (max-monitor) size;
+each frame compute `drawExtent = min(swapchainExtent, drawImage.extent)`
+and `vkCmdBlitImage` that sub-region to the acquired swapchain image
+(blit scales). vkguide does exactly this (and layers a `renderScale`
+slider on top); Unreal similarly renders the scene into pooled
+intermediate targets and upscales to a window-tracking back-buffer.
+**Key limitation:** this decouples *render-target* size from the
+swapchain, but **the swapchain still tracks the window and still
+recreates on OUT_OF_DATE** — it does NOT by itself remove the per-tick
+`vkCreateSwapchainKHR` stall (and WTK does not have a render-target-
+realloc problem to solve — see the STATUS block). It only becomes a
+*resize-stall* win when combined with a way to hold the swapchain extent
+(i.e. the scaling extension, or unreliable deferral).
+
+**Candidate mechanisms, ranked:**
+1. **(Preferred) Drag-held extent + present scaling via swapchain_
+   maintenance1.** On `notifyWindowResizeBegin` (the existing G.5.4
+   `WidgetTreeHost::isResizing` signal), STOP recreating: hold the
+   swapchain at its last extent, render the frame stretched to that
+   extent, and rely on `VK_PRESENT_SCALING_STRETCH_BIT_EXT` to scale to
+   the live window (no OUT_OF_DATE). On `notifyWindowResizeEnd` (or when
+   the live size leaves `[minScaledImageExtent, maxScaledImageExtent]`),
+   do ONE crisp `vkCreateSwapchainKHR` at the exact window size. Net:
+   zero recreations during the drag, one at the end — the same shape as
+   F-G.1, and the same fidelity trade as G.5.4's texture stretch (blurry
+   mid-drag, crisp at rest), but no steady-state overdraw. Requires the
+   extension + a positive caps query; else fall back to (3).
+2. **Bucketed swapchain, always render at bucket res.** Fixed extent =
+   bucket ≥ max window, `STRETCH` downscales to the window (crisp,
+   supersampled). Recreate only on bucket grow. Rejected as the default
+   for the same reason as D3D12's "bucket the back-buffer" option:
+   permanent ≥-window fragment cost every frame, even at rest.
+3. **(Fallback, no extension) Improved recreate-per-tick.** Keep
+   recreating on resize but make it cheap and correct: we already
+   coalesce to ≤ 1 recreate per rendered frame (WTK pending-resize); add
+   modern retirement hygiene (`oldSwapchain`, per-acquire-fence present
+   history so retired swapchains are destroyed only after their last
+   present completes — the `swapchain_recreation` sample's pattern;
+   guard against accumulating old swapchains during a fast continuous
+   drag) and optionally `VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT`.
+   This does not remove the `vkDeviceWaitIdle` stall but bounds and
+   cleans it; it is the safe floor when scaling is unsupported.
+
+**WTK-side parallel to F-G.1.** Whatever mechanism is chosen, the
+Vulkan render-pass viewport/scissor must be driven from the **live
+window size**, not the held/bucketed swapchain extent — the Vulkan
+equivalent of F-G.1's `sourceWidth_/sourceHeight_` fix (see
+`GEVulkanRenderTarget` viewport setup + `getEffectiveViewport`). Today
+the Vulkan target stores `extent` (the swapchain extent) and drives the
+viewport from it; under (1)/(2) that diverges from the window and must
+be split into held-extent vs live-size, exactly as D3D12 split
+buffer-size vs source-size.
+
+**Recommendation / decision tree:**
+1. Measure SUBOPTIMAL vs OUT_OF_DATE on the dev compositor.
+2. Query `VK_EXT_surface_maintenance1` →
+   `VkSurfacePresentScalingCapabilitiesEXT.supportedPresentScaling &
+   STRETCH`. If present (and `VK_EXT_swapchain_maintenance1` is enabled):
+   implement mechanism **(1)**, gated `OMEGAWTK_BUCKETED_SWAPCHAIN` (same
+   env as D3D12), with the present-fence for clean old-swapchain teardown.
+3. If scaling is unsupported on the target driver: ship mechanism **(3)**
+   (cheap+correct recreate) so the env flag is safe to leave ON without a
+   regression, and revisit (1) when driver support lands.
+
+**Validators (F-G.2, when implemented):** log every
+`vkCreateSwapchainKHR` and the `vkAcquireNextImageKHR` return code across
+a 5 s live-drag 800×600→1600×900. Mechanism (1) should show ~2
+`vkCreateSwapchainKHR` (begin-hold + end-crisp), no OUT_OF_DATE during
+the drag, and a crisp final frame; mechanism (3) shows ≤ 1 per rendered
+frame with no leaked/validation-erroring retired swapchains. Visual: crisp
+at rest under both; blurry mid-drag under (1) is expected and acceptable.
+
+**Scope estimate (F-G.2):** mechanism (1) ≈ 150–220 LOC in
+`GEVulkanRenderTarget.{h,cpp}` + the caps query in `GEVulkan.cpp`
+swapchain creation + threading `isResizing` to the GTE target (the one
+piece that, unlike D3D12, *does* need a small WTK→GTE signal). Mechanism
+(3) ≈ 80–120 LOC, no WTK change. Unverifiable on the macOS dev host
+(Vulkan is write-only here); needs a Linux build + visual verify.
+
+**Sources:** [VK_EXT_swapchain_maintenance1 proposal](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/proposals/VK_EXT_swapchain_maintenance1.adoc),
+[VkSwapchainPresentScalingCreateInfoEXT](https://registry.khronos.org/vulkan/specs/latest/man/html/VkSwapchainPresentScalingCreateInfoEXT.html),
+[VK_EXT_surface_maintenance1](https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_surface_maintenance1.html),
+[Vulkan swapchain_recreation sample](https://docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html),
+[vkguide — Window Resizing](https://vkguide.dev/docs/new_chapter_3/resizing_window/),
+[Khronos forum — SUBOPTIMAL as resize detection](https://community.khronos.org/t/vk-suboptimal-khr-is-it-safe-to-use-it-as-window-resize-detection/107848),
+[Mesa 26.0 (KHR maintenance1 promotion)](https://www.phoronix.com/news/Mesa-26.0-Released).
 
 **Does NOT change:**
 
@@ -3628,16 +3869,22 @@ cache texture pool exists by then) and before Phase H (per-tick
 texture reallocation produces 5–20 ms latency spikes that would
 confuse Phase H's pacer measurements; remove them first).
 
-**Validator:** Phase F's multi-widget resize scene instrumented to
-log every `TexturePool::acquire` / `beginCacheTarget` call. A
-5-second live-drag from 800×600 → 1600×900 should produce ≤ 4
-acquires per pool (W and H bucket crossings), not ~300. Visual
-output is identical to the non-bucketed path.
+**Validator (F-G.1, D3D12):** the `[F-G]` `DEBUG_STREAM` traces in
+`resizeSwapChain` distinguish the two paths. A live-drag from 800×600 →
+1600×900 should emit a `SetSourceSize` line on (almost) every tick and a
+`ResizeBuffers -> bucket` line only on bucket crossings (≤ ~4: the W/H
+pow2 boundaries between 800/600 and 1600/900, e.g. 1024/2048). Visual
+output must be pixel-identical to the legacy path
+(`OMEGAWTK_BUCKETED_SWAPCHAIN=0`) at rest — the source size equals the
+window client size, so `SetSourceSize` presents 1:1 (no blur). Run-verify
+on a Windows build (write-only on the macOS dev host).
 
-**Scope estimate:** ~400 LOC across three small PRs (effect pool,
-content-cache pool, opt-in swapchain offscreen for D3D12 / Vulkan).
-Largest is the swapchain offscreen (~200 LOC, env-gated); the other
-two are ~100 LOC each.
+**Scope estimate (revised):** F-G.1 (D3D12, shipped) ≈ 130 LOC across
+three GTE D3D12 files (`GED3D12RenderTarget.{h,cpp}`,
+`GED3D12CommandQueue.cpp`, `D3D12TEContext.cpp`), env-gated, no WTK
+change. F-G.2 (Vulkan) sized after the SUBOPTIMAL/OUT_OF_DATE measurement.
+The effect-pool and content-cache-pool PRs from the original ~400 LOC
+estimate are dropped (out of scope — see STATUS).
 
 ##### Phase H (follow-up) — Frame pacing: vsync-aligned production + real `FrameTime` + load-aware frame gating (folds Frame-Pacing-Plan)
 

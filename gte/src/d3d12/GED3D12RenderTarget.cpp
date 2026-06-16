@@ -1,7 +1,48 @@
 #include "GED3D12RenderTarget.h"
 #include "../common/GEResourceTracker.h"
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <vector>
+
+namespace {
+    // Smallest power of two >= v (v <= 1 maps to 1).
+    unsigned nextPow2(unsigned v){
+        if(v <= 1) return 1u;
+        v--;
+        v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16;
+        return v + 1u;
+    }
+
+    // Phase F-G bucket policy: power-of-two bucket >= x, clamped to
+    // [kMinBucket, kMaxBucket]. For x above the cap the bucket is clamped below
+    // x, so callers take max(bucketDim(x), x) to guarantee the allocation
+    // always covers the live size (an exact, un-bucketed alloc above the cap).
+    unsigned bucketDim(unsigned x){
+        constexpr unsigned kMinBucket = 256u;
+        constexpr unsigned kMaxBucket = 8192u;   // modern max 2D texture dim
+        unsigned b = nextPow2(x);
+        if(b < kMinBucket) b = kMinBucket;
+        if(b > kMaxBucket) b = kMaxBucket;
+        return b;
+    }
+
+    // OMEGAWTK_BUCKETED_SWAPCHAIN gates the Phase F-G bucketed swap-chain path.
+    // Default ON for D3D12 (developer decision); set the env var to
+    // "0" / "off" / "false" to fall back to the legacy exact-size
+    // ResizeBuffers-per-tick behavior. Read once.
+    bool bucketedSwapChainEnabled(){
+        static const bool enabled = [](){
+            const char * v = std::getenv("OMEGAWTK_BUCKETED_SWAPCHAIN");
+            if(v == nullptr) return true;   // default ON
+            return !(std::strcmp(v, "0") == 0 ||
+                     std::strcmp(v, "off") == 0 ||
+                     std::strcmp(v, "false") == 0);
+        }();
+        return enabled;
+    }
+}
 
 _NAMESPACE_BEGIN_
     GED3D12NativeRenderTarget::GED3D12NativeRenderTarget(
@@ -25,6 +66,14 @@ _NAMESPACE_BEGIN_
                                                  dsvDescHeap(dsvDescHeap),
                                                   frameIndex(frameIndex),
                                                  renderTargets(renderTargets,renderTargets + renderTargetViewCount){
+        // Phase F-G: seed the live source dims from the creation back-buffer
+        // size (== window client size at creation). resizeSwapChain keeps them
+        // in step with the presented region thereafter.
+        if(!this->renderTargets.empty() && this->renderTargets[0] != nullptr){
+            auto d = this->renderTargets[0]->GetDesc();
+            sourceWidth_  = static_cast<unsigned>(d.Width);
+            sourceHeight_ = static_cast<unsigned>(d.Height);
+        }
         traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
         ResourceTracking::Tracker::instance().emit(
                 ResourceTracking::EventType::Create,
@@ -60,28 +109,25 @@ _NAMESPACE_BEGIN_
         return (void *)swapChain.Get();
     };
 
-    void GED3D12NativeRenderTarget::resizeSwapChain(unsigned int width, unsigned int height) {
-        if (width == 0 || height == 0) return;
-        if (!renderTargets.empty() && renderTargets[0] != nullptr) {
-            D3D12_RESOURCE_DESC d = renderTargets[0]->GetDesc();
-            if (d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-                static_cast<unsigned>(d.Width) == width && d.Height == height)
-                return;
-        }
+    bool GED3D12NativeRenderTarget::reallocBackBuffers(unsigned bufferW, unsigned bufferH) {
+        if (bufferW == 0 || bufferH == 0) return false;
         ComPtr<ID3D12Device> device;
         if (!renderTargets.empty() && renderTargets[0] != nullptr) {
             if (FAILED(renderTargets[0]->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
-                return;
+                return false;
         } else
-            return;
+            return false;
+        // The realloc frees the back-buffers the present queue's in-flight
+        // command lists bake in, so drain that queue first (sole-owner
+        // contract documented on BackendRenderTargetContext::beginFrame).
         auto queue = (GED3D12CommandQueue *)presentQueue_.get();
         if (queue != nullptr)
             queue->commitToGPUAndWait();
         for (auto *r : renderTargets)
             if (r != nullptr) r->Release();
         renderTargets.clear();
-        HRESULT hr = swapChain->ResizeBuffers(2, width, height, bufferDxgiFormat_, 0);
-        if (FAILED(hr)) return;
+        HRESULT hr = swapChain->ResizeBuffers(2, bufferW, bufferH, bufferDxgiFormat_, 0);
+        if (FAILED(hr)) return false;
         const UINT rtvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvCpuHandle(rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
         D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
@@ -93,7 +139,7 @@ _NAMESPACE_BEGIN_
         for (unsigned i = 0; i < 2; i++) {
             ComPtr<ID3D12Resource> backBuffer;
             hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer));
-            if (FAILED(hr)) return;
+            if (FAILED(hr)) return false;
             device->CreateRenderTargetView(backBuffer.Get(),
                                            needsExplicitRtvDesc ? &rtvDesc : nullptr,
                                            rtvCpuHandle);
@@ -101,6 +147,68 @@ _NAMESPACE_BEGIN_
             renderTargets.push_back(backBuffer.Detach());
         }
         frameIndex = swapChain->GetCurrentBackBufferIndex();
+        return true;
+    }
+
+    void GED3D12NativeRenderTarget::resizeSwapChain(unsigned int width, unsigned int height) {
+        if (width == 0 || height == 0) return;
+        if (renderTargets.empty() || renderTargets[0] == nullptr) return;
+
+        const D3D12_RESOURCE_DESC bb = renderTargets[0]->GetDesc();
+        const unsigned curBufW = static_cast<unsigned>(bb.Width);
+        const unsigned curBufH = static_cast<unsigned>(bb.Height);
+
+        if (bucketedSwapChainEnabled()) {
+            // Phase F-G: keep the back-buffer at a >= power-of-two bucket and
+            // present only the live [0,0,width,height] sub-region via
+            // IDXGISwapChain2::SetSourceSize. DXGI_SCALING_STRETCH (set at
+            // creation) scales that source region to the window; because the
+            // source size == the window's physical client size, the result is
+            // 1:1 (crisp, no blur). ResizeBuffers — the expensive
+            // commitToGPUAndWait + realloc — fires ONLY when the live size
+            // grows past the current buffer; every in-bucket resize tick is a
+            // cheap SetSourceSize. The buffer is grow-only: a shrink keeps the
+            // larger buffer, so a shrink-then-grow stays in one bucket.
+            // (Assumes the non-MSAA native path, SampleDesc.Count == 1, which
+            // is how makeNativeRenderTarget builds the swap chain. MSAA-on-
+            // native would also need its resolve source bucketed; not used.)
+            if (width <= curBufW && height <= curBufH) {
+                HRESULT sr = swapChain->SetSourceSize(width, height);
+                if (SUCCEEDED(sr)) {
+                    sourceWidth_  = width;
+                    sourceHeight_ = height;
+                    DEBUG_STREAM("[F-G] SetSourceSize " << width << "x" << height
+                                 << " (buffer " << curBufW << "x" << curBufH << ")");
+                    return;
+                }
+                // Unexpected (source <= buffer should always succeed) — fall
+                // through to a real resize so we never present a stale region.
+            }
+            // Grow: live exceeds the current buffer. Realloc to a fresh bucket
+            // covering the new live size. max(bucketDim(x), x) handles the
+            // above-cap case as an exact, un-bucketed allocation.
+            const unsigned bufW = std::max(curBufW, std::max(bucketDim(width),  width));
+            const unsigned bufH = std::max(curBufH, std::max(bucketDim(height), height));
+            if (!reallocBackBuffers(bufW, bufH)) return;
+            HRESULT sr = swapChain->SetSourceSize(width, height);
+            sourceWidth_  = width;
+            sourceHeight_ = height;
+            DEBUG_STREAM("[F-G] ResizeBuffers -> bucket " << bufW << "x" << bufH
+                         << ", SetSourceSize " << width << "x" << height
+                         << (SUCCEEDED(sr) ? "" : " (SetSourceSize FAILED)"));
+            return;
+        }
+
+        // Legacy (non-bucketed) path: exact-size ResizeBuffers per tick. Skip
+        // when the buffer already matches. sourceWidth_/sourceHeight_ track the
+        // exact buffer size here, so the viewport Y-flip is unchanged.
+        if (bb.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            curBufW == width && curBufH == height)
+            return;
+        if (reallocBackBuffers(width, height)) {
+            sourceWidth_  = width;
+            sourceHeight_ = height;
+        }
     }
 
     void GED3D12NativeRenderTarget::waitForGPU() {

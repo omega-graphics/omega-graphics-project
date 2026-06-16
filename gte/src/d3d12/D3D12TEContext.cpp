@@ -370,7 +370,17 @@ class D3D12NativeRenderTargetTEContext : public OmegaTriangulationEngineContext 
 public:
     GEViewport getEffectiveViewport() override {
         auto desc = target->renderTargets[target->frameIndex]->GetDesc();
-        return GEViewport{0, 0, (float)desc.Width, (float)desc.Height, 0.f, 1.f};
+        // Phase F-G: tessellation NDC must be authored against the LIVE source
+        // region (what IDXGISwapChain2::SetSourceSize presents), NOT the
+        // (possibly larger, bucketed) back-buffer — otherwise tessellated
+        // geometry scales against the bucket and misaligns with the rest of
+        // the frame. sourceWidth_/Height_ track the exact buffer size in the
+        // legacy (non-bucketed) path, so this is a no-op there.
+        const float w = (float)(target->sourceWidth_  > 0
+                                    ? target->sourceWidth_  : (unsigned)desc.Width);
+        const float h = (float)(target->sourceHeight_ > 0
+                                    ? target->sourceHeight_ : (unsigned)desc.Height);
+        return GEViewport{0, 0, w, h, 0.f, 1.f};
     }
 
     void translateCoords(float x, float y, float z, GEViewport *viewport,
