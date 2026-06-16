@@ -245,6 +245,11 @@ namespace OmegaWTK::Composition {
                 std::uint64_t     nodeId         = 0;
                 std::uint64_t     contentVersion = 0;
                 Composition::Rect rect           {};
+                // Phase G.5.4: true when this View is painted during a live
+                // resize drag. The backend uses it to stretch the View's
+                // prior cached texture to the live rect (skipping re-render)
+                // instead of re-capturing at the new size every tick.
+                bool              dragActive     = false;
             } beginCacheCaptureParams;
             struct {
                 std::uint64_t nodeId = 0;
@@ -382,9 +387,10 @@ namespace OmegaWTK::Composition {
         /// no-ops.
         static DrawOp makeBeginCacheCapture(std::uint64_t nodeId,
                                             std::uint64_t contentVersion,
-                                            const Composition::Rect & rect) {
+                                            const Composition::Rect & rect,
+                                            bool dragActive = false) {
             DrawOp op(StateOpTag{Type::BeginCacheCapture});
-            op.params.beginCacheCaptureParams = {nodeId, contentVersion, rect};
+            op.params.beginCacheCaptureParams = {nodeId, contentVersion, rect, dragActive};
             return op;
         }
         static DrawOp makeEndCacheCapture(std::uint64_t nodeId) {

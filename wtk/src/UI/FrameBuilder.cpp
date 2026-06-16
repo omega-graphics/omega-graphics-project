@@ -383,7 +383,8 @@ void paintSubtree(View & node, Composition::PaintContext & pc){
 void paintSubtreeWithCache(View & node,
                            Composition::PaintContext & pc,
                            AnimationScheduler * animScheduler,
-                           std::uint32_t minSizePx){
+                           std::uint32_t minSizePx,
+                           bool dragActive){
     const auto nodeRect = node.getRect();
     bool eligible = nodeRect.w >= static_cast<float>(minSizePx)
                  && nodeRect.h >= static_cast<float>(minSizePx);
@@ -418,8 +419,10 @@ void paintSubtreeWithCache(View & node,
                                      pc.offset.y - bleed.top},
                 nodeRect.w + bleed.left + bleed.right,
                 nodeRect.h + bleed.top  + bleed.bottom};
+        // §G.5.4: tag the marker with the live-drag state so the backend can
+        // stretch this View's prior texture instead of re-rendering it.
         pc.displayList.append(Composition::DrawOp::makeBeginCacheCapture(
-                node.nodeId(), node.contentVersion(), windowRect));
+                node.nodeId(), node.contentVersion(), windowRect, dragActive));
         node.paint(pc);
         pc.displayList.append(Composition::DrawOp::makeEndCacheCapture(node.nodeId()));
     }
@@ -436,7 +439,7 @@ void paintSubtreeWithCache(View & node,
         const auto & cr = child->getRect();
         pc.offset.x = parentOffset.x + contentOff.x + cr.pos.x;
         pc.offset.y = parentOffset.y + contentOff.y + cr.pos.y;
-        paintSubtreeWithCache(*child, pc, animScheduler, minSizePx);
+        paintSubtreeWithCache(*child, pc, animScheduler, minSizePx, dragActive);
     }
     pc.offset = parentOffset;
 }
@@ -512,7 +515,11 @@ void FrameBuilder::buildFrame(View & root){
         // eligible — i.e. fall back to the plain `paintSubtree`.
         if(paintsCompleted_ >= 1){
             const auto & cfg = Composition::ContentCacheConfig::inst();
-            paintSubtreeWithCache(root, pc, animationScheduler(), cfg.cacheMinSizePx);
+            // §G.5.4: a live resize drag tags each cached View's marker so the
+            // backend can stretch its prior texture instead of re-rendering.
+            auto * tHost = window_.impl_->widgetTreeHost.get();
+            const bool dragActive = tHost != nullptr && tHost->isResizing();
+            paintSubtreeWithCache(root, pc, animationScheduler(), cfg.cacheMinSizePx, dragActive);
         }
         else {
             paintSubtree(root, pc);

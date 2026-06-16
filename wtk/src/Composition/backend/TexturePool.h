@@ -77,7 +77,16 @@ public:
     explicit TexturePool(SharedHandle<OmegaGTE::GEHeap> backingHeap)
         : heap(std::move(backingHeap)) {}
 
-    SharedHandle<OmegaGTE::GETexture> acquire(const TexturePoolKey & key){
+    /// @param exactFit  When true, only an exact-dimension freelist entry is
+    /// reused; the `fitsOversized` (up to 1.5×) fallback is skipped. The
+    /// content cache (Phase G.5.2) requires this: its blit samples the whole
+    /// texture (UV 0..1) and `GETexture` exposes no actual dims, so an
+    /// oversized texture would be sampled past its rendered region (content
+    /// compressed into a corner with a transparent border) — most visible
+    /// during a resize, where exact sizes rarely recur. Transient consumers
+    /// (blur scratch) leave it false: a slightly-larger scratch is fine and
+    /// the oversized reuse lifts their hit rate.
+    SharedHandle<OmegaGTE::GETexture> acquire(const TexturePoolKey & key, bool exactFit = false){
         std::lock_guard<std::mutex> lk(mutex);
         auto now = std::chrono::steady_clock::now();
         trimLocked(now);
@@ -93,7 +102,7 @@ public:
                 bestIdx = static_cast<int>(i);
                 break;
             }
-            if(freeList[i].key.fitsOversized(key)){
+            if(!exactFit && freeList[i].key.fitsOversized(key)){
                 std::size_t area = static_cast<std::size_t>(freeList[i].key.width) * freeList[i].key.height;
                 if(area < bestArea){
                     bestArea = area;

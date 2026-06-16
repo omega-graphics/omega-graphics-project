@@ -311,6 +311,15 @@ namespace OmegaWTK::Composition {
         /// an effect in a build with `OMEGAWTK_ENABLE_CONTENT_CACHE=ON`
         /// (the print site is compiled under that gate).
         bool cacheStatsEnabled = false;
+        /// G.5.4 resize-drag stretch toggle. When on, a cached View painted
+        /// during a live resize drag blits its prior texture STRETCHED to the
+        /// live rect (skipping the per-tick re-render) rather than
+        /// re-capturing at the new size — trading fidelity (blur while
+        /// dragging) for cost. Default OFF (opt-in via `OMEGAWTK_RESIZE_STRETCH=1`)
+        /// for the initial landing; flip the default once the blur tradeoff
+        /// is visually validated. Only meaningful in an
+        /// `OMEGAWTK_ENABLE_CONTENT_CACHE=ON` build.
+        bool resizeStretchEnabled = false;
 
         static const ContentCacheConfig & inst();
     };

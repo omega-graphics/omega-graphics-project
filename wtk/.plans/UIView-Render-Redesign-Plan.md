@@ -3250,14 +3250,29 @@ the same backing on the next `acquire`.
   the same frame-CB `done` flag. `enqueueFrameBufferReleases` moves both
   lists into the batch; `drainCompletedBufferReleases` returns completed-
   batch textures to `TexturePool::release(tex, key)` on the compositor
-  thread. Same destruction-order + teardown-drain contract as the buffers,
-  and the same backend caveat (D3D12 / Vulkan no-op completion handler →
-  batches hold until teardown, no recycling but no regression).
+  thread. Same destruction-order + teardown-drain contract as the buffers.
+  Because it rides the same `GECommandBuffer::setCompletionHandler` gate,
+  texture recycling fires on **all three backends** — the D3D12
+  (poll-on-`retentionFence`) and Vulkan (poll-on-`retentionTimeline`)
+  completion wiring was landed + CI-verified 2026-06-14 (see the G.5.1
+  follow-up above), so there is no Metal-only caveat here.
 - No GTE-side change (the §7.1 `copyBytes` note in the sketch is moot — we
   re-render into a freshly-acquired-but-recycled texture, never overwrite one
   in place). No `beginCacheTarget(reuseHandle=…)` param.
 - Telemetry: a `texPool hits/miss/free/hit%` line on the G.4 stats block
   (`TexturePool::stats()`), the texture analog of the `bufferPool` line.
+- **Hardening (2026-06-16, found during G.5.4 pre-flight).** `TexturePool::
+  acquire` can return an *oversized* texture (`fitsOversized`, up to 1.5×).
+  The content blit samples the whole texture (UV 0..1) and `GETexture`
+  exposes no actual dims, so an oversized texture would be sampled past its
+  rendered region — content compressed into a corner with a transparent
+  border, most visible during a resize (sizes rarely recur exactly there, so
+  `fitsOversized` is the common match once recycling populates the freelist).
+  Fix: `acquire` gained an `exactFit` flag (default false → blur scratch
+  keeps the oversized reuse) and `beginCacheTarget` passes `exactFit=true`,
+  so a content texture's dims always equal its rendered/`rasterizedSize`.
+  Prerequisite for G.5.4's stretch, which makes the texture-vs-rendered-size
+  relationship load-bearing.
 - Confirmed in passing (per the sketch's last bullet): `BlurScratch` and
   `BitmapTextureCache` keep their own persistent handles and do not
   re-allocate on resize; this sub-phase touches only the content-cache path.
@@ -3348,7 +3363,48 @@ backends, with the public interface extended additively.
   `vk_mem_alloc.h` on the LSP path) — those backends were edited by
   mirroring the Metal lifecycle and need CI to compile-verify.
 
-**G.5.4 — Fixed-tile texture + stretch during resize drag [~120 LOC]**
+**G.5.4 — Fixed-tile texture + stretch during resize drag [DONE 2026-06-16,
+opt-in]**
+
+**Shipped shape (refined after pre-flight).** The contract below holds, with
+three adjustments the pre-flight forced:
+
+- **Prerequisite hardening first.** The stretch makes the texture-vs-rendered
+  size relationship load-bearing, but G.5.2's pool reuse could return an
+  *oversized* texture (the blit samples UV 0..1 and `GETexture` has no dims
+  accessor). Fixed under G.5.2: `TexturePool::acquire(key, exactFit=true)`
+  for content textures, so a content texture's dims always equal its
+  `rasterizedSize`. The stretch then blits UV 0..1 → live rect, trivially
+  correct.
+- **Drag signal: `WidgetTreeHost::isResizing()` → marker, not Phase H.** Phase
+  H's FramePacer (the plan's alternate signal + settle-timer) does not exist.
+  Instead `WidgetTreeHost` tracks `resizing_` (set in `notifyWindowResizeBegin`,
+  cleared in `notifyWindowResizeEnd`); `FrameBuilder::paintSubtreeWithCache`
+  reads `isResizing()` and tags each cached View's `BeginCacheCapture` marker
+  with a `dragActive` flag. Drag-end is just `isResizing()` going false — the
+  next paint is a normal (non-drag) miss → crisp re-capture. No settle timer
+  (`OMEGAWTK_RESIZE_SETTLE_MS`) needed.
+- **Prior-texture lookup via a stored key, not the entry / a handle table.**
+  The entry carries no `bucketSize`; during a drag the per-View bucket
+  (`lround`, 1px) changes every tick, so the live-key `find` misses. The
+  backend keeps a per-RTC `nodeId → last ViewCacheKey` map
+  (`ContentCacheState::lastCaptureKey`, updated on every capture). On a
+  drag-frame miss it re-`find`s the View's prior entry by that key and blits
+  its texture stretched to the live rect (UV 0..1, GPU sampler scales),
+  bounded by a fixed 1.5× tolerance (`withinStretchTolerance`) — above which
+  it falls through to a crisp re-capture. Storing the *key* (not a
+  `SharedHandle`) means the drag path reads the cache's own live entry and
+  adds no second owner to G.5.2's gated-recycling lifecycle.
+- **Default OFF (opt-in `OMEGAWTK_RESIZE_STRETCH=1`).** The plan wrote
+  default-on/opt-out; landed opt-in instead since it trades fidelity (blur
+  during drag) and the blur hasn't been visually validated. `rasterizedSize`
+  serves as the plan's `lastRenderedSize`. Telemetry: a `stretch blits=` line
+  (per-tick re-renders avoided). Build clean ON + OFF; no regression headless
+  (the stretch is dormant unless an OS window-edge drag sets `isResizing()` —
+  the programmatic clamp animation does not, correctly). Interactive
+  drag-with-stretch fidelity hands off to the user.
+
+**Original contract (as written; the above is what shipped):**
 
 Both Phase F-G and G.5.2 stop *reallocating* the underlying texture
 during a resize, but they still expect every resize tick to *re-render

@@ -187,6 +187,15 @@ namespace OmegaWTK::Composition {
     // when the texture-pool round-trip should happen on eviction.
     struct ContentCacheState {
         ContentCache<ViewCacheKey, ViewCacheEntry> cache;
+        // Phase G.5.4: the key of the most recent capture per View nodeId.
+        // During a resize drag the live size bucket changes every tick, so
+        // the live-key `find` misses; this lets the drag path re-`find` the
+        // View's prior entry (any bucket) and stretch its texture to the live
+        // rect instead of re-rendering. Updated on every capture; consulted
+        // only on a drag-frame miss. Stores the key (not the texture), so it
+        // adds no second owner to the gated-recycling lifecycle — it reads
+        // the cache's own live entry.
+        OmegaCommon::Map<std::uint64_t, ViewCacheKey> lastCaptureKey;
         ContentCacheState()
             : cache(/*entryLimit*/0,
                     ContentCacheConfig::inst().contentCacheBytes) {}
@@ -637,6 +646,11 @@ void BackendRenderTargetContext::reportContentCacheStats() {
            << " reencode=" << blitQuadReencodes_
            << " reuseRate=" << std::fixed << std::setprecision(1) << blitReuseRate << "%\n";
     }
+    // Phase G.5.4: resize-drag stretch blits — cached Views whose prior
+    // texture was stretched to the live rect during a drag instead of
+    // re-rendered. Nonzero only with `OMEGAWTK_RESIZE_STRETCH=1` during an
+    // active resize drag; the count is the per-tick re-renders avoided.
+    os << "  stretch      blits=" << stretchBlits_ << "\n";
     std::cerr << os.str();
 }
 #endif
@@ -675,6 +689,26 @@ void BackendRenderTargetContext::resetElementState() {
             const long  c = std::clamp<long>(static_cast<long>(std::lround(v)),
                                              1L, 16384L);
             return static_cast<unsigned>(c);
+        }
+
+        // Phase G.5.4: whether the live size is within the resize-stretch
+        // tolerance of the size the prior texture was rendered at — on BOTH
+        // axes. A drag that grows/shrinks a View past `tol`× its last crisp
+        // render falls through to a re-capture so it stays sharp (the
+        // documented "above tolerance → re-render" rule). Fixed 1.5× for the
+        // initial landing (the plan's `OMEGAWTK_RESIZE_STRETCH_TOLERANCE`
+        // env override can be wired later if needed).
+        bool withinStretchTolerance(const Composition::Rect & rendered,
+                                    const Composition::Rect & live){
+            constexpr float tol = 1.5f;
+            if(rendered.w <= 0.f || rendered.h <= 0.f ||
+               live.w <= 0.f || live.h <= 0.f){
+                return false;
+            }
+            const float rw = live.w / rendered.w;
+            const float rh = live.h / rendered.h;
+            return rw >= (1.f / tol) && rw <= tol
+                && rh >= (1.f / tol) && rh <= tol;
         }
     }
 
@@ -1531,7 +1565,13 @@ void BackendRenderTargetContext::resetElementState() {
 
         SharedHandle<OmegaGTE::GETexture> texture;
         if(pool != nullptr){
-            texture = pool->acquire(key);
+            // G.5.2 hardening: exact-size only. The content blit samples the
+            // whole texture (UV 0..1), so an oversized pool texture would be
+            // sampled past its rendered region (worst during a resize, where
+            // sizes rarely recur exactly). Exact-fit keeps texture dims ==
+            // the rendered/`rasterizedSize`, which the blit (and G.5.4's
+            // stretch) rely on.
+            texture = pool->acquire(key, /*exactFit*/true);
         }
         if(texture == nullptr){
             OmegaGTE::TextureDescriptor desc {};
@@ -1790,11 +1830,10 @@ void BackendRenderTargetContext::resetElementState() {
     void BackendRenderTargetContext::drainCompletedBufferReleases(){
         // Front-to-back: command buffers complete in submission order on
         // the single render queue, so the front batch is the oldest. Stop
-        // at the first batch whose GPU work has not finished. On backends
-        // whose `setCompletionHandler` is the base no-op (D3D12 / Vulkan
-        // today) the flag never flips, so batches accumulate until
-        // teardown — the pre-G.5.1 behavior, no recycling but no leak past
-        // the context's lifetime.
+        // at the first batch whose GPU work has not finished. The completion
+        // handler fires on all three backends (Metal native; D3D12 poll on
+        // `retentionFence`; Vulkan poll on `retentionTimeline` — CI-verified
+        // 2026-06-14), so batches drain and recycle on every backend.
         auto * pool = bufferPool();
         auto * texPool = BackendResourceFactory::instance().texturePool();   // G.5.2
         while(!pendingReleaseBatches_.empty() &&
@@ -2797,6 +2836,46 @@ void BackendRenderTargetContext::resetElementState() {
                     return;
                 }
 
+                // Phase G.5.4: resize-drag stretch fast path. On what would
+                // be a miss (the live size bucket changed this tick), and
+                // only when a drag is in flight and stretching is enabled,
+                // reuse the View's PRIOR cached texture instead of
+                // re-rendering: re-`find` the entry by its last capture key
+                // (the live key just missed on the new bucket) and blit it
+                // stretched to the live rect. Bounded by a 1.5× tolerance so
+                // extreme drags fall through to a crisp re-capture. The found
+                // entry stays in the cache (we read it, like a hit), so the
+                // gated-recycling lifecycle is untouched.
+                if(p.dragActive
+                   && ContentCacheConfig::inst().resizeStretchEnabled
+                   && contentCacheState_ != nullptr){
+                    auto kit = contentCacheState_->lastCaptureKey.find(p.nodeId);
+                    if(kit != contentCacheState_->lastCaptureKey.end()
+                       && kit->second.contentVersion == p.contentVersion){
+                        ViewCacheEntry * prior = contentCacheState_->cache.find(kit->second);
+                        if(prior != nullptr && prior->texture != nullptr
+                           && withinStretchTolerance(prior->rasterizedSize, p.rect)){
+                            auto tint = OmegaGTE::FVec<4>::Create();
+                            tint[0][0] = 1.f; tint[1][0] = 1.f;
+                            tint[2][0] = 1.f; tint[3][0] = 1.f;
+                            // Source UV 0..1 (the whole exact-size texture, per
+                            // the G.5.2 hardening), dest = live rect → the GPU
+                            // sampler stretches. No cache entry passed (the
+                            // dest changes every tick, so blit-quad reuse
+                            // wouldn't fire and we keep `prior`'s quad state
+                            // clean for its 1:1 path after the drag).
+                            emitBitmapPrimitive(p.rect,
+                                                0.f, 0.f, 1.f, 1.f,
+                                                tint,
+                                                prior->texture,
+                                                SharedHandle<OmegaGTE::GEFence>{});
+                            ++stretchBlits_;
+                            captureSkipping_ = true;
+                            return;
+                        }
+                    }
+                }
+
                 // MISS: open a View-sized cache target. The capture pass
                 // uses a window-sized viewport offset by -(view origin)
                 // so the wrapped ops (absolute window coords) land at the
@@ -2878,6 +2957,10 @@ void BackendRenderTargetContext::resetElementState() {
                     entry.texHeightPx    = static_cast<unsigned>(pxH);
                     const std::size_t bytes = pxW * pxH * 4;
                     insertedEntry = contentCacheState_->cache.insert(key, std::move(entry), bytes);
+                    // Phase G.5.4: remember this capture's key so a later
+                    // resize-drag tick (whose live bucket has changed → live
+                    // key misses) can re-find this entry and stretch it.
+                    contentCacheState_->lastCaptureKey[captureKeyNodeId_] = key;
                 }
 
                 auto tint = OmegaGTE::FVec<4>::Create();

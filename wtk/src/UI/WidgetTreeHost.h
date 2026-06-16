@@ -95,6 +95,12 @@ namespace OmegaWTK {
         ResizeDynamicsTracker resizeTracker;
         ResizeSessionState lastResizeSessionState {};
         std::uint64_t resizeCoordinatorGeneration = 0;
+        /// Phase G.5.4: true between `notifyWindowResizeBegin` and
+        /// `notifyWindowResizeEnd` — a live resize drag is in progress.
+        /// `FrameBuilder` reads it (via `isResizing()`) to mark each cached
+        /// View's capture marker `dragActive`, enabling the backend's
+        /// stretch-instead-of-re-render fast path.
+        bool resizing_ = false;
         struct ResizeValidationSession {
             bool active = false;
             std::uint64_t sessionId = 0;
@@ -250,6 +256,8 @@ namespace OmegaWTK {
         void notifyWindowResizeBegin(const Composition::Rect & rect);
         void notifyWindowResize(const Composition::Rect & rect);
         void notifyWindowResizeEnd(const Composition::Rect & rect);
+        /// Phase G.5.4: whether a live resize drag is currently in progress.
+        [[nodiscard]] bool isResizing() const { return resizing_; }
 
         /// Walk the virtual widget tree and return the deepest View whose
         /// bounds contain `point` (in window-relative coordinates).

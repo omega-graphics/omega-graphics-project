@@ -590,6 +590,7 @@ namespace OmegaWTK {
     }
 
     void WidgetTreeHost::notifyWindowResizeBegin(const Composition::Rect &rect){
+        resizing_ = true;   // G.5.4: live drag in progress
         lastResizeSessionState = resizeTracker.begin(rect.w,rect.h,nowMs());
         lastResizeSessionState.animatedTree = detectAnimatedTreeRecurse(root.get());
         resizeCoordinatorGeneration += 1;
@@ -619,6 +620,7 @@ namespace OmegaWTK {
         // UIView-Render-Redesign-Plan Phase F (2026-06-05):
         // unconditional relayout + force-full-tree-repaint. See
         // `notifyWindowResize` above for the rationale.
+        resizing_ = false;   // G.5.4: drag ended → next paint re-captures crisp
         if(root != nullptr){
             root->handleHostResize(rect);
             forceFullRepaint();

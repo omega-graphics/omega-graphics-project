@@ -86,6 +86,7 @@ namespace OmegaWTK::Composition {
             readEnvIfPresent("OMEGAWTK_TEXT_SHAPING_CACHE_ENTRIES", cfg.textShapingCacheEntries);
             readEnvIfPresent("OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX",  cfg.cacheMinSizePx);
             readEnvBoolIfPresent("OMEGAWTK_CONTENT_CACHE_STATS",    cfg.cacheStatsEnabled);
+            readEnvBoolIfPresent("OMEGAWTK_RESIZE_STRETCH",         cfg.resizeStretchEnabled);
             return cfg;
         }
 

@@ -185,11 +185,11 @@ namespace OmegaWTK::Composition {
         /// back to the pool on the compositor thread. The completion
         /// callback only stores into the (heap-owned, shared) atomic, so
         /// it captures neither `this` nor the pool — safe if the context
-        /// or pool is torn down before the GPU finishes. Backends whose
-        /// `GECommandBuffer::setCompletionHandler` is the base no-op
-        /// (D3D12 / Vulkan today) never flip the flag, so their batches
-        /// hold the buffers until teardown — identical to the pre-G.5.1
-        /// behavior, no regression.
+        /// or pool is torn down before the GPU finishes. The completion
+        /// handler fires on all three backends — Metal natively, D3D12 via a
+        /// poll on `retentionFence` and Vulkan via a poll on
+        /// `retentionTimeline` (landed + CI-verified 2026-06-14) — so the
+        /// recycling is not Metal-only.
         struct PendingReleaseBatch {
             OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> buffers;
             // Phase G.5.2: evicted content-cache textures gated alongside the
@@ -279,6 +279,10 @@ namespace OmegaWTK::Composition {
         /// Same `[[maybe_unused]]` rationale as the tessellation counters.
         [[maybe_unused]] std::uint64_t blitQuadReuseHits_ = 0;
         [[maybe_unused]] std::uint64_t blitQuadReencodes_ = 0;
+        /// Phase G.5.4 telemetry: count of content-cache blits that stretched
+        /// a prior texture to the live rect during a resize drag (skipping
+        /// re-render). Same `[[maybe_unused]]` rationale as the counters above.
+        [[maybe_unused]] std::uint64_t stretchBlits_ = 0;
 #ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
         /// Phase G.4: print one telemetry line per cache (tessellation,
         /// per-View content, process-wide text-shaping) to stderr on
