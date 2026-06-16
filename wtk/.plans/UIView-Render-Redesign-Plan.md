@@ -3205,8 +3205,72 @@ cache. Closed by developer decision; no code change.
 - Telemetry: a `BufferPool::Stats.persistentReuses` field was sketched;
   superseded by the per-path `tessBuffer` and `blitQuad` reuse counters.
 
-**G.5.2 — Persistent texture handles on content-cache entries [~150 LOC]**
+**G.5.2 — Content-cache texture recycling [re-scoped after pre-flight,
+DONE 2026-06-16]**
 
+**Re-scoped after pre-flight (developer, 2026-06-16).** Reading the texture
+subsystem before writing the persistent-handle code surfaced three facts the
+original sketch (kept below) was built on, none of which held — the same
+shape as the G.5.1 re-scope:
+
+1. **Content-cache textures never recycle today.** `TexturePool::release`
+   has only two callers (`BlurScratch`, and `beginCacheTarget`'s rollback);
+   the texture `endCacheTarget` hands to a `ViewCacheEntry` is never returned
+   to the pool — on eviction its `SharedHandle` just drops and the texture is
+   freed. So every cache miss `acquire`s → pool-miss → allocates. (The exact
+   BufferPool-pre-G.5.1 dead-release situation.)
+2. **`TexturePool::release` is ungated** — it pushes straight onto the
+   freelist, so an immediate release + re-acquire + render-into would race
+   the prior frame's still-in-flight blit (the async-submit hazard G.5.1
+   already solved for buffers).
+3. ⇒ The sketch's "reuse handle, render new pixels in place" is an in-place
+   overwrite (the hazard that re-scoped G.5.1b to hold-and-replace), AND it
+   needs a lookup that does not exist: a Paint-dirty refresh bumps
+   `contentVersion` → new key → `find()` misses, so there is no "existing"
+   entry to pull `reuseHandle` from (reuse would need a secondary
+   `(nodeId, bucket)` lookup ignoring `contentVersion`).
+
+The developer chose the **texture analog of the G.5.1 recycling foundation**
+over the literal in-place reuse. It captures the same win — no per-miss
+texture allocation — GPU-safely and with no new lookup: the pool hands back
+the same backing on the next `acquire`.
+
+**Shipped shape (gated texture recycling):**
+
+- `ViewCacheEntry` records the pixel dims its texture was acquired at
+  (`texWidthPx` / `texHeightPx`) so eviction can release with the matching
+  `TexturePoolKey` (format/usage are the fixed content-cache constants
+  `BGRA8Unorm` / `RenderTarget`, mirroring `beginCacheTarget`'s acquire).
+- The content-cache `OnEvict` (added in G.5.1b for the blit-quad buffer) now
+  ALSO hands an evicted/replaced entry's texture to a completion-gated
+  `deferredTextureReleases` list — the texture sibling of
+  `deferredBufferReleases`. Never released inline: an evicted texture may
+  still be mid-blit in an in-flight frame.
+- `PendingReleaseBatch` grows a `textures` list alongside `buffers`, gated by
+  the same frame-CB `done` flag. `enqueueFrameBufferReleases` moves both
+  lists into the batch; `drainCompletedBufferReleases` returns completed-
+  batch textures to `TexturePool::release(tex, key)` on the compositor
+  thread. Same destruction-order + teardown-drain contract as the buffers,
+  and the same backend caveat (D3D12 / Vulkan no-op completion handler →
+  batches hold until teardown, no recycling but no regression).
+- No GTE-side change (the §7.1 `copyBytes` note in the sketch is moot — we
+  re-render into a freshly-acquired-but-recycled texture, never overwrite one
+  in place). No `beginCacheTarget(reuseHandle=…)` param.
+- Telemetry: a `texPool hits/miss/free/hit%` line on the G.4 stats block
+  (`TexturePool::stats()`), the texture analog of the `bufferPool` line.
+- Confirmed in passing (per the sketch's last bullet): `BlurScratch` and
+  `BitmapTextureCache` keep their own persistent handles and do not
+  re-allocate on resize; this sub-phase touches only the content-cache path.
+- **Verified at runtime (Metal, cache-ON, `ContainerClampAnimationTest`):**
+  the `texPool` telemetry shows the same recycling signature already proven
+  for `bufferPool` — `miss` plateaus at the warmup count (~46) while `hits`
+  climb (18 → 81 → 126 across frames 60/120/180) and the hit-rate rises
+  28% → 67%, with the freelist depth bounded by the pool's trim. Before
+  G.5.2 this was ~0% (every miss allocated, nothing recycled). Exit 0, zero
+  validation errors, `bufferPool` recycling and content-cache hit-rate
+  unchanged. Build clean both `OMEGAWTK_ENABLE_CONTENT_CACHE=ON` and `=OFF`.
+
+**Original plan (historical, superseded):**
 - The G.3.1 cache-target pool's `endCacheTarget` returns *into* the
   cache entry; the cache entry holds the `SharedHandle<GETexture>`
   for its lifetime. A subsequent Paint-dirty refresh at the same

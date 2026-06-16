@@ -248,6 +248,19 @@ BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
                 if(e.blitQuadBuf != nullptr){
                     deferredBufferReleases.push_back({std::move(e.blitQuadBuf), e.blitQuadBytes});
                 }
+                // Phase G.5.2: return the evicted entry's texture to the
+                // TexturePool — but completion-gated, never inline: it may
+                // still be mid-blit in an in-flight frame. The key mirrors
+                // `beginCacheTarget`'s acquire (fixed content-cache format /
+                // usage; the dims recorded on the entry at capture).
+                if(e.texture != nullptr && e.texWidthPx > 0 && e.texHeightPx > 0){
+                    TexturePoolKey key {};
+                    key.width       = e.texWidthPx;
+                    key.height      = e.texHeightPx;
+                    key.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
+                    key.usage       = OmegaGTE::GETexture::RenderTarget;
+                    deferredTextureReleases.push_back({std::move(e.texture), key});
+                }
             });
 
     traceResourceId = ResourceTrace::nextResourceId();
@@ -318,21 +331,36 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
                         renderScale_);
     tessellationContext_.reset();
     imageProcessor.reset();
+    auto * texPoolDtor = BackendResourceFactory::instance().texturePool();   // G.5.2
     for(auto & entry : deferredBufferReleases){
         if(bufferPool() != nullptr && entry.first){
             bufferPool()->release(std::move(entry.first), entry.second);
         }
     }
     deferredBufferReleases.clear();
-    // Phase G.5.1: return the completion-gated batches too. Release to the
-    // pool (which outlives this per-window context) rather than letting the
-    // handles free here — on backends where the GPU completion never fired
-    // the buffers may still be in flight, and the pool keeps them alive
-    // (same keep-alive contract as the deferred list above).
+    // Phase G.5.2: same keep-alive contract for the un-enqueued texture
+    // releases (an eviction during the final frame that never reached an
+    // `enqueueFrameBufferReleases`).
+    for(auto & entry : deferredTextureReleases){
+        if(texPoolDtor != nullptr && entry.first){
+            texPoolDtor->release(std::move(entry.first), entry.second);
+        }
+    }
+    deferredTextureReleases.clear();
+    // Phase G.5.1 / G.5.2: return the completion-gated batches too. Release to
+    // the pools (which outlive this per-window context) rather than letting
+    // the handles free here — on backends where the GPU completion never
+    // fired the buffers/textures may still be in flight, and the pool keeps
+    // them alive (same keep-alive contract as the deferred lists above).
     for(auto & batch : pendingReleaseBatches_){
         for(auto & entry : batch.buffers){
             if(bufferPool() != nullptr && entry.first){
                 bufferPool()->release(std::move(entry.first), entry.second);
+            }
+        }
+        for(auto & entry : batch.textures){
+            if(texPoolDtor != nullptr && entry.first){
+                texPoolDtor->release(std::move(entry.first), entry.second);
             }
         }
     }
@@ -565,6 +593,21 @@ void BackendRenderTargetContext::reportContentCacheStats() {
            << " miss=" << ps.poolMisses
            << " pooledBytes=" << ps.totalPooledBytes
            << " pending=" << pendingReleaseBatches_.size()
+           << " hit=" << std::fixed << std::setprecision(1) << rate << "%\n";
+    }
+    // Phase G.5.2: content-cache texture recycling. Before the fix, evicted
+    // entry textures were freed (never pool-returned), so `hit` sat near 0%
+    // (every miss allocated). After: evictions gated-release to the pool, so
+    // `hit` climbs as recycled textures are re-acquired. `free` is the
+    // freelist depth.
+    if(auto * texPool = BackendResourceFactory::instance().texturePool()){
+        const TexturePool::Stats ts = texPool->stats();
+        const std::uint64_t total = ts.poolHits + ts.poolMisses;
+        const double rate = total == 0 ? 0.0
+                : 100.0 * static_cast<double>(ts.poolHits) / static_cast<double>(total);
+        os << "  texPool      hits=" << ts.poolHits
+           << " miss=" << ts.poolMisses
+           << " free=" << ts.freeCount
            << " hit=" << std::fixed << std::setprecision(1) << rate << "%\n";
     }
     // Phase G.5.1b: persistent tessellation-buffer reuse. `reuse` = draws that
@@ -1721,8 +1764,10 @@ void BackendRenderTargetContext::resetElementState() {
 
     void BackendRenderTargetContext::enqueueFrameBufferReleases(
             SharedHandle<OmegaGTE::GECommandBuffer> & cb){
-        // Phase G.5.1: nothing acquired this frame → nothing to gate.
-        if(deferredBufferReleases.empty() || cb == nullptr){
+        // Phase G.5.1 / G.5.2: nothing acquired (buffers) or evicted
+        // (textures) this frame → nothing to gate.
+        if((deferredBufferReleases.empty() && deferredTextureReleases.empty())
+           || cb == nullptr){
             return;
         }
         // Heap-owned flag so the completion callback can outlive this
@@ -1734,9 +1779,11 @@ void BackendRenderTargetContext::resetElementState() {
             done->store(true, std::memory_order_release);
         });
         PendingReleaseBatch batch;
-        batch.buffers = std::move(deferredBufferReleases);
-        batch.done    = std::move(done);
+        batch.buffers  = std::move(deferredBufferReleases);
+        batch.textures = std::move(deferredTextureReleases);   // G.5.2
+        batch.done     = std::move(done);
         deferredBufferReleases.clear();
+        deferredTextureReleases.clear();
         pendingReleaseBatches_.push_back(std::move(batch));
     }
 
@@ -1749,6 +1796,7 @@ void BackendRenderTargetContext::resetElementState() {
         // teardown — the pre-G.5.1 behavior, no recycling but no leak past
         // the context's lifetime.
         auto * pool = bufferPool();
+        auto * texPool = BackendResourceFactory::instance().texturePool();   // G.5.2
         while(!pendingReleaseBatches_.empty() &&
               pendingReleaseBatches_.front().done->load(std::memory_order_acquire)){
             auto batch = std::move(pendingReleaseBatches_.front());
@@ -1757,6 +1805,15 @@ void BackendRenderTargetContext::resetElementState() {
                 for(auto & entry : batch.buffers){
                     if(entry.first){
                         pool->release(std::move(entry.first), entry.second);
+                    }
+                }
+            }
+            // Phase G.5.2: the frame's GPU work is done, so the evicted
+            // textures it may still have been blitting are safe to recycle.
+            if(texPool != nullptr){
+                for(auto & entry : batch.textures){
+                    if(entry.first){
+                        texPool->release(std::move(entry.first), entry.second);
                     }
                 }
             }
@@ -2813,6 +2870,12 @@ void BackendRenderTargetContext::resetElementState() {
                             scaledExtent(captureRect_.w, renderScale_));
                     const std::size_t pxH = static_cast<std::size_t>(
                             scaledExtent(captureRect_.h, renderScale_));
+                    // Phase G.5.2: record the acquire dims so eviction returns
+                    // the texture to the pool under the matching key. These
+                    // equal `beginCacheTarget`'s `widthPx`/`heightPx` (same
+                    // `scaledExtent(captureRect_)`), the dims it was acquired at.
+                    entry.texWidthPx     = static_cast<unsigned>(pxW);
+                    entry.texHeightPx    = static_cast<unsigned>(pxH);
                     const std::size_t bytes = pxW * pxH * 4;
                     insertedEntry = contentCacheState_->cache.insert(key, std::move(entry), bytes);
                 }

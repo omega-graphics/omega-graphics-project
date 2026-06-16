@@ -77,6 +77,14 @@ namespace OmegaWTK::Composition {
         SharedHandle<OmegaGTE::GETexture> texture;
         Composition::Rect rasterizedSize {Composition::Point2D{0.f, 0.f}, 0.f, 0.f};
 
+        // Phase G.5.2: the pixel dimensions `texture` was acquired from the
+        // TexturePool at — recorded so eviction can return it to the pool
+        // with the matching key (format/usage are the fixed content-cache
+        // constants `BGRA8Unorm` / `RenderTarget`). Zero until a capture
+        // populates the entry.
+        unsigned texWidthPx  = 0;
+        unsigned texHeightPx = 0;
+
         // Phase G.5.1b follow-up: the persistent fullscreen-quad vertex
         // buffer this entry's blit is drawn with. `emitBitmapPrimitive`
         // populates it on the capture-end composite (the miss frame) and

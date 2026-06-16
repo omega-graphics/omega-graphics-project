@@ -30,6 +30,7 @@
 #include "BlurScratch.h"
 #include "RenderPass.h"
 #include "Effect.h"
+#include "TexturePool.h"   // Phase G.5.2: TexturePoolKey for gated texture recycling
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -162,6 +163,17 @@ namespace OmegaWTK::Composition {
         SharedHandle<BackendCanvasEffectProcessor> imageProcessor;
         OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> deferredBufferReleases;
 
+        /// Phase G.5.2: the texture sibling of `deferredBufferReleases`. A
+        /// content-cache entry's texture, when the entry evicts, must not
+        /// return to `TexturePool` until the GPU has finished blitting it —
+        /// an evicted texture may still be mid-blit in an in-flight frame.
+        /// Accumulated here per frame (pushed by the content-cache `OnEvict`),
+        /// then moved into the frame's `PendingReleaseBatch` and gated on the
+        /// same completion flag as the buffers. Each entry carries the
+        /// `TexturePoolKey` it was acquired with so the pool re-files it under
+        /// the matching size/format/usage.
+        OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GETexture>,TexturePoolKey>> deferredTextureReleases;
+
         /// UIView-Render-Redesign Phase G.5.1 (recycling foundation):
         /// a frame's per-draw scratch buffers (`deferredBufferReleases`)
         /// must not return to `BufferPool` until the GPU has finished
@@ -180,6 +192,9 @@ namespace OmegaWTK::Composition {
         /// behavior, no regression.
         struct PendingReleaseBatch {
             OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GEBuffer>,std::size_t>> buffers;
+            // Phase G.5.2: evicted content-cache textures gated alongside the
+            // buffers on the same frame-completion flag.
+            OmegaCommon::Vector<std::pair<SharedHandle<OmegaGTE::GETexture>,TexturePoolKey>> textures;
             std::shared_ptr<std::atomic<bool>> done;
         };
         std::deque<PendingReleaseBatch> pendingReleaseBatches_;
