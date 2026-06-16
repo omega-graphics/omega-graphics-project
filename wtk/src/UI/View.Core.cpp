@@ -485,6 +485,21 @@ void View::paint(Composition::PaintContext & pc){
     (void)pc;
 }
 
+View::PaintBleed View::paintBleed(){
+    // UIView-Render-Redesign-Plan §G.3.4: base `View` paints nothing that
+    // bleeds past its layout rect, so its capture region needs no
+    // inflation. `UIView` overrides to account for resolved drop shadows.
+    return PaintBleed{};
+}
+
+bool View::isAnimating(const AnimationScheduler & scheduler) const {
+    // UIView-Render-Redesign-Plan §G.3.2 eligibility rule #1: base `View`
+    // animates only against its own node id. `UIView` overrides to also
+    // cover its per-element node ids (where drop-shadow / per-element style
+    // transitions register).
+    return scheduler.hasAnyAnimationFor(nodeId());
+}
+
 void View::resolveStyles(){
     // Phase 4.7.2: base `View` has no style cache to populate —
     // default is a no-op. `UIView::resolveStyles` overrides to write

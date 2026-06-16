@@ -149,8 +149,26 @@ namespace OmegaWTK::Composition {
     // unnecessary because the cached value is a vector of `Polygon`
     // structs whose total weight is bounded by the entry count plus the
     // typical mesh size.
+    // Phase G.5.1b: the cached value grows from the bare mesh to the mesh
+    // plus a persistent GPU vertex buffer and the per-draw state baked into
+    // it. `drawTriangulatedResult` binds `vertexBuf` directly (skipping the
+    // per-vertex re-encode) when a hit's `(transform, opacity, size,
+    // pipeline)` still match `baked*`; otherwise it encodes into a fresh
+    // pooled buffer and replaces the held one. The buffer is never
+    // overwritten in place — reuse is read-only across frames, so no
+    // in-flight GPU read is ever raced.
+    struct TessellationCacheEntry {
+        OmegaGTE::TETriangulationResult  mesh;
+        SharedHandle<OmegaGTE::GEBuffer> vertexBuf;     // null until first encode
+        OmegaGTE::FMatrix<4,4> bakedTransform = OmegaGTE::FMatrix<4,4>::Identity();
+        float       bakedOpacity = 1.f;
+        std::size_t bakedBytes   = 0;       // encoded byte count = vertexCount * struct_size
+        bool        bakedPath    = false;   // which vertex layout (path vs color) was baked
+        bool        hasBaked     = false;
+    };
+
     struct TessellationCacheState {
-        ContentCache<TessellationCacheKey, OmegaGTE::TETriangulationResult> cache;
+        ContentCache<TessellationCacheKey, TessellationCacheEntry> cache;
         TessellationCacheState()
             : cache(ContentCacheConfig::inst().tessellationCacheEntries,
                     /*byteLimit*/0) {}
@@ -197,11 +215,40 @@ BackendRenderTargetContext::BackendRenderTargetContext(Composition::Rect & rect,
     // across both build modes; the macro only gates whether the hot path
     // inside `renderVectorPathSegmented` consults the cache.
     tessellationCacheState_ = std::make_unique<TessellationCacheState>();
+    // Phase G.5.1b: when an entry leaves the cache (LRU eviction or same-key
+    // replacement) hand its persistent vertex buffer to the completion-gated
+    // recycler rather than freeing it inline — the evicted entry could (in a
+    // pathological >cap-paths-in-one-frame case) still be read by an
+    // in-flight frame, and the gate releases it to `BufferPool` only after
+    // the GPU is done. Safe destruction order: `deferredBufferReleases` is
+    // declared before `tessellationCacheState_`, so it outlives the cache's
+    // teardown clear() that fires this callback.
+    tessellationCacheState_->cache.setOnEvict(
+            [this](const TessellationCacheKey &, TessellationCacheEntry & e){
+                if(e.vertexBuf != nullptr){
+                    deferredBufferReleases.push_back({std::move(e.vertexBuf), e.bakedBytes});
+                }
+            });
 
     // Phase G.3.0: allocate the content cache PIMPL eagerly, same
     // policy as the tessellation cache. G.3.0 only lands the slot; the
     // FrameBuilder integration in G.3.1 + G.3.2 will exercise it.
     contentCacheState_ = std::make_unique<ContentCacheState>();
+    // Phase G.5.1b follow-up: when a content-cache entry leaves the cache
+    // (LRU eviction or same-key replacement) hand its persistent blit-quad
+    // vertex buffer to the completion-gated recycler — same rationale and
+    // same safe destruction order as the tessellation `OnEvict` above
+    // (`deferredBufferReleases` is declared before `contentCacheState_`, so
+    // it outlives the cache's teardown clear() that fires this callback).
+    // The entry's `texture` handle is left to drop its reference as today;
+    // the texture-pool round-trip on eviction is G.5.2's job and will extend
+    // this same callback.
+    contentCacheState_->cache.setOnEvict(
+            [this](const ViewCacheKey &, ViewCacheEntry & e){
+                if(e.blitQuadBuf != nullptr){
+                    deferredBufferReleases.push_back({std::move(e.blitQuadBuf), e.blitQuadBytes});
+                }
+            });
 
     traceResourceId = ResourceTrace::nextResourceId();
     ResourceTrace::emit("Create",
@@ -519,6 +566,33 @@ void BackendRenderTargetContext::reportContentCacheStats() {
            << " pooledBytes=" << ps.totalPooledBytes
            << " pending=" << pendingReleaseBatches_.size()
            << " hit=" << std::fixed << std::setprecision(1) << rate << "%\n";
+    }
+    // Phase G.5.1b: persistent tessellation-buffer reuse. `reuse` = draws that
+    // bound a cache entry's held vertex buffer and skipped the per-vertex
+    // re-encode; `reencode` = draws that had to (re)encode into a fresh
+    // buffer (first paint, or transform/opacity/size changed). A high reuse
+    // ratio is the win — static cached shapes stop re-encoding every frame.
+    {
+        const std::uint64_t tessTotal = tessReuseHits_ + tessReencodes_;
+        const double reuseRate = tessTotal == 0 ? 0.0
+                : 100.0 * static_cast<double>(tessReuseHits_) / static_cast<double>(tessTotal);
+        os << "  tessBuffer   reuse=" << tessReuseHits_
+           << " reencode=" << tessReencodes_
+           << " reuseRate=" << std::fixed << std::setprecision(1) << reuseRate << "%\n";
+    }
+    // Phase G.5.1b follow-up: persistent content-cache blit-quad reuse.
+    // `reuse` = cache-hit (or capture-end) blits that re-bound the entry's
+    // held fullscreen-quad and skipped the six-vertex re-encode; `reencode`
+    // = blits that had to (re)encode into a fresh quad (first capture, or
+    // the dest/viewport/transform changed). A high reuse ratio is the win —
+    // a static cached View's repeated blits stop re-encoding their quad.
+    {
+        const std::uint64_t blitTotal = blitQuadReuseHits_ + blitQuadReencodes_;
+        const double blitReuseRate = blitTotal == 0 ? 0.0
+                : 100.0 * static_cast<double>(blitQuadReuseHits_) / static_cast<double>(blitTotal);
+        os << "  blitQuad     reuse=" << blitQuadReuseHits_
+           << " reencode=" << blitQuadReencodes_
+           << " reuseRate=" << std::fixed << std::setprecision(1) << blitReuseRate << "%\n";
     }
     std::cerr << os.str();
 }
@@ -866,7 +940,8 @@ void BackendRenderTargetContext::resetElementState() {
             float uMax, float vMax,
             OmegaGTE::FVec<4> tint,
             SharedHandle<OmegaGTE::GETexture> texture,
-            SharedHandle<OmegaGTE::GEFence> textureFence){
+            SharedHandle<OmegaGTE::GEFence> textureFence,
+            ViewCacheEntry * blitCacheEntry){
         auto & pipelines = pipelineRegistry();
         auto bufferWriter = pipelines.bufferWriter();
         auto bitmapPipeline = pipelines.bitmap();
@@ -891,23 +966,63 @@ void BackendRenderTargetContext::resetElementState() {
         const std::size_t vertexStride = OmegaGTE::omegaSLStructStride(
                 {OMEGASL_FLOAT4, OMEGASL_FLOAT4});
         const std::size_t vertexBytes  = vertexStride * 6;
+
+        const bool hasTransform = !(currentTransform == OmegaGTE::FMatrix<4,4>::Identity());
+
+        // Phase G.5.1b follow-up: when the caller passes a content-cache
+        // entry, the six-vertex quad it last encoded is held on the entry.
+        // The vertices bake the dest rect, the viewport, and (when active)
+        // the current transform; the UVs ride alongside. So a blit whose
+        // dest/viewport/UVs are unchanged AND that runs under an identity
+        // transform (matching the bake) re-uses the held buffer's GPU
+        // contents verbatim — bind it and skip the encode. Any active
+        // transform on either side, or any geometry change, re-encodes into
+        // a fresh buffer (the held buffer is never overwritten in place, so
+        // an in-flight GPU read of it is never raced). This mirrors the
+        // tessellation cache's hold-and-replace. The transform is gated on
+        // a single no-transform flag rather than comparing the full matrix
+        // so `ViewCacheEntry` stays free of the GTE math surface.
+        const bool canReuseQuad = blitCacheEntry != nullptr
+                && blitCacheEntry->blitQuadBaked
+                && blitCacheEntry->blitQuadBuf != nullptr
+                && blitCacheEntry->blitQuadBytes == vertexBytes
+                && !hasTransform
+                && blitCacheEntry->blitBakedNoTransform
+                && blitCacheEntry->blitDestX     == destRect.pos.x
+                && blitCacheEntry->blitDestY     == destRect.pos.y
+                && blitCacheEntry->blitDestW     == destRect.w
+                && blitCacheEntry->blitDestH     == destRect.h
+                && blitCacheEntry->blitViewportW == viewportW
+                && blitCacheEntry->blitViewportH == viewportH
+                && blitCacheEntry->blitUMin      == uMin
+                && blitCacheEntry->blitVMin      == vMin
+                && blitCacheEntry->blitUMax      == uMax
+                && blitCacheEntry->blitVMax      == vMax;
+
         SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
-        if(bufferPool() != nullptr){
-            vertexBuffer = bufferPool()->acquire(vertexBytes, vertexStride);
+        if(canReuseQuad){
+            vertexBuffer = blitCacheEntry->blitQuadBuf;   // bind the held quad; no encode
         }
         else {
-            OmegaGTE::BufferDescriptor desc {
-                    OmegaGTE::BufferDescriptor::Upload,
-                    vertexBytes,
-                    vertexStride};
-            vertexBuffer = gte.graphicsEngine->makeBuffer(desc);
-        }
-        if(vertexBuffer == nullptr){
-            return;
+            if(bufferPool() != nullptr){
+                vertexBuffer = bufferPool()->acquire(vertexBytes, vertexStride);
+            }
+            else {
+                OmegaGTE::BufferDescriptor desc {
+                        OmegaGTE::BufferDescriptor::Upload,
+                        vertexBytes,
+                        vertexStride};
+                vertexBuffer = gte.graphicsEngine->makeBuffer(desc);
+            }
+            if(vertexBuffer == nullptr){
+                return;
+            }
         }
 
-        // Per-draw uniform buffer: tintColor (16 bytes). Released after
-        // frame completes via deferredBufferReleases.
+        // Per-draw uniform buffer: tintColor (16 bytes). Always re-encoded
+        // per blit (it folds in the current opacity), so it stays on the
+        // pooled per-draw path — only the geometry quad is held on the entry.
+        // Released after frame completes via deferredBufferReleases.
         const std::size_t paramsStride = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4});
         SharedHandle<OmegaGTE::GEBuffer> paramsBuffer;
         if(bufferPool() != nullptr){
@@ -921,48 +1036,54 @@ void BackendRenderTargetContext::resetElementState() {
             paramsBuffer = gte.graphicsEngine->makeBuffer(desc);
         }
         if(paramsBuffer == nullptr){
-            if(bufferPool() != nullptr && vertexBuffer){
+            // A freshly-acquired (non-reused) vertex buffer that never got
+            // bound goes back to the pool; a reused one belongs to the entry.
+            if(!canReuseQuad && bufferPool() != nullptr && vertexBuffer){
                 bufferPool()->release(std::move(vertexBuffer), vertexBytes);
             }
             return;
         }
 
-        const bool hasTransform = !(currentTransform == OmegaGTE::FMatrix<4,4>::Identity());
         const float opacityMul = std::clamp(currentOpacity, 0.f, 1.f);
 
-        bufferWriter->setOutputBuffer(vertexBuffer);
-        auto writeVertex = [&](float x, float y, float u, float v){
-            auto pos = OmegaGTE::FVec<4>::Create();
-            // Phase 7: WTK Y-down → NDC Y-up (mirrors emitSdfPrimitive).
-            pos[0][0] = (2.f * x) / viewportW - 1.f;
-            pos[1][0] = 1.f - (2.f * y) / viewportH;
-            pos[2][0] = 0.f;
-            pos[3][0] = 1.f;
-            if(hasTransform){
-                pos = currentTransform * pos;
-            }
-            auto uvPad = OmegaGTE::FVec<4>::Create();
-            uvPad[0][0] = u;
-            uvPad[1][0] = v;
-            uvPad[2][0] = 0.f;
-            uvPad[3][0] = 0.f;
-            bufferWriter->structBegin();
-            bufferWriter->writeFloat4(pos);
-            bufferWriter->writeFloat4(uvPad);
-            bufferWriter->structEnd();
-            bufferWriter->sendToBuffer();
-        };
+        // Phase G.5.1b follow-up: encode the six quad vertices only when we
+        // did NOT reuse the entry's held buffer (a reused buffer already
+        // holds correct contents).
+        if(!canReuseQuad){
+            bufferWriter->setOutputBuffer(vertexBuffer);
+            auto writeVertex = [&](float x, float y, float u, float v){
+                auto pos = OmegaGTE::FVec<4>::Create();
+                // Phase 7: WTK Y-down → NDC Y-up (mirrors emitSdfPrimitive).
+                pos[0][0] = (2.f * x) / viewportW - 1.f;
+                pos[1][0] = 1.f - (2.f * y) / viewportH;
+                pos[2][0] = 0.f;
+                pos[3][0] = 1.f;
+                if(hasTransform){
+                    pos = currentTransform * pos;
+                }
+                auto uvPad = OmegaGTE::FVec<4>::Create();
+                uvPad[0][0] = u;
+                uvPad[1][0] = v;
+                uvPad[2][0] = 0.f;
+                uvPad[3][0] = 0.f;
+                bufferWriter->structBegin();
+                bufferWriter->writeFloat4(pos);
+                bufferWriter->writeFloat4(uvPad);
+                bufferWriter->structEnd();
+                bufferWriter->sendToBuffer();
+            };
 
-        // Triangle 1: TL, TR, BL — TL=(minX,minY,uMin,vMin),
-        // TR=(maxX,minY,uMax,vMin), BL=(minX,maxY,uMin,vMax).
-        writeVertex(minX, minY, uMin, vMin);
-        writeVertex(maxX, minY, uMax, vMin);
-        writeVertex(minX, maxY, uMin, vMax);
-        // Triangle 2: TR, BR, BL.
-        writeVertex(maxX, minY, uMax, vMin);
-        writeVertex(maxX, maxY, uMax, vMax);
-        writeVertex(minX, maxY, uMin, vMax);
-        bufferWriter->flush();
+            // Triangle 1: TL, TR, BL — TL=(minX,minY,uMin,vMin),
+            // TR=(maxX,minY,uMax,vMin), BL=(minX,maxY,uMin,vMax).
+            writeVertex(minX, minY, uMin, vMin);
+            writeVertex(maxX, minY, uMax, vMin);
+            writeVertex(minX, maxY, uMin, vMax);
+            // Triangle 2: TR, BR, BL.
+            writeVertex(maxX, minY, uMax, vMin);
+            writeVertex(maxX, maxY, uMax, vMax);
+            writeVertex(minX, maxY, uMin, vMax);
+            bufferWriter->flush();
+        }
 
         bufferWriter->setOutputBuffer(paramsBuffer);
         auto tintWithOpacity = tint;
@@ -975,8 +1096,9 @@ void BackendRenderTargetContext::resetElementState() {
 
         auto scope = frameRenderPass_.beginDraw(textureFence);
         if(scope.cb == nullptr){
+            // Don't release a reused vertex buffer — it belongs to the entry.
             if(bufferPool() != nullptr){
-                if(vertexBuffer){
+                if(!canReuseQuad && vertexBuffer){
                     bufferPool()->release(std::move(vertexBuffer), vertexBytes);
                 }
                 if(paramsBuffer){
@@ -994,13 +1116,44 @@ void BackendRenderTargetContext::resetElementState() {
         cb->drawPolygons(OmegaGTE::GECommandBuffer::Triangle, 6, 0);
         frameRenderPass_.endDraw(scope);
 
-        if(bufferPool() != nullptr){
-            if(vertexBuffer){
-                deferredBufferReleases.push_back({std::move(vertexBuffer), vertexBytes});
+        // Phase G.5.1b follow-up: decide what happens to the vertex buffer.
+        if(canReuseQuad){
+            // Bound the entry's held quad; it stays for the next blit.
+            ++blitQuadReuseHits_;
+        }
+        else if(blitCacheEntry != nullptr){
+            // Re-encoded into a fresh quad for a cached View: adopt it onto
+            // the entry and hand the previous buffer to the completion-gated
+            // recycler (an earlier frame may still be reading it).
+            ++blitQuadReencodes_;
+            if(blitCacheEntry->blitQuadBuf != nullptr
+               && blitCacheEntry->blitQuadBuf != vertexBuffer){
+                deferredBufferReleases.push_back(
+                        {std::move(blitCacheEntry->blitQuadBuf), blitCacheEntry->blitQuadBytes});
             }
-            if(paramsBuffer){
-                deferredBufferReleases.push_back({std::move(paramsBuffer), paramsStride});
-            }
+            blitCacheEntry->blitQuadBuf          = vertexBuffer;
+            blitCacheEntry->blitQuadBytes        = vertexBytes;
+            blitCacheEntry->blitBakedNoTransform = !hasTransform;
+            blitCacheEntry->blitDestX            = destRect.pos.x;
+            blitCacheEntry->blitDestY            = destRect.pos.y;
+            blitCacheEntry->blitDestW            = destRect.w;
+            blitCacheEntry->blitDestH            = destRect.h;
+            blitCacheEntry->blitViewportW        = viewportW;
+            blitCacheEntry->blitViewportH        = viewportH;
+            blitCacheEntry->blitUMin             = uMin;
+            blitCacheEntry->blitVMin             = vMin;
+            blitCacheEntry->blitUMax             = uMax;
+            blitCacheEntry->blitVMax             = vMax;
+            blitCacheEntry->blitQuadBaked        = true;
+        }
+        else if(bufferPool() != nullptr && vertexBuffer){
+            // Non-cache blit: recycle the quad per the foundation.
+            deferredBufferReleases.push_back({std::move(vertexBuffer), vertexBytes});
+        }
+
+        // The per-draw params/tint buffer always recycles per the foundation.
+        if(bufferPool() != nullptr && paramsBuffer){
+            deferredBufferReleases.push_back({std::move(paramsBuffer), paramsStride});
         }
     }
 
@@ -1963,7 +2116,8 @@ void BackendRenderTargetContext::resetElementState() {
             const OmegaGTE::FVec<4> & pathFillColor,
             bool pathHasFillColor,
             SharedHandle<OmegaGTE::GETexture> texturePaint,
-            SharedHandle<OmegaGTE::GEFence> textureFence) {
+            SharedHandle<OmegaGTE::GEFence> textureFence,
+            TessellationCacheEntry * cacheEntry) {
         auto & pipelines = pipelineRegistry();
         auto bufferWriter = pipelines.bufferWriter();
         auto renderPipelineState = pipelines.color();
@@ -2001,16 +2155,37 @@ void BackendRenderTargetContext::resetElementState() {
         }
 
         std::size_t requiredBytes = result.totalVertexCount() * struct_size;
+
+        // Phase G.5.1b: reuse the cache entry's persistent vertex buffer when
+        // its baked state still describes what we'd encode this frame. The
+        // vertex bytes bake `currentTransform` + `currentOpacity` (and the
+        // pipeline picks the layout), and the mesh + colors are fixed by the
+        // cache key — so a match on all four means the buffer's GPU contents
+        // are already correct and we can bind without re-encoding. Reuse is
+        // read-only (the buffer is never overwritten in place), so concurrent
+        // in-flight frames reading the same buffer is safe.
+        const bool canReuse = cacheEntry != nullptr
+                && cacheEntry->hasBaked
+                && cacheEntry->vertexBuf != nullptr
+                && cacheEntry->bakedBytes == requiredBytes
+                && cacheEntry->bakedPath  == usePathRenderPipeline
+                && cacheEntry->bakedOpacity == currentOpacity
+                && cacheEntry->bakedTransform == currentTransform;
+
         SharedHandle<OmegaGTE::GEBuffer> buffer;
-        if(bufferPool()){
-            buffer = bufferPool()->acquire(requiredBytes, struct_size);
+        if(canReuse){
+            buffer = cacheEntry->vertexBuf;   // bind the held buffer; no encode
         }
         else {
-            OmegaGTE::BufferDescriptor bufferDesc {OmegaGTE::BufferDescriptor::Upload,requiredBytes,struct_size};
-            buffer = gte.graphicsEngine->makeBuffer(bufferDesc);
+            if(bufferPool()){
+                buffer = bufferPool()->acquire(requiredBytes, struct_size);
+            }
+            else {
+                OmegaGTE::BufferDescriptor bufferDesc {OmegaGTE::BufferDescriptor::Upload,requiredBytes,struct_size};
+                buffer = gte.graphicsEngine->makeBuffer(bufferDesc);
+            }
+            bufferWriter->setOutputBuffer(buffer);
         }
-
-        bufferWriter->setOutputBuffer(buffer);
 
         // Acquire the command buffer for this draw. The scope wraps the
         // frame's CB (or the per-layer scratch's CB when a scratch pass is
@@ -2021,7 +2196,10 @@ void BackendRenderTargetContext::resetElementState() {
         // recording onto an undefined target.
         auto scope = frameRenderPass_.beginDraw(textureFence);
         if(scope.cb == nullptr){
-            if(bufferPool() != nullptr && buffer){
+            // Don't release a reused buffer — it belongs to the cache entry,
+            // not to this draw. A freshly-acquired (non-reused) buffer that
+            // never got bound goes back to the pool.
+            if(!canReuse && bufferPool() != nullptr && buffer){
                 bufferPool()->release(std::move(buffer), requiredBytes);
             }
             return;
@@ -2030,6 +2208,9 @@ void BackendRenderTargetContext::resetElementState() {
 
         unsigned startVertexIndex = 0;
 
+        // Phase G.5.1b: the per-vertex encode runs only when we did NOT reuse
+        // the entry's buffer (a reused buffer already holds correct contents).
+        if(!canReuse){
         const bool hasTransform = !(currentTransform == OmegaGTE::FMatrix<4,4>::Identity());
         const float opacityMul = currentOpacity;
 
@@ -2194,6 +2375,7 @@ void BackendRenderTargetContext::resetElementState() {
 
         // Flush vertex data before draw calls
         bufferWriter->flush();
+        } // end if(!canReuse) — encode block
 
         // Bind pipeline and resources. The frame render pass suppresses
         // redundant pipeline binds within an open frame and forces a rebind
@@ -2227,7 +2409,31 @@ void BackendRenderTargetContext::resetElementState() {
 
         frameRenderPass_.endDraw(scope);
 
-        if(bufferPool() && buffer){
+        // Phase G.5.1b: decide what happens to `buffer` after the draw.
+        if(canReuse){
+            // Bound the entry's held buffer; it stays on the entry for the
+            // next frame. Nothing to release.
+            ++tessReuseHits_;
+        }
+        else if(cacheEntry != nullptr){
+            // Re-encoded into a fresh buffer for a cached shape: adopt it onto
+            // the entry and hand the entry's previous buffer to the
+            // completion-gated recycler (it was read by an earlier frame, so
+            // it must not return to the pool until the GPU retires it).
+            ++tessReencodes_;
+            if(cacheEntry->vertexBuf != nullptr && cacheEntry->vertexBuf != buffer){
+                deferredBufferReleases.push_back(
+                        {std::move(cacheEntry->vertexBuf), cacheEntry->bakedBytes});
+            }
+            cacheEntry->vertexBuf      = buffer;
+            cacheEntry->bakedTransform = currentTransform;
+            cacheEntry->bakedOpacity   = currentOpacity;
+            cacheEntry->bakedBytes     = requiredBytes;
+            cacheEntry->bakedPath      = usePathRenderPipeline;
+            cacheEntry->hasBaked       = true;
+        }
+        else if(bufferPool() && buffer){
+            // Non-cached draw (gradient-fill path): recycle per the foundation.
             deferredBufferReleases.push_back({std::move(buffer), requiredBytes});
         }
     }
@@ -2309,11 +2515,14 @@ void BackendRenderTargetContext::resetElementState() {
         auto * cacheState = tessellationCacheState_.get();
         if(cacheState != nullptr){
             if(auto * hit = cacheState->cache.find(key)){
-                drawTriangulatedResult(*hit, false, usePathRenderPipeline,
+                // G.5.1b: draw through the entry — reuses its persistent
+                // vertex buffer when the baked state still matches, else
+                // re-encodes into a fresh one and re-adopts it.
+                drawTriangulatedResult(hit->mesh, false, usePathRenderPipeline,
                                        1.f, 1.f,
                                        strokeColor, hasStrokeColor,
                                        fillColor, hasFillColor,
-                                       nullptr, nullptr);
+                                       nullptr, nullptr, hit);
                 return;
             }
         }
@@ -2332,25 +2541,36 @@ void BackendRenderTargetContext::resetElementState() {
                                                             OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise,
                                                             &viewPort);
 
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+        // Phase G.1 + G.5.1b: cache the just-computed mesh and draw THROUGH
+        // the inserted entry, so this frame's encode populates the entry's
+        // persistent vertex buffer for the next frame to reuse. Byte cost is
+        // a telemetry-only estimate (the polygon vector dominates); the cache
+        // caps on entry count, not bytes. `insert` may evict the LRU tail
+        // (its `OnEvict` recycles that entry's buffer) but returns a stable
+        // pointer to the new front entry, which no further cache mutation
+        // touches before the draw.
+        if(cacheState != nullptr){
+            const std::size_t entryBytes =
+                    result.mesh.vertexPolygons.size()
+                    * sizeof(OmegaGTE::TETriangulationResult::TEMesh::Polygon);
+            TessellationCacheEntry entry;
+            entry.mesh = std::move(result);
+            auto * entryPtr = cacheState->cache.insert(key, std::move(entry), entryBytes);
+            drawTriangulatedResult(entryPtr->mesh, false, usePathRenderPipeline,
+                                   1.f, 1.f,
+                                   strokeColor, hasStrokeColor,
+                                   fillColor, hasFillColor,
+                                   nullptr, nullptr, entryPtr);
+            return;
+        }
+#endif
+
         drawTriangulatedResult(result, false, usePathRenderPipeline,
                                1.f, 1.f,
                                strokeColor, hasStrokeColor,
                                fillColor, hasFillColor,
                                nullptr, nullptr);
-
-#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
-        // Phase G.1: cache the just-computed mesh for the next frame.
-        // Byte cost is an estimate — the polygon vector dominates the
-        // mesh weight; we don't recurse into the per-vertex optional
-        // attachments. The estimate feeds telemetry only; the cache caps
-        // on entry count, not bytes (plan §G.1 "LRU cap: 1024 entries").
-        if(cacheState != nullptr){
-            const std::size_t entryBytes =
-                    result.mesh.vertexPolygons.size()
-                    * sizeof(OmegaGTE::TETriangulationResult::TEMesh::Polygon);
-            cacheState->cache.insert(key, std::move(result), entryBytes);
-        }
-#endif
     }
 
     void BackendRenderTargetContext::pushDrawOpClip(const Composition::Rect & rect){
@@ -2505,11 +2725,17 @@ void BackendRenderTargetContext::resetElementState() {
                     auto tint = OmegaGTE::FVec<4>::Create();
                     tint[0][0] = 1.f; tint[1][0] = 1.f;
                     tint[2][0] = 1.f; tint[3][0] = 1.f;
+                    // G.5.1b follow-up: blit THROUGH the hit entry so it
+                    // re-binds the persistent quad buffer populated by the
+                    // capture-end composite (or an earlier hit) and skips
+                    // the six-vertex re-encode when the dest/viewport are
+                    // unchanged.
                     emitBitmapPrimitive(p.rect,
                                         0.f, 0.f, 1.f, 1.f,
                                         tint,
                                         hit->texture,
-                                        SharedHandle<OmegaGTE::GEFence>{});
+                                        SharedHandle<OmegaGTE::GEFence>{},
+                                        hit);
                     captureSkipping_ = true;
                     return;
                 }
@@ -2570,6 +2796,15 @@ void BackendRenderTargetContext::resetElementState() {
                         : 0u;
                 std::memcpy(&key.renderScaleBits, &renderScale_, sizeof(key.renderScaleBits));
 
+                // G.5.1b follow-up: insert returns a stable pointer to the
+                // live entry so the composite blit below can draw THROUGH it
+                // — that first blit populates the entry's persistent quad
+                // buffer, which subsequent cache-hit blits then reuse. The
+                // `insert` may evict the LRU tail (its `OnEvict` recycles
+                // that entry's quad buffer) but the returned pointer is to
+                // the new front entry, untouched by any further cache
+                // mutation before the draw.
+                ViewCacheEntry * insertedEntry = nullptr;
                 if(contentCacheState_ != nullptr){
                     ViewCacheEntry entry {};
                     entry.texture        = texture;
@@ -2579,7 +2814,7 @@ void BackendRenderTargetContext::resetElementState() {
                     const std::size_t pxH = static_cast<std::size_t>(
                             scaledExtent(captureRect_.h, renderScale_));
                     const std::size_t bytes = pxW * pxH * 4;
-                    contentCacheState_->cache.insert(key, std::move(entry), bytes);
+                    insertedEntry = contentCacheState_->cache.insert(key, std::move(entry), bytes);
                 }
 
                 auto tint = OmegaGTE::FVec<4>::Create();
@@ -2589,7 +2824,8 @@ void BackendRenderTargetContext::resetElementState() {
                                     0.f, 0.f, 1.f, 1.f,
                                     tint,
                                     texture,
-                                    captureFence_);
+                                    captureFence_,
+                                    insertedEntry);
 
                 captureFence_.reset();
                 captureKeyNodeId_         = 0;

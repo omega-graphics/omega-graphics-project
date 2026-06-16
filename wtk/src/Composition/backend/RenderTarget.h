@@ -74,6 +74,12 @@ namespace OmegaWTK::Composition {
     // consumer. The state struct is defined inside `RenderTarget.cpp`
     // where the GTE math headers are already in scope.
     struct TessellationCacheState;
+    // Phase G.5.1b: a tessellation cache entry grows from the bare mesh to
+    // the mesh plus the persistent GPU vertex buffer it was last encoded
+    // into and the per-draw state baked into that buffer. Defined in
+    // `RenderTarget.cpp` (full `TETriangulationResult` / `GEBuffer` /
+    // `FMatrix` in scope there); only the pointer is named in the header.
+    struct TessellationCacheEntry;
 
     // Phase G.3.0: per-RTC primitive / content cache. Same PIMPL idiom
     // as the tessellation cache — the inline state struct in
@@ -83,6 +89,13 @@ namespace OmegaWTK::Composition {
     // `beginCacheTarget` / `endCacheTarget` and start populating it,
     // and G.3.2 will read from it in `FrameBuilder::buildFrame`.
     struct ContentCacheState;
+    // Phase G.5.1b follow-up: the content-cache value type (defined in
+    // `ViewContentCache.h`, included only by `RenderTarget.cpp`).
+    // Forward-declared here so `emitBitmapPrimitive` can take an optional
+    // pointer to one — a cache-hit / capture-end blit draws *through* the
+    // entry to reuse its persistent fullscreen-quad vertex buffer — without
+    // dragging the cache header into every `RenderTarget.h` consumer.
+    struct ViewCacheEntry;
 
     enum class BackendSubmissionStatus : std::uint8_t {
         Completed,
@@ -236,6 +249,21 @@ namespace OmegaWTK::Composition {
         /// always-present member so the class layout is identical across
         /// the macro toggle (same convention as the cache-state slots).
         [[maybe_unused]] std::uint64_t frameCounter_ = 0;
+        /// Phase G.5.1b telemetry: count of tessellation draws that bound a
+        /// cache entry's persistent vertex buffer and skipped the per-vertex
+        /// re-encode (`tessReuseHits_`) vs. those that had to (re)encode into
+        /// a fresh buffer (`tessReencodes_`). Surfaced on the G.4 stats line.
+        /// `[[maybe_unused]]` because nothing touches them in an
+        /// `OMEGAWTK_ENABLE_CONTENT_CACHE=OFF` build.
+        [[maybe_unused]] std::uint64_t tessReuseHits_ = 0;
+        [[maybe_unused]] std::uint64_t tessReencodes_ = 0;
+        /// Phase G.5.1b follow-up telemetry: count of content-cache blits
+        /// that re-bound the entry's persistent fullscreen-quad buffer and
+        /// skipped the six-vertex re-encode (`blitQuadReuseHits_`) vs. those
+        /// that had to (re)encode into a fresh buffer (`blitQuadReencodes_`).
+        /// Same `[[maybe_unused]]` rationale as the tessellation counters.
+        [[maybe_unused]] std::uint64_t blitQuadReuseHits_ = 0;
+        [[maybe_unused]] std::uint64_t blitQuadReencodes_ = 0;
 #ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
         /// Phase G.4: print one telemetry line per cache (tessellation,
         /// per-View content, process-wide text-shaping) to stderr on
@@ -326,12 +354,26 @@ namespace OmegaWTK::Composition {
         /// The texture is an already-uploaded `GETexture` (typically from
         /// the process-wide `BitmapTextureCache`); `textureFence` is an
         /// optional fence to wait on before sampling.
+        ///
+        /// Phase G.5.1b follow-up: when `blitCacheEntry` is non-null (the
+        /// content-cache hit + capture-end composite blits pass the live
+        /// entry; every other caller passes null) the entry owns a
+        /// persistent fullscreen-quad vertex buffer. A blit whose baked
+        /// `(dest, viewport, uv, no-transform)` state is unchanged binds the
+        /// held buffer and skips the six-vertex re-encode; any other case
+        /// encodes into a fresh pooled buffer, stores it on the entry, and
+        /// returns the old one through the completion-gated recycler. The
+        /// held buffer is never overwritten in place, so an in-flight GPU
+        /// read is never raced. The per-draw params/tint buffer is left on
+        /// the pooled per-draw path (it re-encodes current opacity each
+        /// blit); only the geometry quad is held.
         void emitBitmapPrimitive(const Composition::Rect & destRect,
                                  float uMin, float vMin,
                                  float uMax, float vMax,
                                  OmegaGTE::FVec<4> tint,
                                  SharedHandle<OmegaGTE::GETexture> texture,
-                                 SharedHandle<OmegaGTE::GEFence> textureFence);
+                                 SharedHandle<OmegaGTE::GEFence> textureFence,
+                                 ViewCacheEntry * blitCacheEntry = nullptr);
 
         /// Emit one MSDF text sub-run through the Phase 6.7.2 text
         /// pipeline (Phase 6.7-c3). Authors a 6-vertex quad per resident
@@ -393,6 +435,16 @@ namespace OmegaWTK::Composition {
         /// primitives (`renderPrimitiveImpl`) and once per segment by
         /// `renderVectorPathSegmented`. (Was the post-switch body of the
         /// old `renderToTarget`.)
+        ///
+        /// Phase G.5.1b: when `cacheEntry` is non-null (the tessellation
+        /// cache paths pass the live entry; the gradient-fill caller passes
+        /// null) the entry owns a persistent vertex buffer. A hit whose
+        /// baked `(transform, opacity, size, pipeline)` is unchanged binds
+        /// the held buffer and skips the per-vertex re-encode entirely; any
+        /// other case encodes into a fresh pooled buffer, stores it on the
+        /// entry, and returns the old one through the completion-gated
+        /// recycler. The held buffer is never overwritten in place, so an
+        /// in-flight GPU read is never raced.
         void drawTriangulatedResult(OmegaGTE::TETriangulationResult & result,
                                     bool useTextureRenderPipeline,
                                     bool usePathRenderPipeline,
@@ -403,7 +455,8 @@ namespace OmegaWTK::Composition {
                                     const OmegaGTE::FVec<4> & pathFillColor,
                                     bool pathHasFillColor,
                                     SharedHandle<OmegaGTE::GETexture> texturePaint,
-                                    SharedHandle<OmegaGTE::GEFence> textureFence);
+                                    SharedHandle<OmegaGTE::GEFence> textureFence,
+                                    TessellationCacheEntry * cacheEntry = nullptr);
 
         /// Triangulate + draw one path segment (the former `VectorPath`
         /// case body, taking concrete args). The `VisualCommand::VectorPath`

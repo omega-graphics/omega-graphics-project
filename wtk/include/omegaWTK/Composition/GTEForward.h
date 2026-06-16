@@ -10,6 +10,7 @@ namespace OmegaGTE {
     template<unsigned c, unsigned r> using FMatrix = Matrix<float, c, r>;
     class GETexture;
     class GEFence;
+    class GEBuffer;
 }
 
 #endif

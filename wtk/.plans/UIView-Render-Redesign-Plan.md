@@ -2688,6 +2688,88 @@ invalidation.
   differs, compared in `Widget::handleHostResize` after
   `runWidgetLayout` settles.
 
+**G.3.4 — Effect-bleed capture inflation (drop-shadow clip fix) [DONE
+2026-06-15]**
+
+*Bug (found after G.5.1b, independent of it).* The §G.3.2-rev2 per-View
+cache captures each eligible View into a texture sized to its **layout
+rect**: `FrameBuilder::paintSubtreeWithCache` emits `BeginCacheCapture` with
+`windowRect = {pc.offset, nodeRect.w, nodeRect.h}`, and the backend
+(`beginCacheTarget`) sizes the texture to that rect and sets a capture
+viewport offset by `-(viewOrigin)` with a scissor = the texture dims — so
+**anything the View paints outside its layout rect is scissored away**. A
+drop shadow is emitted *inside* `node.paint(pc)` and draws at
+`shapeRect.center + (x_offset, y_offset)` with a quad half-extent of
+`shapeHalf + pad`, `pad = max(2, blurAmount + 2)` (see `emitSdfPrimitive`).
+The visible part of a drop shadow is the part *beyond* the shape, so it is
+almost entirely scissored on capture and missing when the texture is blitted
+back — the shadow looks clipped. (Animated-shadow Views are already
+cache-ineligible, so only **static** shadows on cached Views are affected.)
+
+*Fix — inflate the capture region by the View's paint bleed.* The backend
+already drives texture size, capture-viewport offset, size-bucket key, AND
+blit dest entirely from the marker's `p.rect`, so passing an *inflated* rect
+makes the whole pipeline correct with no backend change:
+
+- `UIView::paintBleed()` (new, `UIView.Update.cpp` next to `paint`) walks
+  the same resolved elements `paint` does; for each element that resolves a
+  `DropShadow`, it computes a **conservative symmetric per-side margin**
+  `m = max(2, blurAmount + 2) + |offset|` (horizontal uses `x_offset`,
+  vertical `y_offset`) and unions (max) it across elements. This is a sound
+  upper bound: the shape is always clamped within `localBounds`, so the
+  shadow extends at most `pad + |offset|` beyond the layout rect on any
+  side. It deliberately ignores the shape's inset within the View (which
+  would only *reduce* the bleed) to avoid re-deriving per-element shape
+  rects — over-inflation just adds a transparent texture border, which
+  composites as a no-op. `pad` mirrors `emitSdfPrimitive`'s formula; the
+  coupling is documented at both sites.
+- `paintSubtreeWithCache` inflates `windowRect` by `paintBleed()` (origin
+  moves up-left by `(left, top)`; size grows by `(left+right, top+bottom)`)
+  before `makeBeginCacheCapture`. The capture viewport then offsets by the
+  inflated origin (shape lands inset into the texture by the bleed, leaving
+  room for the shadow on every side), the texture covers shape+shadow, the
+  size bucket keys on the inflated dims, and the hit / capture-end blit
+  composites the inflated texture at the inflated window rect — shadow in
+  its correct position. No `DrawOp`/backend change: only `paintBleed()` +
+  the one inflation site.
+- Scope: drop shadow only (the reported + canonical bleeding effect).
+  `paintBleed()` is the extension point for any future bleeding effect
+  (outer glow, etc.). `contentVersion` already bumps on a shadow style
+  change, so changing/removing a shadow re-rasterizes correctly.
+- Verified: build clean ON + OFF; runtime `ContainerClampAnimationTest`
+  still recycles (`bufferPool`/`blitQuad` telemetry unchanged), no
+  regressions. Visual confirmation of the un-clipped shadow hands off to
+  the user (omega-debugviz untrusted).
+
+**G.3.5 — Cache eligibility must see element-level animations [DONE
+2026-06-15]**
+
+*Bug.* With the cache on, an animation that tweens an *element* property
+(the canonical case: an animated drop shadow) froze the view on its start
+frame — only the first frame of each run rendered. Eligibility rule #1
+(`paintSubtreeWithCache`) marked a view ineligible only when
+`AnimationScheduler::hasAnyAnimationFor(node.nodeId())` matched — i.e. when
+the **view's own** node id had an animation. But per-element animations
+(drop shadow, per-element style transitions, path-node tweens) register
+under **element** node ids (`UIView::Impl::elementNodeIds_`; the scheduler
+keys its table on `(elementNodeId, PropertyKey, subIndex)`), so an
+element-only animation left the view eligible. The first tween frame is a
+miss (the style change bumped `contentVersion`) and captures the start
+value; subsequent tween frames don't bump `contentVersion`, hit that
+texture, and blit the stale start frame — the view appears frozen until the
+style settles and re-dirties it.
+
+*Fix.* A `View::isAnimating(scheduler)` virtual: base checks the view node
+id; `UIView` overrides to ALSO check every entry in `elementNodeIds_`.
+`paintSubtreeWithCache` calls `node.isAnimating(*animScheduler)` for rule #1
+instead of the bare view-node-only `hasAnyAnimationFor`. View-level
+animations (opacity / transform) keep working via the base check; element
+animations now correctly make the view ineligible → it renders live every
+tween frame. Cheaper than the alternative (bumping `contentVersion` per
+tick), which would capture-then-immediately-evict every frame; ineligibility
+skips the capture entirely during the animation. Build clean ON + OFF;
+smooth-animation confirmation hands off to the user.
+
 **G.4 — Documentation + telemetry [DONE 2026-06-14]**
 
 - New "Content Caches (Phase G)" section in `wtk/docs/UIModel.rst`
@@ -2838,7 +2920,7 @@ foundation; the persistent-handle reuse moves to **G.5.1b** (below).
   `build.ninja` was confirmed to carry `OMEGAWTK_CONTENT_CACHE_ENABLED`
   — verify that after toggling, don't trust the cache var alone.)
 
-***Follow-up — D3D12 / Vulkan completion wiring for recycling [D3D12 DONE + CI-verified 2026-06-14; Vulkan not started]***
+***Follow-up — D3D12 / Vulkan completion wiring for recycling [D3D12 + Vulkan DONE + CI-verified 2026-06-14]***
 
 The recycling foundation works on every backend whose
 `GECommandBuffer::setCompletionHandler` actually fires its callback on
@@ -2923,7 +3005,8 @@ CI.
   (`vkWaitForFences`) or a per-frame `vkGetFenceStatus` poll at a drain
   point both work; pick whichever matches the existing present/submit
   threading. Same one-shot + clear-after-fire + thread-safety contract
-  as D3D12.
+  as D3D12. (Shipped shape + CI verification documented below, after
+  the Acceptance criteria.)
 - **No WTK-side change needed** — `enqueueFrameBufferReleases` /
   `drainCompletedBufferReleases` and the `PendingReleaseBatch` flag are
   already backend-agnostic; they start recycling automatically once the
@@ -3002,42 +3085,125 @@ This is the remaining gate on locally observing the Vulkan recycling
 signature; until then the completion wiring is **implemented +
 compile/isolation-verified, runtime-telemetry-pending**.
 
-**G.5.1b — Persistent vertex / params buffer handles on cache entries
-[DEFERRED]** *(original G.5.1 sketch, now unblocked by the recycling
-foundation + the G.5.3 writer hygiene):*
+**G.5.1b — Persistent tessellation vertex buffers on cache entries
+[tessellation path DONE 2026-06-15, hold-and-replace; content-blit-quad
+DONE 2026-06-15, hold-and-replace; emitter follow-on CLOSED — not worth
+doing, see below]**
 
-- The G.1 tessellation cache entry grows from
-  `TETriangulationResult` to
-  `struct { TETriangulationResult mesh;
-            SharedHandle<GEBuffer> vertexBuf;
-            SharedHandle<GEBuffer> paramsBuf;
-            std::size_t vertexBucketSize;
-            std::size_t paramsBucketSize; }`.
-  On a hit, the renderer's `drawTriangulatedResult` path reuses the
-  entry's `vertexBuf` / `paramsBuf` directly when the required
-  vertex / params byte count rounds to the same bucket size; if
-  the mesh data is byte-identical to last frame (same mesh **and**
-  transform **and** opacity — those are baked into the vertices) the
-  buffer's current GPU contents are kept and only the bind happens.
-  Different-data-same-size hits `resetCursor` + overwrite (G.5.3).
-  Different-size misses release the entry's buffers back to
-  `BufferPool` and acquire fresh ones. **Requires** the
-  completion-gated reuse machinery from the foundation above so an
-  overwrite cannot race an in-flight GPU read (e.g. only overwrite
-  once the entry's prior `done` has fired, else allocate a fresh
-  buffer that frame).
-- The G.3 content-cache entry holds the per-blit `DrawOp::Bitmap`'s
-  vertex buffer (a fullscreen-quad of 6 verts) once. That buffer is
-  written at `endCacheTarget` time and reused for every subsequent
-  blit until the entry evicts; no pool churn for the blit-quad
-  vertex buffer at all.
-- The non-cache hot-path emitters in `RenderTarget.cpp` that
-  currently fall through `makeBuffer` on `bufferPool() == nullptr`
-  get a thin per-call-site scratch handle that's reused across frames
-  the same way.
-- Telemetry: extend `BufferPool::Stats` with `persistentReuses` so
-  the stats line shows pool hits vs persistent reuses (the latter
-  being the new optimal path).
+**Shipped shape (tessellation cache, hold + fresh-on-reencode).** Took the
+**hold-and-replace** design over the plan's literal `resetCursor` + in-place
+overwrite (developer decision, 2026-06-15). Rationale: in-place overwrite of
+a persistent buffer races the previous frame's in-flight GPU read (the same
+async-submit hazard that re-scoped G.5.1), and would need per-entry
+completion-gating to be safe. Holding the buffer for *read-only* reuse and
+acquiring a *fresh* buffer on any re-encode sidesteps the hazard entirely —
+a buffer is never overwritten in place — and the recycling foundation makes
+the fresh acquire ~free (a pool hit). It captures the same primary win
+(skip the per-vertex re-encode for static cached shapes) without the
+`resetCursor` path.
+
+- The G.1 tessellation cache value grows from `TETriangulationResult` to
+  `struct TessellationCacheEntry { TETriangulationResult mesh;
+  SharedHandle<GEBuffer> vertexBuf; FMatrix<4,4> bakedTransform;
+  float bakedOpacity; size_t bakedBytes; bool bakedPath; bool hasBaked; }`
+  (`RenderTarget.cpp`). No `paramsBuf` — the tessellation draw uses a single
+  vertex buffer; the `paramsBuf` in the original sketch belongs to the
+  SDF/bitmap emitter path, not here.
+- `drawTriangulatedResult` gains an optional `TessellationCacheEntry *`.
+  On a hit whose baked `(transform, opacity, byte-size, pipeline-layout)`
+  all match the current draw → **bind the held `vertexBuf`, skip the entire
+  per-vertex encode**. Otherwise (first paint, or transform/opacity/size
+  changed) → encode into a **fresh** pooled buffer, adopt it onto the entry,
+  and hand the entry's previous buffer to the completion-gated recycler
+  (G.5.1 foundation). The held buffer is reused read-only across frames, so
+  concurrent in-flight reads are safe and no per-entry `done` tracking is
+  needed.
+- `renderVectorPathSegmented` draws *through* the entry on both hit (the
+  found entry) and miss (insert mesh → draw through the new entry so the
+  first encode populates its buffer). The tessellation cache's `OnEvict`
+  hands an evicted/replaced entry's buffer to the gated recycler (guarded
+  by the safe `deferredBufferReleases`-outlives-cache destruction order).
+- Telemetry: a `tessBuffer reuse=/reencode=/reuseRate=` line on the G.4
+  stats block (`tessReuseHits_` / `tessReencodes_`).
+- **Verified at runtime (Metal, cache-ON):** with content caching forced
+  off (`OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX=99999`) so the tessellation path
+  actually re-runs per frame, `EllipsePathCompositorTest` shows
+  `tessBuffer reuse` climbing in **exact lockstep with `tessellation hits`**
+  (every cached-geometry hit with stable baked state reuses its buffer and
+  skips the re-encode), `bufferPool` still recycling at ~95% with `pending`
+  bounded, no crash / validation errors. Build clean both
+  `OMEGAWTK_ENABLE_CONTENT_CACHE=OFF` (entry/refactor compile, `cacheEntry`
+  always null → old behavior) and `=ON`. *(Note: when a View IS
+  content-cached, its vector paths are captured once and blitted, so the
+  tessellation path — and this reuse — only pays off for content-cache-
+  ineligible Views that redraw vector paths every frame.)*
+
+**Shipped shape (content blit-quad, hold + fresh-on-reencode) [DONE
+2026-06-15].** The first follow-on, in the same hold-and-replace shape as
+the tessellation cache. A content-cache hit blits the cached View texture
+through `emitBitmapPrimitive`; that blit's six-vertex fullscreen-quad is now
+held on the cache entry and re-bound across frames instead of re-encoded.
+
+- `ViewCacheEntry` (`ViewContentCache.h`) grows a `SharedHandle<GEBuffer>
+  blitQuadBuf` plus the per-draw state baked into those vertices — dest
+  rect, viewport, UVs, a byte count, and a `blitBakedNoTransform` flag.
+  `GEBuffer` was added to `GTEForward.h`. The geometry is stored as plain
+  floats and the transform as a single no-transform flag (not the full
+  `FMatrix`) so the header stays free of the GTE math surface — the
+  near-universal top-level-blit case runs under identity transform, and any
+  active transform simply re-encodes (always correct, just no reuse that
+  frame).
+- `emitBitmapPrimitive` gains an optional `ViewCacheEntry *`. On a blit
+  whose `(dest, viewport, uv, no-transform)` all match the baked state →
+  **bind the held `blitQuadBuf`, skip the six-vertex encode**. Otherwise →
+  encode into a **fresh** pooled buffer, adopt it onto the entry, and hand
+  the entry's previous buffer to the completion-gated recycler. The held
+  buffer is reused read-only across frames (never overwritten in place), so
+  concurrent in-flight reads are safe — no per-entry `done` tracking. The
+  per-draw params/tint buffer stays on the pooled per-draw path (it folds
+  in the current opacity every blit); only the geometry quad is held.
+- Both content-cache blit sites draw *through* the entry: the **capture-end
+  composite** (miss frame) draws through the just-inserted entry so the
+  first blit populates `blitQuadBuf` ("written at `endCacheTarget` time"),
+  and the **hit path** draws through the found entry so every subsequent
+  blit reuses it. A new content-cache `OnEvict` hands an evicted/replaced
+  entry's quad buffer to the gated recycler (same safe
+  `deferredBufferReleases`-outlives-cache destruction order as the
+  tessellation `OnEvict`; the entry's `texture` handle still just drops its
+  ref — the texture-pool round-trip on eviction is G.5.2's job and will
+  extend this same callback).
+- Telemetry: a `blitQuad reuse=/reencode=/reuseRate=` line on the G.4 stats
+  block (`blitQuadReuseHits_` / `blitQuadReencodes_`).
+- **Verified at runtime (Metal, cache-ON, `ContainerClampAnimationTest`):**
+  `blitQuad reuse` climbs in **exact lockstep with content-cache hits** —
+  across the frame 60→120 window, content `hits +120 / miss +60` matched
+  `blitQuad reuse +120 / reencode +60` (every hit re-binds its held quad,
+  every miss re-encodes at capture-end). `bufferPool` still recycling at
+  ~95% with `pending` bounded at 2, **zero** validation errors / crashes,
+  app exits cleanly. Build clean both `OMEGAWTK_ENABLE_CONTENT_CACHE=ON`
+  (runtime-verified) and `=OFF` (the cache markers are inert → the entry
+  pointer is always null → old behavior, counters stay 0).
+
+**Emitter follow-on [CLOSED — not worth doing, 2026-06-15].** The second
+follow-on was to give the non-cache hot-path emitters (`emitSdfPrimitive` /
+`emitBitmapPrimitive` / `emitTextSubRun`) a held per-call-site scratch
+buffer on their `bufferPool() == nullptr` → `makeBuffer` fallback. On
+re-reading the lifecycle this targets a path that is **dead at render
+time**: `BackendResourceFactory::bufferPool()` returns non-null for the
+whole window between `InitializeEngine()` (called in the `App` constructor,
+`App.cpp`) and `CleanupEngine()` (teardown), so every real frame takes the
+pooled path — the `makeBuffer` branch never executes while rendering.
+Optimizing it would buy nothing. The broader reading (persistent
+per-emitter scratch *with* the pool present) does not rescue it: those
+emitters bake fresh content every frame and are each called many times per
+frame, so a single per-call-site held buffer would either race the
+previous frame's in-flight GPU read (the exact hazard that re-scoped G.5.1)
+or yield zero reuse — and the genuinely-static, stable cases are already
+captured by the content cache (the blit-quad above) and the tessellation
+cache. Closed by developer decision; no code change.
+
+- Telemetry: a `BufferPool::Stats.persistentReuses` field was sketched;
+  superseded by the per-path `tessBuffer` and `blitQuad` reuse counters.
 
 **G.5.2 — Persistent texture handles on content-cache entries [~150 LOC]**
 

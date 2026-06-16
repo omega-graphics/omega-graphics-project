@@ -313,6 +313,28 @@ Core::Optional<NodeId> UIView::Impl::tryElementNodeId(const UIElementTag & tag) 
     return it->second;
 }
 
+bool UIView::isAnimating(const AnimationScheduler & scheduler) const {
+    // UIView-Render-Redesign-Plan §G.3.2 eligibility rule #1. A UIView's
+    // animations register under several node ids: view-level ones (opacity /
+    // transform) under the view's own node id, and every per-element one
+    // (drop shadow, per-element style transitions, path-node tweens) under
+    // its element node id (`elementNodeIds_`). The cache must treat the view
+    // as animating if ANY of them is active — otherwise an element-only
+    // animation (the canonical case: an animated drop shadow) leaves the
+    // view eligible, it gets cached on its start frame, and every tween
+    // frame blits that stale texture instead of re-rendering (the
+    // "freezes on the start frame" bug).
+    if(scheduler.hasAnyAnimationFor(nodeId())){
+        return true;
+    }
+    for(const auto & entry : impl_->elementNodeIds_){
+        if(scheduler.hasAnyAnimationFor(entry.second)){
+            return true;
+        }
+    }
+    return false;
+}
+
 // Widget-View-Paint-Lifecycle-Plan Tier D / D4 (2026-06-03):
 // `advanceAnimations` deleted. Phase 4.4 already retired its body
 // to a `return false;` stub, and no caller has reached it since —

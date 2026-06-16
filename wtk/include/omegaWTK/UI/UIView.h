@@ -433,6 +433,18 @@ private:
     // through `View::paint` (the base virtual is public, so derived
     // access does not gate virtual dispatch).
     void paint(Composition::PaintContext & pc) override;
+    // §G.3.4: report how far this view's resolved drop shadow(s) bleed
+    // past the layout rect, so the content cache can inflate its capture
+    // region and stop scissoring the shadow. Walks the same resolved
+    // elements `paint` does. Non-const (mirrors `paint`; `ensureElementNodeId`
+    // is non-const) and called immediately before `paint` in the cache walker.
+    PaintBleed paintBleed() override;
+    // §G.3.2 eligibility rule #1: a UIView animates if its own node id OR
+    // any of its per-element node ids has an active animation. Element-level
+    // animations (drop shadow, per-element style transitions) register under
+    // `(elementNodeId, …)`, so the base view-node-only check would miss them
+    // and the cache would freeze the view on its start frame mid-animation.
+    bool isAnimating(const AnimationScheduler & scheduler) const override;
 };
 
 }

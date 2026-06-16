@@ -442,6 +442,50 @@ void UIView::paint(Composition::PaintContext & pc){
 
 }
 
+View::PaintBleed UIView::paintBleed(){
+    // UIView-Render-Redesign-Plan §G.3.4: union the per-side bleed of every
+    // resolved drop shadow this view paints, so the content cache can inflate
+    // its capture region and stop scissoring the shadow to the layout rect.
+    //
+    // A shadow's quad reaches `pad + |offset|` past the shape on each side,
+    // where `pad = max(2, blurAmount + 2)` — this MUST mirror the quad
+    // padding `emitSdfPrimitive` computes for `kindCode >= 2.5` (shadow), or
+    // the shadow re-clips. The shape is always clamped within the view's
+    // bounds, so `pad + |offset|` is a sound upper bound on how far the
+    // shadow reaches past the LAYOUT rect. We apply that margin symmetrically
+    // (ignoring the shape's inset within the view, which would only reduce
+    // the bleed) to avoid re-deriving per-element shape rects — over-
+    // inflation only adds a transparent texture border that composites as a
+    // no-op. Animated-shadow views are cache-ineligible (FrameBuilder skips
+    // the marker), so reading the resolved (static) shadow here is sufficient.
+    PaintBleed bleed{};
+    const auto & resolved = impl_->arranged_;
+    for(const auto & entry : resolved){
+        const auto & spec = *entry.spec;
+        if(!spec.shape){
+            continue;   // only shape elements carry a drop shadow (mirrors paint)
+        }
+        const auto elementNodeId = impl_->ensureElementNodeId(entry.tag);
+        auto dropShadowOpt = impl_->resolvedOptional<Composition::LayerEffect::DropShadowParams>(
+                elementNodeId, PropertyKey::DropShadow);
+        if(!dropShadowOpt){
+            continue;
+        }
+        const auto & s = *dropShadowOpt;
+        const float blur = s.blurAmount > 0.f ? s.blurAmount : 0.f;
+        const float pad  = std::max(2.f, blur + 2.f);
+        const float ax   = s.x_offset < 0.f ? -s.x_offset : s.x_offset;
+        const float ay   = s.y_offset < 0.f ? -s.y_offset : s.y_offset;
+        const float mx   = pad + ax;
+        const float my   = pad + ay;
+        bleed.left   = std::max(bleed.left,   mx);
+        bleed.right  = std::max(bleed.right,  mx);
+        bleed.top    = std::max(bleed.top,    my);
+        bleed.bottom = std::max(bleed.bottom, my);
+    }
+    return bleed;
+}
+
 void UIView::update(){
     // Phase 4.7.5: legacy entry point, kept as a thin stub for source
     // compat with the existing primitive overrides (`Rectangle::onPaint`

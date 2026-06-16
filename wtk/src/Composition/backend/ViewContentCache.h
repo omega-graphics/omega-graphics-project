@@ -76,6 +76,37 @@ namespace OmegaWTK::Composition {
     struct ViewCacheEntry {
         SharedHandle<OmegaGTE::GETexture> texture;
         Composition::Rect rasterizedSize {Composition::Point2D{0.f, 0.f}, 0.f, 0.f};
+
+        // Phase G.5.1b follow-up: the persistent fullscreen-quad vertex
+        // buffer this entry's blit is drawn with. `emitBitmapPrimitive`
+        // populates it on the capture-end composite (the miss frame) and
+        // every subsequent cache-hit blit re-binds it and skips the
+        // six-vertex re-encode — the same hold-and-replace shape as the
+        // tessellation cache (the buffer is never overwritten in place, so
+        // an in-flight GPU read is never raced; a re-encode acquires a
+        // fresh buffer and hands the old one to the completion-gated
+        // recycler). `null` until the first blit encodes it.
+        //
+        // `blitQuad*` mirror the per-draw state baked into those vertices.
+        // The NDC positions fold in the dest rect, the viewport, and the
+        // current transform; the UVs ride alongside. A hit re-binds the
+        // held buffer only when every field still matches what this blit
+        // would encode. The transform is captured as a single
+        // `blitBakedNoTransform` flag rather than the full matrix: reuse is
+        // allowed only when the bake AND the current draw both ran under an
+        // identity transform (the near-universal case for a top-level
+        // cached-View blit). That keeps this header free of the GTE math
+        // surface (it deliberately holds only forward-declared GTE handles)
+        // while staying correct — any active transform simply re-encodes.
+        SharedHandle<OmegaGTE::GEBuffer> blitQuadBuf;
+        bool        blitQuadBaked        = false;
+        bool        blitBakedNoTransform = false;
+        float       blitDestX     = 0.f, blitDestY = 0.f;
+        float       blitDestW     = 0.f, blitDestH = 0.f;
+        float       blitViewportW = 0.f, blitViewportH = 0.f;
+        float       blitUMin      = 0.f, blitVMin = 0.f;
+        float       blitUMax      = 0.f, blitVMax = 0.f;
+        std::size_t blitQuadBytes = 0;
     };
 
 }

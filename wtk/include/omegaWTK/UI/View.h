@@ -17,6 +17,10 @@ namespace OmegaWTK {
     // Forward decl — LayoutManager.h includes View.h (for ResizeClamp /
     // ChildResizeSpec); the back-edge would be circular if pulled in.
     class LayoutManager;
+    // Forward decl — `View::isAnimating` takes the scheduler by reference;
+    // its private header lives under `src/UI/` and must not leak into this
+    // public header.
+    class AnimationScheduler;
     namespace Composition {
         class Compositor;
         class CompositorClientProxy;
@@ -376,6 +380,29 @@ namespace OmegaWTK {
         /// (base `View`) is a pass-through no-op; `UIView`, `SVGView`,
         /// `ScrollView` override to emit their ops.
         virtual void paint(Composition::PaintContext & pc);
+
+        /// The margin (logical px, per side) by which this view's paint
+        /// extends *beyond* its layout rect. Driven today by a resolved
+        /// drop shadow (the shadow quad reaches `max(2, blur+2) + |offset|`
+        /// past the shape on each side). The per-View content cache
+        /// (UIView-Render-Redesign-Plan §G.3.4) inflates its capture region
+        /// by this so bleeding effects are not scissored to the layout rect
+        /// on capture. Default (base `View`) is zero; `UIView` overrides.
+        /// Extension point for any future bleeding effect (outer glow, …).
+        struct PaintBleed { float left = 0.f, top = 0.f, right = 0.f, bottom = 0.f; };
+        virtual PaintBleed paintBleed();
+
+        /// Whether any animation owned by this view is currently active in
+        /// `scheduler`. The per-View content cache (UIView-Render-Redesign-
+        /// Plan §G.3.2 eligibility rule #1) skips caching an animating view
+        /// so its tween frames render live instead of blitting a stale
+        /// captured texture. Base `View` checks only its own node id;
+        /// `UIView` overrides to ALSO check its per-element node ids —
+        /// element-level animations (drop shadow, per-element style
+        /// transitions) register under `(elementNodeId, …)`, NOT the view
+        /// node id, so the bare `scheduler.hasAnyAnimationFor(nodeId())`
+        /// check misses them and the view freezes on its start frame.
+        virtual bool isAnimating(const AnimationScheduler & scheduler) const;
 
         /// Phase 4.7.2: the polymorphic Style-pass hook. Per-node:
         /// resolves this view's style into its private cache (read by

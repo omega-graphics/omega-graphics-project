@@ -387,8 +387,14 @@ void paintSubtreeWithCache(View & node,
     const auto nodeRect = node.getRect();
     bool eligible = nodeRect.w >= static_cast<float>(minSizePx)
                  && nodeRect.h >= static_cast<float>(minSizePx);
+    // §G.3.2 eligibility rule #1: never cache a view mid-animation — its
+    // tween frames must render live. `View::isAnimating` checks the view
+    // node id AND (for `UIView`) every per-element node id; the bare
+    // `hasAnyAnimationFor(node.nodeId())` missed element-level animations
+    // (drop shadow, per-element style transitions), which left animating
+    // views cached and frozen on their start frame.
     if(eligible && animScheduler != nullptr
-       && animScheduler->hasAnyAnimationFor(node.nodeId())){
+       && node.isAnimating(*animScheduler)){
         eligible = false;
     }
 
@@ -397,9 +403,21 @@ void paintSubtreeWithCache(View & node,
         // offset (pc.offset), size = the View's own rect dims. The
         // backend uses pos for the capture-viewport offset + blit dest,
         // size for the texture dims + size bucket.
+        //
+        // §G.3.4: inflate that rect by how far this View's paint bleeds
+        // past its layout rect (drop-shadow offset + blur). Because the
+        // backend drives texture size, capture-viewport offset, size
+        // bucket, AND blit dest entirely from this rect, inflating it here
+        // is the whole fix — the shadow is captured into the (larger)
+        // texture and blitted in its correct window position instead of
+        // being scissored away to the layout rect. Zero bleed (the common
+        // case) leaves the rect exactly as before.
+        const View::PaintBleed bleed = node.paintBleed();
         const Composition::Rect windowRect{
-                Composition::Point2D{pc.offset.x, pc.offset.y},
-                nodeRect.w, nodeRect.h};
+                Composition::Point2D{pc.offset.x - bleed.left,
+                                     pc.offset.y - bleed.top},
+                nodeRect.w + bleed.left + bleed.right,
+                nodeRect.h + bleed.top  + bleed.bottom};
         pc.displayList.append(Composition::DrawOp::makeBeginCacheCapture(
                 node.nodeId(), node.contentVersion(), windowRect));
         node.paint(pc);
