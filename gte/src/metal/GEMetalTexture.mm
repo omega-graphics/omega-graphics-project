@@ -18,6 +18,7 @@ GEMetalTexture::GEMetalTexture(const TextureKind & kind,
             texture.handle(),
             static_cast<float>(mtlTexture.width),
             static_cast<float>(mtlTexture.height));
+    DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Texture created: id=" << traceResourceId << " " << mtlTexture.width << "x" << mtlTexture.height);
 };
 
 GEMetalTexture::~GEMetalTexture(){
@@ -30,6 +31,7 @@ GEMetalTexture::~GEMetalTexture(){
             texture.handle(),
             static_cast<float>(mtlTexture.width),
             static_cast<float>(mtlTexture.height));
+    DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Texture destroyed: id=" << traceResourceId);
 }
 
 void GEMetalTexture::copyBytes(void *bytes, size_t bytesPerRow){
@@ -43,6 +45,7 @@ void GEMetalTexture::copyBytes(void *bytes, size_t bytesPerRow){
 
 void GEMetalTexture::copyBytes(void *bytes, size_t bytesPerRow, const TextureRegion &destRegion){
     if(bytes == nullptr || bytesPerRow == 0 || destRegion.w == 0 || destRegion.h == 0){
+        DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "GETexture::copyBytes: invalid arguments (null bytes, zero bytesPerRow, or zero region extent)");
         return;
     }
     const NSUInteger depth = destRegion.d == 0 ? 1u : destRegion.d;

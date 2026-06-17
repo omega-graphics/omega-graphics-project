@@ -47,11 +47,14 @@ static void checkBufferRoleAgainstShader(unsigned location,
             bool slotIsUniform = (l.type == OMEGASL_SHADER_UNIFORM_DESC);
             bool bufIsUniform = (buf.role == BufferDescriptor::Uniform);
             if (slotIsUniform != bufIsUniform) {
-                NSLog(@"OmegaGTE: buffer role mismatch binding to shader `%s` at slot %u: "
-                       "shader expects %s but the GEBuffer was created as %s.",
-                      shader.name, location,
-                      slotIsUniform ? "uniform<T>" : "buffer<T>",
-                      bufIsUniform ? "Uniform" : "Storage");
+                // Debug-Layer-Plan §4.3 — caller-contract violation: report
+                // through DEBUG_CRITICAL (always-on, even with the layer off)
+                // and keep the assert for the debug-build abort.
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE,
+                    "Bind role mismatch: shader=" << shader.name << " slot=" << location
+                    << " shader expects " << (slotIsUniform ? "uniform<T>" : "buffer<T>")
+                    << " but the GEBuffer was created as "
+                    << (bufIsUniform ? "Uniform" : "Storage"));
                 assert(false && "GEBuffer role does not match shader resource kind (uniform<T> vs buffer<T>)");
             }
             return;
@@ -90,6 +93,32 @@ static bool checkSamplerBindAgainstShader(unsigned int location,
     }
     return true;
 }
+
+// Debug-Layer-Plan §4.3 — caller-contract guard for the encoding API. `ok`
+// is the precondition the caller must satisfy (e.g. "an active render pass
+// exists"). When it is false this reports a DEBUG_CRITICAL line in `domain` —
+// surfacing the misuse even in a release build with the debug layer off
+// (§4.1.6) — trips the debug-build assert, and then **returns from the calling
+// method**. The early return is the hardening: most encoder methods
+// dereference a pipeline-state / encoder immediately after the guard, so
+// without it a release build (asserts compiled out) would fall straight
+// through a contract violation into a null dereference instead of a clean
+// no-op. Every guarded method is a `void` encoder call, so skipping the
+// operation on misuse is the graceful, documented behaviour (§4 intro). The
+// `OrReturn` suffix keeps that control flow legible at the call site.
+//
+// `ok` must be a side-effect-free predicate (it is evaluated twice: once for
+// the branch, once inside the assert so the failed condition prints in debug).
+// A macro rather than a function because only a macro can return from the
+// caller; `do/while(0)` lets it be used as an ordinary `stmt;`.
+#define metalRequireOrReturn(ok, domain, what)                                 \
+    do {                                                                       \
+        if(!(ok)){                                                             \
+            DEBUG_CRITICAL((domain), (what));                                  \
+            assert((ok) && "GTE caller-contract violation; see the CRITICAL log line above"); \
+            return;                                                            \
+        }                                                                      \
+    } while(0)
 
 GEMetalCommandBuffer::GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue):parentQueue(parentQueue),
 buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQueue->commandQueue.handle()) commandBuffer] retain]}){
@@ -157,10 +186,12 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::startBlitPass(){
         buffer.assertExists();
         bp = [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) blitCommandEncoder];
+        DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "BlitPass begin");
     };
 
     void GEMetalCommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest) {
-        assert(bp && "Must be in BLIT PASS");
+        metalRequireOrReturn(bp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "copy/fill blit op: called outside an active blit pass (call startBlitPass first)");
         auto srcTexture = (GEMetalTexture *)src.get(),destTexture = (GEMetalTexture *)dest.get();
 
         /// Use MTLFences as ResourceBarrier.
@@ -181,7 +212,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
     void GEMetalCommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest,
                                                     const TextureRegion &region, const GPoint3D &destCoord) {
-        assert(bp && "Must be in BLIT PASS");
+        metalRequireOrReturn(bp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "copy/fill blit op: called outside an active blit pass (call startBlitPass first)");
         auto mtl_src_texture = (GEMetalTexture *)src.get();
         auto mtl_dest_texture = (GEMetalTexture *)dest.get();
 
@@ -214,7 +246,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
     void GEMetalCommandBuffer::copyBufferToBuffer(SharedHandle<GEBuffer> &src, SharedHandle<GEBuffer> &dest,
                                                   size_t size, size_t srcOffset, size_t destOffset) {
-        assert(bp && "Must be in BLIT PASS");
+        metalRequireOrReturn(bp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "copy/fill blit op: called outside an active blit pass (call startBlitPass first)");
         auto mtl_src = (GEMetalBuffer *)src.get();
         auto mtl_dest = (GEMetalBuffer *)dest.get();
 
@@ -240,7 +273,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::copyBufferToTexture(SharedHandle<GEBuffer> &src, SharedHandle<GETexture> &dest,
                                                    size_t bytesPerRow, size_t bytesPerImage,
                                                    const TextureRegion &destRegion, size_t srcBufferOffset) {
-        assert(bp && "Must be in BLIT PASS");
+        metalRequireOrReturn(bp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "copy/fill blit op: called outside an active blit pass (call startBlitPass first)");
         auto mtl_src = (GEMetalBuffer *)src.get();
         auto mtl_dest = (GEMetalTexture *)dest.get();
 
@@ -272,7 +306,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::copyTextureToBuffer(SharedHandle<GETexture> &src, SharedHandle<GEBuffer> &dest,
                                                    size_t bytesPerRow, size_t bytesPerImage,
                                                    const TextureRegion &srcRegion, size_t destBufferOffset) {
-        assert(bp && "Must be in BLIT PASS");
+        metalRequireOrReturn(bp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "copy/fill blit op: called outside an active blit pass (call startBlitPass first)");
         auto mtl_src = (GEMetalTexture *)src.get();
         auto mtl_dest = (GEMetalBuffer *)dest.get();
 
@@ -302,7 +337,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     }
 
     void GEMetalCommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture){
-        assert(bp && "Must be in BLIT PASS");
+        metalRequireOrReturn(bp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "copy/fill blit op: called outside an active blit pass (call startBlitPass first)");
         auto mtl_tex = (GEMetalTexture *)texture.get();
 
         if(mtl_tex->needsBarrier){
@@ -332,8 +368,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                                                 const TextureRegion &srcRegion,
                                                 const TextureRegion &destRegion){
         (void)srcRegion;
-        assert(rp == nil && cp == nil && bp == nil && ap == nil &&
-               "blitWithPipeline must not be called inside an existing pass scope");
+        metalRequireOrReturn(rp == nil && cp == nil && bp == nil && ap == nil, DEBUG_DOMAIN_RENDERTGT,
+                     "blitWithPipeline: must not be called inside an existing pass scope");
         if(!pipelineState){
             DEBUG_STREAM("blitWithPipeline: pipelineState is null");
             return;
@@ -372,7 +408,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
     void GEMetalCommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t value,
                                           size_t offset, size_t size){
-        assert(bp && "Must be in BLIT PASS");
+        metalRequireOrReturn(bp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "copy/fill blit op: called outside an active blit pass (call startBlitPass first)");
         auto mtl_buf = (GEMetalBuffer *)buffer.get();
 
         if(mtl_buf->needsBarrier){
@@ -390,10 +427,12 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         const bool uniform = (b0 == b1) && (b1 == b2) && (b2 == b3);
 
         if(!uniform){
-            GTE_NSLOG(@"[GEMetalCommandBuffer::fillBuffer] WARNING: Metal blit fill only supports 8-bit patterns. "
-                       "Requested 32-bit value 0x%08X is not byte-uniform; falling back to low byte 0x%02X. "
-                       "Use a compute shader for non-uniform patterns.",
-                       (unsigned)value, (unsigned)b0);
+            // Engine fallback (not caller misuse), so INFO not CRITICAL.
+            DEBUG_INFO(DEBUG_DOMAIN_RESOURCE,
+                "fillBuffer: Metal blit fill only supports 8-bit patterns; requested 32-bit value 0x"
+                << std::hex << (unsigned)value << " is not byte-uniform, falling back to low byte 0x"
+                << (unsigned)b0 << std::dec
+                << " (use a compute shader for non-uniform patterns)");
         }
 
         [bp fillBuffer:buf
@@ -405,6 +444,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     }
 
     void GEMetalCommandBuffer::finishBlitPass(){
+        DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "BlitPass end");
         [bp endEncoding];
         bp = nil;
     };
@@ -469,12 +509,10 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             metalDrawable.assertExists();
             id<CAMetalDrawable> drawable = NSOBJECT_OBJC_BRIDGE(id<CAMetalDrawable>,metalDrawable.handle());
             id<MTLTexture> drawableTexture = drawable.texture;
-            CAMetalLayer *drawableLayer = (CAMetalLayer *)drawable.layer;
-            GTE_NSLOG(@"Prepare Render Pass For NativeTarget: drawable=%p texture=%p %lux%lu format=%lu layer=%p layer.superlayer=%@",
-                      drawable, drawableTexture,
-                      (unsigned long)drawableTexture.width, (unsigned long)drawableTexture.height,
-                      (unsigned long)drawableTexture.pixelFormat,
-                      drawableLayer, drawableLayer.superlayer);
+            DEBUG_TRACE(DEBUG_DOMAIN_RENDERTGT,
+                "RenderPass begin: native rt "
+                << (unsigned long)drawableTexture.width << "x"
+                << (unsigned long)drawableTexture.height);
             renderPassDesc.renderTargetWidth = (NSUInteger)n_rt->drawableSize.width;
             renderPassDesc.renderTargetHeight = (NSUInteger)n_rt->drawableSize.height;
             id<MTLTexture> renderTarget;
@@ -492,7 +530,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             }
         }
         else if(desc.tRenderTarget != nullptr){
-            GTE_NSLOG(@"Prepare Render Pass For TextureTarget");
+            DEBUG_TRACE(DEBUG_DOMAIN_RENDERTGT, "RenderPass begin: texture rt");
             auto *t_rt = (GEMetalTextureRenderTarget *)desc.tRenderTarget;
             if(t_rt->texturePtr->needsBarrier){
                 needsBarrier = true;
@@ -515,7 +553,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             }
         }
         else {
-            DEBUG_STREAM("Failed to Create GERenderPass");
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT,
+                "startRenderPass: descriptor has no render target (neither nRenderTarget nor tRenderTarget set)");
             exit(1);
         };
 
@@ -535,8 +574,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                 desc.colorAttachments.empty() ? nullptr : &desc.colorAttachments[i];
 
             if(i > 0){
-                assert(attachment != nullptr && attachment->texture != nullptr &&
-                       "Color attachments beyond index 0 must supply an explicit texture.");
+                metalRequireOrReturn(attachment != nullptr && attachment->texture != nullptr, DEBUG_DOMAIN_RENDERTGT,
+                             "startRenderPass: color attachments beyond index 0 must supply an explicit texture");
                 auto *attachTex = (GEMetalTexture *)attachment->texture.get();
                 renderPassDesc.colorAttachments[i].texture =
                     NSOBJECT_OBJC_BRIDGE(id<MTLTexture>, attachTex->texture.handle());
@@ -633,7 +672,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
 
         rp = [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) renderCommandEncoderWithDescriptor:renderPassDesc];
-        GTE_NSLOG(@"Starting Render Pass: %@",rp);
+        // (Debug-Layer-Plan §4.3: the "Starting Render Pass" line is dropped —
+        // the "RenderPass begin" trace above already announces the pass.)
         if(needsBarrier){
             /// Ensure texture is ready to render to when fragment stage begins.
             [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,barrier.handle()) beforeStages:MTLRenderStageFragment];
@@ -643,7 +683,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::setRenderPipelineState(SharedHandle<GERenderPipelineState> & pipelineState){
         auto *ps = (GEMetalRenderPipelineState *)pipelineState.get();
         ps->renderPipelineState.assertExists();
-        GTE_NSLOG(@"Render Pipeline Set: %@",(id<MTLRenderPipelineState>)ps->renderPipelineState.handle());
+        DEBUG_TRACE(DEBUG_DOMAIN_PIPELINE, "PSO set");
         [rp setRenderPipelineState:NSOBJECT_OBJC_BRIDGE(id<MTLRenderPipelineState>,ps->renderPipelineState.handle())];
         
         [rp setFrontFacingWinding:ps->rasterizerState.winding];
@@ -657,7 +697,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
 
     void GEMetalCommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> & buffer,unsigned _id){
-        assert((rp && (cp == nil)) && "Cannot Resource Const on a Vertex Func when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtVertexShader(GEBuffer): called outside an active render pass");
         auto *metalBuffer = (GEMetalBuffer *)buffer.get();
         metalBuffer->metalBuffer.assertExists();
 
@@ -679,9 +720,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
 
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->vertexShader->internal);
-        GTE_NSLOG(@"Binding GEBuffer at %s Shader: %@ At Index: %i",
-                  isMeshVariant ? "Mesh" : "Vertex",
-                  NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()), index);
+        // (Debug-Layer-Plan §4.1.5 hot-path rule: no per-bind log on the
+        // success path; compile-time opt-in under OMEGAGTE_DEBUG_TRACE_HOT.)
         if(isMeshVariant){
             [rp setMeshBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()) offset:0 atIndex:index];
         } else {
@@ -696,7 +736,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
     void GEMetalCommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> & texture,unsigned _id,
                                                             const TextureSwizzle & swizzle){
-        assert((rp && (cp == nil)) && "Cannot Resource Const on a Vertex Func when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtVertexShader(GETexture): called outside an active render pass");
         auto *metalTexture = (GEMetalTexture *)texture.get();
 
         checkTextureBindAgainstShader(_id, renderPipelineState->vertexShader->internal, *metalTexture);
@@ -717,8 +758,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->vertexShader->internal);
         TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, _id, renderPipelineState->vertexShader->internal);
         id<MTLTexture> view = metalTexture->getOrCreateSwizzledView(effective);
-        GTE_NSLOG(@"Binding GETexture at %s Shader: %@ At Index: %i",
-                  isMeshVariant ? "Mesh" : "Vertex", view, index);
+        // (§4.1.5 hot-path rule: no per-bind log on the success path.)
         if(isMeshVariant){
             [rp setMeshTexture:view atIndex:index];
         } else {
@@ -731,7 +771,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
 
     void GEMetalCommandBuffer::bindResourceAtVertexShader(SharedHandle<GESamplerState> & sampler,unsigned _id){
-        assert((rp && (cp == nil)) && "Cannot bind sampler at a Vertex Func when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtVertexShader(GESamplerState): called outside an active render pass");
         auto *metalSampler = (GEMetalSamplerState *)sampler.get();
         bool ok = checkSamplerBindAgainstShader(_id, renderPipelineState->vertexShader->internal);
         assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
@@ -748,7 +789,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
 
     void GEMetalCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> & buffer,unsigned _id){
-        assert((rp && (cp == nil)) && "Cannot Resource Const on a Fragment Func when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtFragmentShader(GEBuffer): called outside an active render pass");
         auto *metalBuffer = (GEMetalBuffer *)buffer.get();
         metalBuffer->metalBuffer.assertExists();
 
@@ -760,8 +802,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         }
 
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->fragmentShader->internal);
-
-        GTE_NSLOG(@"Binding GEBuffer at Fragment Shader: %@ At Index: %i",NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()),index);
+        // (§4.1.5 hot-path rule: no per-bind log on the success path.)
         [rp setFragmentBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()) offset:0 atIndex:index];
         if(shaderHasWriteAccessForResource(_id,renderPipelineState->fragmentShader->internal)){
             metalBuffer->needsBarrier = true;
@@ -771,7 +812,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
     void GEMetalCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> & texture,unsigned _id,
                                                               const TextureSwizzle & swizzle){
-        assert((rp && (cp == nil)) && "Cannot Resource Const on a Fragment Func when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtFragmentShader(GETexture): called outside an active render pass");
         auto *metalTexture = (GEMetalTexture *)texture.get();
 
         checkTextureBindAgainstShader(_id, renderPipelineState->fragmentShader->internal, *metalTexture);
@@ -784,8 +826,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         unsigned index = getResourceLocalIndexFromGlobalIndex(_id,renderPipelineState->fragmentShader->internal);
         TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, _id, renderPipelineState->fragmentShader->internal);
         id<MTLTexture> view = metalTexture->getOrCreateSwizzledView(effective);
-        GTE_NSLOG(@"Binding GETexture at Fragment Shader: %@ At Index: %i",view,index);
-
+        // (§4.1.5 hot-path rule: no per-bind log on the success path.)
         [rp setFragmentTexture:view atIndex:index];
         // if(shaderHasWriteAccessForResource(_id,renderPipelineState->fragmentShader->internal)){
         //     metalTexture->needsBarrier = true;
@@ -794,7 +835,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
 
     void GEMetalCommandBuffer::bindResourceAtFragmentShader(SharedHandle<GESamplerState> & sampler,unsigned _id){
-        assert((rp && (cp == nil)) && "Cannot bind sampler at a Fragment Func when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtFragmentShader(GESamplerState): called outside an active render pass");
         auto *metalSampler = (GEMetalSamplerState *)sampler.get();
         bool ok = checkSamplerBindAgainstShader(_id, renderPipelineState->fragmentShader->internal);
         assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
@@ -804,13 +846,16 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
 
     void GEMetalCommandBuffer::setRenderConstants(const void *data, unsigned size, unsigned offset){
-        assert((rp && (cp == nil)) && "setRenderConstants must be called inside a render pass");
-        assert(renderPipelineState && "setRenderConstants requires a bound render pipeline");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_PIPELINE,
+                     "setRenderConstants: called outside an active render pass");
+        metalRequireOrReturn(renderPipelineState != nullptr, DEBUG_DOMAIN_PIPELINE,
+                     "setRenderConstants: no render pipeline bound");
         // Metal's setBytes replaces the whole binding from the encoder's
         // perspective; it has no destination-offset-into-range concept, so a
         // partial update (offset != 0) is not expressible. Honor it on
         // D3D12/Vulkan; require a full-block set here. (Documented follow-up.)
-        assert(offset == 0 && "Metal setRenderConstants supports only offset == 0 (full-block set)");
+        metalRequireOrReturn(offset == 0, DEBUG_DOMAIN_PIPELINE,
+                     "setRenderConstants: Metal supports only offset == 0 (full-block set)");
         (void)offset;
         // Apply to every stage that declared the push constant (`[in pc]`).
         // setVertexBytes / setFragmentBytes / setMeshBytes write the inline
@@ -833,7 +878,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             [rp setFragmentBytes:data length:size atIndex:idx];
             any = true;
         }
-        assert(any && "setRenderConstants: bound pipeline declares no `constant<T>` push constant");
+        metalRequireOrReturn(any, DEBUG_DOMAIN_PIPELINE,
+                     "setRenderConstants: bound pipeline declares no constant<T> push constant");
         (void)any;
     };
 
@@ -874,7 +920,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
 
     void GEMetalCommandBuffer::setStencilRef(unsigned int ref) {
-        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RENDERTGT,
+                     "setStencilRef: called outside an active render pass");
         [rp setStencilReferenceValue:ref];
     }
     
@@ -895,7 +942,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     }
 
     void GEMetalCommandBuffer::drawPolygons(RenderPassDrawPolygonType polygonType,unsigned vertexCount,size_t startIdx){
-        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_QUEUE,
+                     "draw call: called outside an active render pass");
         [rp drawPrimitives:metalPrimitiveTypeForPolygonType(polygonType) vertexStart:startIdx vertexCount:vertexCount];
     };
 
@@ -908,8 +956,10 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
                                                    unsigned indexCount, size_t startIndex,
                                                    int baseVertex){
-        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
-        assert(pendingIndexBuffer != nil && "Index buffer must be set before drawIndexedPolygons");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_QUEUE,
+                     "draw call: called outside an active render pass");
+        metalRequireOrReturn(pendingIndexBuffer != nil, DEBUG_DOMAIN_QUEUE,
+                     "drawIndexedPolygons: no index buffer bound (call setIndexBuffer first)");
         NSUInteger indexByteSize = (pendingIndexType == MTLIndexTypeUInt16) ? 2u : 4u;
         [rp drawIndexedPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
                        indexCount:indexCount
@@ -924,7 +974,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::drawPolygonsInstanced(RenderPassDrawPolygonType polygonType,
                                                      unsigned vertexCount, size_t startIdx,
                                                      unsigned instanceCount, unsigned firstInstance){
-        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_QUEUE,
+                     "draw call: called outside an active render pass");
         [rp drawPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
                vertexStart:startIdx
                vertexCount:vertexCount
@@ -936,8 +987,10 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                                                             unsigned indexCount, size_t startIndex,
                                                             int baseVertex, unsigned instanceCount,
                                                             unsigned firstInstance){
-        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
-        assert(pendingIndexBuffer != nil && "Index buffer must be set before drawIndexedPolygonsInstanced");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_QUEUE,
+                     "draw call: called outside an active render pass");
+        metalRequireOrReturn(pendingIndexBuffer != nil, DEBUG_DOMAIN_QUEUE,
+                     "drawIndexedPolygonsInstanced: no index buffer bound (call setIndexBuffer first)");
         NSUInteger indexByteSize = (pendingIndexType == MTLIndexTypeUInt16) ? 2u : 4u;
         [rp drawIndexedPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
                        indexCount:indexCount
@@ -952,7 +1005,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::drawPolygonsIndirect(RenderPassDrawPolygonType polygonType,
                                                     SharedHandle<GEBuffer> & argumentBuffer,
                                                     size_t argumentBufferOffset){
-        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_QUEUE,
+                     "draw call: called outside an active render pass");
         auto *metalArgBuffer = (GEMetalBuffer *)argumentBuffer.get();
         id<MTLBuffer> argBuf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>, metalArgBuffer->metalBuffer.handle());
         [rp drawPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
@@ -963,8 +1017,10 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
                                                            SharedHandle<GEBuffer> & argumentBuffer,
                                                            size_t argumentBufferOffset){
-        assert((rp && (cp == nil)) && "Cannot Draw Polygons when not in render pass");
-        assert(pendingIndexBuffer != nil && "Index buffer must be set before drawIndexedPolygonsIndirect");
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_QUEUE,
+                     "draw call: called outside an active render pass");
+        metalRequireOrReturn(pendingIndexBuffer != nil, DEBUG_DOMAIN_QUEUE,
+                     "drawIndexedPolygonsIndirect: no index buffer bound (call setIndexBuffer first)");
         auto *metalArgBuffer = (GEMetalBuffer *)argumentBuffer.get();
         id<MTLBuffer> argBuf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>, metalArgBuffer->metalBuffer.handle());
         [rp drawIndexedPrimitives:metalPrimitiveTypeForPolygonType(polygonType)
@@ -976,6 +1032,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
 
     void GEMetalCommandBuffer::finishRenderPass(){
+        DEBUG_TRACE(DEBUG_DOMAIN_RENDERTGT, "RenderPass end");
         renderPipelineState = nullptr;
         [rp endEncoding];
         rp = nil;
@@ -984,10 +1041,12 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     void GEMetalCommandBuffer::startComputePass(const GEComputePassDescriptor & desc){
         buffer.assertExists();
         cp = [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) computeCommandEncoder];
+        DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "ComputePass begin");
     };
 
     void GEMetalCommandBuffer::setComputePipelineState(SharedHandle<GEComputePipelineState> & pipelineState){
-        assert(cp != nil && "");
+        metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_PIPELINE,
+                     "setComputePipelineState: called outside an active compute pass");
         auto * ps = (GEMetalComputePipelineState *)pipelineState.get();
         ps->computePipelineState.assertExists();
         computePipelineState = ps;
@@ -995,7 +1054,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     };
 
     void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int _id) {
-        assert(cp != nil && "");
+        metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtComputeShader(GEBuffer): called outside an active compute pass");
         auto mtl_buffer = (GEMetalBuffer *)buffer.get();
 
         checkBufferRoleAgainstShader(_id, computePipelineState->computeShader->internal, *mtl_buffer);
@@ -1014,7 +1074,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
     void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int _id,
                                                             const TextureSwizzle & swizzle) {
-        assert(cp != nil && "");
+        metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtComputeShader(GETexture): called outside an active compute pass");
         auto mtl_texture = (GEMetalTexture *)texture.get();
 
         checkTextureBindAgainstShader(_id, computePipelineState->computeShader->internal, *mtl_texture);
@@ -1034,7 +1095,8 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     }
 
     void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int _id) {
-        assert(cp != nil && "Cannot bind sampler at a Compute Func when not in compute pass");
+        metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtComputeShader(GESamplerState): called outside an active compute pass");
         auto *metalSampler = (GEMetalSamplerState *)sampler.get();
         bool ok = checkSamplerBindAgainstShader(_id, computePipelineState->computeShader->internal);
         assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
@@ -1045,20 +1107,24 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
 
     void GEMetalCommandBuffer::bindResourceAtComputeShader(SharedHandle<GEAccelerationStruct> & accelStruct,unsigned int idx){
-         assert(cp != nil && "");
+        metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtComputeShader(GEAccelerationStruct): called outside an active compute pass");
         auto mtl_accel_struct = (GEMetalAccelerationStruct *)accelStruct.get();
         [cp setAccelerationStructure:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,mtl_accel_struct->accelStruct.handle()) atBufferIndex:getResourceLocalIndexFromGlobalIndex(idx,computePipelineState->computeShader->internal)];
     }
 
     void GEMetalCommandBuffer::setComputeConstants(const void *data, unsigned size, unsigned offset){
-        assert(cp != nil && "setComputeConstants must be called inside a compute pass");
-        assert(computePipelineState && "setComputeConstants requires a bound compute pipeline");
-        assert(offset == 0 && "Metal setComputeConstants supports only offset == 0 (full-block set)");
+        metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_PIPELINE,
+                     "setComputeConstants: called outside an active compute pass");
+        metalRequireOrReturn(computePipelineState != nullptr, DEBUG_DOMAIN_PIPELINE,
+                     "setComputeConstants: no compute pipeline bound");
+        metalRequireOrReturn(offset == 0, DEBUG_DOMAIN_PIPELINE,
+                     "setComputeConstants: Metal supports only offset == 0 (full-block set)");
         (void)offset;
         unsigned idx = 0;
         bool found = findPushConstantBufferIndex(computePipelineState->computeShader->internal, idx);
-        assert(found && "setComputeConstants: bound pipeline declares no `constant<T>` push constant");
-        if(!found) return;
+        metalRequireOrReturn(found, DEBUG_DOMAIN_PIPELINE,
+                     "setComputeConstants: bound pipeline declares no constant<T> push constant");
         [cp setBytes:data length:size atIndex:idx];
     }
 
@@ -1076,12 +1142,13 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         /// as `GERenderPipelineState`; the `isMesh` flag stamped at
         /// construction (Phase 4c.1) is what tells us the bound
         /// pipeline can dispatch mesh tasks rather than polygon draws.
-        assert(rp != nil && "drawMeshTasks: must be called inside a render pass");
-        assert(renderPipelineState != nullptr
-               && "drawMeshTasks: no pipeline bound (call setRenderPipelineState first)");
-        assert(renderPipelineState->isMesh
-               && "drawMeshTasks: bound pipeline is a graphics pipeline, not a mesh pipeline. "
-                  "Use makeMeshPipelineState to build a mesh-variant PSO.");
+        metalRequireOrReturn(rp != nil, DEBUG_DOMAIN_QUEUE,
+                     "drawMeshTasks: called outside an active render pass");
+        metalRequireOrReturn(renderPipelineState != nullptr, DEBUG_DOMAIN_QUEUE,
+                     "drawMeshTasks: no pipeline bound (call setRenderPipelineState first)");
+        metalRequireOrReturn(renderPipelineState->isMesh, DEBUG_DOMAIN_PIPELINE,
+                     "drawMeshTasks: bound pipeline is a graphics pipeline, not a mesh pipeline; "
+                     "use makeMeshPipelineState to build a mesh-variant PSO");
 
         /// Per-meshlet threadgroup dims come from the mesh shader's
         /// `[[max_total_threads_per_threadgroup(N)]]` / declared
@@ -1109,20 +1176,23 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     }
 
     void GEMetalCommandBuffer::dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) {
-        assert(cp != nil && "");
+        metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_QUEUE,
+                     "dispatchThreadgroups: called outside an active compute pass");
         auto & threadgroup_desc = computePipelineState->computeShader->internal.threadgroupDesc;
         [cp dispatchThreadgroups:MTLSizeMake(x,y,z) threadsPerThreadgroup:MTLSizeMake(threadgroup_desc.x,threadgroup_desc.y,threadgroup_desc.z)];
     }
 
     void GEMetalCommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
-        assert(cp != nil && "");
+        metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_QUEUE,
+                     "dispatchThreads: called outside an active compute pass");
         auto & threadgroup_desc = computePipelineState->computeShader->internal.threadgroupDesc;
         [cp dispatchThreads:MTLSizeMake(x,y,z) threadsPerThreadgroup:MTLSizeMake(threadgroup_desc.x,threadgroup_desc.y,threadgroup_desc.z)];
     }
 
     void GEMetalCommandBuffer::dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
                                                             size_t argumentBufferOffset) {
-        assert(cp != nil && "Must be in a compute pass to dispatch threadgroups");
+        metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_QUEUE,
+                     "dispatchThreadgroupsIndirect: called outside an active compute pass");
         auto & threadgroup_desc = computePipelineState->computeShader->internal.threadgroupDesc;
         auto *metalArgBuffer = (GEMetalBuffer *)argumentBuffer.get();
         id<MTLBuffer> argBuf = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>, metalArgBuffer->metalBuffer.handle());
@@ -1132,6 +1202,7 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
     }
 
     void GEMetalCommandBuffer::finishComputePass(){
+        DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "ComputePass end");
         [cp endEncoding];
         computePipelineState = nullptr;
         cp = nil;
@@ -1151,13 +1222,12 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         presentEvent.commandBufferId = traceResourceId;
         presentEvent.nativeHandle = reinterpret_cast<std::uint64_t>(buffer.handle());
         ResourceTracking::Tracker::instance().emit(presentEvent);
-        GTE_NSLOG(@"Present Drawable");
+        DEBUG_TRACE(DEBUG_DOMAIN_RENDERTGT, "Present: cb=" << traceResourceId);
     };
     
     void GEMetalCommandBuffer::_commit(){
-         GTE_NSLOG(@"[_commit] MTLCommandBuffer=%p status=%lu",
-                   NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()),
-                   (unsigned long)NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()).status);
+         // (Debug-Layer-Plan §4.3: pre-commit status line dropped — the
+         // post-completion trace below covers the command buffer's outcome.)
          buffer.assertExists();
          auto completion = completionHandler;
          completionHandler = nullptr;
@@ -1167,10 +1237,18 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
          const auto capturedQueueTraceId = parentQueue != nullptr ? parentQueue->traceResourceId : static_cast<std::uint64_t>(0);
          [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer){
             if(commandBuffer.status == MTLCommandBufferStatusError){
-                NSLog(@"Command Buffer Failed to Execute. Error: %@",commandBuffer.error);
+                // Engine-side report (the GPU told us it failed): ERROR, not
+                // CRITICAL — this is not a caller-contract violation.
+                const char *errStr = commandBuffer.error
+                                         ? commandBuffer.error.localizedDescription.UTF8String
+                                         : "<none>";
+                DEBUG_ERROR(DEBUG_DOMAIN_QUEUE,
+                    "CB execution error: cb=" << capturedTraceId << " error=" << errStr);
             }
             else if(commandBuffer.status == MTLCommandBufferStatusCompleted){
-                GTE_NSLOG(@"Successfully completed Command Buffer! (Logs: %@) (Warning: %@) Duration:%f",commandBuffer.logs,commandBuffer.error,1000.f * (commandBuffer.GPUEndTime - commandBuffer.GPUStartTime));
+                DEBUG_TRACE(DEBUG_DOMAIN_QUEUE,
+                    "CB complete: cb=" << capturedTraceId << " duration="
+                    << (1000.f * (commandBuffer.GPUEndTime - commandBuffer.GPUStartTime)) << "ms");
             }
             if(completion){
                 GECommandBufferCompletionInfo info {};
@@ -1273,6 +1351,7 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
                 "CommandQueue",
                 traceResourceId,
                 commandQueue.handle());
+        DEBUG_INFO(DEBUG_DOMAIN_QUEUE, "Queue created: queue=" << traceResourceId << " type=" << (int)desc.type);
     };
 
     void GEMetalCommandQueue::notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer,
@@ -1289,10 +1368,8 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
     void GEMetalCommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer){
         auto _commandBuffer = (GEMetalCommandBuffer *)commandBuffer.get();
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,_commandBuffer->buffer.handle()) enqueue];
-        GTE_NSLOG(@"[submitCB] queue=%p enqueue CB=%p bufferCount=%lu->%lu",
-                  this, _commandBuffer->buffer.handle(),
-                  (unsigned long)commandBuffers.size(),
-                  (unsigned long)(commandBuffers.size()+1));
+        DEBUG_TRACE(DEBUG_DOMAIN_QUEUE,
+            "CB submit: queue=" << traceResourceId << " cb=" << _commandBuffer->traceResourceId);
         ResourceTracking::Event submitEvent {};
         submitEvent.backend = ResourceTracking::Backend::Metal;
         submitEvent.eventType = ResourceTracking::EventType::Submit;
@@ -1324,9 +1401,11 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
     };
 
     void GEMetalCommandQueue::commitToGPUAndPresent(NSSmartPtr & drawable){
-        GTE_NSLOG(@"[commitToGPUAndPresent] commandBuffers.size=%lu", (unsigned long)commandBuffers.size());
         if(commandBuffers.empty()){
-            NSLog(@"[commitToGPUAndPresent] ERROR: no command buffers to present!");
+            // Caller-contract violation (Debug-Layer-Plan §4.3): present with no
+            // buffered work. Critical so it surfaces even with the layer off;
+            // the existing graceful early-return stays.
+            DEBUG_CRITICAL(DEBUG_DOMAIN_QUEUE, "commitToGPUAndPresent with no buffered command buffers");
             return;
         }
         auto & b = commandBuffers.back();
@@ -1352,7 +1431,7 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
                 "CommandQueue",
                 traceResourceId,
                 commandQueue.handle());
-        GTE_NSLOG(@"Metal Command Queue Destroy");
+        DEBUG_INFO(DEBUG_DOMAIN_QUEUE, "Queue destroyed: queue=" << traceResourceId);
         dispatch_release(semaphore);
     //    [NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,commandQueue.handle()) autorelease];
     };

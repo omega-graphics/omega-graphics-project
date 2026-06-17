@@ -181,10 +181,15 @@ _NAMESPACE_BEGIN_
 
     /// @brief §6.3 — at bind time, verify the bound texture's
     /// `TextureKind` matches the shader's expected layout-desc texture
-    /// type. Writes a diagnostic to @c stderr and returns @c false on
+    /// type. Reports a caller-contract violation through
+    /// @c DEBUG_CRITICAL (Debug-Layer-Plan §4.3 "bind kind mismatch" row,
+    /// always-on even with the debug layer off) and returns @c false on
     /// mismatch so the caller can skip the bind. The expected kind is
     /// `Auto` for non-texture layout-desc types; in that case we have
     /// no expectation and accept whatever the caller passes.
+    /// @note Lives in the shared header so all three backends report the
+    /// mismatch identically; the per-backend `DEBUG_ENGINE_PREFIX`
+    /// resolves to the engine the bind happened on.
     inline bool validateTextureBindKind(int layoutDescType,
                                         TextureKind boundKind,
                                         unsigned boundSampleCount,
@@ -195,12 +200,12 @@ _NAMESPACE_BEGIN_
             return true;
         }
         if(expected != boundKind){
-            std::cerr << "[OmegaGTE] Texture bind kind mismatch: shader '"
-                      << (shaderName ? shaderName : "<anon>")
-                      << "' binding " << bindingLocation
-                      << " expects " << textureKindName(expected)
-                      << " but bound texture is " << textureKindName(boundKind)
-                      << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE,
+                "Texture bind kind mismatch: shader '"
+                << (shaderName ? shaderName : "<anon>")
+                << "' binding " << bindingLocation
+                << " expects " << textureKindName(expected)
+                << " but bound texture is " << textureKindName(boundKind));
             return false;
         }
         // §6.4 — for MS variants, require sample_count > 1 on the bound
@@ -210,11 +215,12 @@ _NAMESPACE_BEGIN_
         const bool isMS = (expected == TextureKind::Tex2DMS ||
                            expected == TextureKind::Tex2DMSArray);
         if(isMS && boundSampleCount <= 1){
-            std::cerr << "[OmegaGTE] Texture bind sample-count mismatch: shader '"
-                      << (shaderName ? shaderName : "<anon>")
-                      << "' binding " << bindingLocation
-                      << " expects multisampled texture but bound texture has sample_count="
-                      << boundSampleCount << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE,
+                "Texture bind sample-count mismatch: shader '"
+                << (shaderName ? shaderName : "<anon>")
+                << "' binding " << bindingLocation
+                << " expects multisampled texture but bound texture has sample_count="
+                << boundSampleCount);
             return false;
         }
         return true;
@@ -226,8 +232,10 @@ _NAMESPACE_BEGIN_
     /// (a static_assert in the backend translation units pins the contract):
     /// runtime samplers are SAMPLER1D/2D/3D (5/6/7) and SAMPLERCUBE (17);
     /// static samplers are STATIC_SAMPLER1D/2D/3D (8/9/10) and
-    /// STATIC_SAMPLERCUBE (18). Writes a diagnostic to @c stderr and returns
-    /// @c false on mismatch so the caller can skip the bind.
+    /// STATIC_SAMPLERCUBE (18). Reports a caller-contract violation through
+    /// @c DEBUG_CRITICAL (Debug-Layer-Plan §4.3 "bind kind mismatch" row,
+    /// always-on even with the debug layer off) and returns @c false on
+    /// mismatch so the caller can skip the bind.
     inline bool validateSamplerBindKind(int layoutDescType,
                                         const char *shaderName,
                                         unsigned bindingLocation){
@@ -241,20 +249,20 @@ _NAMESPACE_BEGIN_
             case 9:  // OMEGASL_SHADER_STATIC_SAMPLER2D_DESC
             case 10: // OMEGASL_SHADER_STATIC_SAMPLER3D_DESC
             case 18: // OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC
-                std::cerr << "[OmegaGTE] Sampler bind to static slot: shader '"
-                          << (shaderName ? shaderName : "<anon>")
-                          << "' binding " << bindingLocation
-                          << " was declared `static`; its sampler is baked into "
-                             "the pipeline and cannot be bound at runtime"
-                          << std::endl;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE,
+                    "Sampler bind to static slot: shader '"
+                    << (shaderName ? shaderName : "<anon>")
+                    << "' binding " << bindingLocation
+                    << " was declared `static`; its sampler is baked into "
+                       "the pipeline and cannot be bound at runtime");
                 return false;
             default:
-                std::cerr << "[OmegaGTE] Sampler bind kind mismatch: shader '"
-                          << (shaderName ? shaderName : "<anon>")
-                          << "' binding " << bindingLocation
-                          << " is not a sampler slot (layout-desc type "
-                          << layoutDescType << ")"
-                          << std::endl;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE,
+                    "Sampler bind kind mismatch: shader '"
+                    << (shaderName ? shaderName : "<anon>")
+                    << "' binding " << bindingLocation
+                    << " is not a sampler slot (layout-desc type "
+                    << layoutDescType << ")");
                 return false;
         }
     }

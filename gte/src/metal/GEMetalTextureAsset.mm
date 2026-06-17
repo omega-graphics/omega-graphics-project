@@ -24,9 +24,7 @@ TexturePixelFormat mapMetalPixelFormat(MTLPixelFormat fmt) {
         case MTLPixelFormatBGRA8Unorm_sRGB: return TexturePixelFormat::BGRA8Unorm_SRGB;
         case MTLPixelFormatRGBA16Unorm:     return TexturePixelFormat::RGBA16Unorm;
         default:
-            std::cerr << "[GETextureAsset/Metal] warning: MTLPixelFormat "
-                      << (int)fmt << " not modeled in TexturePixelFormat; "
-                         "reporting RGBA8Unorm." << std::endl;
+            DEBUG_INFO(DEBUG_DOMAIN_ASSET, "MTLPixelFormat " << (int)fmt << " not modeled in TexturePixelFormat; reporting RGBA8Unorm.");
             return TexturePixelFormat::RGBA8Unorm;
     }
 }
@@ -42,13 +40,13 @@ public:
 
     bool load(const std::string & path, const LoadOptions & options) override {
         if (engine == nullptr) {
-            std::cerr << "[GETextureAsset/Metal] error: no engine bound." << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "Texture asset load: no engine bound");
             return false;
         }
         @autoreleasepool {
             id<MTLDevice> device = (__bridge id<MTLDevice>)engine->underlyingNativeDevice();
             if (device == nil) {
-                std::cerr << "[GETextureAsset/Metal] error: native device is nil." << std::endl;
+                DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "Texture asset load: native device is nil");
                 return false;
             }
 
@@ -68,10 +66,7 @@ public:
                                                                 options:opts
                                                                   error:&error];
             if (mtlTex == nil || error != nil) {
-                std::cerr << "[GETextureAsset/Metal] error: failed to load '"
-                          << path << "': "
-                          << (error != nil ? error.localizedDescription.UTF8String : "unknown")
-                          << std::endl;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "Texture asset load failed: path=" << path << " error=" << (error != nil ? error.localizedDescription.UTF8String : "unknown"));
                 return false;
             }
 
@@ -108,6 +103,8 @@ public:
             loadedDescriptor.sampleCount = static_cast<unsigned>(mtlTex.sampleCount);
             loadedDescriptor.kind = kind;
             loadedDescriptor.arrayLayers = static_cast<unsigned>(mtlTex.arrayLength);
+
+            DEBUG_INFO(DEBUG_DOMAIN_ASSET, "Texture asset loaded: path=" << path << " " << mtlTex.width << "x" << mtlTex.height);
         }
         return true;
     }

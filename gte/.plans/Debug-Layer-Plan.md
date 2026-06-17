@@ -308,13 +308,128 @@ by need.
       lift the three raw sites to `DEBUG_CRITICAL`/`DEBUG_ERROR`
       first, then rewrite the `GTE_NSLOG` sites to the typed macros,
       then retire `GTE_NSLOG`.
+      **✅ Metal portion done (2026-06-17, code landed + Metal build
+      clean — D3D12/Vulkan backfill still owed).** In
+      `src/metal/GEMetalCommandQueue.mm`: the three raw `NSLog` sites
+      lifted (buffer-role mismatch → `DEBUG_CRITICAL(RESOURCE)`,
+      CB-execution-error → `DEBUG_ERROR(QUEUE)`, empty-present →
+      `DEBUG_CRITICAL(QUEUE)`); all 15 `GTE_NSLOG` sites migrated per
+      the §4.3 curation table (6 → `DEBUG_TRACE`, queue-destroy →
+      `DEBUG_INFO(QUEUE)`, blit 8-bit fallback → `DEBUG_INFO(RESOURCE)`,
+      the per-bind / pre-commit-status / setup-detail lines dropped);
+      `GTE_NSLOG` retired from `src/metal/GEMetal.h`. The D3D12/Vulkan
+      tracker-call-site backfill (the other half of c) is unstarted.
    d. Encoding-API spec checks across all backends (the per-bind /
       per-pass / per-draw Critical rows from §4.3). Each backend
       already has the validation code paths inline (Metal's
       `checkBufferRoleAgainstShader` etc.); this step swaps their
       reporting from `assert`/`NSLog` to `DEBUG_CRITICAL`.
+      **◐ Metal per-bind rows done (2026-06-17).** The three bind-kind
+      validators now report `DEBUG_CRITICAL(RESOURCE)`:
+      `checkBufferRoleAgainstShader` (Metal-local) directly, and the
+      shared `validateTextureBindKind` / `validateSamplerBindKind` in
+      `include/omegaGTE/GETexture.h` migrated from `std::cerr` →
+      `DEBUG_CRITICAL` (one edit, all three backends — the only
+      cross-backend touch in this slice; strictly upgrades the existing
+      always-on `[OmegaGTE]` line to a tagged `[…_Internal] - CRITICAL
+      RESOURCE` one, no behaviour regression). The 10 "bind called
+      outside the matching pass" asserts (vertex/fragment/compute ×
+      buffer/texture/sampler + accel-struct) now route through a new
+      `metalRequireOrReturn(ok, domain, what)` guard (see the hardening note
+      below) that emits `DEBUG_CRITICAL`, keeps the debug-build `assert`, and
+      returns from the calling method on violation. **Deferred
+      (not in this slice):** the per-*pass* / per-*draw* / per-*dispatch*
+      / copy / push-constant / blit-pass contract asserts in the same
+      file (≈25 more sites) — those are the broader §4.3 encoding rows,
+      to land with the cross-backend pass.
    e. PIPELINE/SHADER/MEMORY/ASSET text coverage. Smallest pieces
       last, drop in opportunistically.
+
+### Metal completion pass (2026-06-17) — full §4.3 Metal text + Critical coverage
+
+**✅ DONE (2026-06-17, OmegaGTE library builds clean on macOS host).** No raw
+`NSLog`/`std::cerr` remain in the Metal backend (save `MetalTEContext.mm`,
+deferred below, and dead commented-out lines). 132 typed macro / guard calls
+now span the 6 backend files (`GEMetalCommandQueue.mm` 67, `GEMetal.mm` 35,
+`GEMetalMeshAsset.mm` 16, `GEMetalRenderTarget.mm` 6, `GEMetalTextureAsset.mm`
+5, `GEMetalTexture.mm` 3). The 4 asset/RT/texture files were migrated by
+parallel subagents against a fixed convention spec; the two judgement-heavy
+files (`GEMetalCommandQueue.mm` encoding guards, `GEMetal.mm` factories/init/
+shader) by hand. All compiled clean.
+
+Completing the whole Metal side of §4.3 in one pass (the §4.3 coverage
+table *is* the per-site breakdown; this follows it). Scope:
+
+1. **Finish 8d encoding Critical guards** in `GEMetalCommandQueue.mm`:
+   the remaining per-pass / per-draw / per-dispatch / copy / push-constant
+   / blit-pass caller-contract asserts route through `metalRequireOrReturn`
+   (`DEBUG_CRITICAL` + keep the `assert` + early-return). `draw*`/`dispatch*`
+   → `QUEUE`, copy/blit-pass → `RESOURCE`, set*Constants → `PIPELINE`,
+   setViewport/Scissor/Stencil & startRenderPass-attachment → `RENDERTGT`.
+2. **Retire all remaining raw logging** (`NSLog` / `std::cerr`) across the
+   backend → typed macros: shader load (`GEMetal.mm`), `makeNativeRenderTarget`
+   rejects, `Tex2DMSArray` capability, asset loaders
+   (`GEMetalTextureAsset.mm`, `GEMetalMeshAsset.mm`).
+3. **Upgrade existing failure-path `DEBUG_STREAM`s** in `GEMetal.mm` to typed
+   `DEBUG_ERROR`/`DEBUG_CRITICAL` per the §4.3 factory rows (pipeline compile →
+   `ERROR PIPELINE`, heap alloc → `ERROR MEMORY`, mesh-feature-unsupported →
+   `CRITICAL PIPELINE`, capture/raytracing notices → `INFO GENERAL`).
+4. **Pair `DEBUG_INFO` with the existing resource Create/Destroy tracker
+   emits** (buffer, texture, native/texture render targets) and the make*
+   factory success paths → the §4 "structured event + human line" pairing.
+5. **Init/device**: Metal-not-supported (`GEMetal.mm:1051`) → `CRITICAL GENERAL`.
+
+#### Hardening pass (2026-06-17) — `metalRequire` → `metalRequireOrReturn`
+
+The encoding guard started as `metalRequire(ok, domain, what)`, which reported
++ asserted but *fell through* on violation — faithful to the asserts it
+replaced, but in a release build (asserts compiled out) several encoder
+methods then dereference a null pipeline-state / encoder one line later
+(`dispatchThreadgroups` → `computePipelineState->…`, `setComputeConstants`,
+`drawMeshTasks`, the render/compute binds, the `startRenderPass` color
+attachment). So a contract violation that should be a clean no-op was instead
+a release crash. Converted the guard to the macro `metalRequireOrReturn` (a
+macro, not a function, because only a macro can `return` from the caller): on
+violation it emits `DEBUG_CRITICAL`, trips the debug `assert`, then **returns
+from the void encoder method**. The `assert((ok) && "…")` form (not
+`assert(false)`) keeps the failed predicate in the debug message *and* dodges
+`-Wunreachable-code` on the injected `return`. All 44 encoding call sites use
+it; the only non-crash behaviour delta is `set*Constants` with `offset != 0`,
+which now skips-and-reports instead of silently applying the block at offset 0
+(an improvement). Library builds clean.
+
+**Adjacent crash still open (new validation, not this pass):** the guards key
+on pass/encoder state (`cp != nil`, `rp && cp == nil`), which catches the
+common "outside a pass" case where the pipeline state is null alongside. But
+binding/drawing/dispatching *inside* a pass yet *before* `setRenderPipelineState`
+/ `setComputePipelineState` leaves `renderPipelineState` / `computePipelineState`
+null and still dereferences it (e.g. `dispatchThreadgroups` with a live `cp`
+but no bound PSO). Closing that needs a *new* `metalRequireOrReturn(
+computePipelineState != nullptr, …)` / `renderPipelineState != nullptr` guard at
+those sites — new validation logic, so it belongs with the deferred
+descriptor-validation work, not this logging/hardening pass.
+
+**Deferred (stated, not silent):** extending `ResourceTracking::EventType`
+with `RenderPassBegin`/`RenderPassEnd`/`Copy`/`Map`/`Unmap`/`DrawableAcquire`/
+fence events. That is a shared `common/GEResourceTracker.{h,cpp}` schema change
+touching all three backends' dump formatters; §4.4 change 3 explicitly counsels
+against schema churn for now. The diagnostic value lives in the `DEBUG_TRACE`
+text, which this pass adds; the structured-event extension is its own
+cross-backend task. `MetalTEContext.mm`'s internal shader-compile `NSLog` is
+also left as-is — it is the tessellation engine's internal context, not the
+public OmegaGTE resource/command/pipeline API surface §4 targets.
+
+**Also deferred — *new* descriptor validation.** This pass migrated every
+*existing* spec/contract check's reporting to the typed macros, but did NOT
+add descriptor-validation that the §4.3 table imagines where no check exists
+today (e.g. `makeBuffer` zero-size / bad-alignment, `makeSamplerState`
+anisotropy-range, `makeTexture` mip/array-count-out-of-range). Those are an
+input-validation feature (writing the validity logic), distinct from a logging
+migration, and adding them speculatively risks false-positive CRITICALs on
+valid edge cases. The hooks are ready (`DEBUG_CRITICAL(RESOURCE/…)`); the
+validity predicates are the follow-up.
+
+D3D12/Vulkan remain unbuilt on this host; their §4.3 backfill is still owed.
 
 ## 4. Engine-side API logging
 

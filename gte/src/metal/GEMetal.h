@@ -8,18 +8,10 @@
 #if defined(TARGET_METAL) && defined(__OBJC__)
 @protocol MTLBuffer;
 @protocol MTLFence;
-
-/// NSLog gated on the debug-layer flag — Metal-side counterpart to
-/// DEBUG_STREAM. Use for per-frame / lifecycle diagnostics that should
-/// stay silent unless GTEInitOptions::debugLayer resolved on. Raw NSLog
-/// is still appropriate for fatal-init failures the user must see even
-/// without debug enabled.
-#define GTE_NSLOG(...)                                                         \
-    do {                                                                       \
-        if (::OmegaGTE::isDebugLayerEnabled()) {                               \
-            NSLog(__VA_ARGS__);                                                \
-        }                                                                      \
-    } while (0)
+// GTE_NSLOG retired (Debug-Layer-Plan §4.3): the Metal command-queue logging
+// now goes through the typed DEBUG_TRACE/DEBUG_INFO/DEBUG_ERROR/DEBUG_CRITICAL
+// macros in omegaGTE/GE.h, which gate on the same debug-layer flag (and add
+// level + domain filtering). Use those instead of NSLog for engine logging.
 #endif
 
 _NAMESPACE_BEGIN_

@@ -2,6 +2,7 @@
 #include "omegaGTE/GEMesh.h"
 #include "omegaGTE/GETextureAsset.h"
 #include "omegaGTE/GTEShader.h"
+#include "GEMetal.h"
 #include "../common/MeshParser.h"
 
 #import <Metal/Metal.h>
@@ -127,22 +128,22 @@ public:
 
     bool load(const std::string & path, const LoadOptions & options) override {
         if (engine == nullptr) {
-            std::cerr << "[GEMeshAsset/Metal] error: no engine bound." << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "no engine bound.");
             return false;
         }
         if ((options.desiredDescriptor.attributes & GEMeshAttrPosition) == 0) {
-            std::cerr << "[GEMeshAsset/Metal] error: desired descriptor must include Position." << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "desired descriptor must include Position.");
             return false;
         }
         if (options.desiredDescriptor.indexType != GEMeshIndexType::None) {
-            std::cerr << "[GEMeshAsset/Metal] error: indexed output not supported in Phase 3 v1." << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "indexed output not supported in Phase 3 v1.");
             return false;
         }
 
         const uint32_t attrs = options.desiredDescriptor.attributes;
         const size_t stride = geMeshStrideFor(attrs);
         if (stride == 0) {
-            std::cerr << "[GEMeshAsset/Metal] error: empty vertex layout." << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "empty vertex layout.");
             return false;
         }
 
@@ -152,8 +153,7 @@ public:
         if (lowerExt(path) == "fbx") {
             MeshParser::ParsedMesh parsed;
             if (!MeshParser::parseMesh(path, options.desiredDescriptor, parsed)) {
-                std::cerr << "[GEMeshAsset/Metal] error: FBX parse failed: "
-                          << path << std::endl;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "FBX parse failed: " << path);
                 return false;
             }
             return buildFromPacked(parsed.packed, stride, parsed.baseColorTexturePath, options);
@@ -162,15 +162,14 @@ public:
         @autoreleasepool {
             id<MTLDevice> device = (__bridge id<MTLDevice>)engine->underlyingNativeDevice();
             if (device == nil) {
-                std::cerr << "[GEMeshAsset/Metal] error: native device is nil." << std::endl;
+                DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "native device is nil.");
                 return false;
             }
 
             NSString *nsPath = [[NSString alloc] initWithUTF8String:path.c_str()];
             NSURL *url = [NSURL fileURLWithPath:nsPath];
             if (![[NSFileManager defaultManager] fileExistsAtPath:nsPath]) {
-                std::cerr << "[GEMeshAsset/Metal] error: file not found: "
-                          << path << std::endl;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "file not found: " << path);
                 return false;
             }
 
@@ -181,8 +180,7 @@ public:
                                            vertexDescriptor:nil
                                             bufferAllocator:nil];
             if (asset == nil) {
-                std::cerr << "[GEMeshAsset/Metal] error: MDLAsset failed to load: "
-                          << path << std::endl;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "MDLAsset failed to load: " << path);
                 return false;
             }
 
@@ -214,20 +212,20 @@ public:
                 MDLVertexAttributeData *aC   = attrData(mesh, MDLVertexAttributeColor);
 
                 if (aPos == nil) {
-                    std::cerr << "[GEMeshAsset/Metal] warning: MDLMesh has no Position; skipped." << std::endl;
+                    DEBUG_INFO(DEBUG_DOMAIN_ASSET, "MDLMesh has no Position; skipped.");
                     continue;
                 }
                 if ((attrs & (GEMeshAttrUV2 | GEMeshAttrUV3 | GEMeshAttrNormal | GEMeshAttrColor)) != 0
                     && aUV == nil && aN == nil && aC == nil && !warnedAttachment) {
-                    std::cerr << "[GEMeshAsset/Metal] warning: source mesh missing some "
-                                 "requested attributes; missing components are written as zeros." << std::endl;
+                    DEBUG_INFO(DEBUG_DOMAIN_ASSET, "source mesh missing some "
+                               "requested attributes; missing components are written as zeros.");
                     warnedAttachment = true;
                 }
 
                 NSArray<MDLSubmesh *> *submeshes = mesh.submeshes;
                 for (MDLSubmesh *sub in submeshes) {
                     if (sub.geometryType != MDLGeometryTypeTriangles) {
-                        std::cerr << "[GEMeshAsset/Metal] warning: non-triangle submesh skipped." << std::endl;
+                        DEBUG_INFO(DEBUG_DOMAIN_ASSET, "non-triangle submesh skipped.");
                         continue;
                     }
                     if (baseColorPath.empty()) {
@@ -307,7 +305,7 @@ private:
                          const LoadOptions &options) {
         const unsigned vertexCount = (unsigned)(packed.size() * sizeof(float) / stride);
         if (vertexCount == 0) {
-            std::cerr << "[GEMeshAsset/Metal] error: no triangles produced." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "no triangles produced.");
             return false;
         }
 
@@ -322,12 +320,12 @@ private:
         bdesc.opts = Shared;
         SharedHandle<GEBuffer> vbuf = engine->makeBuffer(bdesc);
         if (!vbuf) {
-            std::cerr << "[GEMeshAsset/Metal] error: makeBuffer failed." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "makeBuffer failed.");
             return false;
         }
         id<MTLBuffer> mtlBuf = (__bridge id<MTLBuffer>)vbuf->native();
         if (mtlBuf == nil) {
-            std::cerr << "[GEMeshAsset/Metal] error: native buffer is nil." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "native buffer is nil.");
             return false;
         }
         std::memcpy(mtlBuf.contents, packed.data(), packed.size() * sizeof(float));
@@ -352,12 +350,13 @@ private:
                 }
                 loadedTextures.push_back(texAsset);
             } else {
-                std::cerr << "[GEMeshAsset/Metal] warning: base-color texture '"
-                          << baseColorPath << "' failed to load." << std::endl;
+                DEBUG_INFO(DEBUG_DOMAIN_ASSET, "base-color texture '"
+                           << baseColorPath << "' failed to load.");
             }
         }
 
         loadedMesh = m;
+        DEBUG_INFO(DEBUG_DOMAIN_ASSET, "Mesh asset loaded: vertexCount=" << vertexCount);
         return true;
     }
 };

@@ -18,6 +18,7 @@ presentQueue_(presentQueue),colorFormat_(colorFormat),drawableSize([metalLayer d
             float(drawableSize.width),
             float(drawableSize.height),
             static_cast<float>(metalLayer.contentsScale));
+    DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "NativeRenderTarget created: id=" << traceResourceId << " " << drawableSize.width << "x" << drawableSize.height);
 };
 
 GEMetalNativeRenderTarget::~GEMetalNativeRenderTarget(){
@@ -30,6 +31,7 @@ GEMetalNativeRenderTarget::~GEMetalNativeRenderTarget(){
             drawableSize.width,
             drawableSize.height,
             static_cast<float>(metalLayer.contentsScale));
+    DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "NativeRenderTarget destroyed: id=" << traceResourceId);
     if(currentDrawable.handle() != nullptr){
         [NSOBJECT_OBJC_BRIDGE(id,currentDrawable.handle()) release];
     }
@@ -48,6 +50,10 @@ void GEMetalNativeRenderTarget::acquireDrawable(){
     id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
     if(drawable != nil){
         currentDrawable = NSObjectHandle{NSOBJECT_CPP_BRIDGE [drawable retain]};
+        DEBUG_TRACE(DEBUG_DOMAIN_RENDERTGT, "Drawable acquired: rt=" << traceResourceId);
+    }
+    else {
+        DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "acquireDrawable: layer returned no drawable (surface lost or no free drawable)");
     }
 }
 
@@ -94,6 +100,7 @@ GEMetalTextureRenderTarget::GEMetalTextureRenderTarget(SharedHandle<GETexture> &
             "TextureRenderTarget",
             traceResourceId,
             nativeTexture);
+    DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "TextureRenderTarget created: id=" << traceResourceId);
 };
 
 GEMetalTextureRenderTarget::~GEMetalTextureRenderTarget(){
@@ -104,6 +111,7 @@ GEMetalTextureRenderTarget::~GEMetalTextureRenderTarget(){
             "TextureRenderTarget",
             traceResourceId,
             nativeTexture);
+    DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "TextureRenderTarget destroyed: id=" << traceResourceId);
 }
 
 SharedHandle<GETexture> GEMetalTextureRenderTarget::underlyingTexture() {

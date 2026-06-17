@@ -258,8 +258,10 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 traceResourceId,
                 metalBuffer.handle(),
                 static_cast<float>(NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer.handle()).length));
+        DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Buffer created: id=" << traceResourceId
+                   << " size=" << (size_t)NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer.handle()).length);
     };
-    
+
     size_t GEMetalBuffer::size(){
         metalBuffer.assertExists();
         return NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer.handle()).length;
@@ -277,6 +279,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 traceResourceId,
                 metalBuffer.handle(),
                 static_cast<float>(NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer.handle()).length));
+        DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Buffer destroyed: id=" << traceResourceId);
     };
 
 
@@ -1010,11 +1013,13 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         SharedHandle<GTEShader> _loadShaderFromDesc(omegasl_shader *shaderDesc,bool runtime) override {
             NSSmartPtr library;
             NSString *str = [[NSString alloc] initWithUTF8String:shaderDesc->name];
-            NSLog(@"Loading Function %@",str);
+            DEBUG_TRACE(DEBUG_DOMAIN_SHADER, "Loading shader function: " << shaderDesc->name);
             if(runtime){
                 /// Field `data` is an id<MTLLibrary>
                 if(shaderDesc->data == nullptr){
-                    NSLog(@"Failed to load runtime shader function %@: no compiled library payload.",str);
+                    // Caller supplied a runtime shader with no compiled payload.
+                    DEBUG_CRITICAL(DEBUG_DOMAIN_SHADER,
+                        "Runtime shader '" << shaderDesc->name << "' has no compiled library payload");
                     return nullptr;
                 }
                 library = NSObjectHandle {shaderDesc->data};
@@ -1027,12 +1032,16 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
             }
             if(library.handle() == nullptr){
-                NSLog(@"Failed to create Metal library for function %@",str);
+                // Engine/driver-side: the Metal library failed to build.
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER,
+                    "Failed to create Metal library for shader '" << shaderDesc->name << "'");
                 return nullptr;
             }
             NSSmartPtr func = NSObjectHandle {NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLLibrary>,library.handle()) newFunctionWithName:str] };
             if(func.handle() == nullptr){
-                NSLog(@"Failed to load Metal function %@",str);
+                // Caller asked for a function name not present in the library.
+                DEBUG_CRITICAL(DEBUG_DOMAIN_SHADER,
+                    "Shader function '" << shaderDesc->name << "' not found in library");
                 return nullptr;
             }
 
@@ -1048,7 +1057,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
         GEMetalEngine(SharedHandle<GTEDevice> & __device){
             __strong id<MTLDevice> device = ((GTEMetalDevice *)__device.get())->device;
             if(device == nil){
-                NSLog(@"Metal is not supported on this device! Exiting...");
+                DEBUG_CRITICAL(DEBUG_DOMAIN_GENERAL, "Init: Metal is not supported on this device; exiting");
                 exit(1);
             }
 
@@ -1062,7 +1071,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             // GTEInitOptions::captureOnInit for the toggle.
             maybeStartGpuCapture(device);
 
-            DEBUG_STREAM("GEMetalEngine Successfully Created");
+            DEBUG_INFO(DEBUG_DOMAIN_GENERAL, "Init: GEMetalEngine created");
 
         };
 
@@ -1078,7 +1087,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
         SharedHandle<GEBuffer> createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes) override {
             if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
-                DEBUG_STREAM("Raytracing not supported on this device");
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "Raytracing not supported on this device");
                 return nullptr;
             }
             auto buffer = std::dynamic_pointer_cast<GEMetalBuffer>(makeBuffer({BufferDescriptor::Upload,sizeof(MTLAxisAlignedBoundingBox) * boxes.size(),sizeof(MTLAxisAlignedBoundingBox)}));
@@ -1096,13 +1105,14 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
         SharedHandle<GEAccelerationStruct> allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc) override {
             if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
-                DEBUG_STREAM("Raytracing not supported on this device");
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "Raytracing not supported on this device");
                 return nullptr;
             }
             MTLPrimitiveAccelerationStructureDescriptor *d = [[MTLPrimitiveAccelerationStructureDescriptor alloc]init];
             auto sizes = [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) accelerationStructureSizesWithDescriptor:d];
             NSSmartPtr handle = NSObjectHandle{NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newAccelerationStructureWithSize:sizes.accelerationStructureSize]};
             auto buffer = std::dynamic_pointer_cast<GEMetalBuffer>(makeBuffer({BufferDescriptor::GPUOnly,sizes.buildScratchBufferSize}));
+            DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Acceleration structure created");
             return (SharedHandle<GEAccelerationStruct>)new GEMetalAccelerationStruct (handle,buffer);
         }
 
@@ -1161,15 +1171,17 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             NSSmartPtr pipelineState =  NSObjectHandle{NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newComputePipelineStateWithDescriptor:pipelineDescriptor options:MTLPipelineOptionNone reflection:nil error:&error]};
 
             if(pipelineState.handle() == nil){
-                DEBUG_STREAM("Failed to Create Compute Pipeline State");
+                DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeComputePipelineState: driver failed to create compute pipeline state");
                 exit(1);
             };
 
+            DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Compute pipeline created");
             return std::shared_ptr<GEComputePipelineState>(new GEMetalComputePipelineState(desc.computeFunc,pipelineState));
         };
         SharedHandle<GEFence> makeFence() override{
              NSSmartPtr fence = NSObjectHandle {NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newEvent]};
 
+             DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Fence created");
              return SharedHandle<GEFence>(new GEMetalFence(fence));
         };
         SharedHandle<GEHeap> makeHeap(const HeapDescriptor &desc) override{
@@ -1180,9 +1192,10 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
             id<MTLHeap> mtlHeap = [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newHeapWithDescriptor:heapDesc];
             if(mtlHeap == nil){
-                DEBUG_STREAM("Failed to create MTLHeap");
+                DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "makeHeap: failed to allocate MTLHeap (size=" << desc.len << ")");
                 return nullptr;
             }
+            DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Heap created: size=" << desc.len);
 
             class GEMetalHeap : public GEHeap {
                 NSSmartPtr metalDevice;
@@ -1261,7 +1274,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                             if (@available(macOS 11.0, iOS 14.0, *)) {
                                 textureType = MTLTextureType2DMultisampleArray;
                             } else {
-                                std::cerr << "[OmegaGTE] Tex2DMSArray requires macOS 11+ / iOS 14+" << std::endl;
+                                DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "makeTexture: Tex2DMSArray requires macOS 11+ / iOS 14+");
                                 return nullptr;
                             }
                             mtlArrayLength = arrayLayers;
@@ -1331,11 +1344,11 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             // swap-chain/drawable intersection so a backend mismatch is
             // surfaced rather than silently substituted.
             if(!isPortableNativeRenderTargetFormat(desc.pixelFormat)){
-                std::cerr << "[GEMetalEngine_Internal] makeNativeRenderTarget: requested pixelFormat is not in the portable drawable set; rejecting." << std::endl;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: requested pixelFormat is not in the portable drawable set; rejecting");
                 return nullptr;
             }
             if(desc.metalLayer == nil){
-                std::cerr << "[GEMetalEngine_Internal] makeNativeRenderTarget: descriptor.metalLayer is nil" << std::endl;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: descriptor.metalLayer is nil");
                 return nullptr;
             }
             // Phase 2 of the CommandQueue-Typed-Pool plan: present
@@ -1345,7 +1358,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             // refuse rather than silently allowing presents that the
             // user said they didn't want this queue to do.
             if(presentQueue != nullptr && presentQueue->type() == GECommandQueueDesc::Type::Transfer){
-                std::cerr << "[GEMetalEngine_Internal] makeNativeRenderTarget: presentQueue is a Transfer queue; cannot present from a transfer-typed queue" << std::endl;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: presentQueue is a Transfer queue; cannot present from a transfer-typed queue");
                 return nullptr;
             }
             metalDevice.assertExists();
@@ -1496,10 +1509,11 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             NSSmartPtr pipelineState =  NSObjectHandle{NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newRenderPipelineStateWithDescriptor:pipelineDesc error:&error]};
             
             if(pipelineState.handle() == nil || error.code < 0){
-                DEBUG_STREAM("Failed to Create Render Pipeline State");
+                DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeRenderPipelineState: driver failed to create render pipeline state ('" << desc.name << "')");
                 exit(1);
             };
-            
+
+            DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Render pipeline created: '" << desc.name << "'");
             return std::shared_ptr<GERenderPipelineState>(new GEMetalRenderPipelineState(desc.vertexFunc,desc.fragmentFunc,pipelineState,hasDepthStencilState,depthStencilState,rasterizerState));
         };
 
@@ -1513,7 +1527,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             /// matching `newRenderPipelineStateWithMeshDescriptor:` call.
             /// Feature-gate first, same idiom as the raytracing pattern.
             if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
-                DEBUG_STREAM("makeMeshPipelineState: device does not advertise "
+                DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: device does not advertise "
                              "GTEDEVICE_FEATURE_MESH_SHADER ('" << desc.name << "')");
                 return nullptr;
             }
@@ -1533,7 +1547,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 if (!_checkPipelineShader(desc.amplificationFunc, "amplification", desc.name)) {
                     return nullptr;
                 }
-                DEBUG_STREAM("makeMeshPipelineState: amplification stage is Phase 5 "
+                DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: amplification stage is Phase 5 "
                              "(payload + object/mesh-grid machinery pending); "
                              "passing `amplificationFunc` is not supported yet ('"
                              << desc.name << "')");
@@ -1674,13 +1688,14 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                                                                                                                                                  reflection:nil
                                                                                                                                                       error:&error];
             if(pipelineStateRaw == nil){
-                DEBUG_STREAM("makeMeshPipelineState: newRenderPipelineStateWithMeshDescriptor failed ('"
+                DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: newRenderPipelineStateWithMeshDescriptor failed ('"
                              << desc.name << "'): "
                              << (error ? [[error localizedDescription] UTF8String] : "(no NSError)"));
                 return nullptr;
             }
             NSSmartPtr pipelineState = NSObjectHandle{NSOBJECT_CPP_BRIDGE pipelineStateRaw};
 
+            DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Mesh pipeline created: '" << desc.name << "'");
             return std::shared_ptr<GERenderPipelineState>(
                 new GEMetalRenderPipelineState(desc.meshFunc, desc.fragmentFunc,
                                                pipelineState, hasDepthStencilState,
@@ -1693,7 +1708,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                 return nullptr;
             }
             if (!ensureBlitFullscreenVs()) {
-                DEBUG_STREAM("makeBlitPipelineState: ensureBlitFullscreenVs failed");
+                DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeBlitPipelineState: ensureBlitFullscreenVs failed");
                 return nullptr;
             }
             RenderPipelineDescriptor rpDesc{};
@@ -1707,9 +1722,10 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             rpDesc.triangleFillMode = TriangleFillMode::Solid;
             auto rp = makeRenderPipelineState(rpDesc);
             if (!rp) {
-                DEBUG_STREAM("makeBlitPipelineState: underlying makeRenderPipelineState failed");
+                DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeBlitPipelineState: underlying makeRenderPipelineState failed");
                 return nullptr;
             }
+            DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Blit pipeline created");
             return SharedHandle<GEBlitPipelineState>(new GEMetalBlitPipelineState(rp));
         };
 
@@ -1797,7 +1813,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                     if (@available(macOS 11.0, iOS 14.0, *)) {
                         textureType = MTLTextureType2DMultisampleArray;
                     } else {
-                        std::cerr << "[OmegaGTE] Tex2DMSArray requires macOS 11+ / iOS 14+" << std::endl;
+                        DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "makeTexture: Tex2DMSArray requires macOS 11+ / iOS 14+");
                         return nullptr;
                     }
                     mtlArrayLength = arrayLayers;
@@ -1952,6 +1968,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
             NSSmartPtr samplerState = NSObjectHandle{NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newSamplerStateWithDescriptor:mtlSamplerDescriptor]};
 
+            DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Sampler state created");
             return SharedHandle<GESamplerState>(new GEMetalSamplerState {samplerState});
         }
     };
@@ -1980,28 +1997,28 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         try {
             auto compiler = OmegaSLCompiler::Create(gteDevice);
             if (!compiler) {
-                DEBUG_STREAM("ensureBlitFullscreenVs: OmegaSLCompiler::Create returned null");
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureBlitFullscreenVs: OmegaSLCompiler::Create returned null");
                 return false;
             }
             OmegaCommon::String src(kBlitFullscreenVsOmegaSL_Metal);
             auto source = OmegaSLCompiler::Source::fromString(src);
             blitFullscreenVsLib = compiler->compile({source});
             if (!blitFullscreenVsLib || blitFullscreenVsLib->header.entry_count == 0) {
-                DEBUG_STREAM("ensureBlitFullscreenVs: OmegaSL compile produced no shaders");
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureBlitFullscreenVs: OmegaSL compile produced no shaders");
                 blitFullscreenVsLib.reset();
                 return false;
             }
             omegasl_shader *shaderDesc = &blitFullscreenVsLib->shaders[0];
             auto shader = _loadShaderFromDesc(shaderDesc, true);
             if (!shader) {
-                DEBUG_STREAM("ensureBlitFullscreenVs: _loadShaderFromDesc failed");
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureBlitFullscreenVs: _loadShaderFromDesc failed");
                 blitFullscreenVsLib.reset();
                 return false;
             }
             blitFullscreenVs = shader;
             return true;
         } catch (const std::exception &e) {
-            DEBUG_STREAM("ensureBlitFullscreenVs: exception: " << e.what());
+            DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureBlitFullscreenVs: exception: " << e.what());
             blitFullscreenVs.reset();
             blitFullscreenVsLib.reset();
             return false;
