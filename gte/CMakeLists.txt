@@ -150,6 +150,20 @@ option(OMEGAGTE_DEBUG "Enable the OmegaGTE debug layer by default" ${OMEGAGTE_DE
 if(OMEGAGTE_DEBUG)
     target_compile_definitions("OmegaGTE" PUBLIC OMEGAGTE_DEBUG)
 endif()
+
+# OMEGAGTE_ENABLE_BUCKETED_RENDER_TARGET: build-time default for the Phase F-G
+# bucketed (power-of-two) swap-chain / render-target sizing on the D3D12 and
+# Vulkan backends. Opt-in (default OFF) while the path is still under test, so
+# the default build keeps the legacy exact-size behavior. When ON, the backends
+# bucket by default. The OMEGAWTK_BUCKETED_SWAPCHAIN env var still overrides the
+# build default at runtime in either direction (1/on/true vs 0/off/false), so a
+# single binary can A/B the path without rebuilding. PRIVATE: the macro is read
+# only inside the backend .cpp files, never in a public header.
+option(OMEGAGTE_ENABLE_BUCKETED_RENDER_TARGET "Default the D3D12/Vulkan bucketed render-target sizing ON (under test; env var OMEGAWTK_BUCKETED_SWAPCHAIN still overrides)" OFF)
+if(OMEGAGTE_ENABLE_BUCKETED_RENDER_TARGET)
+    target_compile_definitions("OmegaGTE" PRIVATE OMEGAGTE_BUCKETED_RENDER_TARGET_ENABLED=1)
+endif()
+
 target_link_libraries("OmegaGTE" PUBLIC "OmegaCommonCore")
 
 # Shared mesh-parser dependencies (src/common/MeshParser.cpp) — compiled on

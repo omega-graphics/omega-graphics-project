@@ -28,14 +28,22 @@ namespace {
         return b;
     }
 
-    // OMEGAWTK_BUCKETED_SWAPCHAIN gates the Phase F-G bucketed swap-chain path.
-    // Default ON for D3D12 (developer decision); set the env var to
-    // "0" / "off" / "false" to fall back to the legacy exact-size
-    // ResizeBuffers-per-tick behavior. Read once.
+    // OMEGAWTK_BUCKETED_SWAPCHAIN gates the Phase F-G bucketed swap-chain path
+    // at runtime. The build-time default is the CMake option
+    // OMEGAGTE_ENABLE_BUCKETED_RENDER_TARGET (OFF while the path is under test,
+    // so the default build uses the legacy exact-size ResizeBuffers-per-tick
+    // behavior). The env var overrides the build default in either direction
+    // ("1"/"on"/"true" to enable, "0"/"off"/"false" to disable), so one binary
+    // can A/B the path. Read once.
     bool bucketedSwapChainEnabled(){
         static const bool enabled = [](){
+#ifdef OMEGAGTE_BUCKETED_RENDER_TARGET_ENABLED
+            constexpr bool kBuildDefault = true;
+#else
+            constexpr bool kBuildDefault = false;
+#endif
             const char * v = std::getenv("OMEGAWTK_BUCKETED_SWAPCHAIN");
-            if(v == nullptr) return true;   // default ON
+            if(v == nullptr) return kBuildDefault;
             return !(std::strcmp(v, "0") == 0 ||
                      std::strcmp(v, "off") == 0 ||
                      std::strcmp(v, "false") == 0);

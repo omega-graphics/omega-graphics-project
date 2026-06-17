@@ -1631,32 +1631,16 @@ void GED3D12CommandBuffer::setViewports(std::vector<GEViewport> viewports) {
     auto viewports_it = viewports.begin();
     while (viewports_it != viewports.end()) {
         GEViewport &viewport = *viewports_it;
-        GRect rect{};
-        if (currentTarget.native != nullptr) {
-            auto res_desc = currentTarget.native->renderTargets[currentTarget.native->frameIndex]->GetDesc();
-            rect.pos.x = 0;
-            rect.pos.y = 0;
-            // Phase F-G: the render area is the LIVE source region — SetSourceSize
-            // presents [0,0,sourceWidth_,sourceHeight_], not the (possibly larger,
-            // bucketed) back-buffer. The Y-flip below MUST use the source height,
-            // or content bottom-aligns against the larger buffer and lands outside
-            // the presented region. sourceWidth_/Height_ track the exact buffer
-            // size in the legacy (non-bucketed) path, so this is a no-op there.
-            rect.w = (float)(currentTarget.native->sourceWidth_ > 0
-                                 ? currentTarget.native->sourceWidth_
-                                 : (unsigned)res_desc.Width);
-            rect.h = (float)(currentTarget.native->sourceHeight_ > 0
-                                 ? currentTarget.native->sourceHeight_
-                                 : (unsigned)res_desc.Height);
-        } else {
-            rect.pos.x = 0;
-            rect.pos.y = 0;
-            auto res_desc = currentTarget.texture->texture->resource->GetDesc();
-            rect.w = (float)res_desc.Width;
-            rect.h = (float)res_desc.Height;
-        }
-
-        CD3DX12_VIEWPORT v(viewport.x, rect.h - (viewport.y + viewport.height), viewport.width, viewport.height,
+        // GEViewport is top-left origin — the Phase-7 convention shared with
+        // the Metal and Vulkan backends and the emit-side `1 - 2y/h` NDC math
+        // — so viewport.y maps straight to D3D12_VIEWPORT.TopLeftY with no
+        // Y-flip. The prior `targetHeight - (y + height)` flip was a remnant of
+        // WTK's old bottom-left coordinate space: it happened to be a no-op for
+        // full-target viewports (y==0, height==targetHeight) but mis-placed any
+        // offset viewport — most visibly the content-cache capture pass, whose
+        // window-sized viewport is offset onto a smaller texture target, which
+        // pushed the captured geometry off the texture entirely on D3D12.
+        CD3DX12_VIEWPORT v(viewport.x, viewport.y, viewport.width, viewport.height,
                            viewport.nearDepth, viewport.farDepth);
         d3d12_viewports.push_back(v);
         ++viewports_it;
@@ -1670,35 +1654,13 @@ void GED3D12CommandBuffer::setScissorRects(std::vector<GEScissorRect> scissorRec
     while (rects_it != scissorRects.end()) {
         GEScissorRect &_rect = *rects_it;
 
-        GRect rect{};
-        if (currentTarget.native != nullptr) {
-
-            auto res_desc = currentTarget.native->renderTargets[currentTarget.native->frameIndex]->GetDesc();
-            rect.pos.x = 0;
-            rect.pos.y = 0;
-            // Phase F-G: the render area is the LIVE source region — SetSourceSize
-            // presents [0,0,sourceWidth_,sourceHeight_], not the (possibly larger,
-            // bucketed) back-buffer. The Y-flip below MUST use the source height,
-            // or content bottom-aligns against the larger buffer and lands outside
-            // the presented region. sourceWidth_/Height_ track the exact buffer
-            // size in the legacy (non-bucketed) path, so this is a no-op there.
-            rect.w = (float)(currentTarget.native->sourceWidth_ > 0
-                                 ? currentTarget.native->sourceWidth_
-                                 : (unsigned)res_desc.Width);
-            rect.h = (float)(currentTarget.native->sourceHeight_ > 0
-                                 ? currentTarget.native->sourceHeight_
-                                 : (unsigned)res_desc.Height);
-        } else {
-            rect.pos.x = 0;
-            rect.pos.y = 0;
-            auto res_desc = currentTarget.texture->texture->resource->GetDesc();
-            rect.w = (float)res_desc.Width;
-            rect.h = (float)res_desc.Height;
-        }
-
-        float top_coord = rect.h - (_rect.height + _rect.y);
-
-        CD3DX12_RECT r((LONG)_rect.x, (LONG)top_coord, LONG(_rect.width + _rect.x), LONG(top_coord + _rect.height));
+        // Top-left origin (Phase-7 convention): _rect.y is the top edge, so it
+        // maps straight to D3D12_RECT.top with no Y-flip — same reasoning as
+        // setViewports above. The prior `targetHeight - (height + y)` flip was
+        // the same bottom-left-coordinate-space remnant: harmless for
+        // full-target rects, wrong for the offset capture pass.
+        CD3DX12_RECT r((LONG)_rect.x, (LONG)_rect.y,
+                       LONG(_rect.x + _rect.width), LONG(_rect.y + _rect.height));
         d3d12_rects.push_back(r);
         ++rects_it;
     };

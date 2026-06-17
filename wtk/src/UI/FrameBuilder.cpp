@@ -198,6 +198,14 @@ void FrameBuilder::endFrame(){
     }
     if(willDeposit){
         impl->windowSurface->deposit(compositeFrame_);
+        // G.3.2 first-paint warmup guard: the first frame actually put on
+        // screen is a full direct render (cache skipped); the content
+        // cache engages from the next presented frame. Flip the flag only
+        // on a real deposit and only AFTER every `buildFrame` for this
+        // frame has run, so all slices composing this frame took the same
+        // (direct) branch — preventing the direct+cache double-composite
+        // that a per-`buildFrame` counter produced on the initial frame.
+        firstFramePresented_ = true;
     }
     compositeFrame_.reset();
 
@@ -506,14 +514,23 @@ void FrameBuilder::buildFrame(View & root){
         // capture on the backend); a hover that changes one View
         // re-captures only that View while siblings blit from cache.
         //
-        // First-paint warmup guard: on a brand-new window the native
-        // swap chain hasn't settled, and the begin/scratch/resume
+        // First-presented-frame warmup guard: on a brand-new window the
+        // native swap chain hasn't settled, and the begin/scratch/resume
         // render-pass cycle the capture uses can produce a blank first
-        // frame on Metal. Skip the cache on paint #1 (direct render),
-        // engage from paint #2. Implemented by passing an
-        // unsatisfiable min-size on the first paint so no View is
-        // eligible — i.e. fall back to the plain `paintSubtree`.
-        if(paintsCompleted_ >= 1){
+        // frame on Metal. Skip the cache until the first frame is on
+        // screen (direct render), engage from the second presented frame.
+        //
+        // The gate is per-PRESENTED-frame (`firstFramePresented_`), NOT
+        // per-`buildFrame`: a single presented frame can be composed of
+        // several `buildFrame` calls (root + overlays in `paintDirty`,
+        // and the startup initial-paint + realize/resize repaint), all
+        // accumulated into one `compositeFrame_`. A per-`buildFrame`
+        // counter flipped mid-frame and let that frame carry both a direct
+        // slice and an all-miss cache slice of the same content — a full
+        // opaque double-composite on the initial frame. `endFrame` flips
+        // this flag only after a real deposit, so every slice in the first
+        // presented frame takes the same (direct) branch here.
+        if(firstFramePresented_){
             const auto & cfg = Composition::ContentCacheConfig::inst();
             // §G.5.4: a live resize drag tags each cached View's marker so the
             // backend can stretch its prior texture instead of re-rendering.
@@ -536,11 +553,10 @@ void FrameBuilder::buildFrame(View & root){
 
     clearDirtySubtree(root);
 
-    // G.3.2 first-paint guard counter. Bumped after each Paint pass so
-    // the cache eligibility check can use `paintsCompleted_ >= 1` to
-    // skip the cache on the very first paint per window (see
-    // `paintsCompleted_` doc in FrameBuilder.h).
-    ++paintsCompleted_;
+    // G.3.2 first-paint guard: the warmup flag (`firstFramePresented_`)
+    // is flipped in `endFrame` on a real deposit — NOT here — so the gate
+    // is per-presented-frame, not per-`buildFrame`. See the eligibility
+    // check above and the `firstFramePresented_` doc in FrameBuilder.h.
 }
 
 // Phase 4.7.5: `submitView`, the offset-accumulator API

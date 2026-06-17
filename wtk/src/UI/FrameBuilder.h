@@ -73,17 +73,26 @@ class FrameBuilder {
     // pacer's frame index.
     std::uint32_t frameIndex_ = 0;
 
-    // UIView-Render-Redesign Phase G.3.2: counts completed Paint passes
-    // on this window's FrameBuilder. Used by the cache-eligibility check
-    // to skip the cache on the first paint per window. On a brand-new
-    // window the native swap chain hasn't settled yet, and the
-    // begin-native-pass / begin-scratch-pass / resume-native-pass cycle
-    // that the cache uses produces a blank first frame on Metal
-    // (the native pass A between `beginFrame` and the scratch transition
-    // has no draws on it, and Metal does not flush its Clear action
-    // into a present-visible state before the resume's LoadPreserve
-    // reads it). The cache kicks in from the second paint onwards.
-    std::uint32_t paintsCompleted_ = 0;
+    // UIView-Render-Redesign Phase G.3.2 (rev. 2026-06-17): whether this
+    // window has presented its first composite frame yet. Used by the
+    // cache-eligibility check to skip the cache until the first frame is
+    // on screen. On a brand-new window the native swap chain hasn't
+    // settled yet, and the begin-native-pass / begin-scratch-pass /
+    // resume-native-pass cycle that the cache uses produces a blank first
+    // frame on Metal (the native pass A between `beginFrame` and the
+    // scratch transition has no draws on it, and Metal does not flush its
+    // Clear action into a present-visible state before the resume's
+    // LoadPreserve reads it). The cache kicks in from the second
+    // presented frame onwards.
+    //
+    // This is a per-PRESENTED-frame flag, not a per-`buildFrame` counter.
+    // `endFrame` sets it (only on a real deposit) AFTER every `buildFrame`
+    // for that frame has run, so every slice composing one presented frame
+    // sees the same value. A per-`buildFrame` counter flipped mid-frame and
+    // let one presented frame carry both a direct slice and an all-miss
+    // cache slice of the same content — a full opaque double-composite on
+    // the initial frame (see the G.3.2-rev2 follow-up in the plan doc).
+    bool firstFramePresented_ = false;
 
     // Tier B / B3: the active lifecycle phase. UIView::update() flips
     // this around each of its ordered sub-phases via ScopedPhase; B5

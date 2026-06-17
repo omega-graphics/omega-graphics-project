@@ -2591,6 +2591,22 @@ triangulator.
   (this host). D3D12 (`D3D12_VIEWPORT.TopLeftX`) and Vulkan
   (`VkViewport.x`) both accept negative origins per spec, but this
   is **unverified on hardware** — needs CI on those backends.
+  - **D3D12 resolved [2026-06-17].** The capture pass's window-sized,
+    negatively-offset viewport rendered nothing to the cache texture on
+    D3D12 (SDF/bitmap/text mis-placed off the small texture; vector
+    paths set their own full-window viewport so were unaffected; worked
+    direct-to-swapchain because the bug was a no-op for full-target
+    viewports). Root cause: `GED3D12CommandBuffer::setViewports` /
+    `setScissorRects` applied a `targetHeight - (y + height)` Y-flip — a
+    remnant of WTK's old **bottom-left** coordinate space — while the
+    Phase-7 convention (and the Metal/Vulkan backends + the emit-side
+    `1 - 2y/h` NDC math) is **top-left**. Fix: D3D12 now maps `viewport.y`
+    / `scissor.y` straight through with no flip, matching Metal and
+    Vulkan. No-op for every full-target call site (native frame, blur
+    scratch, texture-space scissor); also corrects the dormant native
+    viewport-override path and removes the bucketed-back-buffer
+    source-height Y-reference fragility. Verification: dedicated GTE
+    offset-viewport-to-texture test + a focused WTK cache-capture test.
 - **Deferred eligibility:** `DrawOp::NativeContent` (plan rule #2).
   No cheap View-level flag exists today; scanning ops needs a side
   list (which earlier masked the contentVersion freeze bug, so it's
@@ -2619,6 +2635,36 @@ triangulator.
      pass).
 - The eligibility numbers above are env-tunable
   (`OMEGAWTK_CONTENT_CACHE_MIN_SIZE_PX` defaults to 64).
+
+**G.3.2-rev2 follow-up — first-paint warmup double-composite fix [DONE 2026-06-17]**
+
+*Bug.* The first-paint warmup guard in `FrameBuilder::buildFrame` gated on
+`paintsCompleted_`, a counter bumped once **per `buildFrame` call** (paint #1
+direct, paint #2+ cached). But `FrameBuilder` accumulates every `buildFrame`
+issued between one outermost `beginFrame`/`endFrame` into a single
+`compositeFrame_` (`WidgetTreeHost::paintDirty` issues one per root plus one
+per overlay; startup additionally straddles the initial `setRootWidget` paint
+and the realize/resize `forceFullRepaint`). When two `buildFrame` calls landed
+in one presented frame across the `paintsCompleted_` 0→1 boundary, that frame
+carried **two slices of the same content** — one painted directly
+(`paintSubtree`) and one captured-and-blitted (`paintSubtreeWithCache` over an
+all-miss cache) — both composited into the same cleared swap-chain buffer by
+`Compositor::renderCompositeFrame` (one `beginFrame`/`endFrame`, all slices).
+Visible as a **full opaque second copy at the same position on the initial
+frame**, on **all** backends (the logic is in backend-agnostic `OmegaWTK_UI`),
+clearing as soon as any later composite ran — every `buildFrame` then has
+`paintsCompleted_ ≥ 1`, so only the single cache slice is emitted.
+
+*Fix — make the guard per-**presented**-frame, not per-`buildFrame`.* Replace
+`std::uint32_t paintsCompleted_` with `bool firstFramePresented_`, read at the
+eligibility check (`firstFramePresented_` → cache path; else direct), and set
+it `true` in `endFrame` **only when a frame is actually deposited**
+(`willDeposit`). Because every `buildFrame` for a given frame runs before that
+frame's `endFrame`, all slices composing the first presented frame now take the
+*same* (direct) branch — no mid-frame 0→1 flip, no mixed direct+cache slices.
+The Metal "blank first frame" rationale the warmup guard exists for is
+preserved: the first actually-presented frame is still a full direct render,
+and the cache engages from the second presented frame onward.
 
 **G.3.3 — Phase F surgical follow-up: size-diff invalidation [DONE 2026-06-14, content-neutral marking]**
 

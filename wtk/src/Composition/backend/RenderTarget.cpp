@@ -811,10 +811,18 @@ void BackendRenderTargetContext::resetElementState() {
             return;
         }
 
-        // The composite waits on the scratch's fence so the compute writes
-        // have finished before sampling. beginDraw handles the
-        // outside-render-pass notify dance.
-        auto scope = frameRenderPass_.beginDraw(scratch.fence());
+        // The texture-wait on the scratch's fence (needed only when blur ran
+        // on its own queue) is registered by the caller's
+        // `resumeFrameAfterScratch(...)` BEFORE this composite — outside the
+        // render pass, on the same resumed frame CB this blit records into.
+        // So pass an empty fence here: re-passing it would drive `beginDraw`'s
+        // mid-frame restart (finish/notify/restart) a second time — a
+        // redundant empty pass split plus a duplicate wait on every blurred
+        // slice. (When blur did NOT run the caller passes no fence at all; the
+        // scratch render and this composite are ordered by same-queue
+        // submission, and `endScratchPass` never signals the fence anyway.)
+        SharedHandle<OmegaGTE::GEFence> noFence {};
+        auto scope = frameRenderPass_.beginDraw(noFence);
         if(scope.cb == nullptr){
             if(bufferPool() != nullptr){
                 bufferPool()->release(std::move(quadBuffer), quadBytes);
@@ -1654,9 +1662,13 @@ void BackendRenderTargetContext::resetElementState() {
 
         auto texture = std::move(captureTexture_);
         captureTarget_.reset();
-        // Keep `captureFence_` until the bitmap blit has been emitted —
-        // the blit's `emitBitmapPrimitive` consumes it as the
-        // texture-wait fence. The caller resets it after that.
+        // `resumeFrameAfterScratch(captureFence_)` above already registered
+        // the texture-wait on the resumed frame CB (outside the render pass)
+        // and started the pass, so the wait is in place before the composite
+        // blit records into that same CB. `captureFence_` is left set only so
+        // the EndCacheCapture site can reset it after the blit for symmetry;
+        // the blit itself passes an empty fence (re-passing it would split
+        // the pass a second time — see the EndCacheCapture composite site).
         return texture;
     }
 
@@ -1750,7 +1762,14 @@ void BackendRenderTargetContext::resetElementState() {
         }
 
         // Resume the frame's render pass and composite the blurred scratch
-        // onto the swap chain at the slice's window position.
+        // onto the swap chain at the slice's window position. This resume is
+        // the SOLE owner of the texture-wait: when blur ran (on its own
+        // queue), wait on the scratch's fence so the compute writes finish
+        // before the composite samples it; when blur did NOT run, the scratch
+        // render and this composite are ordered by same-queue submission, so
+        // no fence is needed (and `endScratchPass` never signals it). The
+        // composite below draws into this same resumed CB and deliberately
+        // does NOT re-pass the fence (see `compositeScratchOntoFrame`).
         SharedHandle<OmegaGTE::GEFence> waitFence = blurApplied
                 ? scratch.fence()
                 : SharedHandle<OmegaGTE::GEFence>{};
@@ -2982,11 +3001,21 @@ void BackendRenderTargetContext::resetElementState() {
                 auto tint = OmegaGTE::FVec<4>::Create();
                 tint[0][0] = 1.f; tint[1][0] = 1.f;
                 tint[2][0] = 1.f; tint[3][0] = 1.f;
+                // The texture-wait was already registered by
+                // `endCacheTarget`'s `resumeFrameAfterScratch(captureFence_)`,
+                // which notified the freshly-acquired frame CB outside the
+                // render pass and started the pass. This blit records into
+                // that SAME frame CB, so the wait already gates its sampling
+                // of the captured texture. Passing the fence again here would
+                // make `beginDraw` finish/notify/restart the pass a second
+                // time — a redundant empty pass split and duplicate wait on
+                // every cache miss. Pass an empty fence so the blit just draws
+                // into the already-open, already-gated pass.
                 emitBitmapPrimitive(captureRect_,
                                     0.f, 0.f, 1.f, 1.f,
                                     tint,
                                     texture,
-                                    captureFence_,
+                                    SharedHandle<OmegaGTE::GEFence>{},
                                     insertedEntry);
 
                 captureFence_.reset();
