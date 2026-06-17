@@ -26,11 +26,39 @@ namespace OmegaWTK::Composition {
         }
     }
 
-    GlyphAtlas::GlyphAtlas(RasterizeFn rasterize)
-        : rasterize_(std::move(rasterize)) {
+    std::unordered_set<GlyphAtlas *> & GlyphAtlas::liveRegistry() {
+        static std::unordered_set<GlyphAtlas *> s;
+        return s;
     }
 
-    GlyphAtlas::~GlyphAtlas() = default;
+    std::mutex & GlyphAtlas::registryMutex() {
+        static std::mutex m;
+        return m;
+    }
+
+    GlyphAtlas::GlyphAtlas(RasterizeFn rasterize)
+        : rasterize_(std::move(rasterize)) {
+        std::lock_guard<std::mutex> lk(registryMutex());
+        liveRegistry().insert(this);
+    }
+
+    GlyphAtlas::~GlyphAtlas() {
+        std::lock_guard<std::mutex> lk(registryMutex());
+        liveRegistry().erase(this);
+    }
+
+    void GlyphAtlas::releaseAllTextures() {
+        std::lock_guard<std::mutex> lk(registryMutex());
+        for(auto * atlas : liveRegistry()) {
+            if(atlas != nullptr) {
+                // Drop the GPU texture while the GTE allocator is still alive.
+                // A null `texture_` is benign post-shutdown (no further
+                // `ensureGlyph`); `ensureTexture` would lazily re-make it if
+                // anything tried, which nothing does during teardown.
+                atlas->texture_.reset();
+            }
+        }
+    }
 
     void GlyphAtlas::setRasterizeFn(RasterizeFn fn) {
         rasterize_ = std::move(fn);

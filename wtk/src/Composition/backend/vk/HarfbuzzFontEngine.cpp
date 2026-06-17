@@ -972,6 +972,10 @@ namespace OmegaWTK::Composition {
     }
 
     void FontEngine::Destroy(){
+        // Free glyph-atlas GPU textures before engine teardown / OmegaGTE::Close
+        // — owned through Font, which app widgets keep alive past shutdown.
+        // See GlyphAtlas::releaseAllTextures.
+        GlyphAtlas::releaseAllTextures();
         delete instance;
         instance = nullptr;
     }

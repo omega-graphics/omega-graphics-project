@@ -148,15 +148,24 @@ namespace OmegaWTK::Composition {
         // error 924 ("render target resource has been freed") and the
         // nvidia driver eventually segfaults on; on Vulkan the same
         // race manifests as VVL VUID-vkCmdDraw-renderpass after a
-        // silent OUT_OF_DATE acquire on a stale swapchain. The GUI
-        // thread stashes the requested backing dims here; the worker
-        // thread drains them at the top of `beginFrame` (sole owner of
-        // frame lifecycle, and `resizeSwapChain`'s internal
-        // device-idle / commitToGPUAndWait safely drains the previous
-        // frame's submissions before releasing resources).
-        std::atomic<bool>     pendingSwapChainResize_ {false};
-        std::atomic<unsigned> pendingSwapChainW_      {0};
-        std::atomic<unsigned> pendingSwapChainH_      {0};
+        // silent OUT_OF_DATE acquire on a stale swapchain.
+        //
+        // The GUI thread stashes only the requested LOGICAL size here and
+        // does NOT touch `renderTargetSize_` / `backingWidth_/Height_`. The
+        // worker thread is the sole writer of those: at the top of
+        // `beginFrame` it applies the logical size, recomputes the backing
+        // extent, rebuilds the backing target, AND resizes the swap chain
+        // together. This is what keeps the frame viewport extent
+        // (`backingWidth_/Height_`, fed into `setViewports`) and the
+        // presented source region (`SetSourceSize` / `sourceWidth_/Height_`)
+        // on the same resize generation. Updating the backing dims eagerly on
+        // the GUI thread while deferring only the swap-chain resize let the
+        // two fall a generation apart during a drag, and the bucketed
+        // back-buffer's `DXGI_SCALING_STRETCH` magnified that into visibly
+        // stretched content.
+        std::atomic<bool>  pendingSwapChainResize_ {false};
+        std::atomic<float> pendingLogicalW_        {0.f};
+        std::atomic<float> pendingLogicalH_        {0.f};
         void applyPendingSwapChainResize();
 
         FrameRenderPass frameRenderPass_;

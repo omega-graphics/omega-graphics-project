@@ -1062,17 +1062,25 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
                     CD3DX12_CPU_DESCRIPTOR_HANDLE(resolveTexture->dsvDescHeap->GetCPUDescriptorHandleForHeapStart());
             }
 
-            D3D12_RESOURCE_STATES resource_state;
-            if (firstRenderPass) {
-                resource_state = D3D12_RESOURCE_STATE_PRESENT;
-            } else {
-                resource_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
-            }
+            // Resolve into the back buffer from its per-buffer tracked state
+            // (see the non-MSAA branch below): a presented frame can span
+            // several command buffers, so the per-command-buffer
+            // `firstRenderPass` flag is the wrong source of truth for the back
+            // buffer's current state. finishRenderPass records the post-resolve
+            // RENDER_TARGET state; present() flips it to PRESENT.
+            const auto frameIdx = nativeRenderTarget->frameIndex;
+            const D3D12_RESOURCE_STATES resource_state =
+                (frameIdx < nativeRenderTarget->renderTargetStates.size())
+                    ? nativeRenderTarget->renderTargetStates[frameIdx]
+                    : D3D12_RESOURCE_STATE_PRESENT;
 
             auto barrier =
-                CD3DX12_RESOURCE_BARRIER::Transition(nativeRenderTarget->renderTargets[nativeRenderTarget->frameIndex],
+                CD3DX12_RESOURCE_BARRIER::Transition(nativeRenderTarget->renderTargets[frameIdx],
                                                      resource_state, D3D12_RESOURCE_STATE_RESOLVE_DEST);
             commandList->ResourceBarrier(1, &barrier);
+            if (frameIdx < nativeRenderTarget->renderTargetStates.size()) {
+                nativeRenderTarget->renderTargetStates[frameIdx] = D3D12_RESOURCE_STATE_RESOLVE_DEST;
+            }
 
             auto dxgi_format = nativeRenderTarget->renderTargets[nativeRenderTarget->frameIndex]->GetDesc().Format;
             RECT rc;
@@ -1099,12 +1107,25 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
                     CD3DX12_CPU_DESCRIPTOR_HANDLE(nativeRenderTarget->dsvDescHeap->GetCPUDescriptorHandleForHeapStart(),
                                                   nativeRenderTarget->frameIndex, dsvDescSize);
             }
-            if (firstRenderPass) {
+            // Move the back buffer to RENDER_TARGET, gating on the state
+            // tracked per buffer on the native target rather than the
+            // per-command-buffer `firstRenderPass` flag. A presented frame can
+            // span several command buffers — the compositor suspends the frame
+            // for each content-cache capture / blur scratch pass and resumes it
+            // on a fresh buffer, each of which is `firstRenderPass`. Gating on
+            // that flag re-emitted PRESENT->RENDER_TARGET on the resumed buffer
+            // and tripped the D3D12 debug layer (back buffer already in
+            // RENDER_TARGET). The tracked state makes the transition idempotent;
+            // present() flips it back to PRESENT.
+            const auto frameIdx = nativeRenderTarget->frameIndex;
+            if (frameIdx < nativeRenderTarget->renderTargetStates.size() &&
+                nativeRenderTarget->renderTargetStates[frameIdx] != D3D12_RESOURCE_STATE_RENDER_TARGET) {
                 auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-                    nativeRenderTarget->renderTargets[nativeRenderTarget->frameIndex], D3D12_RESOURCE_STATE_PRESENT,
+                    nativeRenderTarget->renderTargets[frameIdx],
+                    nativeRenderTarget->renderTargetStates[frameIdx],
                     D3D12_RESOURCE_STATE_RENDER_TARGET);
-
                 commandList->ResourceBarrier(1, &barrier);
+                nativeRenderTarget->renderTargetStates[frameIdx] = D3D12_RESOURCE_STATE_RENDER_TARGET;
             }
         }
         currentTarget.native = nativeRenderTarget;
@@ -1325,10 +1346,6 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
         }
 
         commandList->BeginRenderPass(attachmentCount, rt_descs, &ds_desc, D3D12_RENDER_PASS_FLAG_ALLOW_UAV_WRITES);
-    }
-
-    if (firstRenderPass) {
-        firstRenderPass = false;
     }
 };
 
@@ -1814,8 +1831,48 @@ void GED3D12CommandBuffer::finishRenderPass() {
         auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(target, D3D12_RESOURCE_STATE_RESOLVE_DEST,
                                                             D3D12_RESOURCE_STATE_RENDER_TARGET);
         commandList->ResourceBarrier(1, &barrier);
+        // The resolve barrier above leaves the resource in RENDER_TARGET but
+        // did not update the tracked state; record it so the sampleable
+        // transition below (texture) or present() (native) uses the correct
+        // StateBefore.
+        if (currentTarget.texture != nullptr && currentTarget.texture->texture != nullptr) {
+            currentTarget.texture->texture->currentState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        } else if (currentTarget.native != nullptr) {
+            const auto frameIdx = currentTarget.native->frameIndex;
+            if (frameIdx < currentTarget.native->renderTargetStates.size()) {
+                currentTarget.native->renderTargetStates[frameIdx] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            }
+        }
     }
 
+    // D3D12 parity with the Vulkan backend: GEVulkanCommandBuffer::startRenderPass
+    // sets a texture render target's render-pass finalLayout to
+    // SHADER_READ_ONLY_OPTIMAL, so the pass itself leaves the texture sampleable.
+    // D3D12 render passes do not auto-transition resource state, so without this
+    // a texture render target stays in RENDER_TARGET and the next pass's bind
+    // path — which cannot emit a barrier between Begin/EndRenderPass — hits
+    // reportTransitionInsideRenderPass and asserts. A texture render target
+    // exists to be sampled by a later pass (the compositor's content-cache blit
+    // and blur composite), so move it to the shader-resource state now that
+    // EndRenderPass has run and we are outside the pass scope. A re-render goes
+    // back through startRenderPass, which transitions it to RENDER_TARGET again.
+    // The native swapchain target (currentTarget.native) is excluded: it reaches
+    // PRESENT via present().
+    if (currentTarget.texture != nullptr && currentTarget.texture->texture != nullptr) {
+        auto *targetTexture = currentTarget.texture->texture.get();
+        const D3D12_RESOURCE_STATES sampleState =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        if (targetTexture->currentState != sampleState) {
+            auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                targetTexture->resource.Get(), targetTexture->currentState, sampleState);
+            commandList->ResourceBarrier(1, &barrier);
+            targetTexture->currentState = sampleState;
+        }
+    }
+
+    // Per-pass flag: clear it so a pooled command buffer that previously ran an
+    // MSAA-resolve pass does not misclassify a later non-resolve pass.
+    multisampleResolvePass = false;
     currentTarget.texture = nullptr;
     currentTarget.native = nullptr;
     currentRenderPipeline = nullptr;
@@ -2247,7 +2304,6 @@ void GED3D12CommandQueue::waitForFence(SharedHandle<GEFence> &fence, std::uint64
 
 void GED3D12CommandBuffer::reset() {
     closed = false;
-    firstRenderPass = true;
     currentResourceDescHeap = nullptr;
     currentSamplerDescHeap = nullptr;
     commandList->Reset(commandAllocator.Get(), nullptr);

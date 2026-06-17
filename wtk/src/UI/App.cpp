@@ -8,6 +8,7 @@
 #include "omegaWTK/UI/ThemeVars.h"
 
 #include "omega-common/assets.h"
+#include "omega-common/unicode.h"
 
 #include "omegaWTK/Native/NativeApp.h"
 
@@ -69,7 +70,27 @@ AppInst::AppInst(void *data):ptr(Native::make_native_app(data)),windowManager(st
     Composition::InitializeEngine();
     OMEGAWTK_DEBUG("Application Startup")
     Composition::FontEngine::Create();
-    
+
+    // Warm ICU's one-time lazy init on the main thread, at startup,
+    // before any window paints. The cross-platform TextLayoutEngine
+    // builds an OmegaCommon::BreakIterator on its first text layout,
+    // and that first call is what triggers ICU's lazy global setup:
+    // the default-locale cache, the line-break data load, and the
+    // construction of ICU's internal std::mutex objects. Done lazily,
+    // that all happens inside the first painted frame.
+    //
+    // Under PIX (and graphics debuggers generally), a GPU capture
+    // suspends the app's threads; the very first ICU init then
+    // deadlocks acquiring a low-level lock (CRT heap / loader / the
+    // capture DLL's own) whose owner PIX has frozen. Forcing the init
+    // here, single-threaded before the capturable render loop, leaves
+    // every per-frame BreakIterator locking an already-constructed,
+    // uncontended mutex — nothing for a capture to wedge against.
+    // (Mirrors the Linux backend's FcInit() warm-up in
+    // HarfBuzzFontEngine's ctor.) A no-op temporary; Type::Line still
+    // runs Locale::getDefault() + createLineInstance() for empty text.
+    { OmegaCommon::BreakIterator warm(OmegaCommon::BreakIterator::Type::Line,
+                                      OmegaCommon::UniString{}); }
 };
 
 int AppInst::start(){

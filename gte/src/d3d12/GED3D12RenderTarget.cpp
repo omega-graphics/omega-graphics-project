@@ -74,6 +74,8 @@ _NAMESPACE_BEGIN_
             sourceWidth_  = static_cast<unsigned>(d.Width);
             sourceHeight_ = static_cast<unsigned>(d.Height);
         }
+        // Back buffers come out of IDXGISwapChain::GetBuffer in COMMON/PRESENT.
+        renderTargetStates.assign(this->renderTargets.size(), D3D12_RESOURCE_STATE_PRESENT);
         traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
         ResourceTracking::Tracker::instance().emit(
                 ResourceTracking::EventType::Create,
@@ -146,6 +148,8 @@ _NAMESPACE_BEGIN_
             rtvCpuHandle.Offset(1, rtvDescSize);
             renderTargets.push_back(backBuffer.Detach());
         }
+        // Freshly (re)allocated back buffers are in COMMON/PRESENT again.
+        renderTargetStates.assign(renderTargets.size(), D3D12_RESOURCE_STATE_PRESENT);
         frameIndex = swapChain->GetCurrentBackBufferIndex();
         return true;
     }
@@ -252,9 +256,16 @@ _NAMESPACE_BEGIN_
                 commandList = static_cast<ID3D12GraphicsCommandList6 *>(barrierCb->native());
             }
         }
-        if(commandList != nullptr){
-            auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex],D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PRESENT);
+        if(commandList != nullptr && frameIndex < renderTargetStates.size()
+           && renderTargetStates[frameIndex] != D3D12_RESOURCE_STATE_PRESENT){
+            // Transition from the tracked state (RENDER_TARGET after a frame's
+            // first startRenderPass). Skipping when already PRESENT avoids a
+            // spurious PRESENT->PRESENT barrier on a frame that never drew to
+            // the back buffer.
+            auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                renderTargets[frameIndex], renderTargetStates[frameIndex], D3D12_RESOURCE_STATE_PRESENT);
             commandList->ResourceBarrier(1,&barrier);
+            renderTargetStates[frameIndex] = D3D12_RESOURCE_STATE_PRESENT;
         }
         if(barrierCb != nullptr){
             queue->submitCommandBuffer(barrierCb);

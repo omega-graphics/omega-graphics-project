@@ -22,7 +22,9 @@
 
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace OmegaWTK::Composition {
@@ -151,7 +153,27 @@ namespace OmegaWTK::Composition {
         /// `ensureGlyph` (chunk 2 onward).
         const SharedHandle<OmegaGTE::GETexture> & texture() const { return texture_; }
 
+        /// Teardown hook (called from `FontEngine::Destroy`, which runs
+        /// before `OmegaGTE::Close`): drop the GPU backing texture of every
+        /// live atlas. The atlas texture is allocated via
+        /// `gte.graphicsEngine->makeTexture` and owned through `Font`, which
+        /// application code routinely keeps alive past engine teardown (e.g.
+        /// widget `shared_ptr`s held until `AppInst::start()` returns). That
+        /// outlives the D3D12MA / Vulkan / Metal allocator and tripped the
+        /// "allocations not freed before block destruction" assert. Releasing
+        /// the GETexture here frees the GPU allocation while the GTE allocator
+        /// is still alive; the `Font`/`GlyphAtlas` C++ objects may then die
+        /// later with a null `texture_` (no further `ensureGlyph` happens
+        /// during shutdown). Registration is automatic in the ctor/dtor.
+        static void releaseAllTextures();
+
     private:
+        /// Process-wide registry of live atlases, for `releaseAllTextures`.
+        /// Function-local statics dodge static-init-order issues; the mutex
+        /// guards against the (stopped-at-teardown, but defensive) font thread.
+        static std::unordered_set<GlyphAtlas *> & liveRegistry();
+        static std::mutex & registryMutex();
+
         /// Lazy-allocate the 1024×1024 atlas texture on first use.
         /// Returns false (and leaves `texture_` null) if allocation
         /// fails; the caller treats this the same as a packing failure.

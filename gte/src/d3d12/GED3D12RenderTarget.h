@@ -42,6 +42,18 @@ _NAMESPACE_BEGIN_
         unsigned frameIndex;
         std::vector<ID3D12Resource *> renderTargets;
 
+        // Per-back-buffer resource state, parallel to `renderTargets`. The
+        // back-buffer's PRESENT<->RENDER_TARGET transition cannot be gated on
+        // the per-command-buffer `firstRenderPass` flag: a single presented
+        // frame can span several command buffers (the compositor suspends the
+        // frame for every content-cache capture / blur scratch pass and resumes
+        // it on a fresh buffer, each of which is `firstRenderPass`). Tracking
+        // the actual state here — set in startRenderPass, cleared in present()
+        // — makes the transition idempotent across those buffers. Assumes the
+        // non-MSAA native swap chain that makeNativeRenderTarget builds. Seeded
+        // to PRESENT (== COMMON, the GetBuffer initial state).
+        std::vector<D3D12_RESOURCE_STATES> renderTargetStates;
+
         // Phase F-G: the LIVE (window) backing dims the OS presents — the
         // [0,0,sourceWidth_,sourceHeight_] source region set via
         // IDXGISwapChain2::SetSourceSize. The back-buffer itself is allocated

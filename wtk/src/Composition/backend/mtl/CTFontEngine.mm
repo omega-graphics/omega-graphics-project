@@ -978,7 +978,13 @@ FontEngine * FontEngine::inst(){
         instance = new CTFontEngine();
      };
       void FontEngine::Destroy(){
+         // Free glyph-atlas GPU textures before engine teardown / OmegaGTE::Close
+         // — owned through Font, which app widgets keep alive past shutdown.
+         // See GlyphAtlas::releaseAllTextures. (Metal's allocator is forgiving,
+         // but the contract is the same across backends.)
+         GlyphAtlas::releaseAllTextures();
          delete instance;
+         instance = nullptr;
      };
 
 };

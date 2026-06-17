@@ -1736,7 +1736,16 @@ namespace OmegaWTK::Composition {
 
 
         void FontEngine::Destroy(){
+            // Free glyph-atlas GPU textures before the engine + D3D12MA
+            // allocator are torn down (OmegaGTE::Close runs right after this in
+            // AppInst::doShutdown). The atlas textures are owned through Font,
+            // which application widget shared_ptrs keep alive past shutdown, so
+            // deleting the engine impl alone leaks them — and the leak tripped
+            // the D3D12MA "allocations not freed before block destruction"
+            // assert. See GlyphAtlas::releaseAllTextures.
+            GlyphAtlas::releaseAllTextures();
             delete instance;
+            instance = nullptr;
         };
 
     }

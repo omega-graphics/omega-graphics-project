@@ -31,7 +31,6 @@ _NAMESPACE_BEGIN_
         bool inComputePass;
         bool inBlitPass;
         bool inRenderPass;
-        bool firstRenderPass = true;
         bool closed = false;
         std::uint64_t traceResourceId = 0;
 

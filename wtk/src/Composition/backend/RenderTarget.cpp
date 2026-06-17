@@ -380,39 +380,55 @@ BackendRenderTargetContext::~BackendRenderTargetContext(){
 }
 
     void BackendRenderTargetContext::setRenderTargetSize(Composition::Rect &rect) {
-        const unsigned oldW = backingWidth_;
-        const unsigned oldH = backingHeight_;
-        renderTargetSize_ = sanitizeRenderRect(rect, renderTargetSize_, renderScale_);
-        const unsigned newW = toBackingDimension(renderTargetSize_.w, renderScale_);
-        const unsigned newH = toBackingDimension(renderTargetSize_.h, renderScale_);
-        if(oldW != newW || oldH != newH){
-            rebuildBackingTarget();
-            // Defer the native swap-chain resize to the worker thread's
-            // `beginFrame`. The actual resize releases backing resources
-            // (DXGI ID3D12Resources / VkImage handles) that the worker is
-            // mid-recording against; the worker is sole owner of frame
-            // lifecycle so it can safely device-idle / commitToGPUAndWait
-            // before tearing them down. On Metal, `GENativeRenderTarget::
-            // resizeSwapChain` is a no-op default (CAMetalLayer auto-resizes
-            // off the layer bounds), so the drain runs but does nothing.
-            pendingSwapChainW_.store(newW, std::memory_order_relaxed);
-            pendingSwapChainH_.store(newH, std::memory_order_relaxed);
-            pendingSwapChainResize_.store(true, std::memory_order_release);
-        }
+        // GUI thread: stash only the requested logical size and arm the
+        // pending flag. The worker thread (`applyPendingSwapChainResize`, at
+        // the top of `beginFrame`) is the sole writer of `renderTargetSize_`
+        // and the backing dims, and applies them together with the swap-chain
+        // resize so the frame viewport and the presented source region never
+        // fall a resize generation apart. (See the header note on
+        // `pendingSwapChainResize_`.) Touching the backing dims here would
+        // reintroduce that divergence — visible as bucketed-stretch during a
+        // drag on D3D12. The size is sanitized on the worker at apply time.
+        pendingLogicalW_.store(rect.w, std::memory_order_relaxed);
+        pendingLogicalH_.store(rect.h, std::memory_order_relaxed);
+        pendingSwapChainResize_.store(true, std::memory_order_release);
     }
 
     void BackendRenderTargetContext::applyPendingSwapChainResize(){
         // Acquire-load pairs with the release-store in setRenderTargetSize
-        // so the new W/H reads below see the values the GUI thread wrote
-        // before flipping the flag. `exchange` clears the pending bit
-        // so a concurrent setRenderTargetSize that fires *after* this
-        // load can re-arm a fresh request for the next frame.
+        // so the logical-size reads below see the values the GUI thread wrote
+        // before flipping the flag. `exchange` clears the pending bit so a
+        // concurrent setRenderTargetSize that fires *after* this load can
+        // re-arm a fresh request for the next frame (rapid drag ticks coalesce
+        // to the latest requested size).
         if(!pendingSwapChainResize_.exchange(false, std::memory_order_acq_rel)){
             return;
         }
-        const unsigned w = pendingSwapChainW_.load(std::memory_order_relaxed);
-        const unsigned h = pendingSwapChainH_.load(std::memory_order_relaxed);
-        resizeSwapChain(w, h);
+        const float reqW = pendingLogicalW_.load(std::memory_order_relaxed);
+        const float reqH = pendingLogicalH_.load(std::memory_order_relaxed);
+
+        // Worker is the sole writer of renderTargetSize_ / backing dims. Apply
+        // the requested logical size, recompute + rebuild the backing target,
+        // and resize the swap chain — all here, together — so the frame
+        // viewport extent (backingWidth_/Height_) and the presented source
+        // region (sourceWidth_/Height_, set inside resizeSwapChain) stay on the
+        // same generation. The render-target-size pos is always the origin.
+        const unsigned oldW = backingWidth_;
+        const unsigned oldH = backingHeight_;
+        Composition::Rect req{Composition::Point2D{0.f, 0.f}, reqW, reqH};
+        renderTargetSize_ = sanitizeRenderRect(req, renderTargetSize_, renderScale_);
+        const unsigned newW = toBackingDimension(renderTargetSize_.w, renderScale_);
+        const unsigned newH = toBackingDimension(renderTargetSize_.h, renderScale_);
+        if(oldW == newW && oldH == newH){
+            // Sanitized request collapsed to the current backing size — no GPU
+            // work, but renderTargetSize_ above is refreshed in case the
+            // logical size changed without crossing a backing-pixel boundary.
+            return;
+        }
+        rebuildBackingTarget();   // sets backingWidth_/Height_ + invalidates tessellation
+        // resizeSwapChain leaves sourceWidth_/Height_ == the backing dims, so
+        // the SetSourceSize'd present region matches what the frame rasterizes.
+        resizeSwapChain(newW, newH);
     }
 
     void BackendRenderTargetContext::applySetClip(const Core::Optional<Composition::Rect> & clipRect){
