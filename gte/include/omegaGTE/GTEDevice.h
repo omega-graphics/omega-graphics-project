@@ -217,6 +217,20 @@ struct OMEGAGTE_EXPORT GTEInitOptions {
     /// default @c omegagte-<pid>-<timestamp>.gputrace is written to the
     /// working directory. Ignored unless @c captureOnInit is set.
     const char *captureFilePath = nullptr;
+
+    /// Threshold for *gated* emits (@c Error / @c Info / @c Trace): a line
+    /// emits only when its level is at or above this floor. @c Critical
+    /// bypasses the floor entirely (see @ref DebugLogLevel), so setting
+    /// @c logLevel to @c Critical is rejected at @c Init() and clamped up to
+    /// @c Error — a @c Critical floor would silence Error/Info/Trace while
+    /// changing nothing about Critical. Default @c Info.
+    DebugLogLevel logLevel = DebugLogLevel::Info;
+
+    /// Bitmask of @c DEBUG_DOMAIN_* bits allowed to emit. Applies to gated
+    /// *and* Critical lines — masking a domain out suppresses even its
+    /// Critical reports, which is the one documented "I know this surface
+    /// misuses the API, hide it" knob. Default @c ~0u (all domains).
+    uint32_t logDomains = ~0u;
 };
 
 /**

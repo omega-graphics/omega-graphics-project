@@ -59,6 +59,45 @@ _NAMESPACE_BEGIN_
 /// Resolved at @c Init() time from @c GTEInitOptions::debugLayer.
 OMEGAGTE_EXPORT bool isDebugLayerEnabled();
 
+/// @brief Severity of a debug-log line (Debug-Layer-Plan §4.2 / §4.5).
+/// @paragraph Ordinals run low → high so a single integer threshold
+/// (@c GTEInitOptions::logLevel) reads as "this severity is at least as
+/// important as the configured floor". @c Critical is the sentinel that
+/// bypasses the master debug-layer gate — it accuses the *caller* of a
+/// documented API-contract violation and must surface even in a release
+/// build with the layer off. See @ref debugLogShouldEmit.
+enum class DebugLogLevel : uint8_t {
+    Critical = 0, ///< Caller broke an API contract. Always emits (domain mask aside).
+    Error    = 1, ///< Engine-side operation failed. Gated on the debug layer.
+    Info     = 2, ///< Significant lifecycle event. Gated.
+    Trace    = 3, ///< Per-call internal detail. Gated.
+};
+
+/// @brief Subsystem bits for the @c DEBUG_LOG domain mask (Debug-Layer-Plan
+/// §4.2). Each log line carries exactly one bit; @c GTEInitOptions::logDomains
+/// is the mask of bits allowed to emit (applies to gated *and* Critical lines).
+constexpr uint32_t DEBUG_DOMAIN_GENERAL   = 1u << 0;
+constexpr uint32_t DEBUG_DOMAIN_RESOURCE  = 1u << 1;
+constexpr uint32_t DEBUG_DOMAIN_PIPELINE  = 1u << 2;
+constexpr uint32_t DEBUG_DOMAIN_SHADER    = 1u << 3;
+constexpr uint32_t DEBUG_DOMAIN_QUEUE     = 1u << 4;
+constexpr uint32_t DEBUG_DOMAIN_RENDERTGT = 1u << 5;
+constexpr uint32_t DEBUG_DOMAIN_MEMORY    = 1u << 6;
+constexpr uint32_t DEBUG_DOMAIN_ASSET     = 1u << 7;
+
+/// @brief Single hot-path predicate behind every @c DEBUG_LOG macro.
+/// @paragraph Returns true when a line at @p level in @p domain should be
+/// written. The domain mask gates both classes. @c Critical then emits
+/// unconditionally; every other level additionally requires the debug layer
+/// to be on and @p level to be at or above the configured @c logLevel floor.
+/// Defined in OmegaGTE.cpp; declared here so the macros can gate without
+/// pulling the full options header.
+OMEGAGTE_EXPORT bool debugLogShouldEmit(DebugLogLevel level, uint32_t domain);
+/// @brief Symbolic name for a level (@c "CRITICAL", @c "ERROR", …).
+OMEGAGTE_EXPORT const char *debugLogLevelName(DebugLogLevel level);
+/// @brief Symbolic name for a single @c DEBUG_DOMAIN_* bit (@c "RESOURCE", …).
+OMEGAGTE_EXPORT const char *debugLogDomainName(uint32_t singleBit);
+
 _NAMESPACE_END_
 
 #define DEBUG_STREAM(message)                                                  \
@@ -68,6 +107,34 @@ _NAMESPACE_END_
                       << std::endl;                                            \
         }                                                                      \
     } while (0)
+
+/// Typed companion to @c DEBUG_STREAM (Debug-Layer-Plan §4.5). Tags every
+/// line with a level and a domain and gates through the one predicate
+/// @c debugLogShouldEmit, so the same call site is filtered by
+/// @c GTEInitOptions::logLevel / @c logDomains. Line shape matches
+/// @c DEBUG_STREAM with a "<LEVEL> <DOMAIN> " infix so existing
+/// `[<Engine>_Internal] - ` log scrapers keep working. @p message is a
+/// streaming expression, e.g. `"id=" << id`.
+#define DEBUG_LOG(level, domain, message)                                      \
+    do {                                                                       \
+        if (::OmegaGTE::debugLogShouldEmit((level), (domain))) {               \
+            std::cout << "[" << DEBUG_ENGINE_PREFIX << "] - "                  \
+                      << ::OmegaGTE::debugLogLevelName(level) << " "           \
+                      << ::OmegaGTE::debugLogDomainName(domain) << " "         \
+                      << message << std::endl;                                 \
+        }                                                                      \
+    } while (0)
+
+/// Caller-contract violation. Bypasses the master debug-layer gate (the
+/// domain mask still applies) — fires even in release with the layer off.
+#define DEBUG_CRITICAL(domain, message) DEBUG_LOG(::OmegaGTE::DebugLogLevel::Critical, domain, message)
+/// Engine-side failure. Gated on the debug layer + @c logLevel floor.
+#define DEBUG_ERROR(domain, message)    DEBUG_LOG(::OmegaGTE::DebugLogLevel::Error,    domain, message)
+/// Significant lifecycle event. Gated.
+#define DEBUG_INFO(domain, message)     DEBUG_LOG(::OmegaGTE::DebugLogLevel::Info,     domain, message)
+/// Per-call internal detail. Gated. Subject to the §4.1.5 hot-path rule —
+/// keep it at command-buffer boundaries, never inside the record loop.
+#define DEBUG_TRACE(domain, message)    DEBUG_LOG(::OmegaGTE::DebugLogLevel::Trace,    domain, message)
 
 _NAMESPACE_BEGIN_
 

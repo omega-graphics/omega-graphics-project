@@ -1629,7 +1629,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         auto & vertexFunc = desc.vertexFunc->internal;
         auto & fragmentFunc = desc.fragmentFunc->internal;
 
-        DEBUG_STREAM("Making D3D12RenderPipelineState");
+        // DEBUG_STREAM("Making D3D12RenderPipelineState");
 
         std::vector<D3D12_INPUT_ELEMENT_DESC> inputs;
 
@@ -1970,7 +1970,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         assert(fragmentDesc.type == OMEGASL_SHADER_FRAGMENT
                && "Fragment slot does not hold a fragment shader");
 
-        DEBUG_STREAM("Making D3D12 mesh-shader pipeline '" << desc.name << "'");
+        // DEBUG_STREAM("Making D3D12 mesh-shader pipeline '" << desc.name << "'");
 
         /// Root signature — reuse the existing OmegaSL-driven builder
         /// over {mesh, fragment}. Mesh shaders bind their resources
@@ -2358,7 +2358,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
     }
 
     SharedHandle<GETexture> GED3D12Engine::makeTexture(const TextureDescriptor &desc){
-         DEBUG_STREAM("Making D3D12Texture");
+        //  DEBUG_STREAM("Making D3D12Texture");
         HRESULT hr;
         D3D12_RESOURCE_DESC d3d12_desc {};
         D3D12_RESOURCE_STATES res_states = D3D12_RESOURCE_STATE_COMMON;
@@ -2843,7 +2843,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
     };
 
     SharedHandle<GEBuffer> GED3D12Engine::makeBuffer(const BufferDescriptor &desc){
-        DEBUG_STREAM("Making D3D12Buffer");
+        // DEBUG_STREAM("Making D3D12Buffer");
         HRESULT hr;
         ID3D12Resource *buffer;
         D3D12_HEAP_TYPE heap_type;

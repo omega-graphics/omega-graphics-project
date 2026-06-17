@@ -76,7 +76,17 @@ class Tracker {
 public:
     static Tracker & instance();
 
+    /// @brief Whether the tracker records events and prints its structured
+    /// lines. True when the @c OMEGAGTE_RESOURCE_TRACE env override is set OR
+    /// the debug layer is on — Debug-Layer-Plan §4.4 folds the two formerly
+    /// independent switches into one.
     bool enabled() const;
+    /// @brief Whether the text/tracking layer is live for @p domain: @ref
+    /// enabled() is true AND @p domain is not masked out by
+    /// @c GTEInitOptions::logDomains. Lets a call site skip building an Event
+    /// for a suppressed domain without duplicating the mask logic. @p domain
+    /// is a single @c DEBUG_DOMAIN_* bit. (Debug-Layer-Plan §4.4 change 2.)
+    bool enabledForDomain(std::uint32_t domain) const;
     std::uint64_t nextResourceId();
 
     void emit(const Event & event);

@@ -16,6 +16,15 @@
 #include <unordered_map>
 #include <utility>
 
+namespace OmegaGTE {
+    // Defined in OmegaGTE.cpp. Forward-declared here rather than including
+    // GE.h, which would drag the backend headers (windows.h / Metal / Vulkan)
+    // into this common translation unit. Lets the tracker's gate fold into
+    // the single debug-layer master switch (Debug-Layer-Plan §4.4).
+    bool isDebugLayerEnabled();
+    bool debugLogDomainEnabled(std::uint32_t domain);
+}
+
 namespace OmegaGTE::ResourceTracking {
 
 namespace {
@@ -260,7 +269,14 @@ Tracker &Tracker::instance(){
 Tracker::Tracker() = default;
 
 bool Tracker::enabled() const{
-    return state().traceEnabled;
+    // §4.4 change 1: the OMEGAGTE_RESOURCE_TRACE env override stays a one-way
+    // "force on" for post-mortem repro, and the debug-layer master switch now
+    // turns the tracker on too — one toggle governs both surfaces.
+    return state().traceEnabled || OmegaGTE::isDebugLayerEnabled();
+}
+
+bool Tracker::enabledForDomain(std::uint32_t domain) const{
+    return enabled() && OmegaGTE::debugLogDomainEnabled(domain);
 }
 
 std::uint64_t Tracker::nextResourceId(){
@@ -268,6 +284,16 @@ std::uint64_t Tracker::nextResourceId(){
 }
 
 void Tracker::emit(const Event &event){
+    // §4.4: one master switch governs the whole tracker. When neither the
+    // OMEGAGTE_RESOURCE_TRACE override nor the debug layer is on, the tracker
+    // is fully inert — no ring-buffer growth, no churn metrics, no print — so
+    // a release build pays nothing. Previously the ring-buffer push ran
+    // unconditionally and only the print was gated; folding it under the gate
+    // is what makes §4.7's "recentEvents() empty when disabled" hold.
+    if(!enabled()){
+        return;
+    }
+
     Event normalized = event;
     if(normalized.timestampMs == 0){
         normalized.timestampMs = nowMs();
@@ -280,10 +306,6 @@ void Tracker::emit(const Event &event){
     }
 
     pushRecentEventAndMetrics(normalized);
-
-    if(!enabled()){
-        return;
-    }
 
     std::ostringstream ss;
     ss << "[OmegaGTEResource] ts=" << normalized.timestampMs

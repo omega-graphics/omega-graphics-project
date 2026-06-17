@@ -1566,7 +1566,7 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> 
     currentResourceDescHeap = parentQueue->engine->resourceDescriptorAllocator->heap(effHandle.block);
     rebindDescriptorHeaps();
     unsigned rootParam = getRootParameterIndexOfResource(index, currentRenderPipeline->fragmentShader->internal);
-    DEBUG_STREAM("Root Param With Texture:" << rootParam);
+    // DEBUG_STREAM("Root Param With Texture:" << rootParam);
     commandList->SetGraphicsRootDescriptorTable(rootParam, effHandle.gpu);
 };
 

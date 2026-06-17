@@ -267,14 +267,38 @@ by need.
    `DEBUG_CRITICAL` (L50, L1302) / `DEBUG_ERROR(QUEUE, …)` (L1170).
 8. §4 engine-side API logging — independent of §2/§3 and can
    interleave with them. Order within §4:
-   a. §4.4 first — unify `ResourceTracking::Tracker` gating with
-      `isDebugLayerEnabled()` (Critical-bypass carve-out included).
-      One small PR; zero behavior change for existing tracker users
-      since the env var stays as override.
-   b. §4.5/§4.6 — add `DEBUG_LOG`/`DEBUG_CRITICAL`/`DEBUG_INFO`/…
-      macros and the `GTEInitOptions::logLevel`/`logDomains` fields.
-      `DEBUG_CRITICAL` ships in this PR so subsequent §4.3 backfill
-      can use it immediately.
+   a. ✅ §4.4 (2026-06-17, code landed — native build owed to user).
+      Unified `ResourceTracking::Tracker` gating with
+      `isDebugLayerEnabled()`: `Tracker::enabled()` now returns
+      `traceEnabled || isDebugLayerEnabled()` and the env var stays a
+      one-way override (`GEResourceTracker.cpp`). Added
+      `Tracker::enabledForDomain(uint32_t)` (change 2) backed by the
+      internal `OmegaGTE::debugLogDomainEnabled` accessor so the domain
+      mask has one source of truth. Change 3 (no `Event` schema change)
+      needed no work. `isDebugLayerEnabled`/`debugLogDomainEnabled` are
+      forward-declared in the tracker TU instead of including `GE.h`, so
+      the common TU stays free of the backend headers. One extra step
+      not in change 1's bullet but required by §4.7: `emit()` used to
+      push to the ring buffer + accumulate churn metrics
+      *unconditionally* (only the print was gated), so a disabled build
+      still grew the buffer. Moved the `if(!enabled()) return;` to the
+      top of `emit()` so the tracker is fully inert when disabled —
+      this is what makes §4.7's "recentEvents() empty when disabled"
+      true. No consumer reads `recentEvents`/`churnMetricsSnapshot`/
+      `dump*` programmatically (grep-verified across gte/wtk/kreate), so
+      gating the push is behavior-safe; the only observable delta is
+      that churn metrics no longer accrue with the layer off and no env
+      override set.
+   b. ✅ §4.5/§4.6 (2026-06-17, code landed — native build owed to user).
+      Added `DebugLogLevel`, the `DEBUG_DOMAIN_*` bits, the
+      `debugLogShouldEmit`/`debugLogLevelName`/`debugLogDomainName`
+      trio, and the `DEBUG_LOG`/`DEBUG_CRITICAL`/`DEBUG_ERROR`/
+      `DEBUG_INFO`/`DEBUG_TRACE` macros to `GE.h`. Backed by two new
+      atomics (`g_debugLogLevel`, `g_debugLogDomains`) in `OmegaGTE.cpp`;
+      `resolveDebugFlags` writes them from the new
+      `GTEInitOptions::logLevel`/`logDomains` fields, clamping a
+      `Critical` floor up to `Error` with a `DEBUG_CRITICAL` self-report.
+      `DEBUG_CRITICAL` is live so §4.3 backfill can use it immediately.
    c. §4.3 — backfill D3D12 and Vulkan tracker call sites + add
       `DEBUG_LOG` / `DEBUG_CRITICAL` lines next to every tracker
       emit and every spec-validation check. This is the bulk-edit
@@ -903,7 +927,7 @@ landing PR, not in CI.
 - **Should `GTEInitOptions` move into its own header** to avoid pulling
   `OmegaGTE.h` (which transitively pulls every backend forward-decl)
   into translation units that only need the options struct? Defer
-  until a real caller hits the include cost.
+  until a real caller hits the include cost. (RESOLVED. There's no OmegaGTE.h umbrella header anymore.)
 - **`Open question above resolved by §4.`** Per-callsite verbosity is
   now level + domain. Keeping the bullet here so readers know the
   question was answered downstream, not abandoned.
