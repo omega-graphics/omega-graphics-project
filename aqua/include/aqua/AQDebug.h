@@ -43,6 +43,13 @@ enum AQDebugFlags : std::uint32_t {
     AQDebugContactPoint     = 1U << 7,   ///< Tiny cross at each contact point (3 line segments)
     AQDebugContactNormal    = 1U << 8,   ///< Contact normal scaled by penetration depth
     AQDebugContactImpulse   = 1U << 9,   ///< Accumulated normal-impulse vector (post-solve)
+    // --- Phase 4 additions (joints, islands, queries, sleep, CCD; see Phase-4 brief §9) ---
+    AQDebugJointAnchor      = 1U << 10,  ///< A short cross at each joint's two world anchor points
+    AQDebugJointAxis        = 1U << 11,  ///< The hinge/slider axis as a colored segment at anchor A
+    AQDebugIsland           = 1U << 12,  ///< Per-island: COM(member)→COM(root) spokes, color by sleep state
+    AQDebugRaycastHit       = 1U << 13,  ///< Last query: origin→hit segment + a short normal tick
+    AQDebugSleepingBody     = 1U << 14,  ///< A greyed marker cross at each sleeping body's COM
+    AQDebugCCDSweep         = 1U << 15,  ///< One segment per opted-in body showing the swept extension
 };
 
 #endif // AQUA_AQDEBUG_H

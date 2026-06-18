@@ -2,6 +2,8 @@
 #include <aqua/AQCollision.h>
 #include <aqua/AQContact.h>
 #include <aqua/AQIntegrator.h>
+#include "AQJointBuild.h"
+#include "AQQueryMath.h"
 #include <vector>
 #include <algorithm>
 #include <cmath>
@@ -71,6 +73,28 @@ struct AQRigidBody::Impl {
     // integrator parity oracle and `AQStepBody` remain unaffected.
     FVec<3> pseudoLinear  = AQvec3(0.f, 0.f, 0.f);
     FVec<3> pseudoAngular = AQvec3(0.f, 0.f, 0.f);
+
+    // --- Phase 4 per-body state ---
+    AQCCDMode ccdMode   = AQCCDMode::Off;  ///< opt-in continuous collision
+    bool      isTrigger = false;           ///< overlap events, no constraint rows
+    // Per-body sleep-threshold overrides; 0 ⇒ use the space default. Linear m/s,
+    // angular rad/s. Read by AQSpace::runIslandsAndSleep (Phase 4b).
+    float     sleepLinearVel  = 0.f;
+    float     sleepAngularVel = 0.f;
+    // Island bookkeeping, refreshed each sub-step by runIslandsAndSleep. Default
+    // root is the body's own index; static/kinematic bodies are never unioned.
+    std::uint32_t islandId = 0;
+    // Consecutive sub-steps this body has been below its sleep thresholds
+    // (energy-flavored idle predicate, §6.G). Reset to 0 when it moves or is
+    // woken; frozen while Sleeping. The island sleeps when every member's count
+    // has reached the threshold.
+    std::uint32_t restingFrames = 0;
+    // Kinematic target pose. When `hasKinematicTarget`, stepInternal teleports
+    // the body to (kinTargetPos, kinTargetOrient) at the next sub-step and sets
+    // the implicit velocity ((target − current)/dt) for one-way response.
+    FVec<3>     kinTargetPos    = AQvec3(0.f, 0.f, 0.f);
+    FQuaternion kinTargetOrient = FQuaternion::Identity();
+    bool        hasKinematicTarget = false;
 };
 
 AQRigidBody::AQRigidBody() : impl(std::make_unique<Impl>()) {}
@@ -199,6 +223,36 @@ FVec<3>       AQRigidBody::aabbMax() const                     { return impl->fa
 AQCollisionFilter AQRigidBody::collisionFilter() const         { return impl->filter; }
 void          AQRigidBody::setCollisionFilter(const AQCollisionFilter &f) { impl->filter = f; }
 
+// --- Phase 4: activation / sleep, triggers, CCD, kinematic control ---
+AQActivationState AQRigidBody::activation() const { return impl->s.activation; }
+
+void AQRigidBody::wakeUp() {
+    // Kinematic / static bodies don't sleep; leave their state alone.
+    if (impl->s.activation == AQActivationState::Kinematic) return;
+    if (impl->type == AQBodyType::Static) return;
+    impl->s.activation = AQActivationState::Active;
+    impl->restingFrames = 0;   // start the idle accumulation over
+    // The island pass re-evaluates idle accumulation from here; the body is
+    // live again immediately and (being in an island) wakes its island next step.
+}
+
+void AQRigidBody::putToSleep() {
+    if (impl->type != AQBodyType::Dynamic) return;   // only dynamics sleep
+    impl->s.activation     = AQActivationState::Sleeping;
+    impl->s.velocity       = AQvec3(0.f, 0.f, 0.f);
+    impl->s.angularVelBody = AQvec3(0.f, 0.f, 0.f);
+}
+
+bool      AQRigidBody::isTrigger() const          { return impl->isTrigger; }
+AQCCDMode AQRigidBody::ccdMode()   const          { return impl->ccdMode; }
+void      AQRigidBody::setCCDMode(AQCCDMode m)     { impl->ccdMode = m; }
+
+void AQRigidBody::setKinematicTarget(const FVec<3> &p, const FQuaternion &q) {
+    impl->kinTargetPos       = p;
+    impl->kinTargetOrient    = q.normalized();
+    impl->hasKinematicTarget = true;
+}
+
 // --- Phase 3: persistence cache record (per contact point) ---
 // Holds the accumulated normal and friction impulses across frames so the
 // PGS sweep can warm-start (§6.C / §11.7). Keyed by (sortedPairKey,
@@ -207,6 +261,34 @@ void          AQRigidBody::setCollisionFilter(const AQCollisionFilter &f) { impl
 struct AQManifoldCacheEntry {
     float accumNormal       = 0.f;
     float accumFriction[2]  = {0.f, 0.f};
+};
+
+// A joint living in the space's joint table (Phase 4, §7/§8). The two endpoints
+// are held by shared_ptr so the body index can be re-resolved each sub-step
+// (robust to removeBody, which renumbers the body SoA); the rest-pose state
+// (`rest`) anchors the angular locks and the hinge/slider axis tracking. `accum`
+// is the per-row warm-start carrier, keyed implicitly by (this joint, row index)
+// — the joint analogue of the contact persistence cache. `generation` (≥1 when
+// live) + the slot index form the public AQJointHandle; `alive` is cleared by
+// destroyJoint without renumbering the table.
+struct AQJointRecord {
+    AQJointType                  type = AQJointType::BallSocket;
+    std::shared_ptr<AQRigidBody> a, b;
+    FVec<3>                      anchorA    = AQvec3(0.f, 0.f, 0.f);
+    FVec<3>                      anchorB    = AQvec3(0.f, 0.f, 0.f);
+    FVec<3>                      axisLocalA = AQvec3(0.f, 1.f, 0.f);
+    float                        distanceTarget = 0.f;
+    AQJointSoftness              softness;
+    AQJointAxisLimit             limit;
+    AQJointRest                  rest;
+    std::uint32_t                generation = 0;
+    bool                         alive = false;
+    float                        accum[kAQMaxJointRows] = {0.f};
+    // World-frame LINEAR impulse this joint applied last sub-step (Σ over its
+    // non-angular rows of direction·accumImpulse). Exposed via jointImpulse()
+    // so callers can read the reaction force (impulse/dt) — the bridge
+    // deliverable's catenary-tension oracle (§9).
+    FVec<3>                      lastLinearImpulse = AQvec3(0.f, 0.f, 0.f);
 };
 
 struct AQSpace::Impl {
@@ -248,6 +330,46 @@ struct AQSpace::Impl {
     std::vector<std::uint32_t>     manifoldRowOffset; ///< rows[manifoldRowOffset[m]] = first row of manifold m
     std::unordered_map<std::uint64_t, AQManifoldCacheEntry> cache;
     ///< (pair key << 32 | featureKey)-indexed; aged out after one missed frame
+
+    // --- Phase 4: joint table (§7/§8) ---
+    // Slot 0 is a sentinel (handle generation 0 ⇒ invalid). Slots never shrink;
+    // destroyJoint clears `alive` and bumps the generation. `jointRowSpans` maps
+    // each joint that contributed rows this sub-step back to its (firstRow,count)
+    // in `rows`, for the warm-start write-back.
+    std::vector<AQJointRecord> joints = std::vector<AQJointRecord>(1);
+    struct JointRowSpan { std::uint32_t jointIndex, firstRow, count; };
+    std::vector<JointRowSpan> jointRowSpans;
+
+    AQJointRecord *jointAt(const AQJointHandle &h) {
+        if (!h.valid()) return nullptr;
+        if (h.index >= joints.size()) return nullptr;
+        AQJointRecord &j = joints[h.index];
+        if (!j.alive || j.generation != h.generation) return nullptr;
+        return &j;
+    }
+
+    // --- Phase 4: CCD scratch (§6.K) ---
+    // Pre-step positions of bodies, captured before the position half-step when
+    // any body opts into CCD, so the swept-sphere TOI pass can cast from where
+    // each body was to where it landed. Reused buffer (no per-sub-step alloc).
+    std::vector<FVec<3>> ccdPrevPos;
+
+    // --- Phase 4: trigger events (§6.M, §11.9) ---
+    // Trigger overlaps are diffed once per advance (not per sub-step) against
+    // last advance's set, producing Enter/Stay/Exit. `prevTriggerPairs` is the
+    // previous advance's sorted overlap set; `triggerEvts` is the drainable
+    // queue rebuilt each advance.
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> prevTriggerPairs;
+    std::vector<AQTriggerEvent> triggerEvts;
+
+    // --- Phase 4: sleep tuning (space defaults; per-body overrides win) ---
+    // Energy-flavored idle predicate (§6.G / §11.6): a body counts as idle when
+    // ‖v‖ < sleepLinearVel AND ‖ω‖ < sleepAngularVel. An island sleeps once
+    // every member has been idle for `sleepIdleSubsteps` consecutive sub-steps.
+    // Defaults from §10: 0.01 m/s, 0.01 rad/s, 60 sub-steps (~0.5 s @ 1/120).
+    float         sleepLinearVel    = 0.01f;
+    float         sleepAngularVel   = 0.01f;
+    std::uint32_t sleepIdleSubsteps = 60;
 
     // Look up a shape by handle. Returns nullptr if the handle is invalid or
     // stale (generation mismatch). Caller checks the pointer.
@@ -293,8 +415,12 @@ std::shared_ptr<AQRigidBody> AQSpace::addBody(const AQBodyDesc &desc) {
     s.orientation = desc.orientation.normalized();
     s.velocity    = desc.linearVelocity;
 
-    const bool isStatic = (desc.type == AQBodyType::Static || desc.mass <= 0.f);
-    s.invMass = isStatic ? 0.f : 1.f / desc.mass;
+    // Static and Kinematic bodies both have infinite mass (invMass 0). The
+    // difference is motion: a Static body never moves; a Kinematic body is
+    // teleported each sub-step by the user (setKinematicTarget) and pushes
+    // dynamics one-way. Dynamic is the only finite-mass type.
+    const bool infiniteMass = (desc.type != AQBodyType::Dynamic) || desc.mass <= 0.f;
+    s.invMass = infiniteMass ? 0.f : 1.f / desc.mass;
 
     // Resolve principal moments. If the desc supplies a full inertia tensor we
     // diagonalize it (the Phase 1 `AQdiagonalizeInertia` Jacobi path, now wired
@@ -312,14 +438,14 @@ std::shared_ptr<AQRigidBody> AQSpace::addBody(const AQBodyDesc &desc) {
     const auto isVec3Zero = [](const FVec<3>& v) {
         return v[0][0] == 0.f && v[1][0] == 0.f && v[2][0] == 0.f;
     };
-    if (!isStatic && !anyNonZero(desc.inertiaTensor) && isVec3Zero(moments)) {
+    if (!infiniteMass && !anyNonZero(desc.inertiaTensor) && isVec3Zero(moments)) {
         if (const AQShape *sp = impl->shapeAt(desc.shape)) {
             moments = AQshapeInertiaMoments(*sp, desc.mass,
                                             impl->hullVerts.data(),
                                             impl->hullVerts.size());
         }
     }
-    if (!isStatic && anyNonZero(desc.inertiaTensor)) {
+    if (!infiniteMass && anyNonZero(desc.inertiaTensor)) {
         FVec<3>      diag = FVec<3>::Create();
         FQuaternion  Qprincipal = FQuaternion::Identity();
         AQdiagonalizeInertia(desc.inertiaTensor, diag, Qprincipal);
@@ -334,9 +460,9 @@ std::shared_ptr<AQRigidBody> AQSpace::addBody(const AQBodyDesc &desc) {
     // Inverse principal moments; a zero moment means infinite inertia on that
     // axis (no angular response), which a static body has on every axis.
     s.invInertiaBody = AQvec3(
-        (isStatic || moments[0][0] <= 0.f) ? 0.f : 1.f / moments[0][0],
-        (isStatic || moments[1][0] <= 0.f) ? 0.f : 1.f / moments[1][0],
-        (isStatic || moments[2][0] <= 0.f) ? 0.f : 1.f / moments[2][0]);
+        (infiniteMass || moments[0][0] <= 0.f) ? 0.f : 1.f / moments[0][0],
+        (infiniteMass || moments[1][0] <= 0.f) ? 0.f : 1.f / moments[1][0],
+        (infiniteMass || moments[2][0] <= 0.f) ? 0.f : 1.f / moments[2][0]);
 
     // Desc gives world-frame angular velocity; store it body-frame relative to
     // the (possibly folded) orientation set above.
@@ -367,6 +493,17 @@ std::shared_ptr<AQRigidBody> AQSpace::addBody(const AQBodyDesc &desc) {
     body->impl->restitution = desc.restitution < 0.f ? 0.f
                             : desc.restitution > 1.f ? 1.f : desc.restitution;
     body->impl->friction    = desc.friction    < 0.f ? 0.f : desc.friction;
+
+    // Phase 4 attachments. Kinematic bodies report the Kinematic activation
+    // state (one-way response, user-driven pose); everything else starts Active.
+    s.activation       = (desc.type == AQBodyType::Kinematic)
+                       ? AQActivationState::Kinematic : AQActivationState::Active;
+    body->impl->ccdMode         = desc.ccdMode;
+    body->impl->isTrigger       = desc.isTrigger;
+    body->impl->sleepLinearVel  = desc.sleepLinearVelocity  < 0.f ? 0.f : desc.sleepLinearVelocity;
+    body->impl->sleepAngularVel = desc.sleepAngularVelocity < 0.f ? 0.f : desc.sleepAngularVelocity;
+    body->impl->kinTargetPos    = s.position;
+    body->impl->kinTargetOrient = s.orientation;
 
     impl->bodies.push_back(body);
     return body;
@@ -475,6 +612,32 @@ void AQSpace::stepInternal(float dt) {
     // Phase-1 fast-spin warning lives in the per-body loop just before the
     // velocity half-step, where it always has — the metric is ‖ω‖·dt of the
     // pre-step angular velocity, which is what determines integrator drift.
+    // Phase 4 — kinematic target application (runs before integration). A
+    // kinematic body is teleported to its target pose and its implicit velocity
+    // ((target − current)/dt) is set so the contact solver sees a moving
+    // infinite-mass body that pushes dynamics ONE-WAY (invMass/invInertia are 0,
+    // so it receives no impulse). With no fresh target this sub-step the body is
+    // treated as at rest. Static and dynamic bodies skip this loop.
+    for (auto &body : impl->bodies) {
+        if (body->impl->type != AQBodyType::Kinematic) continue;
+        auto &s = body->impl->s;
+        if (body->impl->hasKinematicTarget && dt > 0.f) {
+            s.velocity = (body->impl->kinTargetPos - s.position) * (1.f / dt);
+            // Angular implicit velocity from the orientation delta:
+            // dq = q_target · q_current⁻¹; ω_world = 2·log(dq)/dt (shortest arc).
+            FQuaternion dq = (body->impl->kinTargetOrient * s.orientation.conjugate()).normalized();
+            if (dq.w < 0.f) { dq.x = -dq.x; dq.y = -dq.y; dq.z = -dq.z; dq.w = -dq.w; }
+            const FVec<3> wWorld = AQquatLog(dq) * (2.f / dt);   // AQquatLog → ½·φ
+            s.angularVelBody = AQrotate(body->impl->kinTargetOrient.conjugate(), wWorld);
+            s.position    = body->impl->kinTargetPos;
+            s.orientation = body->impl->kinTargetOrient;
+            body->impl->hasKinematicTarget = false;
+        } else {
+            s.velocity       = AQvec3(0.f, 0.f, 0.f);
+            s.angularVelBody = AQvec3(0.f, 0.f, 0.f);
+        }
+    }
+
     for (auto &body : impl->bodies) {
         if (body->impl->type == AQBodyType::Static) continue;
         auto &s = body->impl->s;
@@ -484,8 +647,9 @@ void AQSpace::stepInternal(float dt) {
         // once, so a newly added fast body still warns even if another already
         // did, and changing the sub-step (AQContext::setFixedTimestep) re-arms
         // every body. ‖ω‖ is frame-invariant, so the body-frame norm is the
-        // world angular speed.
-        if (!body->impl->warnedFastSpin) {
+        // world angular speed. Kinematic bodies carry a user-driven implicit ω,
+        // so the integrator-drift warning does not apply to them.
+        if (body->impl->type == AQBodyType::Dynamic && !body->impl->warnedFastSpin) {
             const float angle = std::sqrt(OmegaGTE::dot(s.angularVelBody, s.angularVelBody)) * dt;
             if (angle > kMaxStepAngle) {
                 std::cerr << "AQUA::AQSpace: a body rotates " << angle
@@ -504,6 +668,23 @@ void AQSpace::stepInternal(float dt) {
 
     // Phase 3 — contact solver (operates on the now-predicted velocities).
     runNarrowphaseAndSolve(dt);
+
+    // Phase 4 CCD — if any body opts in, snapshot pre-step positions so the
+    // post-step swept-sphere TOI pass can detect tunneling (§6.K). Cheap O(N)
+    // scan; skipped entirely (the common case) when no body uses CCD.
+    bool ccdActive = false;
+    for (auto &body : impl->bodies) {
+        if (body->impl->ccdMode != AQCCDMode::Off && body->impl->type == AQBodyType::Dynamic) {
+            ccdActive = true; break;
+        }
+    }
+    if (ccdActive) {
+        // assign (not resize) — a fresh element would otherwise default-construct
+        // FVec<3>, whose default ctor is private (factory-only idiom).
+        impl->ccdPrevPos.assign(impl->bodies.size(), AQvec3(0.f, 0.f, 0.f));
+        for (std::size_t i = 0; i < impl->bodies.size(); ++i)
+            impl->ccdPrevPos[i] = impl->bodies[i]->impl->s.position;
+    }
 
     // Position half-step + pseudo-velocity position correction + AABB refresh
     // + debug emission. Static bodies remain skipped (no pose update).
@@ -541,6 +722,15 @@ void AQSpace::stepInternal(float dt) {
             }
         }
     }
+
+    // Phase 4 — continuous collision: stop opted-in fast bodies at their time of
+    // impact before islands/sleep run (so a snapped body's corrected state is
+    // what the sleep predicate sees).
+    if (ccdActive) runCCD(dt);
+
+    // Phase 4 — island detection + sleep/wake on the post-solve state. Sets the
+    // activation the next sub-step's velocity sweep and integrator read.
+    runIslandsAndSleep(dt);
 }
 
 void AQSpace::resetStepWarnings() {
@@ -636,6 +826,451 @@ int AQSpace::positionIterations() const { return impl->positionIters; }
 
 std::vector<AQContactManifold> AQSpace::contactManifolds() const {
     return impl->manifolds;
+}
+
+// --- Phase 4: sleep tuning (storage; consumed by runIslandsAndSleep, §6.G) ---
+void AQSpace::setSleepThresholds(float linearVel, float angularVel,
+                                 std::uint32_t idleSubsteps) {
+    impl->sleepLinearVel    = linearVel  < 0.f ? 0.f : linearVel;
+    impl->sleepAngularVel   = angularVel < 0.f ? 0.f : angularVel;
+    impl->sleepIdleSubsteps = idleSubsteps;
+}
+
+// ============================================================================
+// Phase 4 — joints (§6.C, §7, §10). Five specialized types built on the shared
+// constraint-row schema; the per-type Jacobian math lives in AQJoint.cpp.
+// ============================================================================
+
+namespace {
+// Rest-pose state captured at creation: the relative orientation the angular
+// locks hold to, and the hinge/slider axis re-expressed in body B's frame so the
+// alignment row can compare it against body A's axis each sub-step.
+AQJointRest computeJointRest(const FQuaternion &qA0, const FQuaternion &qB0,
+                             const FVec<3> &axisLocalA) {
+    AQJointRest r;
+    r.relOrient        = (qA0.conjugate() * qB0).normalized();
+    const FVec<3> axisW = AQrotate(qA0, axisLocalA);
+    r.axisLocalB       = AQrotate(qB0.conjugate(), axisW);
+    return r;
+}
+} // namespace
+
+AQJointHandle AQSpace::createDistanceJoint(const std::shared_ptr<AQRigidBody> &a,
+                                           const std::shared_ptr<AQRigidBody> &b,
+                                           const FVec<3> &anchorALocal,
+                                           const FVec<3> &anchorBLocal,
+                                           float length) {
+    if (!a || !b) return {};
+    if (a->type() != AQBodyType::Dynamic && b->type() != AQBodyType::Dynamic) return {};
+    AQJointRecord J;
+    J.type = AQJointType::Distance;
+    J.a = a; J.b = b;
+    J.anchorA = anchorALocal; J.anchorB = anchorBLocal;
+    J.distanceTarget = length < 0.f ? 0.f : length;
+    J.rest = computeJointRest(a->orientation(), b->orientation(), AQvec3(0.f, 1.f, 0.f));
+    J.generation = 1; J.alive = true;
+    const std::uint32_t idx = static_cast<std::uint32_t>(impl->joints.size());
+    impl->joints.push_back(J);
+    return AQJointHandle{idx, 1};
+}
+
+AQJointHandle AQSpace::createBallSocketJoint(const std::shared_ptr<AQRigidBody> &a,
+                                             const std::shared_ptr<AQRigidBody> &b,
+                                             const FVec<3> &anchorALocal,
+                                             const FVec<3> &anchorBLocal) {
+    if (!a || !b) return {};
+    if (a->type() != AQBodyType::Dynamic && b->type() != AQBodyType::Dynamic) return {};
+    AQJointRecord J;
+    J.type = AQJointType::BallSocket;
+    J.a = a; J.b = b;
+    J.anchorA = anchorALocal; J.anchorB = anchorBLocal;
+    J.rest = computeJointRest(a->orientation(), b->orientation(), AQvec3(0.f, 1.f, 0.f));
+    J.generation = 1; J.alive = true;
+    const std::uint32_t idx = static_cast<std::uint32_t>(impl->joints.size());
+    impl->joints.push_back(J);
+    return AQJointHandle{idx, 1};
+}
+
+AQJointHandle AQSpace::createHingeJoint(const std::shared_ptr<AQRigidBody> &a,
+                                        const std::shared_ptr<AQRigidBody> &b,
+                                        const FVec<3> &anchorALocal,
+                                        const FVec<3> &anchorBLocal,
+                                        const FVec<3> &axisALocal,
+                                        const AQJointAxisLimit &limit) {
+    if (!a || !b) return {};
+    if (a->type() != AQBodyType::Dynamic && b->type() != AQBodyType::Dynamic) return {};
+    AQJointRecord J;
+    J.type = AQJointType::Hinge;
+    J.a = a; J.b = b;
+    J.anchorA = anchorALocal; J.anchorB = anchorBLocal;
+    J.axisLocalA = axisALocal; J.limit = limit;
+    J.rest = computeJointRest(a->orientation(), b->orientation(), axisALocal);
+    J.generation = 1; J.alive = true;
+    const std::uint32_t idx = static_cast<std::uint32_t>(impl->joints.size());
+    impl->joints.push_back(J);
+    return AQJointHandle{idx, 1};
+}
+
+AQJointHandle AQSpace::createSliderJoint(const std::shared_ptr<AQRigidBody> &a,
+                                         const std::shared_ptr<AQRigidBody> &b,
+                                         const FVec<3> &anchorALocal,
+                                         const FVec<3> &anchorBLocal,
+                                         const FVec<3> &axisALocal,
+                                         const AQJointAxisLimit &limit) {
+    if (!a || !b) return {};
+    if (a->type() != AQBodyType::Dynamic && b->type() != AQBodyType::Dynamic) return {};
+    AQJointRecord J;
+    J.type = AQJointType::Slider;
+    J.a = a; J.b = b;
+    J.anchorA = anchorALocal; J.anchorB = anchorBLocal;
+    J.axisLocalA = axisALocal; J.limit = limit;
+    J.rest = computeJointRest(a->orientation(), b->orientation(), axisALocal);
+    J.generation = 1; J.alive = true;
+    const std::uint32_t idx = static_cast<std::uint32_t>(impl->joints.size());
+    impl->joints.push_back(J);
+    return AQJointHandle{idx, 1};
+}
+
+AQJointHandle AQSpace::createFixedJoint(const std::shared_ptr<AQRigidBody> &a,
+                                        const std::shared_ptr<AQRigidBody> &b) {
+    if (!a || !b) return {};
+    if (a->type() != AQBodyType::Dynamic && b->type() != AQBodyType::Dynamic) return {};
+    AQJointRecord J;
+    J.type = AQJointType::Fixed;
+    J.a = a; J.b = b;
+    // A fixed joint holds B at its CURRENT relative pose, not at A's origin: the
+    // point constraint's anchor on A is B's origin expressed in A's local frame
+    // at creation (anchorB stays at B's origin). Both anchors then coincide at
+    // rest, and the joint preserves the offset rather than collapsing B onto A.
+    J.anchorA = AQrotate(a->orientation().conjugate(), b->position() - a->position());
+    J.anchorB = AQvec3(0.f, 0.f, 0.f);
+    J.rest = computeJointRest(a->orientation(), b->orientation(), AQvec3(0.f, 1.f, 0.f));
+    J.generation = 1; J.alive = true;
+    const std::uint32_t idx = static_cast<std::uint32_t>(impl->joints.size());
+    impl->joints.push_back(J);
+    return AQJointHandle{idx, 1};
+}
+
+void AQSpace::setJointSoftness(AQJointHandle h, AQJointSoftness s) {
+    if (AQJointRecord *J = impl->jointAt(h)) J->softness = s;
+}
+
+bool AQSpace::destroyJoint(AQJointHandle h) {
+    AQJointRecord *J = impl->jointAt(h);
+    if (J == nullptr) return false;
+    J->alive = false;
+    ++J->generation;          // stale out any outstanding handle; slot is not reused
+    J->a.reset(); J->b.reset();
+    return true;
+}
+
+std::vector<AQJointDesc> AQSpace::joints() const {
+    std::vector<AQJointDesc> out;
+    std::unordered_map<const AQRigidBody *, std::uint32_t> idx;
+    idx.reserve(impl->bodies.size());
+    for (std::uint32_t i = 0; i < impl->bodies.size(); ++i)
+        idx.emplace(impl->bodies[i].get(), i);
+    for (std::uint32_t ji = 1; ji < impl->joints.size(); ++ji) {
+        const AQJointRecord &J = impl->joints[ji];
+        if (!J.alive) continue;
+        auto ia = idx.find(J.a.get());
+        auto ib = idx.find(J.b.get());
+        AQJointDesc d;
+        d.type = J.type;
+        d.bodyA = (ia != idx.end()) ? ia->second : 0u;
+        d.bodyB = (ib != idx.end()) ? ib->second : 0u;
+        d.anchorA = J.anchorA; d.anchorB = J.anchorB; d.axisLocalA = J.axisLocalA;
+        d.distanceTarget = J.distanceTarget; d.softness = J.softness; d.limit = J.limit;
+        out.push_back(d);
+    }
+    return out;
+}
+
+FVec<3> AQSpace::jointImpulse(AQJointHandle h) const {
+    if (!h.valid() || h.index >= impl->joints.size()) return AQvec3(0.f, 0.f, 0.f);
+    const AQJointRecord &J = impl->joints[h.index];
+    if (!J.alive || J.generation != h.generation) return AQvec3(0.f, 0.f, 0.f);
+    return J.lastLinearImpulse;
+}
+
+void AQSpace::buildJointRows(float dt) {
+    impl->jointRowSpans.clear();
+    if (impl->joints.size() <= 1) return;        // only the sentinel slot
+
+    // Resolve body pointers to current SoA indices (robust to removeBody, which
+    // renumbers the body array).
+    std::unordered_map<const AQRigidBody *, std::uint32_t> idx;
+    idx.reserve(impl->bodies.size());
+    for (std::uint32_t i = 0; i < impl->bodies.size(); ++i)
+        idx.emplace(impl->bodies[i].get(), i);
+
+    AQConstraintRow scratch[kAQMaxJointRows];
+    for (std::uint32_t ji = 1; ji < impl->joints.size(); ++ji) {
+        AQJointRecord &J = impl->joints[ji];
+        if (!J.alive) continue;
+        auto ia = idx.find(J.a.get());
+        auto ib = idx.find(J.b.get());
+        if (ia == idx.end() || ib == idx.end()) continue;   // an endpoint was removed
+        const std::uint32_t aIdx = ia->second, bIdx = ib->second;
+
+        const auto &sa = impl->bodies[aIdx]->impl->s;
+        const auto &sb = impl->bodies[bIdx]->impl->s;
+
+        AQJointBodyKin A, B;
+        A.com = sa.position + AQrotate(sa.orientation, sa.comOffset);
+        A.q = sa.orientation; A.invMass = sa.invMass;
+        A.invI = AQworldInvInertia(sa.orientation, sa.invInertiaBody);
+        B.com = sb.position + AQrotate(sb.orientation, sb.comOffset);
+        B.q = sb.orientation; B.invMass = sb.invMass;
+        B.invI = AQworldInvInertia(sb.orientation, sb.invInertiaBody);
+
+        AQJointDesc desc;
+        desc.type = J.type; desc.bodyA = aIdx; desc.bodyB = bIdx;
+        desc.anchorA = J.anchorA; desc.anchorB = J.anchorB; desc.axisLocalA = J.axisLocalA;
+        desc.distanceTarget = J.distanceTarget; desc.softness = J.softness; desc.limit = J.limit;
+
+        const int nr = AQbuildJointRows(desc, J.rest, A, B, dt, scratch);
+        if (nr == 0) continue;
+
+        const std::uint32_t first = static_cast<std::uint32_t>(impl->rows.size());
+        for (int r = 0; r < nr; ++r) {
+            scratch[r].bodyA = aIdx;
+            scratch[r].bodyB = bIdx;
+            scratch[r].accumImpulse = J.accum[r];      // warm-start
+            impl->rows.push_back(scratch[r]);
+        }
+        impl->jointRowSpans.push_back({ji, first, static_cast<std::uint32_t>(nr)});
+    }
+}
+
+// ============================================================================
+// Phase 4 — queries (§6.L, §10). Raycast / shapecast / overlap iterate the
+// candidate bodies, reading each body's fat AABB (the broadphase output, valid
+// until the next advance) for the broad reject, then the analytic ray/shape math
+// (AQQuery.cpp). Results are reported in a deterministic (fraction, bodyIndex)
+// order. A full 3D-DDA grid walk over the stored cell scratch is the documented
+// performance path (Phase-4 §6.L); this correctness-first form reuses the same
+// per-body broadphase bounds and matches the brute-force oracle exactly.
+// ============================================================================
+
+namespace {
+inline bool queryFilterAccepts(const AQQueryFilter &q, const AQCollisionFilter &b) {
+    return ((q.layer & b.mask) != 0u) && ((b.layer & q.mask) != 0u);
+}
+} // namespace
+
+void AQSpace::raycast(const FVec<3> &origin, const FVec<3> &direction, float maxT,
+                      const AQQueryFilter &filter, std::vector<AQRaycastHit> &hits) const {
+    hits.clear();
+    for (std::uint32_t i = 0; i < impl->bodies.size(); ++i) {
+        auto &bi = *impl->bodies[i]->impl;
+        const AQShape *sp = impl->shapeAt(bi.shape);
+        if (sp == nullptr) continue;
+        if (!queryFilterAccepts(filter, bi.filter)) continue;
+        float tEnter;
+        if (bi.fatValid && !AQrayAABB(bi.fatAABB.min, bi.fatAABB.max, origin, direction, maxT, tEnter))
+            continue;                                       // broad reject vs the broadphase bound
+        AQTransform<float> xf; xf.p = bi.s.position; xf.q = bi.s.orientation;
+        float t; FVec<3> pos = AQvec3(0.f,0.f,0.f), nrm = AQvec3(0.f,0.f,0.f);
+        if (AQrayShape(*sp, xf, origin, direction, maxT, 0.f,
+                       impl->hullVerts.data(), impl->hullVerts.size(), t, pos, nrm)) {
+            AQRaycastHit h; h.bodyIndex = i; h.fraction = t; h.position = pos; h.normal = nrm;
+            hits.push_back(h);
+        }
+    }
+    std::sort(hits.begin(), hits.end(), [](const AQRaycastHit &a, const AQRaycastHit &b) {
+        return (a.fraction != b.fraction) ? (a.fraction < b.fraction) : (a.bodyIndex < b.bodyIndex);
+    });
+    if ((impl->debugFlags & AQDebugRaycastHit) && !hits.empty()) {
+        const FVec<3> hp = origin + direction * hits.front().fraction;
+        impl->debugLines.push_back(makeLine(origin, hp, 1.f, 1.f, 0.f));
+        impl->debugLines.push_back(makeLine(hp, hp + hits.front().normal * 0.25f, 0.f, 1.f, 0.f));
+    }
+}
+
+void AQSpace::shapecast(AQShapeHandle shape, const FVec<3> &origin,
+                        const FQuaternion & /*orientation*/, const FVec<3> &direction,
+                        float maxT, const AQQueryFilter &filter,
+                        std::vector<AQRaycastHit> &hits) const {
+    hits.clear();
+    const AQShape *cast = impl->shapeAt(shape);
+    if (cast == nullptr) return;
+    // Sphere-cast specialization: sweep the cast shape's bounding sphere, i.e.
+    // ray vs each target inflated by the cast radius (the Minkowski sum for a
+    // swept sphere). Exact for sphere/plane targets; conservative otherwise.
+    const float inflate = AQshapeBoundingRadius(*cast, impl->hullVerts.data(), impl->hullVerts.size());
+    for (std::uint32_t i = 0; i < impl->bodies.size(); ++i) {
+        auto &bi = *impl->bodies[i]->impl;
+        const AQShape *sp = impl->shapeAt(bi.shape);
+        if (sp == nullptr) continue;
+        if (!queryFilterAccepts(filter, bi.filter)) continue;
+        float tEnter;
+        const FVec<3> inf = AQvec3(inflate, inflate, inflate);
+        if (bi.fatValid && !AQrayAABB(bi.fatAABB.min - inf, bi.fatAABB.max + inf,
+                                      origin, direction, maxT, tEnter))
+            continue;
+        AQTransform<float> xf; xf.p = bi.s.position; xf.q = bi.s.orientation;
+        float t; FVec<3> pos = AQvec3(0.f,0.f,0.f), nrm = AQvec3(0.f,0.f,0.f);
+        if (AQrayShape(*sp, xf, origin, direction, maxT, inflate,
+                       impl->hullVerts.data(), impl->hullVerts.size(), t, pos, nrm)) {
+            AQRaycastHit h; h.bodyIndex = i; h.fraction = t; h.position = pos; h.normal = nrm;
+            hits.push_back(h);
+        }
+    }
+    std::sort(hits.begin(), hits.end(), [](const AQRaycastHit &a, const AQRaycastHit &b) {
+        return (a.fraction != b.fraction) ? (a.fraction < b.fraction) : (a.bodyIndex < b.bodyIndex);
+    });
+}
+
+void AQSpace::overlap(AQShapeHandle shape, const FVec<3> &origin,
+                      const FQuaternion &orientation, const AQQueryFilter &filter,
+                      bool exactShapes, std::vector<std::uint32_t> &bodies) const {
+    bodies.clear();
+    const AQShape *q = impl->shapeAt(shape);
+    if (q == nullptr) return;
+    AQTransform<float> qx; qx.p = origin; qx.q = orientation;
+    const FAABB qbb = AQshapeAABB(*q, qx, impl->hullVerts.data(), impl->hullVerts.size());
+    for (std::uint32_t i = 0; i < impl->bodies.size(); ++i) {
+        auto &bi = *impl->bodies[i]->impl;
+        const AQShape *sp = impl->shapeAt(bi.shape);
+        if (sp == nullptr) continue;
+        if (!queryFilterAccepts(filter, bi.filter)) continue;
+        const FAABB bb = bi.fatValid ? bi.fatAABB : bi.worldAABB;
+        if (!qbb.overlaps(bb)) continue;                    // broad AABB reject
+        if (exactShapes) {
+            AQTransform<float> bx; bx.p = bi.s.position; bx.q = bi.s.orientation;
+            AQContactManifold mf;
+            if (!AQnarrowphase(*q, *sp, qx, bx, impl->hullVerts.data(), impl->hullVerts.size(), mf)
+                || mf.pointCount == 0)
+                continue;                                   // AABBs touch but shapes don't
+        }
+        bodies.push_back(i);                                // pushed in ascending index order
+    }
+}
+
+// ============================================================================
+// Phase 4 — trigger events (§6.M, §11.9). Run once per advance by AQContext.
+// ============================================================================
+void AQSpace::updateTriggers() {
+    impl->triggerEvts.clear();
+
+    // This advance's overlapping trigger pairs (tight world-AABB test, per the
+    // §6.M "short-circuit after the AABB test" rule). Candidate pairs are
+    // already (a < b)-ordered, so `curr` stays sorted.
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> curr;
+    for (const auto &p : impl->pairs) {
+        const auto &ba = *impl->bodies[p.a]->impl;
+        const auto &bb = *impl->bodies[p.b]->impl;
+        if (!ba.isTrigger && !bb.isTrigger) continue;
+        if (!ba.worldAABB.overlaps(bb.worldAABB)) continue;
+        curr.emplace_back(p.a, p.b);
+    }
+    std::sort(curr.begin(), curr.end());
+
+    // Merge-diff against the previous advance: prev-only ⇒ Exit, curr-only ⇒
+    // Enter, both ⇒ Stay.
+    const auto &prev = impl->prevTriggerPairs;
+    std::size_t i = 0, j = 0;
+    while (i < prev.size() || j < curr.size()) {
+        if (j >= curr.size() || (i < prev.size() && prev[i] < curr[j])) {
+            impl->triggerEvts.push_back({prev[i].first, prev[i].second, AQTriggerEventKind::Exit});
+            ++i;
+        } else if (i >= prev.size() || curr[j] < prev[i]) {
+            impl->triggerEvts.push_back({curr[j].first, curr[j].second, AQTriggerEventKind::Enter});
+            ++j;
+        } else {
+            impl->triggerEvts.push_back({curr[j].first, curr[j].second, AQTriggerEventKind::Stay});
+            ++i; ++j;
+        }
+    }
+    impl->prevTriggerPairs.swap(curr);
+
+    // Deterministic order: by (a, b), then Exit before Stay before Enter (the
+    // §11.9 "process exits first" idiom; at most one event per pair so the kind
+    // tiebreak is belt-and-suspenders).
+    std::sort(impl->triggerEvts.begin(), impl->triggerEvts.end(),
+              [](const AQTriggerEvent &x, const AQTriggerEvent &y) {
+                  if (x.a != y.a) return x.a < y.a;
+                  if (x.b != y.b) return x.b < y.b;
+                  return static_cast<int>(x.kind) > static_cast<int>(y.kind);
+              });
+}
+
+std::vector<AQTriggerEvent> AQSpace::triggerEvents() {
+    std::vector<AQTriggerEvent> out;
+    out.swap(impl->triggerEvts);     // drain: subsequent calls return empty until next advance
+    return out;
+}
+
+// ============================================================================
+// Phase 4 — continuous collision (§6.K). After the regular position step, each
+// CCD body's bounding sphere is swept from its pre-step position to where it
+// landed; if that sweep hits another shape sooner than the full step, the body
+// tunneled — snap it to the time of impact (just touching) and cancel the
+// into-surface velocity so it cannot pass through.
+//
+// The swept test reuses the analytic sphere-cast already shipped for queries
+// (AQrayShape with inflate = the body's bounding radius). For a sphere body this
+// is exact; for a non-spherical body it is the conservative bounding-sphere
+// approximation. (The general convex conservative-advancement over AQshapeSupport
+// — Mirtich 1997, the brief's lead — is the heavier generalization, deferred:
+// the analytic swept sphere is exact for the Phase 4 bullet deliverable and
+// reuses shipped code. Recorded in the Phase-4 plan §13.) `AQCCDMode::Speculative`
+// and `Continuous` share this path; Speculative additionally benefits from the
+// broadphase's velocity-proportional AABB fattening already applied each frame.
+// ============================================================================
+void AQSpace::runCCD(float dt) {
+    (void)dt;
+    auto &bodies = impl->bodies;
+    const std::size_t N = bodies.size();
+    for (std::size_t i = 0; i < N; ++i) {
+        auto &bi = *bodies[i]->impl;
+        if (bi.ccdMode == AQCCDMode::Off || bi.type != AQBodyType::Dynamic) continue;
+        const AQShape *sp = impl->shapeAt(bi.shape);
+        if (sp == nullptr) continue;
+        if (i >= impl->ccdPrevPos.size()) continue;
+
+        const FVec<3> p0 = impl->ccdPrevPos[i];
+        const FVec<3> p1 = bi.s.position;
+        const FVec<3> disp = p1 - p0;
+        const float dlen = std::sqrt(OmegaGTE::dot(disp, disp));
+        const float r = AQshapeBoundingRadius(*sp, impl->hullVerts.data(), impl->hullVerts.size());
+        if (dlen <= r || r <= 0.f) continue;          // moved less than its own radius ⇒ discrete is safe
+
+        // Sweep the bounding sphere from p0 along `disp` (t ∈ [0,1]) against every
+        // other eligible shape; keep the earliest impact.
+        float bestT = 1.f;
+        FVec<3> bestN = AQvec3(0.f, 0.f, 0.f);
+        bool hit = false;
+        for (std::size_t j = 0; j < N; ++j) {
+            if (j == i) continue;
+            auto &bj = *bodies[j]->impl;
+            if (bj.isTrigger) continue;                // triggers never block motion
+            const AQShape *sj = impl->shapeAt(bj.shape);
+            if (sj == nullptr) continue;
+            if (!AQfilterAccepts(bi.filter, bj.filter)) continue;
+            AQTransform<float> xj; xj.p = bj.s.position; xj.q = bj.s.orientation;
+            float t; FVec<3> pos = AQvec3(0.f,0.f,0.f), nrm = AQvec3(0.f,0.f,0.f);
+            if (AQrayShape(*sj, xj, p0, disp, 1.f, r,
+                           impl->hullVerts.data(), impl->hullVerts.size(), t, pos, nrm)) {
+                if (t < bestT) { bestT = t; bestN = nrm; hit = true; }
+            }
+        }
+
+        if (hit && bestT < 1.f) {
+            bi.s.position = p0 + disp * bestT;          // snap to the time of impact (touching)
+            const float vn = OmegaGTE::dot(bi.s.velocity, bestN);
+            if (vn < 0.f) bi.s.velocity = bi.s.velocity - bestN * vn;  // kill the into-surface component
+            // Refresh the body's bounds at the corrected pose so the next frame's
+            // broadphase / queries see it where it actually stopped.
+            AQTransform<float> xf; xf.p = bi.s.position; xf.q = bi.s.orientation;
+            bi.worldAABB = AQshapeAABB(*sp, xf, impl->hullVerts.data(), impl->hullVerts.size());
+            bi.fatAABB   = bi.worldAABB.fattened(impl->fattenMargin);
+            bi.fatValid  = true;
+            if (impl->debugFlags & AQDebugCCDSweep)
+                impl->debugLines.push_back(makeLine(p0, bi.s.position, 1.f, 0.f, 1.f));
+        }
+    }
 }
 
 // ============================================================================
@@ -924,12 +1559,31 @@ void AQSpace::runNarrowphaseAndSolve(float dt) {
         body->impl->pseudoAngular = AQvec3(0.f, 0.f, 0.f);
     }
 
-    if (impl->pairs.empty()) return;
+    // NOTE: no early-out on an empty pair list — joints may still contribute
+    // rows even when nothing is in contact (the bridge before it touches
+    // anything). The narrowphase loop below simply iterates zero pairs.
+
+    // A body can absorb constraint impulses only if it is Dynamic, has finite
+    // mass, and is Active. Static, kinematic, and sleeping bodies cannot — a
+    // row/manifold whose two bodies are both inert is skipped in the warm-start,
+    // the velocity sweep, and the position-correction pass (Phase 4 sleep skip).
+    // Connected bodies share an island activation state, so a mixed
+    // awake/asleep contact row does not arise for bodies actually in contact.
+    auto movable = [&](std::uint32_t bi) {
+        const auto &st = impl->bodies[bi]->impl->s;
+        return st.invMass > 0.f && st.activation == AQActivationState::Active;
+    };
+    auto rowInert = [&](const AQConstraintRow &r) {
+        return !movable(r.bodyA) && !movable(r.bodyB);
+    };
 
     // --- A. Narrowphase: build manifolds from candidate pairs ---
     for (const auto &pair : impl->pairs) {
         AQRigidBody *bodyA = impl->bodies[pair.a].get();
         AQRigidBody *bodyB = impl->bodies[pair.b].get();
+        // Trigger pairs produce overlap EVENTS (updateTriggers, per advance), not
+        // contact rows — short-circuit here so a trigger never pushes anything.
+        if (bodyA->impl->isTrigger || bodyB->impl->isTrigger) continue;
         const AQShape *shA = impl->shapeAt(bodyA->impl->shape);
         const AQShape *shB = impl->shapeAt(bodyB->impl->shape);
         if (shA == nullptr || shB == nullptr) continue;
@@ -973,11 +1627,10 @@ void AQSpace::runNarrowphaseAndSolve(float dt) {
     }
 
     if (impl->manifolds.empty()) {
-        // Drop the cache so settled contacts don't carry stale impulses if
-        // the bodies separate and re-contact later — zero-frame grace is the
-        // §11.8 default.
+        // Drop the contact cache so settled contacts don't carry stale impulses
+        // if bodies separate and re-contact later (zero-frame grace, §11.8). We
+        // do NOT return here — joints may still produce rows below.
         impl->cache.clear();
-        return;
     }
 
     // --- Constraint-row build: 1 normal + 2 friction per contact point ---
@@ -1068,46 +1721,92 @@ void AQSpace::runNarrowphaseAndSolve(float dt) {
         }
     }
 
+    // --- C. Joint-row build (appends to the same row buffer, after contacts) ---
+    buildJointRows(dt);
+
+    if (impl->rows.empty()) {
+        // Nothing to solve this sub-step (no contacts and no joints).
+        impl->cache.clear();
+        return;
+    }
+
+    // Apply a row's impulse increment `dl` to both bodies. LINEAR rows apply a
+    // `direction·dl` impulse at `contactPoint` (the Phase 3 path, unchanged);
+    // ANGULAR rows (joint orientation locks / angular limits / motors) apply a
+    // pure torque impulse `direction·dl`. Defined once, used by warm-start and
+    // the sweep so the two paths can never drift.
+    auto applyRowImpulse = [&](const AQConstraintRow &row, float dl) {
+        const FVec<3> P = row.direction * dl;
+        if (row.isAngular) {
+            impl->bodies[row.bodyB]->applyAngularImpulse(P);
+            impl->bodies[row.bodyA]->applyAngularImpulse(P * -1.f);
+        } else {
+            impl->bodies[row.bodyB]->applyImpulseAtPoint(P,        row.contactPoint);
+            impl->bodies[row.bodyA]->applyImpulseAtPoint(P * -1.f, row.contactPoint);
+        }
+    };
+
     // --- D. Warm-start: apply cached impulses once before the iteration ---
     for (const AQConstraintRow &row : impl->rows) {
+        if (rowInert(row)) continue;            // both bodies inert (sleep skip)
         if (row.accumImpulse == 0.f) continue;
-        const FVec<3> P = row.direction * row.accumImpulse;
-        impl->bodies[row.bodyB]->applyImpulseAtPoint(P,       row.contactPoint);
-        impl->bodies[row.bodyA]->applyImpulseAtPoint(P * -1.f, row.contactPoint);
+        applyRowImpulse(row, row.accumImpulse);
     }
 
     // --- E. Sequential-impulse PGS sweep ---
+    // Soft-constraint CFM regularization: γ = compliance/dt² (0 for contacts and
+    // hard joints, so the term vanishes — no branch, the Phase 3 math is exact).
+    const float invDt2 = (dt > 0.f) ? (1.f / (dt * dt)) : 0.f;
     for (int iter = 0; iter < impl->velocityIters; ++iter) {
         for (AQConstraintRow &row : impl->rows) {
+            if (rowInert(row)) continue;        // both bodies inert (Phase 4 sleep skip)
             const auto &bA = impl->bodies[row.bodyA]->impl->s;
             const auto &bB = impl->bodies[row.bodyB]->impl->s;
             const FVec<3> wA = AQrotate(bA.orientation, bA.angularVelBody);
             const FVec<3> wB = AQrotate(bB.orientation, bB.angularVelBody);
-            const FVec<3> velA = bA.velocity + OmegaGTE::cross(wA, row.rA);
-            const FVec<3> velB = bB.velocity + OmegaGTE::cross(wB, row.rB);
-            const float relV = OmegaGTE::dot(velB - velA, row.direction);
 
-            float lambda = -(relV + row.bias) * row.effectiveMass;
-
-            // Per-row bound clamp. Normal row: λ ≥ 0 (no pull-together).
-            // Friction row: |λ| ≤ μ · λ_n_accumulated of the peer normal row.
-            float newAccum = row.accumImpulse + lambda;
-            if (row.kind == AQConstraintKind::ContactNormal) {
-                if (newAccum < 0.f) newAccum = 0.f;
+            // Relative velocity along the constraint direction: angular rows use
+            // the relative angular velocity; linear rows the point velocity.
+            float relV;
+            if (row.isAngular) {
+                relV = OmegaGTE::dot(wB - wA, row.direction);
             } else {
+                const FVec<3> velA = bA.velocity + OmegaGTE::cross(wA, row.rA);
+                const FVec<3> velB = bB.velocity + OmegaGTE::cross(wB, row.rB);
+                relV = OmegaGTE::dot(velB - velA, row.direction);
+            }
+
+            const float gamma  = row.compliance * invDt2;          // CFM (0 ⇒ hard)
+            float lambda = -(relV + row.bias + gamma * row.accumImpulse) * row.effectiveMass;
+
+            // Per-kind bound clamp.
+            float newAccum = row.accumImpulse + lambda;
+            switch (row.kind) {
+            case AQConstraintKind::ContactNormal:
+            case AQConstraintKind::JointLimit:                     // one-sided: λ ≥ 0
+                if (newAccum < 0.f) newAccum = 0.f;
+                break;
+            case AQConstraintKind::ContactFriction: {              // cone clamp |λ| ≤ μ·λ_n
                 const float peerN = impl->rows[row.peerRow].accumImpulse;
                 const float maxF  = row.frictionCoeff * peerN;
                 if (newAccum >  maxF) newAccum =  maxF;
                 if (newAccum < -maxF) newAccum = -maxF;
+                break;
+            }
+            case AQConstraintKind::JointMotor: {                   // |λ| ≤ motorMaxImpulse
+                const float maxM = row.frictionCoeff;
+                if (newAccum >  maxM) newAccum =  maxM;
+                if (newAccum < -maxM) newAccum = -maxM;
+                break;
+            }
+            case AQConstraintKind::JointAxis:                      // bilateral: unbounded
+            default:
+                break;
             }
             const float dl = newAccum - row.accumImpulse;
             row.accumImpulse = newAccum;
 
-            if (dl != 0.f) {
-                const FVec<3> P = row.direction * dl;
-                impl->bodies[row.bodyB]->applyImpulseAtPoint(P,        row.contactPoint);
-                impl->bodies[row.bodyA]->applyImpulseAtPoint(P * -1.f, row.contactPoint);
-            }
+            if (dl != 0.f) applyRowImpulse(row, dl);
         }
     }
 
@@ -1129,6 +1828,7 @@ void AQSpace::runNarrowphaseAndSolve(float dt) {
         for (int iter = 0; iter < impl->positionIters; ++iter) {
             for (std::size_t mi = 0; mi < impl->manifolds.size(); ++mi) {
                 const AQContactManifold &mf = impl->manifolds[mi];
+                if (!movable(mf.a) && !movable(mf.b)) continue;  // inert pair (sleep skip)
                 AQRigidBody::Impl &biA = *impl->bodies[mf.a]->impl;
                 AQRigidBody::Impl &biB = *impl->bodies[mf.b]->impl;
                 const auto &bA = biA.s;
@@ -1201,6 +1901,20 @@ void AQSpace::runNarrowphaseAndSolve(float dt) {
     }
     impl->cache = std::move(newCache);
 
+    // Joint warm-start write-back: each joint's per-row accumulated impulse is
+    // saved into its record for next sub-step's warm-start (§6.N). Keyed by the
+    // joint and the local row index — the joint analogue of the contact cache.
+    for (const auto &span : impl->jointRowSpans) {
+        AQJointRecord &J = impl->joints[span.jointIndex];
+        FVec<3> linImp = AQvec3(0.f, 0.f, 0.f);
+        for (std::uint32_t r = 0; r < span.count && r < kAQMaxJointRows; ++r) {
+            const AQConstraintRow &row = impl->rows[span.firstRow + r];
+            J.accum[r] = row.accumImpulse;
+            if (!row.isAngular) linImp += row.direction * row.accumImpulse;
+        }
+        J.lastLinearImpulse = linImp;
+    }
+
     // --- Debug emissions (Phase-3 brief §9 / new AQDebugContact* flags) ---
     if (impl->debugFlags & (AQDebugContactPoint | AQDebugContactNormal | AQDebugContactImpulse)) {
         for (std::size_t mi = 0; mi < impl->manifolds.size(); ++mi) {
@@ -1232,6 +1946,133 @@ void AQSpace::runNarrowphaseAndSolve(float dt) {
                         cp.positionWorld,
                         cp.positionWorld + mf.normalWorld * ln,
                         0.f, 1.f, 1.f));
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Phase 4 — island detection (union-find) + per-island sleep/wake (§6.F/§6.G).
+// Runs at the END of stepInternal on POST-solve velocities: a resting body
+// whose gravity the contact solver just cancelled reads as idle, so the idle
+// counter accumulates instead of being reset by the pre-solve gravity kick. The
+// activation it sets is what the NEXT sub-step's velocity sweep and the
+// integrator fast-path (AQStepBody*) consume.
+// ============================================================================
+void AQSpace::runIslandsAndSleep(float dt) {
+    (void)dt;
+    auto &bodies = impl->bodies;
+    const std::uint32_t N = static_cast<std::uint32_t>(bodies.size());
+    if (N == 0) return;
+
+    // (1) Per-body idle counter on the post-solve velocity. Energy-flavored
+    //     predicate (§6.G / §11.6): below BOTH the linear and angular thresholds
+    //     (a non-zero per-body override wins over the space default). Sleeping
+    //     bodies are idle by fiat; their counter is frozen (skipped here).
+    for (std::uint32_t i = 0; i < N; ++i) {
+        auto &bi = *bodies[i]->impl;
+        if (bi.type != AQBodyType::Dynamic) continue;
+        if (bi.s.activation == AQActivationState::Sleeping) continue;
+        const float thrLin = bi.sleepLinearVel  > 0.f ? bi.sleepLinearVel  : impl->sleepLinearVel;
+        const float thrAng = bi.sleepAngularVel > 0.f ? bi.sleepAngularVel : impl->sleepAngularVel;
+        const float vlin = std::sqrt(OmegaGTE::dot(bi.s.velocity, bi.s.velocity));
+        const float vang = std::sqrt(OmegaGTE::dot(bi.s.angularVelBody, bi.s.angularVelBody));
+        if (vlin < thrLin && vang < thrAng) {
+            if (bi.restingFrames != 0xFFFFFFFFu) ++bi.restingFrames;
+        } else {
+            bi.restingFrames = 0;
+        }
+    }
+
+    // (2) Union-find over dynamic-dynamic constraint edges (contacts ∪ joints).
+    //     Static / kinematic bodies are never unioned — they would merge every
+    //     island that touches them (the §6.F gotcha). The row order is
+    //     deterministic, so the roots are stable across runs.
+    std::vector<std::uint32_t> parent(N), rnk(N, 0u);
+    for (std::uint32_t i = 0; i < N; ++i) parent[i] = i;
+    auto find = [&](std::uint32_t x) {
+        while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+    };
+    auto unite = [&](std::uint32_t a, std::uint32_t b) {
+        std::uint32_t ra = find(a), rb = find(b);
+        if (ra == rb) return;
+        if (rnk[ra] < rnk[rb]) std::swap(ra, rb);
+        parent[rb] = ra;
+        if (rnk[ra] == rnk[rb]) ++rnk[ra];
+    };
+    auto isDyn = [&](std::uint32_t bi) { return bodies[bi]->impl->type == AQBodyType::Dynamic; };
+    for (const AQConstraintRow &row : impl->rows) {
+        if (isDyn(row.bodyA) && isDyn(row.bodyB)) unite(row.bodyA, row.bodyB);
+    }
+    for (std::uint32_t i = 0; i < N; ++i) bodies[i]->impl->islandId = find(i);
+
+    // (3) Per-island collective decision. minResting = smallest idle counter
+    //     among the island's dynamic members (a sleeping member counts as
+    //     "infinitely idle"). The island is eligible to sleep iff EVERY member
+    //     has been idle for at least `sleepIdleSubsteps`. The activation of every
+    //     member is then set to the island target — so one moving member (a new
+    //     contact, an external wakeUp) drops minResting and wakes the whole
+    //     island. That is the §2 chain-with-one-sleeping-body fix.
+    std::unordered_map<std::uint32_t, std::uint32_t> minResting;  // root -> min idle counter
+    std::unordered_map<std::uint32_t, std::uint32_t> islandSize;  // root -> dynamic member count
+    for (std::uint32_t i = 0; i < N; ++i) {
+        auto &bi = *bodies[i]->impl;
+        if (bi.type != AQBodyType::Dynamic) continue;
+        const std::uint32_t rf = (bi.s.activation == AQActivationState::Sleeping)
+                               ? 0xFFFFFFFFu : bi.restingFrames;
+        auto it = minResting.find(bi.islandId);
+        if (it == minResting.end()) minResting.emplace(bi.islandId, rf);
+        else if (rf < it->second)   it->second = rf;
+        ++islandSize[bi.islandId];
+    }
+    const std::uint32_t thr = impl->sleepIdleSubsteps;
+    for (std::uint32_t i = 0; i < N; ++i) {
+        auto &bi = *bodies[i]->impl;
+        if (bi.type != AQBodyType::Dynamic) continue;
+        const bool eligible = (thr > 0u) && (minResting[bi.islandId] >= thr);
+        if (eligible) {
+            if (bi.s.activation != AQActivationState::Sleeping) {
+                bi.s.activation     = AQActivationState::Sleeping;
+                bi.s.velocity       = AQvec3(0.f, 0.f, 0.f);
+                bi.s.angularVelBody = AQvec3(0.f, 0.f, 0.f);
+            }
+        } else if (bi.s.activation == AQActivationState::Sleeping) {
+            bi.s.activation = AQActivationState::Active;   // wake (idle counter preserved)
+        }
+    }
+
+    // (4) Debug emissions (§9): island spokes colored by sleep state, sleeping-
+    //     body markers, and the over-connection guard (a red origin tick if any
+    //     island has grown implausibly large — the classic missed-static-body
+    //     symptom, which the dynamic-only union above is designed to prevent).
+    const std::uint32_t dbg = impl->debugFlags;
+    if (dbg & (AQDebugIsland | AQDebugSleepingBody)) {
+        for (std::uint32_t i = 0; i < N; ++i) {
+            auto &bi = *bodies[i]->impl;
+            if (bi.type != AQBodyType::Dynamic) continue;
+            const FVec<3> com = bi.s.position + AQrotate(bi.s.orientation, bi.s.comOffset);
+            const bool asleep = (bi.s.activation == AQActivationState::Sleeping);
+            if (dbg & AQDebugIsland) {
+                auto &rb = *bodies[bi.islandId]->impl;
+                const FVec<3> rootCom = rb.s.position + AQrotate(rb.s.orientation, rb.s.comOffset);
+                if (asleep) impl->debugLines.push_back(makeLine(com, rootCom, 0.4f, 0.4f, 0.4f));
+                else        impl->debugLines.push_back(makeLine(com, rootCom, 0.f, 0.8f, 0.2f));
+            }
+            if ((dbg & AQDebugSleepingBody) && asleep) {
+                constexpr float e = 0.1f;
+                impl->debugLines.push_back(makeLine(com - AQvec3(e,0.f,0.f), com + AQvec3(e,0.f,0.f), 0.5f,0.5f,0.5f));
+                impl->debugLines.push_back(makeLine(com - AQvec3(0.f,e,0.f), com + AQvec3(0.f,e,0.f), 0.5f,0.5f,0.5f));
+                impl->debugLines.push_back(makeLine(com - AQvec3(0.f,0.f,e), com + AQvec3(0.f,0.f,e), 0.5f,0.5f,0.5f));
+            }
+        }
+        if (dbg & AQDebugIsland) {
+            constexpr std::uint32_t kIslandWarnSize = 1024u;   // §9 over-connection guard
+            for (const auto &kv : islandSize) {
+                if (kv.second > kIslandWarnSize) {
+                    impl->debugLines.push_back(makeLine(AQvec3(0.f,0.f,0.f), AQvec3(0.f,1.f,0.f), 1.f,0.f,0.f));
+                    break;
                 }
             }
         }

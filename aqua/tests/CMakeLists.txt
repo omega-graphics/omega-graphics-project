@@ -94,3 +94,14 @@ add_aqua_test(
     NAME    aqua_contact_test
     SOURCES aqua_contact_test.cpp
     LIBS    AQUA OmegaCommonCore)
+
+# Phase 4 joints / queries / sleeping / CCD validation: the swinging bridge
+# (ball-socket chain + catenary support-force oracle), the hinge door (angular
+# limit + motor steady state), raycast/shapecast/overlap + island sleep/wake,
+# and the CCD bullet (off tunnels / speculative < 1 cm / continuous < 1 mm).
+# Drives the public AQContext/AQSpace/AQRigidBody surface, matching the Phase-4
+# brief §1/§9 runnable-deliverable bars.
+add_aqua_test(
+    NAME    aqua_phase4_test
+    SOURCES aqua_phase4_test.cpp
+    LIBS    AQUA OmegaCommonCore)

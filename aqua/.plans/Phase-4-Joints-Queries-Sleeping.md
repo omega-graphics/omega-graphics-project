@@ -1196,3 +1196,94 @@ port (Patwary 2012, Jaiganesh 2018).
 Re-audit due: 2028-06-06 (roadmap §4 two-year freshness rule) or sooner
 if the §7.2 fork lands in Phase 7, or if hardware RT broadphase ships
 broadly enough to justify enabling the Phase 5.x path.
+
+---
+
+## 13. Implementation phasing (addendum, 2026-06-17)
+
+§1–§11 are the prior-art brief; this section is the reviewable-increment
+breakdown AGENTS.md requires before code lands (the brief did not carry one).
+Each increment builds and keeps the Phase 1–3 test battery green as a
+regression guard before the next begins; the §11 leans are adopted as the
+decisions (specialized joints #1, Catto-2011 softness #2, deferred
+articulations #3, union-find islands #4, ship-both-CCD-default-Off #5,
+energy-flavored sleep #6, one-way-kinematic #7, append-buffer queries #8,
+`(a,b)`-ordered triggers #9).
+
+- **4a — Groundwork (lands first, §1).** Type/enum/header surface and the
+  integrator hooks the rest builds on. `AQConstraintKind` gains
+  `JointAxis`/`JointLimit`/`JointMotor`; `AQConstraintRow` gains
+  `compliance` (defaults preserve Phase 3 row math byte-for-byte). New
+  `AQJoint.h` / `AQQuery.h`. `AQBodyType::Kinematic`, `AQActivationState`,
+  `AQCCDMode`, the `AQBodyDesc` Phase 4 fields, and the `AQRigidBody`
+  accessors. `AQBodyState<Ty>` gains `activation`; `AQStepBodyVelocity`/
+  `AQStepBodyPosition` fast-path `Sleeping`. `AQDebugFlags` extension.
+  AQSpace wires the body-side state, kinematic implicit velocity, the
+  both-sleeping PGS row skip, and the `compliance` term in `effectiveMass`.
+- **4b — Islands & sleeping.** `runIslandsAndSleep()` between row-build and
+  the PGS sweep: union-find over the (contact ∪ joint) edge set (statics
+  excluded), per-island energy-flavored idle accumulation, island-scoped
+  activation flips, the over-connection debug guard, and the sleep-tuning
+  API.
+- **4c — Joints.** `src/AQJoint.cpp` per-type row builders + limits/motors;
+  the SoA joint table on `AQSpace::Impl`; the `create*Joint` /
+  `destroyJoint` / `setJointSoftness` / `joints()` surface; the
+  `(jointIndex, rowIndex)` warm-start cache; the joint-row build step in
+  `runNarrowphaseAndSolve`; the Catto-2011 `(frequency,damping)` →
+  `(compliance,bias)` translation.
+- **4d — Queries.** Grid-scratch lifetime promoted to "valid until next
+  `advance`"; `src/AQQuery.cpp` 3D-DDA walk + analytic ray/shape forms +
+  GJK-ray fallback; `raycast` / `shapecast` / `overlap`.
+- **4e — Triggers.** `isTrigger` short-circuit in the candidate loop;
+  Enter/Stay/Exit diff over prev/curr overlap sets; `triggerEvents()`.
+- **4f — CCD.** `src/AQCCD.cpp` conservative-advancement TOI; speculative
+  fattening hook; the post-step per-body continuous substep.
+- **4g — Deliverable tests.** The four §1 scenes + the Phase 3 regression
+  re-run, wired into `tests/CMakeLists.txt`.
+
+Off-platform note (per the repo's multi-backend convention): AQUA is a
+pure-CPU library with no backend-specific paths, so there are no
+D3D12/Metal-unverified surfaces here — every increment is built and run on
+this Linux host.
+
+**Status (2026-06-17): COMPLETE.** All seven increments landed; the Phase 1–3
+test battery stays green and the new `aqua_phase4_test` passes all four §1
+deliverables (bridge, hinge door, raycast+sleep, bullet). Notable
+implementation decisions that diverged from the brief's lead, recorded for the
+record:
+
+- **Angular constraint rows.** The shared `AQConstraintRow` gained one field,
+  `isAngular`, beyond the `compliance` the brief scoped. Hinge/slider/fixed
+  orientation locks, angular limits, and angular motors are pure-torque rows
+  that the brief's contact-shaped row could not express; the PGS sweep branches
+  once on it and contacts take the unchanged linear path (byte-for-byte Phase 3).
+- **CCD via analytic swept-sphere TOI, not GJK conservative-advancement.**
+  §6.K's lead was Mirtich conservative-advancement over `AQshapeSupport`. The
+  shipped `runCCD` instead sweeps the body's bounding sphere with the analytic
+  sphere-cast already built for queries (`AQrayShape`): exact for the spherical
+  bullet deliverable, conservative for other shapes, and it reuses shipped code
+  instead of a second GJK path. The general convex-convex CA generalization is
+  deferred (no deliverable needs it); `src/AQCCD.cpp` was therefore not created.
+- **Queries are an O(N) sweep over the per-body broadphase AABBs, not a 3D-DDA
+  grid walk.** Correctness-first and matches the brute-force oracle exactly; the
+  per-body fat AABB *is* broadphase output (valid until the next advance), so the
+  §8 lifetime contract holds. The full 3D-DDA over the cell grid is the
+  documented performance follow-up.
+- **`jointImpulse()` accessor added.** §9's bridge oracle needs the solver's
+  accumulated joint impulse; a small read-only `AQSpace::jointImpulse(handle)`
+  exposes the joint's last-sub-step world linear impulse (reaction force =
+  impulse/dt). Folded into the §10 surface.
+- **The bridge deliverable is a *taut* rigid-link chain, not a sagging
+  catenary.** Wide rigid boxes joined by ball-sockets have a stable collinear
+  equilibrium (each box balances equal vertical joint forces at ±0.5), so a
+  span-length chain stays straight rather than catenary-sagging like a
+  point-mass string. The test asserts the load-bearing invariants instead
+  (joint error < 1 mm, symmetry, ends pinned, end anchors carry the chain
+  weight within ~15% — the Baumgarte position-bias inflates the pure support
+  force slightly). The < 1 mm joint-error bound is the §1 headline and holds.
+- **The query/CCD math seams** live in `src/AQQuery.cpp` (`AQrayShape`,
+  `AQshapeBoundingRadius`) and `src/AQJoint.cpp` (`AQbuildJointRows`); the
+  `AQSpace::Impl`-touching glue (joint table, query/trigger/CCD iteration) stays
+  in `AQSpace.cpp` because `AQRigidBody::Impl`/`AQSpace::Impl` are private and
+  only `AQSpace` is their friend — the same split the brief assumes for the
+  per-type math vs. the SoA driver.

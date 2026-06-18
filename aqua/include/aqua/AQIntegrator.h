@@ -18,6 +18,7 @@
 // the case where COM ≠ pose origin).
 
 #include "AQMath.h"
+#include "AQJoint.h"   // AQActivationState (Phase 4 sleep/kinematic fast-path)
 #ifndef NDEBUG
 #include <cassert>
 #endif
@@ -44,6 +45,15 @@ struct AQBodyState {
     Ty                       gravityScale    = Ty(1);                  // per-body gravity multiplier
     Ty                       maxAngularSpeed = Ty(0);                  // 0 ⇒ unlimited
     AQVec3<Ty>               comOffset       = AQVec3<Ty>::Create();   // reserved (Phase 2)
+
+    // --- Phase 4: activation (sleep / kinematic fast-path) ---
+    // Active (default) integrates as Phase 1. Sleeping skips both half-steps
+    // (the body is inert until its island wakes). Kinematic bodies carry
+    // invMass == 0, so the invMass guard below already skips their integration;
+    // the enum is still set so the public accessor and the island/solver code
+    // can distinguish a kinematic body from a static one. Default Active keeps
+    // the `double` parity oracle and every Phase 1-3 path byte-for-byte.
+    AQActivationState        activation      = AQActivationState::Active;
 };
 
 // Adaptive-iteration policy (§4, §11.1). When the per-step rotation ‖ω‖·dt is
@@ -68,7 +78,8 @@ inline constexpr int kAQAdaptiveCap = 4;
 // original Phase 1 `AQStepBody` byte-for-byte.
 template<class Ty>
 inline void AQStepBodyVelocity(AQBodyState<Ty>& b, const AQVec3<Ty>& gravity, Ty dt) {
-    if (b.invMass == Ty(0)) return;                       // static / immovable
+    if (b.invMass == Ty(0)) return;                       // static / kinematic / immovable
+    if (b.activation == AQActivationState::Sleeping) return;  // Phase 4 sleep fast-path
 
     // 1. Linear: symplectic Euler, velocity first. Per-body gravityScale scales
     //    the world acceleration; accumulated forces are scaled by inverse mass.
@@ -160,7 +171,10 @@ inline void AQStepBodyVelocity(AQBodyState<Ty>& b, const AQVec3<Ty>& gravity, Ty
 // frame doesn't carry forward (Phase 1 semantics preserved).
 template<class Ty>
 inline void AQStepBodyPosition(AQBodyState<Ty>& b, Ty dt) {
-    if (b.invMass == Ty(0)) {
+    if (b.invMass == Ty(0) || b.activation == AQActivationState::Sleeping) {
+        // Static / kinematic / sleeping: pose stays put (kinematic pose is set
+        // externally), but the accumulators are still cleared so a stray
+        // applied force on such a body in the same frame doesn't carry forward.
         b.forceAccum  = AQVec3<Ty>::Create();
         b.torqueAccum = AQVec3<Ty>::Create();
         return;

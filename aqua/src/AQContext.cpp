@@ -58,6 +58,9 @@ void AQContext::advance(float realDt) {
 
     if (willStep) {
         for (auto &space : spaces) space->runBroadphase(realDt);
+        // Phase 4 — trigger Enter/Stay/Exit are diffed once per advance, on the
+        // post-step candidate pairs + world AABBs the refresh above produced.
+        for (auto &space : spaces) space->updateTriggers();
     }
 }
 

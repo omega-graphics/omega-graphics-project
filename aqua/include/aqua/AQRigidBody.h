@@ -10,14 +10,16 @@
 
 #include "AQBase.h"
 #include "AQCollision.h"
+#include "AQJoint.h"   // AQActivationState, AQCCDMode (Phase 4)
 #include "AQMath.h"
 #include <omegaGTE/GTEMath.h>
 #include <memory>
 
 /// How a body participates in the simulation.
 enum class AQBodyType {
-    Static,   ///< Never moves; treated as infinite mass (ground, level geometry).
-    Dynamic,  ///< Integrated each step; affected by gravity and forces.
+    Static,    ///< Never moves; treated as infinite mass (ground, level geometry).
+    Dynamic,   ///< Integrated each step; affected by gravity and forces.
+    Kinematic, ///< Phase 4 — user-driven pose, infinite mass, pushes dynamics one-way.
 };
 
 /// Parameters for creating an AQRigidBody.
@@ -68,6 +70,21 @@ struct AQUA_EXPORT AQBodyDesc {
     /// Collision-filter layer/mask. Defaults: layer 1, mask = all — every
     /// body collides with every other body. Phase 2 brief §11.5 lean.
     AQCollisionFilter filter;
+
+    // --- Phase 4 additions (triggers, CCD, sleep) ---
+    /// When true the body is a TRIGGER: it still generates broadphase candidate
+    /// pairs and an overlap test runs, but the narrowphase emits Enter/Stay/Exit
+    /// events (drained via `AQSpace::triggerEvents`) instead of constraint rows.
+    /// No collision response. (Phase-4 brief §6.M.)
+    bool      isTrigger = false;
+    /// Opt-in continuous-collision mode for fast/thin bodies. `Off` (default)
+    /// keeps the Phase 3 discrete path and the settling-stack performance bar.
+    AQCCDMode ccdMode   = AQCCDMode::Off;
+    /// Per-body sleep thresholds; 0 ⇒ use the space default
+    /// (`AQSpace::setSleepThresholds`). Linear m/s, angular rad/s. An island
+    /// sleeps when every member is below threshold for the configured frames.
+    float     sleepLinearVelocity  = 0.f;
+    float     sleepAngularVelocity = 0.f;
 };
 
 /// Handle to a body living inside an AQSpace. Owned by the AQSpace; obtained from
@@ -141,6 +158,32 @@ public:
 
     AQUA_NODISCARD AQCollisionFilter collisionFilter() const;
     void setCollisionFilter(const AQCollisionFilter &f);
+
+    // --- activation / sleep (Phase 4) ---
+    /// Current activation state. The integrator and PGS sweep fast-path
+    /// `Sleeping`; `Kinematic` is reported for kinematic bodies.
+    AQUA_NODISCARD AQActivationState activation() const;
+    /// Force the body Active (and, if it is in an island, wakes the whole
+    /// island on the next step). A no-op on kinematic bodies.
+    void wakeUp();
+    /// Force the body Sleeping (clears its velocities). A no-op on static /
+    /// kinematic bodies. The island sleep logic may re-wake it if it is
+    /// touched by an active body.
+    void putToSleep();
+
+    // --- triggers / CCD (Phase 4) ---
+    AQUA_NODISCARD bool isTrigger() const;
+    AQUA_NODISCARD AQCCDMode ccdMode() const;
+    void setCCDMode(AQCCDMode m);
+
+    // --- kinematic control (Phase 4) ---
+    /// Set the kinematic target pose. Only meaningful for `Kinematic` bodies:
+    /// at the next sub-step the body teleports to `(p, q)` and its implicit
+    /// velocity ((target − previous)/dt) is used for one-way collision response
+    /// and to drive joints. `setPosition`/`setOrientation` still work but do
+    /// NOT compute the implicit velocity.
+    void setKinematicTarget(const OmegaGTE::FVec<3>     &p,
+                            const OmegaGTE::FQuaternion &q);
 
     // --- force / torque / impulse API ---
     // Forces/torques accumulate in world space and are consumed at the start of

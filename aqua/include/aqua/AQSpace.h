@@ -12,6 +12,8 @@
 #include "AQCollision.h"
 #include "AQContact.h"
 #include "AQDebug.h"
+#include "AQJoint.h"
+#include "AQQuery.h"
 #include "AQRigidBody.h"
 #include <omegaGTE/GTEMath.h>
 #include <cstddef>
@@ -96,6 +98,86 @@ public:
     /// pointers, so it is safe to hold across `advance` boundaries.
     AQUA_NODISCARD std::vector<AQContactManifold> contactManifolds() const;
 
+    // ========================================================================
+    // Phase 4 — joints, queries, triggers, sleep tuning (§10 public API).
+    // ========================================================================
+
+    // --- joints ---
+    // Named-ctor idiom matching `createSphereShape` etc. Each returns a handle
+    // into the space's joint table. A joint between two infinite-mass bodies
+    // (static/static, static/kinematic, …) returns an invalid handle — it would
+    // be a no-op. Anchors are in each body's LOCAL frame; axes are body-A local.
+    AQJointHandle createDistanceJoint(const std::shared_ptr<AQRigidBody> &a,
+                                      const std::shared_ptr<AQRigidBody> &b,
+                                      const OmegaGTE::FVec<3> &anchorALocal,
+                                      const OmegaGTE::FVec<3> &anchorBLocal,
+                                      float length);
+    AQJointHandle createBallSocketJoint(const std::shared_ptr<AQRigidBody> &a,
+                                        const std::shared_ptr<AQRigidBody> &b,
+                                        const OmegaGTE::FVec<3> &anchorALocal,
+                                        const OmegaGTE::FVec<3> &anchorBLocal);
+    AQJointHandle createHingeJoint(const std::shared_ptr<AQRigidBody> &a,
+                                   const std::shared_ptr<AQRigidBody> &b,
+                                   const OmegaGTE::FVec<3> &anchorALocal,
+                                   const OmegaGTE::FVec<3> &anchorBLocal,
+                                   const OmegaGTE::FVec<3> &axisALocal,
+                                   const AQJointAxisLimit &limit = AQJointAxisLimit{});
+    AQJointHandle createSliderJoint(const std::shared_ptr<AQRigidBody> &a,
+                                    const std::shared_ptr<AQRigidBody> &b,
+                                    const OmegaGTE::FVec<3> &anchorALocal,
+                                    const OmegaGTE::FVec<3> &anchorBLocal,
+                                    const OmegaGTE::FVec<3> &axisALocal,
+                                    const AQJointAxisLimit &limit = AQJointAxisLimit{});
+    AQJointHandle createFixedJoint(const std::shared_ptr<AQRigidBody> &a,
+                                   const std::shared_ptr<AQRigidBody> &b);
+
+    void setJointSoftness(AQJointHandle h, AQJointSoftness s);
+    bool destroyJoint(AQJointHandle h);
+
+    /// Read-only joint view, refreshed per `advance`. Value-type copies carry
+    /// body indices, not pointers — safe to hold across `advance` boundaries.
+    AQUA_NODISCARD std::vector<AQJointDesc> joints() const;
+
+    /// World-frame linear impulse this joint applied during the most recent
+    /// sub-step (zero vector for an invalid handle). Divide by the sub-step `dt`
+    /// for the reaction force the joint exerts — the bridge deliverable reads
+    /// this for its catenary-tension / support-force oracle.
+    AQUA_NODISCARD OmegaGTE::FVec<3> jointImpulse(AQJointHandle h) const;
+
+    // --- queries (valid between `advance` calls; stale during one) ---
+    // `hits` is cleared then appended; results are sorted by (fraction, body).
+    // The grid walked is the same per-step structure the broadphase builds.
+    void raycast(const OmegaGTE::FVec<3> &origin,
+                 const OmegaGTE::FVec<3> &direction,
+                 float maxT,
+                 const AQQueryFilter &filter,
+                 std::vector<AQRaycastHit> &hits) const;
+    void shapecast(AQShapeHandle shape,
+                   const OmegaGTE::FVec<3> &origin,
+                   const OmegaGTE::FQuaternion &orientation,
+                   const OmegaGTE::FVec<3> &direction,
+                   float maxT,
+                   const AQQueryFilter &filter,
+                   std::vector<AQRaycastHit> &hits) const;
+    void overlap(AQShapeHandle shape,
+                 const OmegaGTE::FVec<3> &origin,
+                 const OmegaGTE::FQuaternion &orientation,
+                 const AQQueryFilter &filter,
+                 bool exactShapes,
+                 std::vector<std::uint32_t> &bodies) const;
+
+    // --- triggers ---
+    /// Drains the per-`advance` trigger-event queue; subsequent calls until the
+    /// next advance return empty. Events are ordered by `(a, b)` ascending.
+    AQUA_NODISCARD std::vector<AQTriggerEvent> triggerEvents();
+
+    // --- sleep tuning ---
+    /// Space-wide sleep thresholds. Defaults: 0.01 m/s linear, 0.01 rad/s
+    /// angular, 60 idle sub-steps (~0.5 s @ 1/120). Non-zero per-body overrides
+    /// on `AQBodyDesc` take precedence. Negative inputs are clamped to 0.
+    void setSleepThresholds(float linearVel, float angularVel,
+                            std::uint32_t idleSubsteps);
+
 private:
     AQSpace();
 
@@ -122,6 +204,36 @@ private:
     /// `AQSpace::stepInternal` between the velocity half-step and the
     /// position half-step of `AQStepBody*` (Phase-3 brief §6, §10).
     void runNarrowphaseAndSolve(float dt);
+
+    /// Phase 4 — island detection + per-island sleep/wake. Runs once per
+    /// sub-step at the end of `stepInternal` (on the POST-solve velocities, so
+    /// a resting body whose gravity the solver just cancelled reads as idle).
+    /// Union-find over the (contact ∪ joint) edges in the row buffer (statics /
+    /// kinematics excluded), an energy-flavored per-body idle counter, and a
+    /// collective per-island activation flip. Sets the activation the NEXT
+    /// sub-step's velocity sweep and integrator fast-path read.
+    void runIslandsAndSleep(float dt);
+
+    /// Phase 4 — build the constraint rows for every live joint into the shared
+    /// row buffer (after the contact rows), warm-starting each from its joint
+    /// record and recording the row span for the post-sweep write-back. Called
+    /// by `runNarrowphaseAndSolve` between the contact-row build and the sweep.
+    void buildJointRows(float dt);
+
+    /// Phase 4 — diff this advance's trigger overlaps against the previous
+    /// advance's set, producing Enter/Stay/Exit events. Called once per advance
+    /// by AQContext (after the post-step broadphase refresh), NOT per sub-step,
+    /// so a steady overlap yields one Enter, then one Stay per advance, then one
+    /// Exit (the §9 event-count contract).
+    void updateTriggers();
+
+    /// Phase 4 — opt-in continuous collision (§6.K). After the position
+    /// half-step, sweep each CCD body's bounding sphere from its pre-step
+    /// position to where it landed; if it would have passed through another
+    /// shape this sub-step, snap it back to the time of impact and cancel the
+    /// into-surface velocity, so a fast/thin body cannot tunnel. Reads the
+    /// pre-step positions captured in `impl->ccdPrevPos`.
+    void runCCD(float dt);
 
     friend class AQContext;
 

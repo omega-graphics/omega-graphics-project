@@ -58,12 +58,21 @@ struct AQContactManifold {
 /// Which kind of constraint row a `AQConstraintRow` carries.
 /// `ContactNormal` rows are lower-bounded at 0 (the solver never pulls bodies
 /// together); `ContactFriction` rows are cone-clamped each iteration to
-/// `±μ · λ_n` of the row their `peerRow` index points at. Phase 4 joints will
-/// add their own kinds (revolute axis row, limit row, motor row) with their
-/// own bound rules — the SoA layout stays the same.
+/// `±μ · λ_n` of the row their `peerRow` index points at.
+///
+/// Phase 4 joints add three more kinds on the SAME row layout (Phase-4 brief
+/// §5, §7): `JointAxis` is a BILATERAL row (lowerBound = -inf, upperBound =
+/// +inf — the solver pulls or pushes to hold the constraint); `JointLimit` is a
+/// one-sided bounded row at a violated angular/linear limit (λ ≥ 0, like a
+/// contact normal); `JointMotor` is a target-velocity row bounded by a max
+/// impulse (|λ| ≤ F_max·dt). The PGS inner loop branches on these the same way
+/// it branches on contact rows — only the per-kind bound rule differs.
 enum class AQConstraintKind : std::uint32_t {
     ContactNormal,
     ContactFriction,
+    JointAxis,    ///< bilateral (two-sided); λ unbounded
+    JointLimit,   ///< one-sided at a limit; λ ≥ 0
+    JointMotor,   ///< target velocity; |λ| ≤ motorMaxImpulse (carried in frictionCoeff)
 };
 
 /// A single row consumed by the PGS sweep (Phase-3 brief §6.D, §7). Three
@@ -85,7 +94,23 @@ struct AQConstraintRow {
     float             bias          = 0.f;   ///< restitution bias on normal; 0 on friction
     float             accumImpulse  = 0.f;   ///< warm-started across the sweep
     std::uint32_t     peerRow       = 0;     ///< friction → its normal row index
-    float             frictionCoeff = 0.f;   ///< μ on friction rows; 0 on normal
+    float             frictionCoeff = 0.f;   ///< μ on friction rows; 0 on normal; motor max-impulse on JointMotor rows
+    /// Soft-constraint compliance (Catto 2011, Phase-4 §6.D). 0 ⇒ HARD — the
+    /// effective mass is the Phase 3 `1/Keff` unchanged. When > 0 the row build
+    /// folds it in as `effectiveMass = 1 / (Keff + compliance/dt²)` and rescales
+    /// the bias, giving spring/damper joint behaviour. The CFM term it implies
+    /// (`γ·accumImpulse`, γ = compliance/dt²) is added in the PGS iteration but
+    /// vanishes for contact rows (compliance 0), so Phase 3 row math is
+    /// byte-for-byte preserved.
+    float             compliance    = 0.f;
+    /// Geometric type of the row (Phase 4). `false` (the default, every contact
+    /// row) is a LINEAR row: a `direction·λ` impulse applied at `contactPoint`,
+    /// with relative velocity `(vB + ωB×rB − vA − ωA×rA)·direction`. `true` is
+    /// an ANGULAR row (hinge/slider/fixed orientation locks, angular limits and
+    /// motors): a pure torque `direction·λ`, relative velocity `(ωB − ωA)·
+    /// direction`, `rA`/`rB`/`contactPoint` unused. The PGS loop branches once
+    /// on this; contacts take the unchanged linear path.
+    bool              isAngular     = false;
 };
 
 /// PhysX/Chaos-style material-combine rules. Picked per-AQSpace via
