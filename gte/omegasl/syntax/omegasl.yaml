@@ -2,7 +2,7 @@ name: OmegaSL
 scopeName: source.omegasl
 fileTypes:
   - omegasl
-  - osl
+  - omegaslh
 foldingStartMarker: '\{\s*$'
 foldingStopMarker: '^\s*\}'
 uuid: 0c7af5c0-ded7-44af-8b49-15e3e0203d8f
