@@ -862,7 +862,7 @@ Listed as not-implemented. Lower impact than switch/ternary.
 | flatten   | `[flatten]` | — | — |
 
 **Proposal:** accept `[unroll]` and `[unroll(N)]` everywhere; on backends that
-don't support it, emit nothing. Rare to need the others.
+don't support it, emit nothing. Rare to need the others. (FEATURE GATE)
 
 ### 3.5 Function overloading [LANDED]
 
@@ -1159,9 +1159,74 @@ hardware safe; bumping the profile when `#requires(FLOAT16)` /
 `#requires(INT64)` is declared is a follow-up that touches the offline
 DXC invocation rather than the type system.
 
-### 4.3 `double` — 
+### 4.3 `double` — [LANDED — compile path; HLSL/GLSL source-verified, MSL stubbed]
 
-We can do this but we must feature gate it with our feature gating system.
+| HLSL | MSL | GLSL |
+|------|-----|------|
+| `double` / `double2..4` (SM 5.0+) | **none — Metal has no `double`** | `double` / `dvec2..4` (`GL_ARB_gpu_shader_fp64`) |
+
+Double-precision floating point. The defining asymmetry is that **Metal/MSL
+has no `double` type at all** — so this is the §1.7 `CullDistance` situation,
+not the §4.2 `INT64` situation: HLSL and GLSL can express it, MSL cannot.
+
+**Gated by `OMEGASL_FEATURE_BIT_DOUBLE` (HLSL=true, MSL=false, GLSL=true).**
+The feature bit, the `{"DOUBLE", …, true, false, true}` row in the
+Preprocessor feature table, the `KW_TY_DOUBLE/2/3/4` tokens, the
+`LiteralExpr::d_num` / `isDouble()` storage, and the
+`CodeGen::emitLiteralValue` `isDouble` branch were all pre-laid in earlier
+passes; this cut wires the type itself through the rest of the pipeline.
+
+Because MSL is not expressible, a shader that uses `double` must declare
+`#requires(DOUBLE)`. On MSL the existing unsatisfied-feature path
+(`fileUnsatisfiedFeatures != 0` in `CodeGen::SHADER_DECL`) stubs the whole
+shader **before body emission** — the MSL backend never tries to spell
+`double`, and the loader rejects pipelines that bind the stub. HLSL/GLSL
+emit the shader normally. Undeclared use trips the FeatureScanner Layer-2
+portability warning (same as `CULL_DISTANCE` / `TEXTURECUBE_RW`).
+
+**Scope (matches the §4.1/§4.2 cuts):** scalar `double` + `double2/3/4`
+vectors + `make_double2/3/4` constructors. **No `double` matrices** — same
+rationale the half/int64 cuts used for skipping their matrix families; add
+them when a real workload needs `dmat`.
+
+**Literals.** Full-precision literals use an `lf` / `LF` suffix
+(`3.141592653589793lf`) — the GLSL convention — parsed via `std::stod`
+into `d_num` and emitted at 17 significant digits with the `lf` suffix so
+the downstream GLSL/HLSL compiler parses a genuine `double` rather than
+rounding through `float` first. An unsuffixed float literal still coerces
+into a `double` slot (at float precision), exactly like `half` (`1.0`).
+A `double` literal does *not* coerce into a `float`/`half` slot (that
+would silently drop precision — use an explicit cast).
+
+**Per backend.** HLSL `double` / `double2..4`; GLSL `double` / `dvec2..4`
+plus a `#extension GL_ARB_gpu_shader_fp64 : enable` line emitted on
+`#requires(DOUBLE)` (mirrors the FLOAT16/INT64 extension pattern); MSL
+emits nothing (stub).
+
+**Verification.** Only Metal compiles on the macOS host, and a
+`#requires(DOUBLE)` shader stubs on Metal — but Sema + the FeatureScanner
+still run there, so `omegasl_compile_numeric_double` exercises the whole
+front end locally. The HLSL `double2..4` and GLSL `dvec2..4` / fp64 /
+`lf`-suffix *source* emission is verified with
+`omegaslc -S --hlsl` / `-S --glsl` (the `-S` flag transpiles without
+invoking dxc/glslc). Real compile-through on dxc (Windows) and glslc
+(Linux) is the user's host-side confirmation — in particular the `lf`
+double-literal suffix on dxc (HLSL also accepts a bare `l`; switch the
+suffix in `CodeGen::emitLiteralValue` if dxc rejects `lf`).
+
+Test: `numeric_double.omegasl` (scalar + vector double, `lf` literal,
+int-literal + float-literal coercion, `(double)` cast, vector indexing),
+mirroring `numeric_64bit.omegasl`.
+
+**Out of scope (follow-ups):**
+* `double` matrix types (`double2x2`…`double4x4` → HLSL `doubleNxM` /
+  GLSL `dmat`); no MSL analogue regardless.
+* HLSL DXC profile/flag handling for `double` (the SM-profile bump
+  follow-up tracked for FLOAT16/INT64 covers this family too).
+* Runtime `GTEDeviceFeatures → featuresAsBitmask` advertisement of
+  `DOUBLE` on D3D12/Vulkan (the same bridge §1.7 notes for
+  `CULL_DISTANCE`); until then the MSL stub + stub-rejection give the
+  correct Metal behavior and the compile path is complete.
 
 ---
 

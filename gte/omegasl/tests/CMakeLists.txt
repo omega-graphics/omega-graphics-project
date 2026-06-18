@@ -111,9 +111,11 @@ add_omegasl_compile_test(omegasl_compile_pack_norm           pack_norm.omegasl)
 add_omegasl_compile_test(omegasl_compile_atomic_ops          atomic_ops.omegasl)
 # §5.1.0 — modf / frexp out-param intrinsics + mod / mad aliases.
 add_omegasl_compile_test(omegasl_compile_math_modf_frexp     math_modf_frexp.omegasl)
-# §4.1 / §4.2 — 16-bit and 64-bit numeric type families.
+# §4.1 / §4.2 / §4.3 — 16-bit, 64-bit, and double numeric type families.
 add_omegasl_compile_test(omegasl_compile_numeric_16bit       numeric_16bit.omegasl)
 add_omegasl_compile_test(omegasl_compile_numeric_64bit       numeric_64bit.omegasl)
+# §4.3 — `double` (DOUBLE-gated; HLSL/GLSL express it, MSL stubs the shader).
+add_omegasl_compile_test(omegasl_compile_numeric_double      numeric_double.omegasl)
 # §3.2 — ternary `?:`.
 add_omegasl_compile_test(omegasl_compile_ternary             ternary.omegasl)
 # §3.6 — `const` qualifier on a local variable.

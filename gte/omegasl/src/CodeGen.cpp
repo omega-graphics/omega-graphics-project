@@ -12,9 +12,11 @@ namespace omegasl {
     /// for `max` / `min` / `clamp` / etc. — an integer-shaped argument
     /// either picks the int overload silently (HLSL/MSL) or hard errors
     /// (GLSL). Centralized here so the three backends share one rule.
-    static std::string formatFloatLit(double v) {
+    /// `precision` is the number of significant digits to round-trip: 9 is
+    /// enough for a 32-bit `float`, 17 for a 64-bit `double` (§4.3).
+    static std::string formatFloatLit(double v, int precision = 9) {
         std::ostringstream os;
-        os << std::setprecision(9) << v;
+        os << std::setprecision(precision) << v;
         std::string s = os.str();
         if (s.find_first_of(".eEnN") == std::string::npos) {
             s += ".0";
@@ -73,7 +75,13 @@ namespace omegasl {
         if (expr->isFloat()) {
             out << formatFloatLit(expr->f_num.value());
         } else if (expr->isDouble()) {
-            out << formatFloatLit(expr->d_num.value());
+            /// §4.3 — 17 significant digits (round-trips a 64-bit double) plus
+            /// the `lf` suffix so the downstream HLSL/GLSL compiler parses a
+            /// genuine `double` rather than rounding the literal through float
+            /// first. MSL never reaches here — a `double` shader stubs out,
+            /// since Metal has no double. (If dxc rejects `lf`, HLSL also
+            /// accepts a bare `l` — swap the suffix here.)
+            out << formatFloatLit(expr->d_num.value(), 17) << "lf";
         } else if (expr->isInt()) {
             out << expr->i_num.value();
         } else if (expr->isUint()) {

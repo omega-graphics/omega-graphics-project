@@ -228,6 +228,12 @@ namespace omegasl {
         if(cg.fileRequiredFeatures & OMEGASL_FEATURE_BIT_INT64){
             out << "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable" << std::endl;
         }
+        /// §4.3 — double-precision floats need `GL_ARB_gpu_shader_fp64`
+        /// (core in GLSL 4.0 / SPIR-V Float64). Emitted on `#requires(DOUBLE)`,
+        /// mirroring the FLOAT16/INT64 extension pattern.
+        if(cg.fileRequiredFeatures & OMEGASL_FEATURE_BIT_DOUBLE){
+            out << "#extension GL_ARB_gpu_shader_fp64 : enable" << std::endl;
+        }
     }
 
     void GLSLTarget::emitStructDecl(CodeGen &cg, ast::StructDecl *_decl) {
@@ -1322,6 +1328,10 @@ namespace omegasl {
         if (name == BUILTIN_MAKE_ULONG2)   return "u64vec2";
         if (name == BUILTIN_MAKE_ULONG3)   return "u64vec3";
         if (name == BUILTIN_MAKE_ULONG4)   return "u64vec4";
+        /// §4.3 — GLSL double-precision vectors.
+        if (name == BUILTIN_MAKE_DOUBLE2)  return "dvec2";
+        if (name == BUILTIN_MAKE_DOUBLE3)  return "dvec3";
+        if (name == BUILTIN_MAKE_DOUBLE4)  return "dvec4";
         if (name == BUILTIN_MAKE_FLOAT2X2) return "mat2";
         if (name == BUILTIN_MAKE_FLOAT3X3) return "mat3";
         if (name == BUILTIN_MAKE_FLOAT4X4) return "mat4";
@@ -2025,6 +2035,14 @@ namespace omegasl {
         else if(t == ast::builtins::ulong2_type) { out << "u64vec2"; }
         else if(t == ast::builtins::ulong3_type) { out << "u64vec3"; }
         else if(t == ast::builtins::ulong4_type) { out << "u64vec4"; }
+        /// §4.3 double-precision floats. GLSL spells the scalar `double`
+        /// and the vectors `dvecN`; `emitDefaultHeaders` adds the
+        /// `GL_ARB_gpu_shader_fp64` extension when the file
+        /// `#requires(DOUBLE)`.
+        else if(t == ast::builtins::double_type)  { out << "double"; }
+        else if(t == ast::builtins::double2_type) { out << "dvec2"; }
+        else if(t == ast::builtins::double3_type) { out << "dvec3"; }
+        else if(t == ast::builtins::double4_type) { out << "dvec4"; }
         else {
             out << t->name;
         }

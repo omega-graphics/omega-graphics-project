@@ -47,6 +47,14 @@ namespace omegasl {
         ast::builtins::ulong3_type,
         ast::builtins::ulong4_type,
 
+        /// §4.3 double-precision floats. Sema treats them like any other
+        /// scalar/vector; the DOUBLE feature-bit gate (and the MSL stub) is
+        /// the FeatureScanner's / CodeGen's job, not Sema's.
+        ast::builtins::double_type,
+        ast::builtins::double2_type,
+        ast::builtins::double3_type,
+        ast::builtins::double4_type,
+
         ast::builtins::float_type,
         ast::builtins::float2_type,
         ast::builtins::float3_type,
@@ -132,6 +140,12 @@ namespace omegasl {
             ast::builtins::make_ulong2,
             ast::builtins::make_ulong3,
             ast::builtins::make_ulong4,
+            /// §4.3 double vector constructors. Like make_half*/make_long*,
+            /// these have no special dispatch arm — the generic builtin path
+            /// (returns the FuncType's declared return) handles them.
+            ast::builtins::make_double2,
+            ast::builtins::make_double3,
+            ast::builtins::make_double4,
             ast::builtins::make_float2x2,
             ast::builtins::make_float2x3,
             ast::builtins::make_float2x4,
@@ -250,6 +264,9 @@ namespace omegasl {
             if(t == ulong2_type) return {ulong_type, 2};
             if(t == ulong3_type) return {ulong_type, 3};
             if(t == ulong4_type) return {ulong_type, 4};
+            if(t == double2_type) return {double_type, 2};
+            if(t == double3_type) return {double_type, 3};
+            if(t == double4_type) return {double_type, 4};
             if(t == bool2_type) return {bool_type, 2};
             if(t == bool3_type) return {bool_type, 3};
             if(t == bool4_type) return {bool_type, 4};
@@ -269,6 +286,7 @@ namespace omegasl {
             if(scalar == ushort_type) return n==2?ushort2_type : n==3?ushort3_type : ushort4_type;
             if(scalar == long_type) return n==2?long2_type : n==3?long3_type : long4_type;
             if(scalar == ulong_type) return n==2?ulong2_type : n==3?ulong3_type : ulong4_type;
+            if(scalar == double_type) return n==2?double2_type : n==3?double3_type : double4_type;
             if(scalar == bool_type) return n==2?bool2_type : n==3?bool3_type : bool4_type;
             return nullptr;
         }
@@ -497,7 +515,7 @@ namespace omegasl {
         using namespace ast::builtins;
         return t == float_type  || t == int_type    || t == uint_type
             || t == half_type   || t == short_type  || t == ushort_type
-            || t == long_type   || t == ulong_type;
+            || t == long_type   || t == ulong_type  || t == double_type;
     }
 
     /// Check if a resolved type is a matrix type.
@@ -563,7 +581,7 @@ namespace omegasl {
     static ast::LiteralExpr *asNumericLiteral(ast::Expr *e) {
         auto isAnyNumeric = [](ast::LiteralExpr *lit) {
             return lit->isInt() || lit->isUint() || lit->isFloat()
-                || lit->isLong() || lit->isUlong();
+                || lit->isLong() || lit->isUlong() || lit->isDouble();
         };
         if(e == nullptr) return nullptr;
         if(e->type == UNARY_EXPR){
@@ -586,15 +604,20 @@ namespace omegasl {
     ///     numeric scalar slot. The shader author writes a small constant
     ///     and gets the declared type; out-of-range values are caught by
     ///     the backend compiler, which is honest about hardware limits.
-    ///   - float literals coerce to float and half. The `h` suffix is a
-    ///     spelling convenience — `1.0` and `1.0h` both initialize a
-    ///     `half` slot. They never coerce to ints/uints; that requires
-    ///     an explicit cast.
+    ///   - float literals coerce to float, half, and double (§4.3). The
+    ///     `h` suffix is a spelling convenience — `1.0` and `1.0h` both
+    ///     initialize a `half` slot; `1.0` also initializes a `double` slot
+    ///     (at float precision). They never coerce to ints/uints; that
+    ///     requires an explicit cast.
+    ///   - double literals (`1.0lf`, §4.3) coerce only to a `double` slot.
+    ///     They do *not* narrow into a `float`/`half` slot — that would
+    ///     silently drop precision; use an explicit cast.
     static bool canCoerceLiteralTo(ast::LiteralExpr *lit, ast::Type *target) {
         using namespace ast::builtins;
         if(lit == nullptr || target == nullptr) return false;
         if(!isNumericScalar(target)) return false;
-        if(lit->isFloat()) return target == float_type || target == half_type;
+        if(lit->isFloat()) return target == float_type || target == half_type || target == double_type;
+        if(lit->isDouble()) return target == double_type;
         if(lit->isInt() || lit->isUint() || lit->isLong() || lit->isUlong()) return true;
         return false;
     }
@@ -819,6 +842,9 @@ namespace omegasl {
             }
             else if(_expr->isUlong()){
                 return ast::TypeExpr::Create(ast::builtins::ulong_type);
+            }
+            else if(_expr->isDouble()){
+                return ast::TypeExpr::Create(ast::builtins::double_type);
             }
             else if(_expr->isFloat()){
                 return ast::TypeExpr::Create(ast::builtins::float_type);

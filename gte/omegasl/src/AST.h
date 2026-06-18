@@ -102,6 +102,13 @@ namespace omegasl {
             DECLARE_BUILTIN_TYPE(ulong2_type);
             DECLARE_BUILTIN_TYPE(ulong3_type);
             DECLARE_BUILTIN_TYPE(ulong4_type);
+            /// §4.3 double-precision floats — gated on DOUBLE. HLSL/GLSL
+            /// express them; Metal has no `double`, so a DOUBLE shader stubs
+            /// on MSL (see Feature-Gap-Survey §4.3).
+            DECLARE_BUILTIN_TYPE(double_type);
+            DECLARE_BUILTIN_TYPE(double2_type);
+            DECLARE_BUILTIN_TYPE(double3_type);
+            DECLARE_BUILTIN_TYPE(double4_type);
             DECLARE_BUILTIN_TYPE(float_type);
             DECLARE_BUILTIN_TYPE(float2_type);
             DECLARE_BUILTIN_TYPE(float3_type);
@@ -200,6 +207,10 @@ namespace omegasl {
             DECLARE_BUILTIN_FUNC(make_ulong2);
             DECLARE_BUILTIN_FUNC(make_ulong3);
             DECLARE_BUILTIN_FUNC(make_ulong4);
+            /// §4.3 double vector constructors.
+            DECLARE_BUILTIN_FUNC(make_double2);
+            DECLARE_BUILTIN_FUNC(make_double3);
+            DECLARE_BUILTIN_FUNC(make_double4);
             DECLARE_BUILTIN_FUNC(make_float2x2);
             DECLARE_BUILTIN_FUNC(make_float3x3);
             DECLARE_BUILTIN_FUNC(make_float4x4);

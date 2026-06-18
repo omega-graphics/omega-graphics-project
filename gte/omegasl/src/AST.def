@@ -88,6 +88,10 @@ typedef int ASTType;
 #define BUILTIN_MAKE_ULONG2 "make_ulong2"
 #define BUILTIN_MAKE_ULONG3 "make_ulong3"
 #define BUILTIN_MAKE_ULONG4 "make_ulong4"
+/// §4.3 double-precision vector constructors. DOUBLE-gated; MSL stubs.
+#define BUILTIN_MAKE_DOUBLE2 "make_double2"
+#define BUILTIN_MAKE_DOUBLE3 "make_double3"
+#define BUILTIN_MAKE_DOUBLE4 "make_double4"
 
 #define BUILTIN_MAKE_FLOAT2X2 "make_float2x2"
 #define BUILTIN_MAKE_FLOAT3X3 "make_float3x3"

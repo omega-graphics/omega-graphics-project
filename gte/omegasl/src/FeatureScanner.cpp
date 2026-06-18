@@ -106,6 +106,12 @@ uint64_t featureBitsForBuiltin(ast::Type *t) {
         t == ulong_type  || t == ulong2_type  || t == ulong3_type  || t == ulong4_type) {
         return OMEGASL_FEATURE_BIT_INT64;
     }
+    /// §4.3 double-precision floats. HLSL/GLSL express them; Metal has no
+    /// `double`, so a shader using one must `#requires(DOUBLE)` (it stubs on
+    /// MSL). Undeclared use trips the Layer-2 portability warning.
+    if (t == double_type  || t == double2_type || t == double3_type || t == double4_type) {
+        return OMEGASL_FEATURE_BIT_DOUBLE;
+    }
     return 0;
 }
 

@@ -550,6 +550,10 @@ namespace omegasl {
         if (name == BUILTIN_MAKE_ULONG2)   return "vector<uint64_t,2>";
         if (name == BUILTIN_MAKE_ULONG3)   return "vector<uint64_t,3>";
         if (name == BUILTIN_MAKE_ULONG4)   return "vector<uint64_t,4>";
+        /// §4.3 — HLSL has the native `doubleN` vector shorthand.
+        if (name == BUILTIN_MAKE_DOUBLE2)  return "double2";
+        if (name == BUILTIN_MAKE_DOUBLE3)  return "double3";
+        if (name == BUILTIN_MAKE_DOUBLE4)  return "double4";
         /// OmegaSL `floatCxR` (C cols × R rows, host's `Matrix<float,C,R>`)
         /// emits as HLSL `floatRxC` so HLSL's row-first source-level
         /// indexing aligns with OmegaSL's column-first convention after the
@@ -1656,6 +1660,14 @@ namespace omegasl {
         else if (_ty == ast::builtins::ulong2_type) { out << "vector<uint64_t,2>"; }
         else if (_ty == ast::builtins::ulong3_type) { out << "vector<uint64_t,3>"; }
         else if (_ty == ast::builtins::ulong4_type) { out << "vector<uint64_t,4>"; }
+        /// §4.3 double-precision floats. HLSL has native `double` plus the
+        /// `double2/3/4` shorthand vectors (unlike the 16/64-bit families,
+        /// which need `vector<T,N>`). The FeatureScanner trips
+        /// OMEGASL_FEATURE_BIT_DOUBLE when these appear.
+        else if (_ty == ast::builtins::double_type)  { out << "double"; }
+        else if (_ty == ast::builtins::double2_type) { out << "double2"; }
+        else if (_ty == ast::builtins::double3_type) { out << "double3"; }
+        else if (_ty == ast::builtins::double4_type) { out << "double4"; }
         else {
             out << _ty->name;
         }

@@ -79,6 +79,11 @@ namespace omegasl::ast {
         Type *ulong2_type;
         Type *ulong3_type;
         Type *ulong4_type;
+        /// §4.3 double-precision floats.
+        Type *double_type;
+        Type *double2_type;
+        Type *double3_type;
+        Type *double4_type;
 
         /// §5.6 — atomic scalar types.
         Type *atomic_int_type;
@@ -129,6 +134,9 @@ namespace omegasl::ast {
         FuncType *make_ulong2;
         FuncType *make_ulong3;
         FuncType *make_ulong4;
+        FuncType *make_double2;
+        FuncType *make_double3;
+        FuncType *make_double4;
         FuncType *make_float2x2;
         FuncType *make_float3x3;
         FuncType *make_float4x4;
@@ -238,6 +246,15 @@ namespace omegasl::ast {
                 ulong3_type = new Type{KW_TY_ULONG3,global_scope};
                 ulong4_type = new Type{KW_TY_ULONG4,global_scope};
 
+                /// §4.3 double-precision floats. Like the §4.1/§4.2 numerics
+                /// the Type carries no width metadata — pointer identity drives
+                /// the per-backend `writeTypeName` (HLSL `double`/`doubleN`,
+                /// GLSL `double`/`dvecN`; MSL never reaches it, the shader stubs).
+                double_type = new Type{KW_TY_DOUBLE,global_scope};
+                double2_type = new Type{KW_TY_DOUBLE2,global_scope};
+                double3_type = new Type{KW_TY_DOUBLE3,global_scope};
+                double4_type = new Type{KW_TY_DOUBLE4,global_scope};
+
                 buffer_type = new Type{KW_TY_BUFFER,global_scope,true,{"type"}};
                 uniform_type = new Type{KW_TY_UNIFORM,global_scope,true,{"type"}};
                 push_constant_type = new Type{KW_TY_CONSTANT,global_scope,true,{"type"}};
@@ -301,6 +318,9 @@ namespace omegasl::ast {
                 make_ulong2 = new FuncType{BUILTIN_MAKE_ULONG2,global_scope,true,{},{},TypeExpr::Create(ulong2_type)};
                 make_ulong3 = new FuncType{BUILTIN_MAKE_ULONG3,global_scope,true,{},{},TypeExpr::Create(ulong3_type)};
                 make_ulong4 = new FuncType{BUILTIN_MAKE_ULONG4,global_scope,true,{},{},TypeExpr::Create(ulong4_type)};
+                make_double2 = new FuncType{BUILTIN_MAKE_DOUBLE2,global_scope,true,{},{},TypeExpr::Create(double2_type)};
+                make_double3 = new FuncType{BUILTIN_MAKE_DOUBLE3,global_scope,true,{},{},TypeExpr::Create(double3_type)};
+                make_double4 = new FuncType{BUILTIN_MAKE_DOUBLE4,global_scope,true,{},{},TypeExpr::Create(double4_type)};
                 make_float2x2 = new FuncType{BUILTIN_MAKE_FLOAT2X2,global_scope,true,{},{},TypeExpr::Create(float2x2_type)};
                 make_float2x3 = new FuncType{BUILTIN_MAKE_FLOAT2X3,global_scope,true,{},{},TypeExpr::Create(float2x3_type)};
                 make_float2x4 = new FuncType{BUILTIN_MAKE_FLOAT2X4,global_scope,true,{},{},TypeExpr::Create(float2x4_type)};
@@ -487,6 +507,10 @@ namespace omegasl::ast {
                 delete ulong2_type;
                 delete ulong3_type;
                 delete ulong4_type;
+                delete double_type;
+                delete double2_type;
+                delete double3_type;
+                delete double4_type;
                 delete buffer_type;
                 delete uniform_type;
                 delete push_constant_type;
@@ -533,6 +557,9 @@ namespace omegasl::ast {
                 delete make_ulong2;
                 delete make_ulong3;
                 delete make_ulong4;
+                delete make_double2;
+                delete make_double3;
+                delete make_double4;
                 delete make_float2x2;
                 delete make_float2x3;
                 delete make_float2x4;

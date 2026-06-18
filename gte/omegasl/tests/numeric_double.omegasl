@@ -1,0 +1,43 @@
+/// §4.3 — double-precision floating point. Exercises `double` and its
+/// 2/3/4 vector forms. Metal has no `double`, so the file declares
+/// `#requires(DOUBLE)` — HLSL emits `double`/`double2..4` and GLSL emits
+/// `double`/`dvec2..4` (plus the `GL_ARB_gpu_shader_fp64` extension). On
+/// MSL the unsatisfied-feature path stubs the whole shader (header only),
+/// and the loader rejects pipelines that bind it. Sema + the FeatureScanner
+/// still run on every host, so this compile test exercises the front end
+/// even where codegen stubs.
+#requires(DOUBLE)
+
+struct VertexRaster internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+vertex VertexRaster doubleVert(uint vid : VertexID){
+    VertexRaster r;
+    r.pos = float4(0.0, 0.0, 0.0, 1.0);
+    r.uv  = float2(0.0, 0.0);
+    return r;
+}
+
+fragment float4 doubleFrag(VertexRaster raster){
+    /// Scalar double — full-precision `lf` literal.
+    double a = 3.141592653589793lf;
+    /// Implicit coercion of an int literal into a double slot.
+    double b = 42;
+    /// An unsuffixed float literal coerces into a double slot (float precision).
+    double c = 1.5;
+    /// Vector double via the make_* constructors.
+    double2 v2 = make_double2(1.0, 2.0);
+    double3 v3 = make_double3(-1.0, 0.0, 1.0);
+    double4 v4 = make_double4(0.0, 1.0, 2.0, 3.0);
+
+    /// Cast also trips the DOUBLE feature bit.
+    double c_cast = (double)c;
+
+    /// Double vector families are indexable (`v[i]`), not just swizzlable.
+    double e0 = v4[0];
+    double e1 = v2[1];
+
+    return float4(0.0, 0.0, 0.0, 1.0);
+}

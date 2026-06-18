@@ -113,6 +113,11 @@ namespace omegasl {
         (subject == KW_TY_ULONG2) ||
         (subject == KW_TY_ULONG3) ||
         (subject == KW_TY_ULONG4) ||
+        /// §4.3 double-precision floats (DOUBLE-gated; no MSL analogue).
+        (subject == KW_TY_DOUBLE) ||
+        (subject == KW_TY_DOUBLE2) ||
+        (subject == KW_TY_DOUBLE3) ||
+        (subject == KW_TY_DOUBLE4) ||
         (subject == KW_TY_BUFFER) ||
         (subject == KW_TY_UNIFORM) ||
         (subject == KW_TY_CONSTANT) ||
@@ -475,7 +480,8 @@ namespace omegasl {
                         ///   `u` / `U`     = uint
                         ///   `l` / `L`     = long  (§4.2)   (signed 64-bit)
                         ///   `ul` / `UL` / `lu` / `LU` = ulong (§4.2)
-                        /// `f`/`h` are not valid on hex literals.
+                        ///   `lf` / `LF`   = double (§4.3)  (decimal only)
+                        /// `f`/`h`/`lf` are not valid on hex literals.
                         if((c == 'f' || c == 'F') && !isHex){
                             c = NEXT_CHAR();
                             PUSH_CHAR(c);
@@ -497,9 +503,12 @@ namespace omegasl {
                         else if(c == 'l' || c == 'L'){
                             c = NEXT_CHAR();
                             PUSH_CHAR(c);
-                            /// Optional trailing `u`/`U` to spell `lu`.
+                            /// Optional trailing `u`/`U` to spell `lu` (ulong),
+                            /// or `f`/`F` to spell `lf` (double, §4.3). The
+                            /// parser disambiguates the two from the captured
+                            /// suffix text.
                             c = AHEAD_CHAR();
-                            if(c == 'u' || c == 'U'){
+                            if(c == 'u' || c == 'U' || c == 'f' || c == 'F'){
                                 c = NEXT_CHAR();
                                 PUSH_CHAR(c);
                             }

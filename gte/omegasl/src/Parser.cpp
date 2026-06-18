@@ -2055,10 +2055,17 @@ namespace omegasl {
             bool hasUintSuffix  = false;
             bool hasLongSuffix  = false;
             bool hasUlongSuffix = false;
+            bool hasDoubleSuffix = false;
             if(!s.empty()){
                 if(endsWith("ul") || endsWith("uL") || endsWith("Ul") || endsWith("UL") ||
                    endsWith("lu") || endsWith("lU") || endsWith("Lu") || endsWith("LU")){
                     hasUlongSuffix = true; suffixLen = 2;
+                }
+                /// §4.3 — `lf`/`LF` is the double-precision suffix. Checked
+                /// before the single-char `l` (long) and `f` (float) cases
+                /// since it ends in `f` and starts with `l`.
+                else if((endsWith("lf") || endsWith("lF") || endsWith("Lf") || endsWith("LF")) && !isHex){
+                    hasDoubleSuffix = true; suffixLen = 2;
                 }
                 else if(s.back() == 'u' || s.back() == 'U'){
                     hasUintSuffix = true; suffixLen = 1;
@@ -2093,6 +2100,13 @@ namespace omegasl {
                 else {
                     _e->i_num = static_cast<int>(v);
                 }
+            }
+            else if(hasDoubleSuffix){
+                /// §4.3 — full-precision double literal. Parse via `std::stod`
+                /// (vs. `std::stof` for float/half) so the value round-trips at
+                /// double precision; codegen emits 17 significant digits + the
+                /// `lf` suffix so the backend doesn't re-narrow through float.
+                _e->d_num = std::stod(s.substr(0, s.size() - suffixLen));
             }
             else if(s.find('.') != std::string::npos || hasFloatSuffix || hasHalfSuffix){
                 /// Half literals (`1.0h`) reuse f_num — Sema's literal

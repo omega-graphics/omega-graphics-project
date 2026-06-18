@@ -1693,6 +1693,13 @@ using namespace metal;
         else if(_t == builtins::ulong2_type) { out << "ulong2"; }
         else if(_t == builtins::ulong3_type) { out << "ulong3"; }
         else if(_t == builtins::ulong4_type) { out << "ulong4"; }
+        /// §4.3 — `double`/`doubleN` have NO MSL mapping on purpose: Metal has
+        /// no double-precision type. A shader using `double` must
+        /// `#requires(DOUBLE)`, which marks DOUBLE unsatisfied on MSL and stubs
+        /// the whole shader before body emission (CodeGen::SHADER_DECL) — so
+        /// this writer never reaches a double_type under correct use. (An
+        /// undeclared use trips the FeatureScanner warning and then falls to
+        /// the `_t->name` default below, which Metal rejects loudly.)
         else if(_t == builtins::float_type){
             out << "float";
         }
