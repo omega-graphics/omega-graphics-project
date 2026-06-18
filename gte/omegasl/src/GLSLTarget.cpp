@@ -1710,6 +1710,79 @@ namespace omegasl {
             out << "))";
             return true;
         }
+        /// §5.6 — atomic operations. GLSL carries atomicity on the operation
+        /// (`atomic*` on a plain int/uint SSBO / shared slot). The fetch-ops /
+        /// exchange return the original value inline; the operand is cast to
+        /// the underlying type so a bare literal can't make the int/uint
+        /// overload ambiguous. `atomic_load`/`atomic_store` are a plain read /
+        /// write (32-bit aligned access is atomic).
+        {
+            const char *verb = nullptr;
+            if (name == BUILTIN_ATOMIC_ADD)           verb = "atomicAdd";
+            else if (name == BUILTIN_ATOMIC_MIN)      verb = "atomicMin";
+            else if (name == BUILTIN_ATOMIC_MAX)      verb = "atomicMax";
+            else if (name == BUILTIN_ATOMIC_AND)      verb = "atomicAnd";
+            else if (name == BUILTIN_ATOMIC_OR)       verb = "atomicOr";
+            else if (name == BUILTIN_ATOMIC_XOR)      verb = "atomicXor";
+            else if (name == BUILTIN_ATOMIC_EXCHANGE) verb = "atomicExchange";
+            if (verb) {
+                auto *mty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+                const char *uty = (mty == ast::builtins::atomic_int_type) ? "int" : "uint";
+                out << verb << "(";
+                cg.generateExpr(_expr->args[0]);
+                out << ", " << uty << "(";
+                cg.generateExpr(_expr->args[1]);
+                out << "))";
+                return true;
+            }
+            if (name == BUILTIN_ATOMIC_LOAD) {
+                cg.generateExpr(_expr->args[0]);
+                return true;
+            }
+            if (name == BUILTIN_ATOMIC_STORE) {
+                out << "(";
+                cg.generateExpr(_expr->args[0]);
+                out << " = ";
+                cg.generateExpr(_expr->args[1]);
+                out << ")";
+                return true;
+            }
+            /// §5.6 Phase B — CAS. GLSL's `atomicCompSwap` is native strong and
+            /// returns the original value inline; the compare/desired operands
+            /// are cast to the underlying type for overload disambiguation.
+            if (name == BUILTIN_ATOMIC_COMPARE_EXCHANGE) {
+                auto *mty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+                const char *uty = (mty == ast::builtins::atomic_int_type) ? "int" : "uint";
+                out << "atomicCompSwap(";
+                cg.generateExpr(_expr->args[0]);
+                out << ", " << uty << "(";
+                cg.generateExpr(_expr->args[1]);
+                out << "), " << uty << "(";
+                cg.generateExpr(_expr->args[2]);
+                out << "))";
+                return true;
+            }
+            /// §5.6 Phase B — weak CAS. GLSL has no weak form; emulated from the
+            /// strong `atomicCompSwap` (strong satisfies the weak contract):
+            /// capture the original, `ok = (orig == expected)` against the OLD
+            /// expected, then `expected = orig`. Value = the bool.
+            if (name == BUILTIN_ATOMIC_COMPARE_EXCHANGE_WEAK) {
+                auto *mty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+                const char *uty = (mty == ast::builtins::atomic_int_type) ? "int" : "uint";
+                std::string mem = cg.renderExprToString(_expr->args[0]);
+                std::string exp = cg.renderExprToString(_expr->args[1]);
+                std::string des = cg.renderExprToString(_expr->args[2]);
+                unsigned id = cg.getDimensionsTempId++;
+                std::string o  = "_cw" + std::to_string(id) + "_o";
+                std::string ok = "_cw" + std::to_string(id) + "_ok";
+                cg.queuePendingStatement(std::string(uty) + " " + o + " = atomicCompSwap(" + mem
+                    + ", " + std::string(uty) + "(" + exp + "), " + std::string(uty) + "(" + des + "));");
+                cg.queuePendingStatement("bool " + ok + " = (" + o + " == " + exp + ");");
+                cg.queuePendingStatement(exp + " = " + o + ";");
+                out << ok;
+                return true;
+            }
+        }
         return false;
     }
 
@@ -1922,6 +1995,11 @@ namespace omegasl {
         else if(t == ast::builtins::uint4_type){
             out << "uvec4";
         }
+        /// §5.6 — atomic scalars. GLSL carries atomicity on the operation
+        /// (`atomic*` on a plain int/uint SSBO / shared slot), so the type
+        /// is the underlying scalar.
+        else if(t == ast::builtins::atomic_int_type){ out << "int"; }
+        else if(t == ast::builtins::atomic_uint_type){ out << "uint"; }
         /// §4.1 16-bit family. Spelt with the explicit-arithmetic-types
         /// names from `GL_EXT_shader_explicit_arithmetic_types_*`.
         /// `emitDefaultHeaders` adds the matching `#extension` lines

@@ -177,6 +177,23 @@ target_link_options("BitfieldOpsTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_bitfield_ops COMMAND BitfieldOpsTest)
 
+# OmegaSL §5.6 — atomic-operation GPU integration test (shared, backend-
+# independent source under gte/tests/). Proves atomicity on real hardware
+# (256 racing atomic_add -> exactly 256) plus load/store/exchange/and/min/max/or
+# and the signed-atomic path.
+add_metal_cli_test(
+    NAME
+    "AtomicOpsTest"
+    SOURCES
+    "../atomic_ops_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("AtomicOpsTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_atomic_ops COMMAND AtomicOpsTest)
+
 # OmegaSL §5.5 Phase B — half-float pack / unpack GPU integration test (shared,
 # backend-independent source under gte/tests/). Proves f16tof32 / f32tof16 /
 # packHalf2x16 / unpackHalf2x16 round-trip a binary16 value bit-identically

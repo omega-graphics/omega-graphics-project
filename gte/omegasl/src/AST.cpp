@@ -80,6 +80,10 @@ namespace omegasl::ast {
         Type *ulong3_type;
         Type *ulong4_type;
 
+        /// §5.6 — atomic scalar types.
+        Type *atomic_int_type;
+        Type *atomic_uint_type;
+
         Type *buffer_type;
         Type *uniform_type;
         Type *push_constant_type;
@@ -251,6 +255,14 @@ namespace omegasl::ast {
                 sampler2d_type = new Type{KW_TY_SAMPLER2D,global_scope};
                 sampler3d_type = new Type{KW_TY_SAMPLER3D,global_scope};
                 samplercube_type = new Type{KW_TY_SAMPLERCUBE,global_scope};
+
+                /// §5.6 — atomic scalar types. Like the §4.1/§4.2 numerics,
+                /// the Type struct carries no metadata beyond a unique name;
+                /// the per-backend `writeTypeName` switches on pointer
+                /// identity (MSL keeps `atomic_int`/`atomic_uint`; HLSL/GLSL
+                /// map to `int`/`uint`).
+                atomic_int_type = new Type{KW_TY_ATOMIC_INT,global_scope};
+                atomic_uint_type = new Type{KW_TY_ATOMIC_UINT,global_scope};
 
                 make_float2 = new FuncType{BUILTIN_MAKE_FLOAT2,global_scope,true,{},{
 
@@ -491,6 +503,9 @@ namespace omegasl::ast {
                 delete sampler2d_type;
                 delete sampler3d_type;
                 delete samplercube_type;
+                /// §5.6 — atomic scalar types.
+                delete atomic_int_type;
+                delete atomic_uint_type;
                 delete make_float2;
                 delete make_float3;
                 delete make_float4;
@@ -696,6 +711,11 @@ namespace omegasl::ast {
             BUILTIN_PACK_UNORM_4X8, BUILTIN_UNPACK_UNORM_4X8,
             BUILTIN_PACK_SNORM_2X16, BUILTIN_UNPACK_SNORM_2X16,
             BUILTIN_PACK_UNORM_2X16, BUILTIN_UNPACK_UNORM_2X16,
+            /// §5.6 atomic operations.
+            BUILTIN_ATOMIC_ADD, BUILTIN_ATOMIC_MIN, BUILTIN_ATOMIC_MAX,
+            BUILTIN_ATOMIC_AND, BUILTIN_ATOMIC_OR, BUILTIN_ATOMIC_XOR,
+            BUILTIN_ATOMIC_EXCHANGE, BUILTIN_ATOMIC_LOAD, BUILTIN_ATOMIC_STORE,
+            BUILTIN_ATOMIC_COMPARE_EXCHANGE, BUILTIN_ATOMIC_COMPARE_EXCHANGE_WEAK,
             /// Matrix intrinsics (string-matched in Sema).
             "transpose", "determinant",
             /// Compute barriers.

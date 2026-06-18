@@ -1153,6 +1153,91 @@ using namespace metal;
         if (cg.emitVectorCompare(_expr, name, out)) {
             return true;
         }
+        /// §5.6 — atomic operations. Metal carries atomicity on the type, so
+        /// every access is an `atomic_*_explicit` call taking `&mem` and
+        /// (always) `memory_order_relaxed`. The fetch-ops / exchange / load
+        /// return the original value directly — no statement injection. The
+        /// operand is cast to the underlying type so the right overload binds.
+        {
+            const char *verb = nullptr;
+            if (name == BUILTIN_ATOMIC_ADD)           verb = "atomic_fetch_add_explicit";
+            else if (name == BUILTIN_ATOMIC_MIN)      verb = "atomic_fetch_min_explicit";
+            else if (name == BUILTIN_ATOMIC_MAX)      verb = "atomic_fetch_max_explicit";
+            else if (name == BUILTIN_ATOMIC_AND)      verb = "atomic_fetch_and_explicit";
+            else if (name == BUILTIN_ATOMIC_OR)       verb = "atomic_fetch_or_explicit";
+            else if (name == BUILTIN_ATOMIC_XOR)      verb = "atomic_fetch_xor_explicit";
+            else if (name == BUILTIN_ATOMIC_EXCHANGE) verb = "atomic_exchange_explicit";
+            /// Only an atomic builtin resolves arg0's type — every other
+            /// builtin falls through to `renameBuiltin` below. Resolving
+            /// unconditionally would deref a null `resolvedType` on builtins
+            /// Sema doesn't stamp (e.g. `countbits` reaches here on MSL).
+            if (verb || name == BUILTIN_ATOMIC_LOAD || name == BUILTIN_ATOMIC_STORE
+                     || name == BUILTIN_ATOMIC_COMPARE_EXCHANGE
+                     || name == BUILTIN_ATOMIC_COMPARE_EXCHANGE_WEAK) {
+                auto *mty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+                const char *uty = (mty == ast::builtins::atomic_int_type) ? "int" : "uint";
+                if (verb) {
+                    out << verb << "(&";
+                    cg.generateExpr(_expr->args[0]);
+                    out << ", (" << uty << ")(";
+                    cg.generateExpr(_expr->args[1]);
+                    out << "), memory_order_relaxed)";
+                    return true;
+                }
+                if (name == BUILTIN_ATOMIC_LOAD) {
+                    out << "atomic_load_explicit(&";
+                    cg.generateExpr(_expr->args[0]);
+                    out << ", memory_order_relaxed)";
+                    return true;
+                }
+                if (name == BUILTIN_ATOMIC_STORE) {
+                    out << "atomic_store_explicit(&";
+                    cg.generateExpr(_expr->args[0]);
+                    out << ", (" << uty << ")(";
+                    cg.generateExpr(_expr->args[1]);
+                    out << "), memory_order_relaxed)";
+                    return true;
+                }
+                /// §5.6 Phase B — weak CAS is Metal's *native* primitive, so it
+                /// emits inline (bool result + in-place `expected` update via the
+                /// `&expected` pointer). `expected` is a thread-local (Sema
+                /// rejects a device buffer field, which couldn't form a
+                /// `thread T*`). No loop, no statement injection.
+                if (name == BUILTIN_ATOMIC_COMPARE_EXCHANGE_WEAK) {
+                    out << "atomic_compare_exchange_weak_explicit(&";
+                    cg.generateExpr(_expr->args[0]);
+                    out << ", &";
+                    cg.generateExpr(_expr->args[1]);
+                    out << ", (" << uty << ")(";
+                    cg.generateExpr(_expr->args[2]);
+                    out << "), memory_order_relaxed, memory_order_relaxed)";
+                    return true;
+                }
+                /// §5.6 Phase B — strong CAS. Metal has only the *weak* form, so a
+                /// strong CAS (matching HLSL/GLSL) is emulated with the canonical
+                /// weak-in-a-loop: loop only while the failure was spurious
+                /// (`_exp` still == the captured compare value). `_exp` ends
+                /// holding the original value, which is the expression's result.
+                /// compare / desired are captured into single-eval temps so the
+                /// loop condition and the retried CAS don't re-evaluate them.
+                // BUILTIN_ATOMIC_COMPARE_EXCHANGE
+                std::string mem = cg.renderExprToString(_expr->args[0]);
+                std::string cmp = cg.renderExprToString(_expr->args[1]);
+                std::string des = cg.renderExprToString(_expr->args[2]);
+                unsigned id = cg.getDimensionsTempId++;
+                std::string c = "_caec" + std::to_string(id);
+                std::string d = "_caed" + std::to_string(id);
+                std::string e = "_caee" + std::to_string(id);
+                cg.queuePendingStatement(std::string(uty) + " " + c + " = (" + uty + ")(" + cmp + ");");
+                cg.queuePendingStatement(std::string(uty) + " " + d + " = (" + uty + ")(" + des + ");");
+                cg.queuePendingStatement(std::string(uty) + " " + e + " = " + c + ";");
+                cg.queuePendingStatement("while(!atomic_compare_exchange_weak_explicit(&" + mem
+                    + ", &" + e + ", " + d + ", memory_order_relaxed, memory_order_relaxed) && "
+                    + e + " == " + c + "){ }");
+                out << e;
+                return true;
+            }
+        }
         return false;
     }
 
@@ -1578,6 +1663,11 @@ using namespace metal;
         else if(_t == builtins::uint4_type){
             out << "uint4";
         }
+        /// §5.6 — atomic scalars. Metal carries atomicity on the *type*
+        /// (`metal::atomic_int`/`atomic_uint`, from `<metal_atomic>` via
+        /// `<metal_stdlib>`); every access goes through `atomic_*_explicit`.
+        else if(_t == builtins::atomic_int_type){ out << "atomic_int"; }
+        else if(_t == builtins::atomic_uint_type){ out << "atomic_uint"; }
         /// §4.1 16-bit family — Metal natively supports all of these
         /// since MSL 1.0 (`half`) / MSL 1.0 (`short`,`ushort`).
         else if(_t == builtins::half_type)   { out << "half"; }

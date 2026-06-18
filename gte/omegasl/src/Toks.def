@@ -248,5 +248,13 @@ namespace omegasl {
 #define KW_TY_SAMPLER3D KW_TY("sampler3d")
 #define KW_TY_SAMPLERCUBE KW_TY("samplercube")
 
+/// §5.6 — atomic scalar types. `atomic_int` / `atomic_uint` carry the
+/// atomicity in the *type* (MSL's requirement); they spell as `atomic_int` /
+/// `atomic_uint` on MSL but as plain `int` / `uint` on HLSL / GLSL, and are
+/// only ever touched through the `atomic_*` intrinsics + `atomic_load` /
+/// `atomic_store`.
+#define KW_TY_ATOMIC_INT KW_TY("atomic_int")
+#define KW_TY_ATOMIC_UINT KW_TY("atomic_uint")
+
 
 #endif // OMEGASL_TOKS_DEF

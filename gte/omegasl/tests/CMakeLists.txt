@@ -107,6 +107,8 @@ add_omegasl_compile_test(omegasl_compile_bit_reinterpret     bit_reinterpret.ome
 add_omegasl_compile_test(omegasl_compile_half_pack           half_pack.omegasl)
 # §5.5 Phase C — normalized 4x8 / 2x16 pack / unpack family.
 add_omegasl_compile_test(omegasl_compile_pack_norm           pack_norm.omegasl)
+# §5.6 Phase A — atomic ops (add/min/max/and/or/xor/exchange + load/store).
+add_omegasl_compile_test(omegasl_compile_atomic_ops          atomic_ops.omegasl)
 # §5.1.0 — modf / frexp out-param intrinsics + mod / mad aliases.
 add_omegasl_compile_test(omegasl_compile_math_modf_frexp     math_modf_frexp.omegasl)
 # §4.1 / §4.2 — 16-bit and 64-bit numeric type families.
@@ -176,6 +178,8 @@ add_omegasl_fail_test(omegasl_invalid_bit_reinterpret        invalid_bit_reinter
 add_omegasl_fail_test(omegasl_invalid_half_pack              invalid_half_pack.omegasl)
 # §5.5 Phase C — normalized-pack diagnostics (arg count + per-builtin operand type).
 add_omegasl_fail_test(omegasl_invalid_pack_norm              invalid_pack_norm.omegasl)
+# §5.6 — atomic op diagnostics (non-atomic operand / type mismatch / arg count).
+add_omegasl_fail_test(omegasl_invalid_atomic_ops             invalid_atomic_ops.omegasl)
 add_omegasl_fail_test(omegasl_invalid_switch                 invalid_switch.omegasl)
 add_omegasl_fail_test(omegasl_invalid_matrix_column_write    invalid_matrix_column_write.omegasl)
 # Matrix index-type rule (column + two-level row index must be int/uint).

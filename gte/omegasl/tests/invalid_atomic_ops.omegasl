@@ -1,0 +1,37 @@
+// §5.6 — atomic operation diagnostics (multi-error negative test).
+//   1. atomic op on a non-atomic (plain uint) memory location.
+//   2. operand type does not match the atomic's underlying scalar.
+//   3. wrong argument count (atomic_load takes exactly one argument).
+// Any one of these makes compilation fail (the test is marked WILL_FAIL).
+
+struct Bad {
+    uint  plain;        // NOT an atomic type
+    atomic_uint counter;
+};
+
+buffer<Bad> data : 0;
+
+[inout data]
+compute(x=1,y=1,z=1)
+void bad_atomic(uint3 tid : GlobalThreadID){
+    // (1) first argument is a plain uint, not atomic_int / atomic_uint.
+    atomic_add(data[0].plain, 1u);
+
+    // (2) operand is a float — cannot match the uint underlying scalar
+    //     (and is not an integer literal that could coerce).
+    float f = 1.5;
+    atomic_add(data[0].counter, f);
+
+    // (3) atomic_load takes exactly one argument.
+    uint x = atomic_load(data[0].counter, 5u);
+    data[0].plain = x;
+
+    // (4) atomic_compare_exchange takes exactly three arguments.
+    uint y = atomic_compare_exchange(data[0].counter, 5u);
+    data[0].plain = y;
+
+    // (5) atomic_compare_exchange_weak's `expected` must be a writable local
+    //     variable (it is updated in place) — a literal is rejected.
+    bool ok = atomic_compare_exchange_weak(data[0].counter, 5u, 9u);
+    data[0].plain = (uint)ok;
+}

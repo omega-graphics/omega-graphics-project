@@ -95,7 +95,13 @@ namespace omegasl {
         ast::builtins::sampler1d_type,
         ast::builtins::sampler2d_type,
         ast::builtins::sampler3d_type,
-        ast::builtins::samplercube_type
+        ast::builtins::samplercube_type,
+
+        /// §5.6 — atomic scalar types. The Sema sees them like any other
+        /// scalar; the atomic-operand rules live in the CALL_EXPR atomic
+        /// bucket and the type just needs to resolve here.
+        ast::builtins::atomic_int_type,
+        ast::builtins::atomic_uint_type
         }),
         builtinFunctionMap({
 
@@ -1350,6 +1356,133 @@ namespace omegasl {
                     }
                     /// Return type = the fractional part / mantissa, same type as `x`.
                     return ast::TypeExpr::Create(xTy);
+                }
+
+                /// §5.6 — atomic operations. Self-contained like modf/frexp:
+                /// arg0 (`mem`) must resolve to `atomic_int`/`atomic_uint`; every
+                /// op except the read-only `atomic_load` also requires it to be a
+                /// writable (non-const) lvalue (the modf out-param check). The
+                /// value operand(s) — one for the fetch-ops / store, the
+                /// (compare, desired) pair for compare_exchange — must match the
+                /// underlying scalar (or be an integer literal). The fetch-ops /
+                /// load / compare_exchange return the original value (the
+                /// underlying scalar); `atomic_store` returns void.
+                {
+                    using namespace ast::builtins;
+                    bool isAtomicFetch = (fname == BUILTIN_ATOMIC_ADD || fname == BUILTIN_ATOMIC_MIN ||
+                                          fname == BUILTIN_ATOMIC_MAX || fname == BUILTIN_ATOMIC_AND ||
+                                          fname == BUILTIN_ATOMIC_OR  || fname == BUILTIN_ATOMIC_XOR ||
+                                          fname == BUILTIN_ATOMIC_EXCHANGE);
+                    bool isAtomicStore   = (fname == BUILTIN_ATOMIC_STORE);
+                    bool isAtomicLoad    = (fname == BUILTIN_ATOMIC_LOAD);
+                    bool isAtomicCAS     = (fname == BUILTIN_ATOMIC_COMPARE_EXCHANGE);
+                    bool isAtomicCASWeak = (fname == BUILTIN_ATOMIC_COMPARE_EXCHANGE_WEAK);
+                    if(isAtomicFetch || isAtomicStore || isAtomicLoad || isAtomicCAS || isAtomicCASWeak){
+                        unsigned want = isAtomicLoad ? 1u : (isAtomicCAS || isAtomicCASWeak) ? 3u : 2u;
+                        if(_expr->args.size() != want){
+                            auto e = std::make_unique<ArgumentCountMismatch>();
+                            e->functionName = fname; e->expected = want;
+                            e->actual = (unsigned)_expr->args.size();
+                            e->loc = _expr->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return nullptr;
+                        }
+                        auto reportErr = [&](const std::string& msg){
+                            auto e = std::make_unique<TypeError>(msg);
+                            e->loc = _expr->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                        };
+                        auto mem_e = performSemForExpr(_expr->args[0], funcContext);
+                        if(!mem_e) return nullptr;
+                        _expr->args[0]->resolvedType = mem_e;
+                        auto memTy = resolveTypeWithExpr(mem_e);
+                        ast::Type *underlying = (memTy == atomic_int_type) ? int_type
+                                              : (memTy == atomic_uint_type) ? uint_type : nullptr;
+                        if(underlying == nullptr){
+                            reportErr("1st argument of `" + std::string(fname) + "` must be an atomic_int / atomic_uint memory location.");
+                            return nullptr;
+                        }
+                        if(!isAtomicLoad){
+                            /// Writable-lvalue check: walk past index / member
+                            /// access to the root binding, the same shape the
+                            /// §3.6 const-write check uses.
+                            ast::Expr *root = _expr->args[0];
+                            while(root){
+                                if(root->type == INDEX_EXPR) root = ((ast::IndexExpr *)root)->lhs;
+                                else if(root->type == MEMBER_EXPR) root = ((ast::MemberExpr *)root)->lhs;
+                                else break;
+                            }
+                            bool writable = root && root->type == ID_EXPR;
+                            if(writable){
+                                auto found = currentContext->variableMap.find(((ast::IdExpr *)root)->id);
+                                if(found != currentContext->variableMap.end() && found->second.isConst)
+                                    writable = false;
+                            }
+                            if(!writable){
+                                reportErr("1st argument of `" + std::string(fname) + "` must be a writable (non-const) atomic memory location.");
+                                return nullptr;
+                            }
+                            /// `atomic_compare_exchange_weak`'s 2nd argument
+                            /// (`expected`) is an in/out lvalue, not a value: it
+                            /// must be a writable variable of the underlying
+                            /// scalar (the failure path writes the current value
+                            /// back through it), and a literal is rejected.
+                            if(isAtomicCASWeak){
+                                auto exp_e = performSemForExpr(_expr->args[1], funcContext);
+                                if(!exp_e) return nullptr;
+                                _expr->args[1]->resolvedType = exp_e;
+                                if(resolveTypeWithExpr(exp_e) != underlying){
+                                    reportErr("2nd argument (`expected`) of `atomic_compare_exchange_weak` must be a `" + std::string(underlying->name) + "` variable.");
+                                    return nullptr;
+                                }
+                                /// `expected` must be a writable *local* variable
+                                /// (or param), not a buffer field: Metal's weak
+                                /// CAS takes `expected` as a `thread T*`, so a
+                                /// `device`-space buffer field would compile on
+                                /// HLSL/GLSL but fail on MSL — reject it here so
+                                /// the surface stays portable. A local/param is
+                                /// the only binding in `variableMap`.
+                                ast::Expr *eroot = _expr->args[1];
+                                while(eroot){
+                                    if(eroot->type == INDEX_EXPR) eroot = ((ast::IndexExpr *)eroot)->lhs;
+                                    else if(eroot->type == MEMBER_EXPR) eroot = ((ast::MemberExpr *)eroot)->lhs;
+                                    else break;
+                                }
+                                bool ewritable = false;
+                                if(eroot && eroot->type == ID_EXPR){
+                                    auto found = currentContext->variableMap.find(((ast::IdExpr *)eroot)->id);
+                                    ewritable = (found != currentContext->variableMap.end() && !found->second.isConst);
+                                }
+                                if(!ewritable){
+                                    reportErr("2nd argument (`expected`) of `atomic_compare_exchange_weak` must be a writable (non-const) local variable (it is updated in place on failure).");
+                                    return nullptr;
+                                }
+                            }
+                            /// Value operands: args[1] for fetch/store; the
+                            /// (compare, desired) pair for the strong CAS; just
+                            /// `desired` (args[2]) for the weak CAS (its args[1]
+                            /// was the in/out lvalue handled above). Each must
+                            /// match the underlying scalar (atomic_int→int /
+                            /// atomic_uint→uint) or be an integer literal coerced
+                            /// to the slot's type.
+                            unsigned firstValue = isAtomicCASWeak ? 2u : 1u;
+                            for(unsigned k = firstValue; k < want; ++k){
+                                auto v_e = performSemForExpr(_expr->args[k], funcContext);
+                                if(!v_e) return nullptr;
+                                _expr->args[k]->resolvedType = v_e;
+                                auto vTy = resolveTypeWithExpr(v_e);
+                                auto *lit = asNumericLiteral(_expr->args[k]);
+                                if(vTy != underlying && !canCoerceLiteralTo(lit, underlying)){
+                                    reportErr("argument " + std::to_string(k + 1) + " of `" + std::string(fname) + "` must be `" + std::string(underlying->name) + "` to match the atomic operand.");
+                                    return nullptr;
+                                }
+                            }
+                        }
+                        /// weak CAS returns whether the store happened; store is
+                        /// void; everything else returns the original value.
+                        return ast::TypeExpr::Create(isAtomicCASWeak ? bool_type
+                                                   : isAtomicStore ? void_type : underlying);
+                    }
                 }
 
                 int expectedArgs = -1; // -1 = unknown function

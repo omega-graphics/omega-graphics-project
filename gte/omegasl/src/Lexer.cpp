@@ -128,7 +128,10 @@ namespace omegasl {
         (subject == KW_TY_SAMPLER1D) ||
         (subject == KW_TY_SAMPLER2D) ||
         (subject == KW_TY_SAMPLER3D) ||
-        (subject == KW_TY_SAMPLERCUBE);
+        (subject == KW_TY_SAMPLERCUBE) ||
+        /// §5.6 — atomic scalar types.
+        (subject == KW_TY_ATOMIC_INT) ||
+        (subject == KW_TY_ATOMIC_UINT);
     }
 
 

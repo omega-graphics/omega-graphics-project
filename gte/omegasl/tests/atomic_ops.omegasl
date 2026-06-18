@@ -1,0 +1,96 @@
+// §5.6 Phase A — atomic operations on `atomic_int` / `atomic_uint` memory.
+//   atomic_add / atomic_min / atomic_max / atomic_and / atomic_or /
+//   atomic_xor / atomic_exchange   — 2-arg, return the original value.
+//   atomic_load(mem)               — 1-arg, return the current value.
+//   atomic_store(mem, v)           — 2-arg, void.
+// Atomic memory is a new scalar type: `atomic_uint` / `atomic_int`. It spells
+// as `atomic_uint`/`atomic_int` on MSL (atomicity rides on the type) and as
+// plain `uint`/`int` on HLSL/GLSL (atomicity rides on the operation). Covered
+// here on both a `buffer<T>` field and a `threadgroup atomic_uint`, for both
+// the unsigned and signed underlying type.
+
+struct Counters {
+    atomic_uint counter;   // fetch-op / load / store target (unsigned)
+    atomic_int  balance;   // signed atomic
+    uint        result;    // plain readback slots
+    uint        original;
+};
+
+buffer<Counters> data : 0;
+
+// Unsigned fetch-ops on a device buffer field. Each returns the original
+// value; `slot` exercises the canonical "allocate-an-index" idiom.
+[inout data]
+compute(x=64,y=1,z=1)
+void atomic_unsigned(uint3 tid : GlobalThreadID){
+    uint slot = atomic_add(data[0].counter, 1);   // original value
+    atomic_min(data[0].counter, slot);
+    atomic_max(data[0].counter, 7u);
+    atomic_and(data[0].counter, 0xFFu);
+    atomic_or(data[0].counter, 1u);
+    atomic_xor(data[0].counter, 2u);
+    uint prev = atomic_exchange(data[0].counter, 100u);  // original value
+    data[0].original = prev;
+    data[0].result = slot;
+}
+
+// Signed atomic + load / store round-trip.
+[inout data]
+compute(x=1,y=1,z=1)
+void atomic_signed(uint3 tid : GlobalThreadID){
+    atomic_store(data[0].balance, -5);
+    int b = atomic_load(data[0].balance);   // -5
+    int before = atomic_add(data[0].balance, 10);  // original (-5)
+    atomic_min(data[0].balance, before);
+    data[0].result = (uint)(b + atomic_load(data[0].balance));
+}
+
+// §5.6 Phase B — compare_exchange (strong CAS). Returns the original value;
+// the caller checks `result == compare` for success.
+[inout data]
+compute(x=1,y=1,z=1)
+void atomic_cas(uint3 tid : GlobalThreadID){
+    atomic_store(data[0].counter, 5u);
+    uint hit  = atomic_compare_exchange(data[0].counter, 5u, 42u);   // 5==5 -> store 42, returns 5
+    uint miss = atomic_compare_exchange(data[0].counter, 5u, 99u);   // 42!=5 -> no store, returns 42
+    data[0].result = hit + miss + atomic_load(data[0].counter);      // 5 + 42 + 42
+
+    atomic_store(data[0].balance, -1);
+    int so = atomic_compare_exchange(data[0].balance, -1, 7);        // signed CAS, returns -1
+    data[0].original = (uint)(so + atomic_load(data[0].balance));    // -1 + 7
+}
+
+// §5.6 Phase B — weak CAS in the canonical lock-free retry loop. `expected` is
+// a thread-local updated in place on failure; the bool says whether the store
+// happened. Atomic "multiply by 3" (no atomic_mul exists).
+//
+// Portability note: on HLSL/GLSL the weak CAS lowers to several statements
+// (the strong intrinsic has no inline bool form), so it must be called as a
+// *statement* — `done = atomic_compare_exchange_weak(...)` inside the loop
+// body — not placed directly in the `while(...)` condition. Inside the body
+// the lowering re-runs each iteration; in a bare condition it would be hoisted
+// out of the loop. (On MSL the weak CAS is a native inline call, fine either
+// way; this statement form is the portable one.)
+[inout data]
+compute(x=1,y=1,z=1)
+void atomic_cas_weak(uint3 tid : GlobalThreadID){
+    atomic_store(data[0].counter, 10u);
+    uint expected = atomic_load(data[0].counter);
+    bool done = false;
+    while(!done){
+        // on failure `expected` is updated to the current value — recompute & retry
+        done = atomic_compare_exchange_weak(data[0].counter, expected, expected * 3u);
+    }
+    data[0].result = atomic_load(data[0].counter);   // 30
+}
+
+// Atomics on threadgroup shared memory (the histogram pattern).
+[inout data]
+compute(x=256,y=1,z=1)
+void atomic_threadgroup(uint3 tid : GlobalThreadID, uint3 lid : LocalThreadID){
+    threadgroup atomic_uint histo;
+    atomic_store(histo, 0u);
+    uint bucket = atomic_add(histo, 1u);
+    atomic_max(histo, bucket);
+    data[tid[0]].result = atomic_load(histo);
+}

@@ -804,6 +804,89 @@ namespace omegasl {
         if (cg.emitVectorCompare(_expr, name, out)) {
             return true;
         }
+        /// §5.6 — atomic operations. HLSL carries atomicity on the operation
+        /// (`Interlocked*` on a plain int/uint UAV / groupshared slot). The
+        /// fetch-ops write the original value to an `out` param, so they need
+        /// statement injection (declare a temp, call `Interlocked*` with it as
+        /// the 3rd arg, the call's value is the temp — the frexp machinery).
+        /// The operand is cast to the underlying type so a bare literal can't
+        /// pick the wrong Interlocked overload. `atomic_load` is a plain read
+        /// and `atomic_store` a plain assignment (32-bit aligned access is
+        /// atomic on D3D).
+        {
+            const char *interlocked = nullptr;
+            if (name == BUILTIN_ATOMIC_ADD)           interlocked = "InterlockedAdd";
+            else if (name == BUILTIN_ATOMIC_MIN)      interlocked = "InterlockedMin";
+            else if (name == BUILTIN_ATOMIC_MAX)      interlocked = "InterlockedMax";
+            else if (name == BUILTIN_ATOMIC_AND)      interlocked = "InterlockedAnd";
+            else if (name == BUILTIN_ATOMIC_OR)       interlocked = "InterlockedOr";
+            else if (name == BUILTIN_ATOMIC_XOR)      interlocked = "InterlockedXor";
+            else if (name == BUILTIN_ATOMIC_EXCHANGE) interlocked = "InterlockedExchange";
+            if (interlocked) {
+                auto *mty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+                const char *uty = (mty == ast::builtins::atomic_int_type) ? "int" : "uint";
+                std::string dest = cg.renderExprToString(_expr->args[0]);
+                std::string val  = cg.renderExprToString(_expr->args[1]);
+                unsigned id = cg.getDimensionsTempId++;
+                std::string t = "_atm" + std::to_string(id);
+                cg.queuePendingStatement(std::string(uty) + " " + t + ";");
+                cg.queuePendingStatement(std::string(interlocked) + "(" + dest
+                    + ", (" + uty + ")(" + val + "), " + t + ");");
+                out << t;
+                return true;
+            }
+            if (name == BUILTIN_ATOMIC_LOAD) {
+                cg.generateExpr(_expr->args[0]);
+                return true;
+            }
+            if (name == BUILTIN_ATOMIC_STORE) {
+                out << "(";
+                cg.generateExpr(_expr->args[0]);
+                out << " = ";
+                cg.generateExpr(_expr->args[1]);
+                out << ")";
+                return true;
+            }
+            /// §5.6 Phase B — CAS. HLSL's strong `InterlockedCompareExchange`
+            /// writes the original value to an out-param, so it's statement-
+            /// injected like the fetch-ops; the expression value is the temp.
+            if (name == BUILTIN_ATOMIC_COMPARE_EXCHANGE) {
+                auto *mty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+                const char *uty = (mty == ast::builtins::atomic_int_type) ? "int" : "uint";
+                std::string dest = cg.renderExprToString(_expr->args[0]);
+                std::string cmp  = cg.renderExprToString(_expr->args[1]);
+                std::string des  = cg.renderExprToString(_expr->args[2]);
+                unsigned id = cg.getDimensionsTempId++;
+                std::string t = "_cae" + std::to_string(id);
+                cg.queuePendingStatement(std::string(uty) + " " + t + ";");
+                cg.queuePendingStatement("InterlockedCompareExchange(" + dest
+                    + ", (" + uty + ")(" + cmp + "), (" + uty + ")(" + des + "), " + t + ");");
+                out << t;
+                return true;
+            }
+            /// §5.6 Phase B — weak CAS. HLSL has no weak form, so it's emulated
+            /// from the strong `InterlockedCompareExchange` (strong satisfies the
+            /// weak contract — it never fails spuriously): capture the original,
+            /// the bool is `orig == expected` (computed against the OLD expected,
+            /// before write-back), then `expected = orig`. Value = the bool.
+            if (name == BUILTIN_ATOMIC_COMPARE_EXCHANGE_WEAK) {
+                auto *mty = cg.typeResolver->resolveTypeWithExpr(_expr->args[0]->resolvedType);
+                const char *uty = (mty == ast::builtins::atomic_int_type) ? "int" : "uint";
+                std::string dest = cg.renderExprToString(_expr->args[0]);
+                std::string exp  = cg.renderExprToString(_expr->args[1]);
+                std::string des  = cg.renderExprToString(_expr->args[2]);
+                unsigned id = cg.getDimensionsTempId++;
+                std::string o  = "_cw" + std::to_string(id) + "_o";
+                std::string ok = "_cw" + std::to_string(id) + "_ok";
+                cg.queuePendingStatement(std::string(uty) + " " + o + ";");
+                cg.queuePendingStatement("InterlockedCompareExchange(" + dest + ", " + exp
+                    + ", (" + uty + ")(" + des + "), " + o + ");");
+                cg.queuePendingStatement("bool " + ok + " = (" + o + " == " + exp + ");");
+                cg.queuePendingStatement(exp + " = " + o + ";");
+                out << ok;
+                return true;
+            }
+        }
         return false;
     }
 
@@ -1540,6 +1623,11 @@ namespace omegasl {
         } else if (_ty == ast::builtins::uint4_type) {
             out << "uint4";
         }
+        /// §5.6 — atomic scalars. HLSL carries atomicity on the operation
+        /// (`Interlocked*` on a plain int/uint UAV / groupshared slot), so
+        /// the type is the underlying scalar.
+        else if (_ty == ast::builtins::atomic_int_type)  { out << "int"; }
+        else if (_ty == ast::builtins::atomic_uint_type) { out << "uint"; }
         /// §4.1 16-bit family. HLSL spells these with the explicit
         /// arithmetic-type names from SM 6.2; vectors require the
         /// `vector<T,N>` template since `float16_t2` etc. aren't built

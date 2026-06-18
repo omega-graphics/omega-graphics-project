@@ -370,6 +370,69 @@ typedef int ASTType;
 #define BUILTIN_PACK_UNORM_2X16 "packUnorm2x16"
 #define BUILTIN_UNPACK_UNORM_2X16 "unpackUnorm2x16"
 
+/// §5.6 — atomic operations on `atomic_int` / `atomic_uint` memory (a
+/// `buffer<T>` field or a `threadgroup atomic_uint`). Phase A: seven 2-arg
+/// fetch-ops that return the *original* value, plus `atomic_load` (1-arg) /
+/// `atomic_store` (2-arg, void). arg0 (`mem`) resolves to an atomic type and
+/// must be a writable lvalue; the operand `v` matches the underlying scalar
+/// (`atomic_int`→int / `atomic_uint`→uint) or is an integer literal. No
+/// feature bit (32-bit int atomics are universal). Per backend (MSL memory
+/// order is always `memory_order_relaxed`):
+///   add/min/max/and/or/xor → InterlockedAdd/Min/Max/And/Or/Xor(dest,v,out
+///     orig) (HLSL, statement-injected out temp) / atomic_fetch_*_explicit
+///     (MSL) / atomicAdd/Min/Max/And/Or/Xor (GLSL).
+///   exchange → InterlockedExchange (HLSL) / atomic_exchange_explicit (MSL) /
+///     atomicExchange (GLSL).
+///   load  → plain read `mem` (HLSL/GLSL — 32-bit aligned reads are atomic) /
+///     atomic_load_explicit(&mem) (MSL).
+///   store → plain write `(mem = v)` (HLSL/GLSL) /
+///     atomic_store_explicit(&mem,v) (MSL).
+#define BUILTIN_ATOMIC_ADD "atomic_add"
+#define BUILTIN_ATOMIC_MIN "atomic_min"
+#define BUILTIN_ATOMIC_MAX "atomic_max"
+#define BUILTIN_ATOMIC_AND "atomic_and"
+#define BUILTIN_ATOMIC_OR "atomic_or"
+#define BUILTIN_ATOMIC_XOR "atomic_xor"
+#define BUILTIN_ATOMIC_EXCHANGE "atomic_exchange"
+#define BUILTIN_ATOMIC_LOAD "atomic_load"
+#define BUILTIN_ATOMIC_STORE "atomic_store"
+
+/// §5.6 Phase B — `atomic_compare_exchange(mem, compare, desired)` — 3-arg.
+/// Strong CAS: if the current value equals `compare`, store `desired`. Returns
+/// the *original* value either way (the caller checks `result == compare` for
+/// success). The contract is STRONG (no spurious failure) on every backend, to
+/// match HLSL/GLSL — the only portable choice, since a strong CAS cannot be
+/// made to fail spuriously. Per backend:
+///   GLSL — `atomicCompSwap(mem, compare, desired)` (native strong, returns
+///     original).
+///   HLSL — `InterlockedCompareExchange(dest, compare, desired, out orig)`
+///     (native strong); the original goes to an out-param, so statement-
+///     injected like the fetch-ops, expression value = the temp.
+///   MSL  — has only `atomic_compare_exchange_weak_explicit` (no strong form),
+///     so strong is emulated with the canonical weak-in-a-loop: seed
+///     `_exp = compare`, loop while the CAS fails AND `_exp == compare` (a
+///     spurious failure leaves `_exp` unchanged; a genuine mismatch loads the
+///     differing value into `_exp` and exits). `_exp` ends holding the original
+///     value. Statement-injected (decl + while-loop), expression value = `_exp`.
+#define BUILTIN_ATOMIC_COMPARE_EXCHANGE "atomic_compare_exchange"
+
+/// §5.6 Phase B — `atomic_compare_exchange_weak(mem, inout expected, desired)`
+/// — 3-arg, returns `bool`. The *weak* CAS: it may fail spuriously even when
+/// the value matched, so it is only correct inside a caller retry loop. This is
+/// the loop-free primitive — `atomic_compare_exchange` (strong) is the
+/// emulated-via-loop convenience. Shape matches Metal's native weak / C++
+/// `std::atomic`: returns whether the store happened, and on failure writes the
+/// current value back through `expected` (which must be a writable lvalue of
+/// the underlying scalar — NOT a literal). `desired` is the underlying scalar
+/// or an integer literal. Per backend:
+///   MSL  — `atomic_compare_exchange_weak_explicit(&mem, &expected, desired,
+///     relaxed, relaxed)` (native, inline — bool + in-place `expected` update).
+///   HLSL — no weak form; emulated from strong `InterlockedCompareExchange`
+///     (statement-injected): capture orig, `_ok = (orig == expected)`, write
+///     `expected = orig`, value = `_ok`. Strong-satisfies-weak (never spurious).
+///   GLSL — same emulation from `atomicCompSwap` (statement-injected).
+#define BUILTIN_ATOMIC_COMPARE_EXCHANGE_WEAK "atomic_compare_exchange_weak"
+
 /// §5.1.0 — `mod` / `mad` are accepted as aliases of the canonical
 /// `fmod` / `fma` spellings (see `ast::canonicalBuiltinAlias`). They
 /// carry no separate semantics: `mod` is truncation-modulus like `fmod`

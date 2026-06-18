@@ -1161,7 +1161,7 @@ DXC invocation rather than the type system.
 
 ### 4.3 `double` — 
 
-We can do this but we must feature gate it with our proposed feature gating.
+We can do this but we must feature gate it with our feature gating system.
 
 ---
 
@@ -2019,8 +2019,6 @@ bit (universal on every backend).
 
 ### 5.6 Atomic operations
 
-Already on the "not implemented" list. Recap of what's needed:
-
 ```
 atomic_add(buf[i].counter, 1);
 atomic_exchange(buf[i].slot, newValue);
@@ -2030,6 +2028,187 @@ atomic_min/max/and/or/xor(...);
 
 All three backends have native support; Vulkan additionally has
 `atomic_*` on images and on 64-bit integers via extensions.
+
+**The memory-model decision (per Alex).** MSL is the constraint that drives
+the whole design: Metal *requires* atomic memory to be declared as an
+`atomic_int` / `atomic_uint` type (`metal::atomic<int>` / `<uint>`). You
+cannot run an atomic op on a plain `uint`, and once a slot is atomic you
+cannot even plainly read it — every access goes through `atomic_*_explicit`.
+HLSL (`Interlocked*` on plain `int`/`uint` in a UAV / `groupshared`) and GLSL
+(`atomic*` on plain `int`/`uint` in an SSBO / `shared`) carry the atomicity in
+the *operation*, not the *type*. So OmegaSL introduces two new builtin scalar
+types — **`atomic_int` / `atomic_uint`** — that spell as `atomic_int` /
+`atomic_uint` on MSL but as plain `int` / `uint` on HLSL / GLSL, and are only
+ever touched through the `atomic_*` intrinsics (plus `atomic_load` /
+`atomic_store`). This is the only model that satisfies Metal cleanly; the
+alternative (plain `uint` fields + whole-program inference of which fields are
+used atomically, rewriting the MSL type) was rejected as fragile.
+
+**Return value (per Alex).** The fetch-ops return the *original* value, like
+`atomic_add` on GLSL/MSL (`uint slot = atomic_add(b[0].count, 1);` is the
+canonical "allocate-an-index" idiom). GLSL/MSL return it natively; HLSL's
+`InterlockedAdd(dest, val, out orig)` writes it to an out-param, so HLSL uses
+the existing statement-injection hook (`queuePendingStatement` /
+`getDimensionsTempId`, same machinery as `frexp` / `GetDimensions`).
+
+**No feature bit.** 32-bit integer atomics on device / threadgroup memory are
+universal (SM5 `Interlocked*`, MSL `atomic_int`/`atomic_uint`, GLSL 4.3 /
+Vulkan core), so this carries no `#requires` gate — matching `discard` / MRT /
+the §6.2 barriers. 64-bit atomics and image atomics (extension-gated on
+Vulkan) are explicitly out of scope.
+
+**Compiler-only, no runtime change.** Like §5.3, this adds no resource form
+and no runtime descriptor: the buffer is still a normal `buffer<T>`; an atomic
+field is 4 bytes / 4-aligned exactly like `uint`, so `omegaSLStructStride` and
+the `GEBufferWriter`/`Reader` path are unaffected (the C++ caller's CPU struct
+just uses `uint`/`int`). The only new surface is the *shader-source* type
+spelling.
+
+**Phase A — atomic types + fetch-ops + load/store (LANDED)**
+
+New scalar types `atomic_int` / `atomic_uint` and seven 2-arg fetch-ops plus
+`atomic_load` / `atomic_store`:
+
+| Builtin | Args | Returns | Notes |
+|---------|------|---------|-------|
+| `atomic_add(mem, v)` | (atomic, scalar) | original | |
+| `atomic_min/max/and/or/xor(mem, v)` | (atomic, scalar) | original | |
+| `atomic_exchange(mem, v)` | (atomic, scalar) | original | |
+| `atomic_load(mem)` | (atomic) | scalar | |
+| `atomic_store(mem, v)` | (atomic, scalar) | void | |
+
+`mem` (arg0) must resolve to `atomic_int` / `atomic_uint` and be a writable
+lvalue (walk-to-root + reject `const`, the `modf` out-param check); `load`
+needs only the atomic-type check. `v` must match the underlying scalar
+(`atomic_int`→`int`, `atomic_uint`→`uint`) or be an integer literal
+(`canCoerceLiteralTo`). Ops are stage-agnostic (device-buffer atomics are
+valid in any stage; `threadgroup atomic_uint` is already compute-gated by the
+§6.1 storage-qualifier rule). Misusing an atomic slot in plain arithmetic /
+read produces an ordinary type-mismatch (`atomic_uint` ≠ `uint`), which nudges
+toward `atomic_load` — Phase A does not add a dedicated diagnostic for that.
+
+Per-backend lowering (memory ordering is always `memory_order_relaxed` on MSL;
+pair with §6.2 `deviceBarrier` when ordering is needed):
+
+| Op | HLSL (statement-injected `out` temp) | MSL (inline, `&mem`) | GLSL (inline) |
+|----|--------------------------------------|----------------------|---------------|
+| add | `Interlocked Add(dest,v,_atmN)` → `_atmN` | `atomic_fetch_add_explicit` | `atomicAdd` |
+| min/max | `InterlockedMin/Max(...)` | `atomic_fetch_min/max_explicit` | `atomicMin/Max` |
+| and/or/xor | `InterlockedAnd/Or/Xor(...)` | `atomic_fetch_and/or/xor_explicit` | `atomicAnd/Or/Xor` |
+| exchange | `InterlockedExchange(...)` | `atomic_exchange_explicit` | `atomicExchange` |
+| load | plain read `mem` (32-bit aligned reads are atomic) | `atomic_load_explicit(&mem,…)` | plain read `mem` |
+| store | plain write `(mem = v)` | `atomic_store_explicit(&mem,v,…)` | plain write `(mem = v)` |
+
+The HLSL temp is `int`/`uint` per the operand's underlying type; the operand
+is cast to that spelling on every backend to avoid the literal-overload
+ambiguity §5.3 Phase C hit (`0xFFu`→`255`). The type spelling hooks into each
+`writeTypeName` (HLSL/GLSL → `int`/`uint`; MSL → `atomic_int`/`atomic_uint`).
+
+Touch points: `Toks.def` (two `KW_TY`), `Lexer.cpp` (`isKeywordType`),
+`AST.def` (op-name macros), `AST.h`/`AST.cpp` (two builtin types +
+`isReservedBuiltinName`), `Sema.cpp` (`builtinsTypeMap` + a CALL_EXPR
+validation bucket + atomic-type→underlying helper), three `writeTypeName`,
+three `tryEmitBuiltinCall`. Tests: `atomic_ops.omegasl` (every op on a
+`buffer<T>` atomic field + a `threadgroup atomic_uint`, both `atomic_int` and
+`atomic_uint`), `invalid_atomic_ops.omegasl` (op on a non-atomic operand,
+mismatched operand type, wrong arg count), and a GPU runtime test
+`atomic_ops_test.cpp` (a compute dispatch where N threads `atomic_add` a
+shared counter and the readback equals N).
+
+*Verification.* The full omegasl ctest suite is green (109 tests incl. the two
+new ones); the `omegagte_atomic_ops` GPU test passes on real Metal hardware —
+256 racing `atomic_add`s read back as exactly 256, and max/or/exchange/load/
+store + the signed-atomic path all match (proving atomicity, not just "it
+compiles"). The emitted HLSL compiles under `dxc -T cs_6_0` and the GLSL under
+`glslc -fshader-stage=comp` (both installed here); D3D12/Vulkan *runtime* is
+pending CI like §5.3. HLSL discards a fetch-op's result as a dead `_atmN;`
+statement when the value is unused — a benign unused-value warning, the same
+property the `frexp` / `GetDimensions` statement-injection has; the
+`Interlocked*` side effect is preserved.
+
+*Bug caught during verification (worth recording).* The MSL
+`tryEmitBuiltinCall` initially resolved `args[0]->resolvedType`
+*unconditionally* before checking the call was an atomic op, so every
+non-atomic builtin that falls through to `renameBuiltin` on MSL (e.g.
+`countbits`) dereferenced a null/unstamped `resolvedType` → segfault in
+`resolveTypeWithExpr`. It slipped past the new `atomic_ops` test (whose calls
+are all atomic) and only surfaced when the whole suite ran — `bitfield_ops`
+and others crashed. Fixed by gating the resolve behind the atomic-name check
+(HLSL/GLSL were already guarded inside their `if`). Lesson: run the *whole*
+suite, not just the new test, when a change adds a fall-through branch to a
+shared dispatch.
+
+**Phase B — `atomic_compare_exchange` (strong) + `atomic_compare_exchange_weak` (LANDED)**
+
+Two CAS builtins land together — a strong convenience form and the loop-free
+weak primitive, per Alex (the weak primitive keeps the strong form's loop
+emulation honest rather than a silent perf cliff; see the rule below and the
+`Emulation.rst` §"Atomics" write-up).
+
+`atomic_compare_exchange(mem, compare, desired)` → original value; the caller
+checks `result == compare` for success. The contract is **strong** (no spurious
+failure) on every backend — the only portable choice, since you cannot make a
+strong CAS fail spuriously.
+
+* **GLSL** — `atomicCompSwap(mem, compare, desired)` (native strong, returns
+  original) inline; compare/desired cast to the underlying type.
+* **HLSL** — `InterlockedCompareExchange(dest, compare, desired, out orig)`
+  (native strong); the original goes to an out-param, so statement-injected
+  like the fetch-ops (temp decl + call; expression value = the temp).
+* **MSL** — Metal has **only** `atomic_compare_exchange_weak_explicit` (no
+  strong form — verified against the toolchain headers). Strong is emulated
+  with the canonical weak-in-a-loop: capture compare/desired into single-eval
+  temps, seed `_exp = compare`, then
+  `while(!atomic_compare_exchange_weak_explicit(&mem,&_exp,desired,relaxed,
+  relaxed) && _exp == compare){}`. A spurious failure leaves `_exp` unchanged
+  (== compare) so it retries; a genuine mismatch loads the differing value into
+  `_exp` and exits. `_exp` ends holding the original value (the expression
+  result). Statement-injected (decl + while-loop).
+
+`atomic_compare_exchange_weak(mem, inout expected, desired)` → **bool** (did the
+store happen). The weak primitive — may fail spuriously, so it is only correct
+inside a caller retry loop. Shape matches Metal's native weak / C++
+`std::atomic`: on failure it writes the current value back through `expected`
+(which must be a writable **local** variable — a `device` buffer field can't
+form Metal's `thread T*` `expected` pointer, so Sema rejects it). Per backend:
+**MSL** native inline (`atomic_compare_exchange_weak_explicit`, bool + in-place
+`expected`); **HLSL/GLSL** have no weak form, so it's emulated from the strong
+intrinsic (strong satisfies weak) via statement injection — capture orig,
+`ok = (orig == expected)`, write back `expected = orig`, value = `ok`.
+
+*Portability constraint (documented in `Emulation.rst`):* because the weak CAS
+expands to multiple statements on HLSL/GLSL, it must be called as a *statement*
+(`done = atomic_compare_exchange_weak(...)` inside the loop body), not placed in
+a bare `while`/`for` condition — in a condition the injection hoists out of the
+loop and runs once. MSL (inline) works either way; the statement form is the
+portable one.
+
+Sema folds both into the §5.6 bucket: 3-arg, arg0 a writable atomic lvalue.
+Strong: args1/2 (compare/desired) match the underlying scalar or are integer
+literals, returns the underlying scalar. Weak: arg1 (`expected`) is a writable
+local of the underlying type (not a literal), arg2 (`desired`) matches or is a
+literal, returns `bool`.
+
+*Verification.* Full omegasl ctest suite green (109 tests; CAS cases folded into
+`atomic_ops.omegasl` / `invalid_atomic_ops.omegasl`); the `omegagte_atomic_ops`
+GPU test passes on real Metal — strong CAS hit returns 5 & stores, miss returns
+42 & leaves memory (both `atomic_uint` and `atomic_int`); a **contended**
+weak-CAS increment loop across 256 threads converges to exactly 256 (proving the
+in-place `expected` update + retry under genuine contention). Emitted
+HLSL/MSL/GLSL for all five atomic shaders compile under dxc / `xcrun metal` /
+glslc. **§5.6 complete** (64-bit + image atomics remain out of scope below).
+
+**Out of scope (follow-ups)**
+
+* 64-bit atomics (`atomic_long`/`atomic_ulong`) and image/texture atomics —
+  Vulkan-extension-gated; would need a feature bit.
+* Atomic resource-access enforcement (rejecting an atomic op on an `in`-only
+  `buffer<T>` in Sema). Phase A mirrors the existing precedent that plain
+  buffer *writes* aren't access-checked either — the backend compiler catches
+  a write to a read-only resource. Land as a shared buffer-write rule later.
+* Explicit memory-order arguments (`atomic_add(mem, v, acquire)`); Phase A
+  pins `relaxed`, the right default for the overwhelming majority of GPU
+  atomics.
 
 ---
 

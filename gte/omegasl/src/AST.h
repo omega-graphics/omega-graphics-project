@@ -160,6 +160,13 @@ namespace omegasl {
             DECLARE_BUILTIN_TYPE(sampler3d_type);
             DECLARE_BUILTIN_TYPE(samplercube_type);
 
+            /// §5.6 — atomic scalar types. Spell as `atomic_int` /
+            /// `atomic_uint` on MSL (where atomicity rides on the type) and
+            /// as plain `int` / `uint` on HLSL / GLSL (atomicity rides on the
+            /// operation). Touched only through the `atomic_*` intrinsics.
+            DECLARE_BUILTIN_TYPE(atomic_int_type);
+            DECLARE_BUILTIN_TYPE(atomic_uint_type);
+
 #undef  DECLARE_BUILTIN_TYPE
 #define DECLARE_BUILTIN_FUNC(name) extern FuncType *name;
 

@@ -532,6 +532,29 @@ Phase 3 writes the solver, so the CPU solver is already SoA-friendly.
   constrains float usage and reduction order. Decide the target here, because it
   governs how the kernels are written.
 
+**Research note (recency audit, 2026-06-18).** The §4 methodology asks
+whether a *newer* parallel solver beats colored-Gauss-Seidel for a faithful
+GPU port of the shipped Phase 3 PGS. Audit done; the answer is "the newer
+solvers are genuinely better *as GPU solvers* but are different algorithms,
+so they belong to the §7.2 fork, not to a port." The newest threads —
+**Vertex/Block Descent (Chen, Macklin et al., SIGGRAPH 2024)** and the
+**GPU-XPBD / unified-particle line (Müller 2020; Macklin 2014 FleX)** — would
+replace the sequential-impulse iteration the CPU oracle runs, breaking the
+parity contract that *is* this phase's deliverable; they are flagged as the
+Phase 7 candidates. The port therefore adopts **colored-Gauss-Seidel (Tonge
+et al. 2012 mass-splitting / batched-constraint lineage)** as the parallel
+form of the exact CPU iteration, the **canonical sort-based GPU grid (Green
+2010)** for broadphase, and **Blelloch scan / Merrill–Grimshaw radix sort**
+as the AQUA-owned primitives GTE doesn't supply. Determinism leans
+**stable-cross-path, bitwise-within-path** (the §7.4 decision): a single GPU
+path is run-to-run deterministic because the colored solve uses no
+order-dependent float atomics, while CPU↔GPU agreement is tolerance-equivalent
+(float reassociation + colored traversal order), with bitwise-cross-path left
+as a documented future mode if kREATE lockstep demands it. **RT-core
+broadphase (Wang 2024)** is the recorded hardware-gated Phase 5.x acceleration
+(gated on `GTEDEVICE_FEATURE_RAYTRACING`, vendor-specific). Full detail:
+`aqua/.plans/Phase-5-Compute-Execution-Substrate.md` §12.
+
 ---
 
 ### Phase 6 — Particle systems — [Particle]
