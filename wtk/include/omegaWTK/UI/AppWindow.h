@@ -22,6 +22,7 @@ class Widget;
 OMEGACOMMON_SHARED_CLASS(Widget);
 class View;
 class FrameBuilder;
+class FramePacer;
 
 namespace Composition {
     class LayerTree;
@@ -54,6 +55,7 @@ class AppWindowDelegate;
         friend class AppWindowManager;
         friend class WidgetTreeHost;
         friend class FrameBuilder;
+        friend class FramePacer;
 
         void onThemeSet(Native::ThemeDesc &desc) override;
 

@@ -3571,6 +3571,18 @@ stretch the persistent texture on present).
 
 ##### Phase F-G (follow-up) — Bucketed render-target + image allocation: render-into-region, never reallocate per resize tick
 
+> **SUPERSEDED (2026-06-17) by
+> [`gte/.plans/Cheap-Swapchain-Resize-Plan.md`](../../gte/.plans/Cheap-Swapchain-Resize-Plan.md).**
+> The bucketed approach (F-G.1 D3D12 `SetSourceSize`, F-G.2 Vulkan research)
+> didn't pan out — it is per-backend (one shipped, one unfinished, one N/A),
+> never validated as a win, and still pays per-tick relayout cost. The
+> replacement, **Cheap Swapchain Resize**, suspends content drawing for the
+> duration of an interactive resize and lets the OS stretch the last-presented
+> surface, doing one relayout + repaint + swap-chain resize at drag-end — a
+> single backend-agnostic WTK toggle, no per-backend code. Phase F-G.1's D3D12
+> GTE code is slated for removal by that plan. The F-G material below is kept
+> for history.
+
 > **STATUS / SCOPE (2026-06-16, re-scoped after pre-flight + prior-art
 > research — the original three-pool plan below is SUPERSEDED).** A
 > pre-flight against the current code found the original premise stale and
@@ -4257,6 +4269,111 @@ Files outside this plan (in Native-API §2.9):
 - `wtk/src/Native/gtk/NativeScreen.cpp` — `wl_surface.frame` + `wp_presentation_feedback` (Wayland) or `GLX_INTEL_swap_event` (X11), keyed by `GdkMonitor`.
 
 Phase H is platform-agnostic on its side; every platform-specific concern lives in §2.9.
+
+###### Implementation phasing (added 2026-06-17)
+
+The architecture above is the design; this is the reviewable-increment
+breakdown. Developer decisions for this landing (2026-06-17):
+
+- **Scope this session: H.1 + H.2 ("core").** The headline of the phase
+  — real `FrameTime` (closes the 4.3 `steady_clock` seam) + vsync-aligned
+  production. The load-aware `PaceHint` / `FramePacingMonitor` gating
+  (H.3) is deferred to a follow-up increment; it is an optimization layer
+  on top, and it is the only part that reaches into the Compositor for
+  present/GPU timing.
+- **On-demand display-link subscription.** The bound `NativeDisplayLink`
+  is subscribed only while a build is pending and **paused** (unsubscribed)
+  once the app goes idle, so a resting app costs zero per-vsync wakeups —
+  important because GTK's link is a free-running `g_timeout_add` that fires
+  every refresh interval while subscribed.
+- **Re-entrancy is sidestepped, not patched.** Subscribe / unsubscribe
+  happen **only on the UI thread** — in `requestFrame` (arm + subscribe)
+  and at the tail of `flushFrame` (pause-if-idle). The display-link
+  callback never mutates the subscription, so there is no
+  "unsubscribe-from-inside-my-own-callback" footgun and **no change to
+  §2.9 platform code is required**. `buildPending_` is `std::atomic`
+  because the callback fires on the link thread on macOS/Win (it is the
+  GTK main/UI thread on Linux).
+
+**H.1 — `FramePacer` skeleton + real `FrameTime` (no cadence change).**
+*[IMPLEMENTED 2026-06-17 — build-verified Linux/GTK + Vulkan; default-path
+smoke run renders identically and does not crash. Visual verify pending
+user handoff.]*
+New UI-private `wtk/src/UI/FramePacer.{h,cpp}` (peer of `FrameBuilder` /
+`AnimationScheduler`). `AppWindow::Impl` owns one; the ctor constructs it
+and binds it to `Native::displayLinkForScreen(currentScreen())`; Phase F's
+`onRealize` handler rebinds it on cross-screen transitions. `FramePacer`
+owns the OS-monotonic clock (`std::chrono::steady_clock`, the portable
+C++17 wrapper over `mach_absolute_time` / `QueryPerformanceCounter` /
+`clock_gettime`) + the per-window `frameIndex`. `FrameBuilder::beginFrame`
+stamps `AnimationScheduler::tick`'s `FrameTime` from
+`framePacer_->beginFrameTime()` instead of the file-local
+`steadyFrameClockNs()` + `FrameBuilder::frameIndex_`. Behavior-neutral:
+`beginFrameTime()` returns `{ steadyNowNs(), ++frameIndex }`, exactly what
+the 4.3 stand-in produced — the change is that one object now owns the
+clock + counter and is bound to the per-screen vsync source ready for H.2.
+- *Files:* new `FramePacer.{h,cpp}`; `AppWindow.{h,cpp}` (forward decl +
+  `friend class FramePacer`, ctor construct/bind, `onRealize` rebind);
+  `AppWindowImpl.h` (`framePacer_` slot); `FrameBuilder.cpp` (tick source).
+- *Validator:* full build clean; animations (`ContainerClampAnimationTest`)
+  unchanged — same monotonic clock, same per-frame index, no skipped or
+  duplicated ticks.
+
+**H.2 — Vsync-aligned production (env-gated, default off).**
+*[IMPLEMENTED 2026-06-17 — build-verified Linux/GTK + Vulkan. Smoke run
+with `OMEGAWTK_VSYNC_PACING=1` produces frames through the new
+requestBuild → subscribe → onVsync → requestFrameFlush → flushFrame chain
+and does not crash/hang; idle-pause logic traced. Per-vsync cap, idle CPU
+drop, and visual identity pending user visual verify.]* Gated behind
+`OMEGAWTK_VSYNC_PACING` (read once at pacer construction). Default off ⇒
+the legacy free-running path (`requestFrame → requestFrameFlush`) is
+byte-for-byte unchanged, so this lands without a visible default-behavior
+change until the user visually verifies the gated path (omega-debugviz is
+user-handoff per AGENTS.md). When on:
+- `AppWindow::requestFrame()` routes to `framePacer_->requestBuild()`:
+  set `buildPending_ = true` and `ensureSubscribed()` (UI thread).
+- The pacer's vsync callback (`onVsync(presentationTimeNs, intervalNs)`)
+  records the interval/timestamp and, if `buildPending_`, clears it and
+  calls `nativeWindow->requestFrameFlush()` — the existing coalesced,
+  UI-thread-marshalling primitive. Production is thereby capped at **one
+  build per vsync**; bursts of `invalidate` between vsyncs coalesce.
+- `flushFrame()` tail calls `framePacer_->onFrameFlushed()`, which pauses
+  (unsubscribes) the link iff no build is pending and the
+  `AnimationScheduler` has no active animations — keeping idle truly idle.
+  The end-of-frame animation auto-pump (`requestFrame` in
+  `FrameBuilder::endFrame`) re-arms + re-subscribes for the next frame.
+- `beginFrameTime()` returns the **predicted presentation time**
+  (`lastPresentationNs + intervalNs`) while vsync-active, so animations
+  step against display time, not CPU time; it falls back to `steadyNowNs()`
+  on the legacy path / before the first vsync.
+- *Files:* `FramePacer.{h,cpp}` (subscribe/onVsync/requestBuild/pause);
+  `AppWindow.cpp` (`requestFrame` reroute + `flushFrame` tail hook).
+- *Validator:* with `OMEGAWTK_VSYNC_PACING=1`, an animation test paces at
+  the refresh interval (≤ one build per vsync) and the link pauses at rest
+  (no idle CPU spin); default-off run is identical to pre-H.2. Visual
+  verify is a user handoff.
+- *Known limitation (flagged):* §2.9 `NativeDisplayLink` is
+  single-subscriber, so two windows on the *same* screen would clobber
+  each other's subscription. Acceptable for first landing (single-window
+  test apps); multi-subscriber links are a §2.9 follow-up, out of Phase H.
+
+**H.3 — `PaceHint` + `FramePacingMonitor` load gating (DEFERRED).** Folds
+the stale `Frame-Pacing-Plan.md` mechanism (per-lane 100 ms windowed
+monitor, asymmetric hysteresis, discontinuity reset) onto the Compositor +
+adds `FramePacer::shouldBuildNextVsync(hint)` so a deferrable build is
+skipped under `Saturated`, with the resize / DPI / live-animation /
+first-paint critical exceptions never skipped. Not implemented this
+session.
+
+**Cross-platform verification status (flagged per repo convention).**
+Authored and build/run-verified on **Linux/GTK + Vulkan** only.
+macOS (`CADisplayLink`) and Windows (`IDXGIOutput::WaitForVBlank` /
+`DCompositionWaitForCompositorClock`) display-link impls already exist in
+§2.9 but the FramePacer integration on those backends is **compile/run-
+unverified off-platform** — the UI-thread-only subscription discipline is
+written to be backend-agnostic, but the macOS/Win link callback fires on a
+non-UI thread (unlike GTK's main-loop timer), so the marshalling path there
+needs an on-platform run before it is trusted.
 
 ##### Phase 4.3 — `AnimationScheduler` lands alongside the old animator (folds Animation-Scheduler-Plan Tier A) [DONE]
 

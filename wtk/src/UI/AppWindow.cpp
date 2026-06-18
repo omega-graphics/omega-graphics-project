@@ -84,6 +84,17 @@ Composition::Rect translateRectToScreen(Composition::Rect rect,
         // nothing reads the scheduler's side table until 4.4. FrameBuilder
         // ticks it once per frame (see beginFrame).
         impl_->animationScheduler_ = std::make_unique<AnimationScheduler>(*this);
+        // UIView-Render-Redesign Phase H: stand up the per-window frame
+        // pacer alongside the scheduler. It owns the FrameTime clock +
+        // frame index FrameBuilder feeds AnimationScheduler::tick (closing
+        // Phase 4.3's steady_clock stand-in) and binds to the vsync source
+        // for the screen this window currently lives on (§2.9). The bind
+        // is refreshed on cross-screen transitions in the onRealize handler
+        // below. H.1 is behavior-neutral; H.2's vsync-aligned production is
+        // gated behind OMEGAWTK_VSYNC_PACING.
+        impl_->framePacer_ = std::make_unique<FramePacer>(*this);
+        impl_->framePacer_->bindTo(
+            Native::displayLinkForScreen(impl_->nativeWindow->currentScreen()));
         // Widget-View-Paint-Lifecycle-Plan Tier D / D7.5 (2026-06-04):
         // seat the user-agent default stylesheet at the bottom of the
         // cascade stack BEFORE the app sees the window. The cascade
@@ -143,6 +154,16 @@ void AppWindow::onThemeSet(Native::ThemeDesc &desc){
 }
 
 void AppWindow::requestFrame(){
+    // Phase H.2 (OMEGAWTK_VSYNC_PACING): align frame production to the
+    // screen's vsync. Instead of scheduling a flush on the very next
+    // run-loop turn (free-running), arm the pacer to build on the next
+    // vsync — bursts of invalidate between vsyncs coalesce into one build,
+    // and the pacer subscribes the display link so the callback drives the
+    // flush. Default-off this branch is dead and the legacy path runs.
+    if(impl_->framePacer_ != nullptr && impl_->framePacer_->vsyncPacingEnabled()){
+        impl_->framePacer_->requestBuild();
+        return;
+    }
     // Tier A: coalesced schedule of flushFrame() on the next run-loop
     // turn. The native window dedups bursts into one callback.
     if(impl_->nativeWindow != nullptr){
@@ -166,8 +187,18 @@ void AppWindow::flushFrame(){
     if(impl_->widgetTreeHost == nullptr){
         return;
     }
-    FrameBuilder::ScopedFrame frame(impl_->frameBuilder_.get());
-    impl_->widgetTreeHost->paintDirty();
+    {
+        FrameBuilder::ScopedFrame frame(impl_->frameBuilder_.get());
+        impl_->widgetTreeHost->paintDirty();
+    }
+    // Phase H.2: the ScopedFrame above is closed (endFrame has run, so the
+    // end-of-frame animation auto-pump has already re-armed the pacer if an
+    // animation is still live). Now let the pacer pause its display-link
+    // subscription if the app has gone idle — keeping a resting window off
+    // the per-vsync wakeup path. No-op when vsync pacing is disabled.
+    if(impl_->framePacer_ != nullptr && impl_->framePacer_->vsyncPacingEnabled()){
+        impl_->framePacer_->onFrameFlushed();
+    }
 }
 
 // ---------------------------------------------------------------
@@ -406,9 +437,19 @@ void AppWindow::setRootWidget(WidgetPtr widget){
            impl_->delegate == nullptr){
             return;
         }
-        const float newScale = impl_->nativeWindow->currentScreen().scaleFactor;
+        const Native::NativeScreenDesc screen = impl_->nativeWindow->currentScreen();
         if(impl_->rootViewRenderTarget != nullptr){
-            impl_->rootViewRenderTarget->setRenderScale(newScale);
+            impl_->rootViewRenderTarget->setRenderScale(screen.scaleFactor);
+        }
+        // Phase H: a re-realize is also where the window can cross screen
+        // boundaries (a different monitor with a different refresh rate),
+        // so the vsync source changes here too. Rebind the pacer to the new
+        // screen's display link — the one trigger point handles both "the
+        // DPI changed" and "the vsync source changed." The pacer's clock is
+        // OS-monotonic, not the link's, so AnimationScheduler never sees a
+        // time jump across the rebind; only the frame interval changes.
+        if(impl_->framePacer_ != nullptr){
+            impl_->framePacer_->bindTo(Native::displayLinkForScreen(screen));
         }
         impl_->delegate->dispatchResizeToHosts(impl_->nativeWindow->getRect());
     });

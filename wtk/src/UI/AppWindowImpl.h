@@ -11,6 +11,7 @@
 #include "../Composition/backend/ResourceFactory.h"
 #include "FrameBuilder.h"
 #include "AnimationScheduler.h"
+#include "FramePacer.h"
 
 #include <memory>
 
@@ -53,6 +54,14 @@ struct AppWindow::Impl {
     // Additive — the legacy ViewAnimator/LayerAnimator path still drives
     // all animation until 4.4.
     std::unique_ptr<AnimationScheduler> animationScheduler_;
+
+    // UIView-Render-Redesign Phase H: per-window frame pacer, a peer of
+    // the FrameBuilder / AnimationScheduler. Owns the FrameTime clock +
+    // frame index (closing Phase 4.3's steady_clock seam) and binds to the
+    // current screen's vsync source (§2.9 NativeDisplayLink). H.2's
+    // vsync-aligned production is gated behind OMEGAWTK_VSYNC_PACING;
+    // default-off it is inert (the FrameTime source is unchanged in shape).
+    std::unique_ptr<FramePacer> framePacer_;
 
     // Widget-View-Paint-Lifecycle-Plan Tier D / D6.2 (2026-06-03):
     // per-window style-sheet stack. The cascade in D6.3's

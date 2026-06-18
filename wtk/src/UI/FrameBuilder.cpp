@@ -86,7 +86,17 @@ void FrameBuilder::beginFrame(){
     // UIView routes onto it, so this is a no-op-over-empty for now.
     if(impl->animationScheduler_){
         ScopedPhase tickPhase(this, FramePhase::Tick);
-        impl->animationScheduler_->tick(FrameTime{steadyFrameClockNs(), frameIndex_++});
+        // Phase H: the per-window FramePacer is now the single owner of
+        // the FrameTime clock + frame index — it stamps the predicted
+        // presentation time (vsync-aligned) when OMEGAWTK_VSYNC_PACING is
+        // on, and an OS-monotonic now() otherwise, closing Phase 4.3's
+        // `steady_clock` + per-FrameBuilder-counter stand-in. The local
+        // `steadyFrameClockNs()` + `frameIndex_` fallback survives only for
+        // the defensive case where the pacer is somehow absent.
+        const FrameTime frameTime = (impl->framePacer_ != nullptr)
+            ? impl->framePacer_->beginFrameTime()
+            : FrameTime{steadyFrameClockNs(), frameIndex_++};
+        impl->animationScheduler_->tick(frameTime);
 
         // Widget-View-Paint-Lifecycle-Plan Tier D / D7.2 (2026-06-04):
         // scheduler-side auto-pump. While the active set is non-empty,
