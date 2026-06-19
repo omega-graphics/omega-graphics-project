@@ -1,0 +1,12 @@
+// Phase 4 advisory test: includes a `.omegasl` file as a header. The compile
+// still succeeds (the advisory is warn-only); omegaslc emits a warning nudging
+// toward the `.omegaslh` extension.
+#include "shared_decls.omegasl"
+
+[in shared_src, out shared_dst]
+compute(x=1,y=1,z=1)
+void useSharedDecls(uint3 tid : GlobalThreadID){
+    float a = shared_src[0].value[0];
+    float b = shared_src[0].value[1];
+    shared_dst[0].value = float4(combine(a, b), a, b, 1.0);
+}

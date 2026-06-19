@@ -1,0 +1,19 @@
+// A header (`.omegaslh`) that wrongly declares a shader entry point.
+// Headers hold shared declarations only; a `fragment`/`vertex`/`compute`/...
+// entry point here would be textually inlined into every including
+// translation unit and collide by name at link time. The preprocessor must
+// reject this when the header is `#include`d (see Phase 5).
+
+struct Vtx {
+    float4 position;
+    float4 color;
+};
+
+struct Raster internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+fragment float4 badFrag(Raster raster){
+    return raster.color;
+}

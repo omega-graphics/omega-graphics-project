@@ -3,7 +3,7 @@
 ## Overview
 
 This plan adds two new subsystems to OmegaCommon, both landing in the
-new **`OmegaCommon.ASIO`** binary defined by
+new **`OmegaCommonASIO`** binary defined by
 `OmegaCommon-Binary-Split-Plan.md`:
 
 - **`io.h`** — an async I/O context (event loop + thread pool) that other
@@ -13,7 +13,7 @@ new **`OmegaCommon.ASIO`** binary defined by
 
 Both are backed by **Boost.Asio + Boost.Beast** vendored privately under
 `common/deps/boost` via `AUTOMDEPS`. Neither header leaks any Boost type
-across the OmegaCommon.ASIO DLL boundary; public symbols use the
+across the OmegaCommonASIO DLL boundary; public symbols use the
 `OMEGACOMMON_ASIO_EXPORT` macro introduced by the split plan.
 
 The existing curl/WinHTTP `HttpClientContext` in `net.h` (now in
@@ -23,9 +23,9 @@ transport surface; it does not migrate HTTP off curl.
 ## Prerequisite
 
 `OmegaCommon-Binary-Split-Plan.md` Phase 3 must land first — it creates
-the empty `OmegaCommon.ASIO` SHARED target this plan fills. The two
+the empty `OmegaCommonASIO` SHARED target this plan fills. The two
 plans were authored together; without the split, all references to
-`OmegaCommon.ASIO` below would have to fall back to the legacy single
+`OmegaCommonASIO` below would have to fall back to the legacy single
 `OmegaCommon` target.
 
 ## Decisions (locked in before writing)
@@ -91,7 +91,7 @@ dependency) is header-only by default in 1.86. Net result: **no Boost
 sources need to be compiled** — the entry is purely an include-path
 provider.
 
-Defines applied to `OmegaCommon.ASIO` (PRIVATE):
+Defines applied to `OmegaCommonASIO` (PRIVATE):
 
 - `BOOST_ASIO_NO_DEPRECATED` — drop legacy API names
 - `BOOST_BEAST_USE_STD_STRING_VIEW` — interop with our `StrRef` family
@@ -317,12 +317,12 @@ namespace OmegaCommon {
   `onError` callback or a `std::future`'s exception).
 - Move constructors are `noexcept` so containers behave.
 
-## TLS — reuse OmegaCommon.Core's OpenSSL build
+## TLS — reuse OmegaCommonCore's OpenSSL build
 
 Boost.Beast's `ssl_stream` uses `boost::asio::ssl::context`, which is a
 thin wrapper over OpenSSL's `SSL_CTX`. OpenSSL is already built via
 `add_third_party` in `common/CMakeLists.txt` and consumed by
-OmegaCommon.Core. OmegaCommon.ASIO links Core PUBLIC and therefore
+OmegaCommon.Core. OmegaCommonASIO links Core PUBLIC and therefore
 inherits the `ssl` / `crypto` imported targets — **no new TLS
 dependency, no re-link of OpenSSL**.
 
@@ -332,7 +332,7 @@ tempfile, matching what `crypto.h`'s TLS surface already does.
 
 ## CMake wiring (`common/CMakeLists.txt`)
 
-The split plan's Phase 3 creates an empty `OmegaCommon.ASIO` SHARED
+The split plan's Phase 3 creates an empty `OmegaCommonASIO` SHARED
 target. This plan's Phase 1b appends to that target's existing block:
 
 ```cmake
@@ -346,18 +346,18 @@ if(NOT EXISTS "${BOOST_SOURCE_DIR}/boost/version.hpp")
     message(FATAL_ERROR
         "Boost headers not found at ${BOOST_SOURCE_DIR}. Run autom-deps.")
 endif()
-target_include_directories("OmegaCommon.ASIO" PRIVATE "${BOOST_SOURCE_DIR}")
-target_compile_definitions("OmegaCommon.ASIO" PRIVATE
+target_include_directories("OmegaCommonASIO" PRIVATE "${BOOST_SOURCE_DIR}")
+target_compile_definitions("OmegaCommonASIO" PRIVATE
     BOOST_ASIO_NO_DEPRECATED
     BOOST_ASIO_DISABLE_BOOST_REGEX
     BOOST_BEAST_USE_STD_STRING_VIEW)
 if(WIN32)
-    target_compile_definitions("OmegaCommon.ASIO" PRIVATE _WIN32_WINNT=0x0A00)
-    target_link_libraries("OmegaCommon.ASIO" PRIVATE ws2_32 mswsock)
+    target_compile_definitions("OmegaCommonASIO" PRIVATE _WIN32_WINNT=0x0A00)
+    target_link_libraries("OmegaCommonASIO" PRIVATE ws2_32 mswsock)
 endif()
 ```
 
-Per-platform link additions for OmegaCommon.ASIO:
+Per-platform link additions for OmegaCommonASIO:
 
 - **Linux**: Core already links `pthread`; ASIO inherits it via PUBLIC. No
   extra link line.
@@ -367,7 +367,7 @@ Per-platform link additions for OmegaCommon.ASIO:
   add here is the `mswsock` delta.
 
 Beast / Asio TLS picks up the `ssl` / `crypto` imported targets via
-`OmegaCommon.ASIO`'s PUBLIC link to OmegaCommon.Core — no explicit
+`OmegaCommonASIO`'s PUBLIC link to OmegaCommon.Core — no explicit
 re-link is needed in this target's block.
 
 Sources under `src/`:
@@ -389,14 +389,14 @@ to commits/PRs.
 
 ### Phase 1 — Vendoring + skeleton (`~80 LOC`)
 
-Pre-req: split plan Phase 3 has landed — the empty `OmegaCommon.ASIO`
+Pre-req: split plan Phase 3 has landed — the empty `OmegaCommonASIO`
 target exists and produces a stub DLL.
 
 - `1a` Add Boost entry to `common/AUTOMDEPS`. Run `autom-deps`, verify
   `common/deps/boost/boost/version.hpp` and
   `common/deps/boost/boost/beast.hpp` both exist.
 - `1b` Append the Boost include + defines block (above) to the
-  `OmegaCommon.ASIO` section of `common/CMakeLists.txt`. Add
+  `OmegaCommonASIO` section of `common/CMakeLists.txt`. Add
   `ws2_32 mswsock` to ASIO's Windows link line.
 - `1c` Create `include/omega-common/io.h` and
   `include/omega-common/websocket.h` exactly as in this doc, with
@@ -404,7 +404,7 @@ target exists and produces a stub DLL.
 - `1d` Replace the `src/asio_stub.cpp` placeholder created by split
   Phase 3 with real stubs `src/io.cpp` and `src/websocket.cpp` that
   define the PIMPL `Impl` struct + ctor/dtor only (no behavior).
-- Verifies: Linux + Windows full build of OmegaCommon.ASIO clean, no
+- Verifies: Linux + Windows full build of OmegaCommonASIO clean, no
   new symbols exported except the new class shells.
 
 **Per AGENTS.md small-feature exception, 1a–1d is a single 80-LOC change

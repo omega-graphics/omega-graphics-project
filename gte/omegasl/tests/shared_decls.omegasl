@@ -1,0 +1,15 @@
+// Intentionally named `.omegasl` (not `.omegaslh`) to exercise the Phase 4
+// extension advisory: including a non-`.omegaslh` file as a header emits a
+// warning but still compiles. Contains shared declarations only — no shader
+// entry point — so the include itself is otherwise legal.
+
+struct SharedData {
+    float4 value;
+};
+
+buffer<SharedData> shared_src : 0;
+buffer<SharedData> shared_dst : 1;
+
+float combine(float a, float b){
+    return a + b;
+}

@@ -1,4 +1,5 @@
 #include "Preprocessor.h"
+#include "Lexer.h"
 
 #include <omegasl.h>
 
@@ -78,6 +79,25 @@ void trimInPlace(std::string& s) {
     auto notSpace = [](unsigned char c) { return !std::isspace(c); };
     s.erase(s.begin(), std::find_if(s.begin(), s.end(), notSpace));
     s.erase(std::find_if(s.rbegin(), s.rend(), notSpace).base(), s.end());
+}
+
+/// The six shader-stage keywords. These are *hard* keywords in the Lexer
+/// (`isKeyword`, `Lexer.cpp`), so a `TOK_KW` whose text is one of these is
+/// unambiguously a shader entry point declaration — it can never be an
+/// identifier. Mirrors the stage-keyword subset of `Lexer::isKeyword`.
+bool isStageKeyword(const std::string& text) {
+    return text == KW_VERTEX || text == KW_FRAGMENT || text == KW_COMPUTE ||
+           text == KW_HULL || text == KW_DOMAIN || text == KW_MESH;
+}
+
+/// True if `path` ends in the recommended header extension `.omegaslh`.
+/// Case-sensitive — the convention is exactly `.omegaslh`. Drives the
+/// Phase 4 advisory: an include whose path is not a `.omegaslh` is nudged
+/// toward the convention (warn-only; the include is still processed).
+bool hasOmegaslhExtension(const std::string& path) {
+    static const std::string ext = ".omegaslh";
+    return path.size() >= ext.size() &&
+           path.compare(path.size() - ext.size(), ext.size(), ext) == 0;
 }
 
 } // namespace
@@ -207,6 +227,31 @@ bool Preprocessor::evaluateIfExpression(const std::string& expr) const {
     e.erase(end, e.end());
     if (e.empty()) return false;
     return isDefined(e);
+}
+
+bool Preprocessor::includeDeclaresShader(const std::string& processedContent,
+                                         std::string& keywordOut, unsigned& lineOut) const {
+    /// Drive the real Lexer over the already-preprocessed include body.
+    /// Reusing it (rather than a substring scan) gives correct skipping of
+    /// line/block comments and string literals, whole-token identifier
+    /// boundaries, and a line number — all for free. The scan runs on the
+    /// *processed* text so a shader behind an `#if`/`#ifdef` that resolved
+    /// to false for the active backend was already stripped and does not
+    /// count. This is the exact lexer-driving pattern used by the
+    /// `--tokens-only` path in `main.cpp`.
+    std::istringstream stream(processedContent);
+    Lexer lexer;
+    lexer.setInputStream(&stream);
+    for (Tok t = lexer.nextTok(); t.type != TOK_EOF; t = lexer.nextTok()) {
+        if (t.type == TOK_KW && isStageKeyword(t.str)) {
+            keywordOut = t.str;
+            lineOut = t.line;
+            lexer.finishTokenizeFromStream();
+            return true;
+        }
+    }
+    lexer.finishTokenizeFromStream();
+    return false;
 }
 
 std::string Preprocessor::processInternal(const std::string& source, const std::string& currentPath, unsigned includeDepth) {
@@ -352,12 +397,59 @@ std::string Preprocessor::processInternal(const std::string& source, const std::
                     std::string fullPath = currentPath.empty() ? incPath : (currentPath + "/" + incPath);
                     std::ifstream incFile(fullPath);
                     if (incFile) {
+                        /// Phase 4 advisory: a header — a file included for its
+                        /// shared declarations — should be named `*.omegaslh`.
+                        /// A `.omegasl` is a translation unit that owns shader
+                        /// entry points. Nudge toward the convention but keep
+                        /// processing (warn-only): hard-failing here would break
+                        /// any project that includes a file of pure declarations
+                        /// under a different extension. The real guard against a
+                        /// header carrying a shader is the rejection below.
+                        if (!hasOmegaslhExtension(incPath)) {
+                            std::cerr << "warning: `#include \"" << incPath
+                                      << "\"` does not use the recommended `.omegaslh` header "
+                                         "extension. Headers (files included for their shared "
+                                         "declarations) should be named `*.omegaslh`; a "
+                                         "`.omegasl` is a translation unit that owns shader "
+                                         "entry points. (Advisory — the include is still "
+                                         "processed.)" << std::endl;
+                        }
                         std::string incContent((std::istreambuf_iterator<char>(incFile)),
                                                std::istreambuf_iterator<char>());
                         incFile.close();
                         size_t slash = fullPath.find_last_of("/\\");
                         std::string incDir = (slash != std::string::npos) ? fullPath.substr(0, slash) : "";
-                        out << processInternal(incContent, incDir, includeDepth + 1);
+                        std::string processedInclude = processInternal(incContent, incDir, includeDepth + 1);
+                        /// A header is textually inlined into every including
+                        /// translation unit. A shader entry point declared in
+                        /// one would therefore be compiled into each unit and
+                        /// collide by name at link time (and bloat the output).
+                        /// Reject it loudly here — name the header, the line,
+                        /// and the offending stage keyword — and drop the
+                        /// content rather than silently inline a duplicate that
+                        /// would surface as a cryptic link-time collision later.
+                        /// (Nested includes are covered: an inner header's
+                        /// shader is caught and stripped by the recursive
+                        /// `processInternal` above before this outer scan runs.)
+                        std::string stageKeyword;
+                        unsigned stageLine = 0;
+                        if (includeDeclaresShader(processedInclude, stageKeyword, stageLine)) {
+                            std::cerr << "error: included header `" << fullPath
+                                      << "` declares a shader entry point (`"
+                                      << stageKeyword << "` at line " << stageLine
+                                      << "). Shader entry points must live in a translation "
+                                         "unit (`.omegasl`), not in an `#include`d header "
+                                         "(`.omegaslh`): a header is inlined into every "
+                                         "including unit, so a shader in it is compiled "
+                                         "multiple times and collides at link time. Move the `"
+                                      << stageKeyword << "` entry point into a `.omegasl` "
+                                         "translation unit and keep only shared declarations "
+                                         "(structs, resources, helper functions) in the header."
+                                      << std::endl;
+                            hasErrors_ = true;
+                        } else {
+                            out << processedInclude;
+                        }
                     }
                 }
             }

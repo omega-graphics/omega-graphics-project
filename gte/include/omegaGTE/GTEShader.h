@@ -41,6 +41,19 @@ struct GTEShaderLibrary {
       time. See OmegaSL-Feature-Gap-Survey §14.3 / §14.7.1 task B.
      */
     std::map<std::string,std::string> unsupportedDiagnostics;
+    /**
+      @brief Opaque owner of the deserialized archive backing storage that the
+      shaders' @c internal pointer fields (name, resource layout, vertex params)
+      alias.
+      @paragraph Set by @c loadShaderLibraryFromInputStream (the file path) to
+      the @c OmegaSLShaderArchive it parsed; null for runtime-loaded libraries,
+      whose records are owned by the caller's @c omegasl_shader_lib. Holding it
+      here ties the buffers' lifetime to the library — the documented owner of
+      its shaders — so they live as long as any pipeline that references them
+      (pipeline creation dereferences @c internal.pLayout after load). Type is
+      erased so this header carries no dependency on the compiler-side archive.
+     */
+    std::shared_ptr<void> _backingStore;
 };
 
 /// @brief Byte stride of one struct in a GPU buffer, for the given binding

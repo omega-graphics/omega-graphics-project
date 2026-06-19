@@ -2,6 +2,8 @@
 #include "omegaGTE/GECommandQueue.h"
 #include "omegaGTE/GTEShader.h"
 
+#include "../omegasl/src/ShaderArchive.h"
+
 
 #ifdef TARGET_DIRECTX
 #include "d3d12/GED3D12.h"
@@ -20,6 +22,7 @@
 #endif
 
 #include <cassert>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -28,35 +31,10 @@
 _NAMESPACE_BEGIN_
 
 
-using ShaderByte = unsigned char;
-
-namespace {
-    constexpr std::size_t kMaxShaderLibraryNameBytes = 4096u;
-    constexpr unsigned kMaxShaderEntryCount = 4096u;
-    constexpr std::size_t kMaxShaderNameBytes = 4096u;
-    constexpr std::size_t kMaxShaderBytecodeBytes = 256u * 1024u * 1024u;
-    constexpr unsigned kMaxShaderLayoutCount = 1024u;
-    constexpr unsigned kMaxVertexShaderParamCount = 256u;
-
-    template <typename T>
-    bool readBinaryValue(std::istream &in,T &value) {
-        in.read(reinterpret_cast<char *>(&value),sizeof(T));
-        return static_cast<bool>(in);
-    }
-
-    bool readBinaryBytes(std::istream &in,void *data,std::size_t size) {
-        if(size == 0){
-            return true;
-        }
-        in.read(static_cast<char *>(data),static_cast<std::streamsize>(size));
-        return static_cast<bool>(in);
-    }
-
-    bool readBinaryString(std::istream &in,std::string &out,std::size_t size) {
-        out.resize(size);
-        return readBinaryBytes(in,out.data(),out.size());
-    }
-}
+// The hand-rolled binary-read helpers and size-limit constants that used to
+// live here moved into the shared `ShaderArchive` (de)serializer
+// (gte/omegasl/src/ShaderArchive.{h,cpp}) — the single owner of the
+// `.omegasllib` byte layout and its defensive bounds checks (Phase 1).
 
 /// Names every @c OMEGASL_FEATURE_BIT_* in @p bits. Order matches the bit
 /// indices declared in @c omegasl.h. Empty input yields @c "[]".
@@ -146,263 +124,36 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
         return nullptr;
     }
 
+    /// Parse the whole archive — prefix validation (magic + format version),
+    /// the library name, and every shader record — through the one shared
+    /// deserializer (`ReadShaderArchive`, in `ShaderArchive.cpp`). It performs
+    /// no GTE-device work and no feature gating; it stops at raw records. This
+    /// is the same core the link tool uses to read a `.omegasllib` with no GPU
+    /// present, and it removes the second hand-rolled copy of the byte layout
+    /// (Phase 1).
+    auto archive = std::make_shared<omegasl::OmegaSLShaderArchive>();
+    std::string archiveErr;
+    if(!omegasl::ReadShaderArchive(in,*archive,archiveErr)){
+        std::cerr << "OmegaSL shader library load failed: " << archiveErr << "." << std::endl;
+        return nullptr;
+    }
+
     auto lib = std::make_shared<GTEShaderLibrary>();
+    /// The archive owns the backing storage that each record's pointer fields
+    /// (name, pLayout, vertex params) — copied into `GTEShader::internal` at
+    /// load — alias. Pipeline creation dereferences `internal.pLayout` well
+    /// after load, so the archive must outlive the shaders: hand its ownership
+    /// to the library (the documented owner of its shaders). This replaces the
+    /// old per-buffer `.release()` leak with a clean, library-scoped owner.
+    lib->_backingStore = archive;
 
-    std::string libName;
-    std::size_t size = 0;
-    if(!readBinaryValue(in,size)){
-        std::cerr << "OmegaSL shader library load failed: could not read library name length." << std::endl;
-        return nullptr;
-    }
-    if(size > kMaxShaderLibraryNameBytes){
-        std::cerr << "OmegaSL shader library load failed: library name length " << size
-                  << " exceeds supported limit." << std::endl;
-        return nullptr;
-    }
-    if(!readBinaryString(in,libName,size)){
-        std::cerr << "OmegaSL shader library load failed: could not read library name." << std::endl;
-        return nullptr;
-    }
-    (void)libName;
-
-    unsigned entryCount = 0;
-    if(!readBinaryValue(in,entryCount)){
-        std::cerr << "OmegaSL shader library load failed: could not read shader entry count." << std::endl;
-        return nullptr;
-    }
-    if(entryCount > kMaxShaderEntryCount){
-        std::cerr << "OmegaSL shader library load failed: shader entry count " << entryCount
-                  << " exceeds supported limit." << std::endl;
-        return nullptr;
-    }
-
-    for(unsigned entryIndex = 0; entryIndex < entryCount; ++entryIndex){
-        /// 1. Read Shader Type.
-        omegasl_shader shaderEntry {};
-        if(!readBinaryValue(in,shaderEntry.type)){
-            std::cerr << "OmegaSL shader library load failed: could not read shader type for entry "
-                      << entryIndex << "." << std::endl;
-            return nullptr;
-        }
-
-        /// 2. Read Shader Name Length and Data
-        std::size_t name_len = 0;
-        if(!readBinaryValue(in,name_len)){
-            std::cerr << "OmegaSL shader library load failed: could not read shader name length for entry "
-                      << entryIndex << "." << std::endl;
-            return nullptr;
-        }
-        if(name_len == 0 || name_len > kMaxShaderNameBytes){
-            std::cerr << "OmegaSL shader library load failed: invalid shader name length " << name_len
-                      << " for entry " << entryIndex << "." << std::endl;
-            return nullptr;
-        }
-
-        auto shaderName = std::make_unique<char[]>(name_len + 1);
-        if(!readBinaryBytes(in,shaderName.get(),name_len)){
-            std::cerr << "OmegaSL shader library load failed: could not read shader name for entry "
-                      << entryIndex << "." << std::endl;
-            return nullptr;
-        }
-        shaderName[name_len] = '\0';
-        shaderEntry.name = shaderName.get();
-
-        /// 3. Read Shader GPU Code Length and Data
-        if(!readBinaryValue(in,shaderEntry.dataSize)){
-            std::cerr << "OmegaSL shader library load failed: could not read shader bytecode size for `"
-                      << shaderEntry.name << "`." << std::endl;
-            return nullptr;
-        }
-        /// `dataSize == 0` is the Layer 1 stub marker (Feature-Gap-Survey
-        /// §14.1). The shader's `#requires(...)` set named at least one
-        /// feature the active backend couldn't express, so codegen
-        /// emitted only a header (type, name, requiredFeatures). The
-        /// loader records the entry as unsupported so a precise rejection
-        /// diagnostic can fire at pipeline-creation time.
-        std::unique_ptr<ShaderByte[]> shaderData;
-        if(shaderEntry.dataSize > kMaxShaderBytecodeBytes){
-            std::cerr << "OmegaSL shader library load failed: invalid shader bytecode size "
-                      << shaderEntry.dataSize << " for `" << shaderEntry.name << "`." << std::endl;
-            return nullptr;
-        }
-        if(shaderEntry.dataSize > 0){
-            shaderData = std::make_unique<ShaderByte[]>(shaderEntry.dataSize);
-            if(!readBinaryBytes(in,shaderData.get(),shaderEntry.dataSize)){
-                std::cerr << "OmegaSL shader library load failed: could not read shader bytecode for `"
-                          << shaderEntry.name << "`." << std::endl;
-                return nullptr;
-            }
-            shaderEntry.data = shaderData.get();
-        }
-        else {
-            shaderEntry.data = nullptr;
-        }
-        const bool isStubEntry = (shaderEntry.dataSize == 0);
-
-        /// 4. Read Shader Layout
-        if(!readBinaryValue(in,shaderEntry.nLayout)){
-            std::cerr << "OmegaSL shader library load failed: could not read resource layout count for `"
-                      << shaderEntry.name << "`." << std::endl;
-            return nullptr;
-        }
-
-        auto layout_count = shaderEntry.nLayout;
-        if(layout_count > kMaxShaderLayoutCount){
-            std::cerr << "OmegaSL shader library load failed: resource layout count " << layout_count
-                      << " exceeds supported limit for `" << shaderEntry.name << "`." << std::endl;
-            return nullptr;
-        }
-
-        std::unique_ptr<omegasl_shader_layout_desc[]> layoutDescArr;
-        if(layout_count > 0){
-            layoutDescArr = std::make_unique<omegasl_shader_layout_desc[]>(layout_count);
-        }
-
-        for(unsigned i = 0;i < layout_count;i++){
-            if(!readBinaryValue(in,layoutDescArr[i])){
-                std::cerr << "OmegaSL shader library load failed: could not read layout entry " << i
-                          << " for `" << shaderEntry.name << "`." << std::endl;
-                return nullptr;
-            }
-        }
-
-        shaderEntry.pLayout = layoutDescArr.get();
-
-        /// Stub entries carry no per-stage decoration on disk — only the
-        /// header (type, name, requiredFeatures). Skip the vertex /
-        /// compute decoration reads so the file pointer lands on the
-        /// requiredFeatures field.
-        if(shaderEntry.type == OMEGASL_SHADER_VERTEX && !isStubEntry) {
-            /// 5. (For Vertex Shaders) Read Vertex Shader Input Desc
-            if(!readBinaryValue(in,shaderEntry.vertexShaderInputDesc.useVertexID)){
-                std::cerr << "OmegaSL shader library load failed: could not read vertex input mode for `"
-                          << shaderEntry.name << "`." << std::endl;
-                return nullptr;
-            }
-            if(!readBinaryValue(in,shaderEntry.vertexShaderInputDesc.nParam)){
-                std::cerr << "OmegaSL shader library load failed: could not read vertex input parameter count for `"
-                          << shaderEntry.name << "`." << std::endl;
-                return nullptr;
-            }
-            auto &param_c = shaderEntry.vertexShaderInputDesc.nParam;
-            if(param_c > kMaxVertexShaderParamCount){
-                std::cerr << "OmegaSL shader library load failed: vertex input parameter count " << param_c
-                          << " exceeds supported limit for `" << shaderEntry.name << "`." << std::endl;
-                return nullptr;
-            }
-
-            std::unique_ptr<omegasl_vertex_shader_param_desc[]> vertexShaderInputParams;
-            if(param_c > 0){
-                vertexShaderInputParams = std::make_unique<omegasl_vertex_shader_param_desc[]>(param_c);
-            }
-            std::vector<std::unique_ptr<char[]>> vertexParamNames;
-            vertexParamNames.reserve(param_c);
-
-            for (unsigned i = 0; i < param_c; i++) {
-                auto &paramDesc = vertexShaderInputParams[i];
-                std::size_t param_name_len = 0;
-                if(!readBinaryValue(in,param_name_len)){
-                    std::cerr << "OmegaSL shader library load failed: could not read vertex parameter name length "
-                              << "for parameter " << i << " in `" << shaderEntry.name << "`." << std::endl;
-                    return nullptr;
-                }
-                if(param_name_len == 0 || param_name_len > kMaxShaderNameBytes){
-                    std::cerr << "OmegaSL shader library load failed: invalid vertex parameter name length "
-                              << param_name_len << " for parameter " << i << " in `" << shaderEntry.name << "`."
-                              << std::endl;
-                    return nullptr;
-                }
-                auto paramName = std::make_unique<char[]>(param_name_len + 1);
-                if(!readBinaryBytes(in,paramName.get(),param_name_len)){
-                    std::cerr << "OmegaSL shader library load failed: could not read vertex parameter name for "
-                              << "parameter " << i << " in `" << shaderEntry.name << "`." << std::endl;
-                    return nullptr;
-                }
-                paramName[param_name_len] = '\0';
-                paramDesc.name = paramName.get();
-                if(!readBinaryValue(in,paramDesc.type)){
-                    std::cerr << "OmegaSL shader library load failed: could not read vertex parameter type for "
-                              << "parameter " << i << " in `" << shaderEntry.name << "`." << std::endl;
-                    return nullptr;
-                }
-                if(!readBinaryValue(in,paramDesc.offset)){
-                    std::cerr << "OmegaSL shader library load failed: could not read vertex parameter offset for "
-                              << "parameter " << i << " in `" << shaderEntry.name << "`." << std::endl;
-                    return nullptr;
-                }
-                vertexParamNames.push_back(std::move(paramName));
-            }
-
-            shaderEntry.vertexShaderInputDesc.pParams = vertexShaderInputParams.get();
-
-            /// 6. Per-shader required-feature bitfield (Layer 1 of the
-            /// Backend Feature Gating system, Feature-Gap-Survey §14.3).
-            /// Read for every entry, after the per-stage block (or after
-            /// the layout block for stubs / fragment / hull / domain).
-            if(!readBinaryValue(in,shaderEntry.requiredFeatures)){
-                std::cerr << "OmegaSL shader library load failed: could not read required-feature flags for `"
-                          << shaderEntry.name << "`." << std::endl;
-                return nullptr;
-            }
-
-            SharedHandle<GTEShader> shader = nullptr;
-            const uint64_t missing = shaderEntry.requiredFeatures & ~_deviceFeatures;
-            if(missing != 0){
-                auto diag = _formatMissingFeatures(shaderEntry.requiredFeatures,missing);
-                std::cerr << "OmegaSL shader '" << shaderEntry.name << "' rejected at load: "
-                          << diag << "." << std::endl;
-                lib->unsupportedDiagnostics.emplace(std::string(shaderEntry.name),diag);
-                shader = _makeUnsupportedShaderSentinel(std::move(diag));
-            }
-            else {
-                shader = _loadShaderFromDesc(&shaderEntry);
-            }
-            lib->shaders.insert(std::make_pair(std::string(shaderEntry.name),shader));
-
-            if(shader != nullptr && !shader->isUnsupported){
-                shaderEntry.name = shaderName.release();
-                shaderEntry.data = shaderData.release();
-                shaderEntry.pLayout = layoutDescArr.release();
-                shaderEntry.vertexShaderInputDesc.pParams = vertexShaderInputParams.release();
-                for(auto &paramName : vertexParamNames){
-                    paramName.release();
-                }
-            }
-            continue;
-
-        }
-        else if(shaderEntry.type == OMEGASL_SHADER_COMPUTE && !isStubEntry){
-            if(!readBinaryValue(in,shaderEntry.threadgroupDesc.x) ||
-               !readBinaryValue(in,shaderEntry.threadgroupDesc.y) ||
-               !readBinaryValue(in,shaderEntry.threadgroupDesc.z)){
-                std::cerr << "OmegaSL shader library load failed: could not read compute threadgroup size for `"
-                          << shaderEntry.name << "`." << std::endl;
-                return nullptr;
-            }
-        }
-        else if(shaderEntry.type == OMEGASL_SHADER_MESH && !isStubEntry){
-            /// Mirror of the CodeGen.h mesh writer: the per-meshlet workgroup
-            /// size (as for compute) followed by the meshlet output maxima and
-            /// topology, in that exact order.
-            if(!readBinaryValue(in,shaderEntry.threadgroupDesc.x) ||
-               !readBinaryValue(in,shaderEntry.threadgroupDesc.y) ||
-               !readBinaryValue(in,shaderEntry.threadgroupDesc.z) ||
-               !readBinaryValue(in,shaderEntry.meshDesc.max_vertices) ||
-               !readBinaryValue(in,shaderEntry.meshDesc.max_primitives) ||
-               !readBinaryValue(in,shaderEntry.meshDesc.topology)){
-                std::cerr << "OmegaSL shader library load failed: could not read mesh descriptor for `"
-                          << shaderEntry.name << "`." << std::endl;
-                return nullptr;
-            }
-        }
-
-        /// Per-shader required-feature bitfield — see comment above.
-        if(!readBinaryValue(in,shaderEntry.requiredFeatures)){
-            std::cerr << "OmegaSL shader library load failed: could not read required-feature flags for `"
-                      << shaderEntry.name << "`." << std::endl;
-            return nullptr;
-        }
-
+    /// Per record: device feature-gating (a shader whose `#requires(...)` bits
+    /// the active device can't satisfy becomes a rejection sentinel with a
+    /// diagnostic) then `_loadShaderFromDesc`. Uniform across stages now that
+    /// all parsing — including the per-stage decoration — was done up front by
+    /// `ReadShaderArchive`. The records' pointers stay valid via `lib`'s
+    /// ownership of the archive (`_backingStore`).
+    for(auto & shaderEntry : archive->shaders){
         SharedHandle<GTEShader> shader = nullptr;
         const uint64_t missing = shaderEntry.requiredFeatures & ~_deviceFeatures;
         if(missing != 0){
@@ -416,12 +167,6 @@ SharedHandle<GTEShaderLibrary> OmegaGraphicsEngine::loadShaderLibraryFromInputSt
             shader = _loadShaderFromDesc(&shaderEntry);
         }
         lib->shaders.insert(std::make_pair(std::string(shaderEntry.name),shader));
-
-        if(shader != nullptr && !shader->isUnsupported){
-            shaderEntry.name = shaderName.release();
-            shaderEntry.data = shaderData.release();
-            shaderEntry.pLayout = layoutDescArr.release();
-        }
     }
     return lib;
 }

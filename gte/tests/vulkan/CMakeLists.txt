@@ -103,3 +103,29 @@ add_vulkan_test(
     SOURCES
     "../command_queue_desc_test.cpp")
 add_test(NAME omegagte_command_queue_desc COMMAND CommandQueueDescTest)
+
+# OmegaSL linker Phase 0 — `.omegasllib` on-disk container prefix round-trip.
+# omegaslc compiles a fixture shader into a real `.omegasllib` (with the
+# magic / version / backend-id prefix) at build time; the test loads it back
+# through loadShaderLibrary to verify the writer↔reader lockstep, plus that a
+# corrupted-magic and an unknown-version copy are both rejected. This is the
+# only test that exercises the file (not runtime) library path on Vulkan.
+set(RT_LIB "${CMAKE_CURRENT_BINARY_DIR}/roundtrip.omegasllib")
+add_custom_command(
+    OUTPUT "${RT_LIB}"
+    COMMAND $<TARGET_FILE:omegaslc>
+            -t "${CMAKE_CURRENT_BINARY_DIR}/roundtrip_temp"
+            -o "${RT_LIB}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/LibFileRoundTripTest/roundtrip.omegasl"
+    DEPENDS omegaslc "${CMAKE_CURRENT_SOURCE_DIR}/LibFileRoundTripTest/roundtrip.omegasl"
+    COMMENT "omegaslc: compiling roundtrip.omegasllib fixture")
+add_custom_target(roundtrip_lib_fixture DEPENDS "${RT_LIB}")
+
+add_vulkan_test(
+    NAME
+    "LibFileRoundTripTest"
+    SOURCES
+    "LibFileRoundTripTest/main.cpp")
+add_dependencies(LibFileRoundTripTest roundtrip_lib_fixture)
+target_compile_definitions(LibFileRoundTripTest PRIVATE "ROUNDTRIP_LIB_PATH=\"${RT_LIB}\"")
+add_test(NAME omegagte_lib_file_roundtrip COMMAND LibFileRoundTripTest)

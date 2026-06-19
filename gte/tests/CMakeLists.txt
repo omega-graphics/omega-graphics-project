@@ -20,7 +20,7 @@ target_include_directories(omegagte_sampler_validation_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../common/include")
 target_compile_definitions(omegagte_sampler_validation_test PRIVATE ${PUBLIC_DEFS})
-target_link_libraries(omegagte_sampler_validation_test PRIVATE OmegaCommonCore)
+target_link_libraries(omegagte_sampler_validation_test PRIVATE OmegaCommonCore OmegaGTE)
 add_test(NAME omegagte_sampler_validation COMMAND omegagte_sampler_validation_test)
 
 if(TARGET_DIRECTX)

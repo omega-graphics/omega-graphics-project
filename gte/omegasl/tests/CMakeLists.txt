@@ -22,6 +22,15 @@ function(add_omegasl_fail_test TEST_NAME SOURCE_FILE)
     set_tests_properties(${TEST_NAME} PROPERTIES WILL_FAIL TRUE)
 endfunction()
 
+# --- Helper: add a test asserting omegaslc emits a diagnostic matching REGEX ---
+# PASS_REGULAR_EXPRESSION passes the test when the regex matches the output
+# regardless of exit code, so it asserts the *message*; pair it with an
+# add_omegasl_fail_test on the same source to also assert the nonzero exit.
+function(add_omegasl_diag_test TEST_NAME SOURCE_FILE REGEX)
+    add_omegasl_compile_test(${TEST_NAME} ${SOURCE_FILE})
+    set_tests_properties(${TEST_NAME} PROPERTIES PASS_REGULAR_EXPRESSION "${REGEX}")
+endfunction()
+
 
 # =============================================================
 # 1. Tokenizer test
@@ -138,6 +147,20 @@ add_omegasl_compile_test(omegasl_compile_threadgroup_shared  threadgroup_shared.
 # §6.2 — compute barriers (threadgroupBarrier / deviceBarrier).
 add_omegasl_compile_test(omegasl_compile_compute_barriers    compute_barriers.omegasl)
 
+# Phase 5/6 — `.omegaslh` headers: a translation unit may `#include` a header
+# of shared declarations (struct + buffer resources + helper func) and use
+# them. The comment-guard header names stage keywords only inside comments
+# and as an identifier substring, proving the shader-rejection scan is
+# token-based (not substring-based) by still compiling clean.
+add_omegasl_compile_test(omegasl_compile_clean_header        include_clean_header.omegasl)
+add_omegasl_compile_test(omegasl_compile_comment_guard       include_comment_guard.omegasl)
+# Phase 4 — including a non-`.omegaslh` file as a header is warn-only: the
+# compile test asserts it still succeeds (exit 0); the diag test asserts the
+# advisory warning text is emitted.
+add_omegasl_compile_test(omegasl_compile_non_omegaslh_include include_non_omegaslh_header.omegasl)
+add_omegasl_diag_test(omegasl_warn_non_omegaslh_ext          include_non_omegaslh_header.omegasl
+                      "does not use the recommended")
+
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)
 add_omegasl_compile_test(omegasl_compile_gaussian_blur       gaussian_blur.omegasl)
@@ -149,6 +172,13 @@ add_omegasl_compile_test(omegasl_compile_particle_sim        particle_sim.omegas
 # =============================================================
 # 3. Negative compilation tests (expected to fail)
 # =============================================================
+
+# Phase 5/6 — a shader entry point declared in an `#include`d header is
+# rejected. The fail test asserts the nonzero exit (guards the main.cpp
+# preprocessor-error gate); the diag test asserts the diagnostic text.
+add_omegasl_fail_test(omegasl_reject_shader_in_header        include_shader_in_header.omegasl)
+add_omegasl_diag_test(omegasl_reject_shader_in_header_diag   include_shader_in_header.omegasl
+                      "declares a shader entry point")
 
 add_omegasl_fail_test(omegasl_invalid_phase2_errors          invalid_phase2.omegasl)
 add_omegasl_fail_test(omegasl_invalid_type_mismatch          invalid_type_mismatch.omegasl)
@@ -224,7 +254,95 @@ add_omegasl_fail_test(omegasl_invalid_reserved_name          invalid_reserved_na
 add_omegasl_fail_test(omegasl_invalid_internal_unattributed_field invalid_internal_unattributed_field.omegasl)
 
 # =============================================================
-# 4. Golden-file tests for HLSL codegen (DirectX only)
+# 4. ShaderArchive Read->Write byte-identical round-trip (Phase 1)
+# =============================================================
+
+# Host-only test: compiles the shared (de)serializer directly (no GPU device)
+# and asserts ReadShaderArchive / WriteShaderArchive are exact inverses on a
+# real generated lib — the regression guard that keeps the single owner of the
+# `.omegasllib` byte layout honest. Mirrors VulkanQueueFamiliesTest's pattern
+# of building an in-tree translation unit into a standalone host test.
+add_executable(ArchiveRoundTripTest
+    archive_roundtrip_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ShaderArchive.cpp)
+target_include_directories(ArchiveRoundTripTest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../common/include)
+target_compile_definitions(ArchiveRoundTripTest PRIVATE ${PUBLIC_DEFS})
+target_link_libraries(ArchiveRoundTripTest PRIVATE OmegaCommonCore)
+
+# Generate a fixture lib (vertex + fragment + resource layout coverage) as a
+# CTest fixture, then run the round-trip on it. FIXTURES_* means running the
+# round-trip alone (`ctest -R omegasl_archive_roundtrip`) still produces its
+# input first.
+set(ARCHIVE_FIXTURE_LIB "${OMEGASL_TEST_TEMP_DIR}/archive_roundtrip_fixture.omegasllib")
+add_test(
+    NAME omegasl_archive_fixture_setup
+    COMMAND $<TARGET_FILE:omegaslc>
+            -t ${OMEGASL_TEST_TEMP_DIR}/archive_roundtrip_temp
+            -o ${ARCHIVE_FIXTURE_LIB}
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders.omegasl)
+set_tests_properties(omegasl_archive_fixture_setup PROPERTIES FIXTURES_SETUP ARCHIVE_FIXTURE)
+
+add_test(NAME omegasl_archive_roundtrip COMMAND ArchiveRoundTripTest ${ARCHIVE_FIXTURE_LIB})
+set_tests_properties(omegasl_archive_roundtrip PROPERTIES FIXTURES_REQUIRED ARCHIVE_FIXTURE)
+
+# =============================================================
+# 5. `omegaslc --link` linker (Phase 2/3)
+# =============================================================
+
+# One fixture-setup step compiles two single-shader libs, `--link`s them into a
+# merged lib, and writes a backend-bumped variant of one input. Every linker
+# test then requires this fixture, so `ctest -R omegasl_link` regenerates its
+# inputs first.
+set(LINK_FIXTURE_DIR "${OMEGASL_TEST_TEMP_DIR}/link_fixtures")
+add_test(
+    NAME omegasl_link_fixture_setup
+    COMMAND ${CMAKE_COMMAND}
+            -DOMEGASLC=$<TARGET_FILE:omegaslc>
+            -DARCHIVE_TOOL=$<TARGET_FILE:ArchiveRoundTripTest>
+            -DSRC_A=${CMAKE_CURRENT_SOURCE_DIR}/link_a.omegasl
+            -DSRC_B=${CMAKE_CURRENT_SOURCE_DIR}/link_b.omegasl
+            -DTEMPDIR=${LINK_FIXTURE_DIR}/temp
+            -DOUTDIR=${LINK_FIXTURE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/SetupLinkFixtures.cmake)
+set_tests_properties(omegasl_link_fixture_setup PROPERTIES FIXTURES_SETUP LINK_FIXTURE)
+
+# Positive: the merged lib holds Sigma(inputs) = 2 shaders and round-trips.
+add_test(NAME omegasl_link_merge
+    COMMAND ArchiveRoundTripTest ${LINK_FIXTURE_DIR}/link_merged.omegasllib 2)
+set_tests_properties(omegasl_link_merge PROPERTIES FIXTURES_REQUIRED LINK_FIXTURE)
+
+# Negative: a duplicate shader name across inputs is a hard error (link a lib
+# with itself). One test guards the nonzero exit, one guards the diagnostic.
+add_test(NAME omegasl_link_dup_fail
+    COMMAND $<TARGET_FILE:omegaslc> --link
+            ${LINK_FIXTURE_DIR}/link_a.omegasllib ${LINK_FIXTURE_DIR}/link_a.omegasllib
+            -o ${LINK_FIXTURE_DIR}/link_dup.omegasllib)
+set_tests_properties(omegasl_link_dup_fail PROPERTIES FIXTURES_REQUIRED LINK_FIXTURE WILL_FAIL TRUE)
+add_test(NAME omegasl_link_dup_diag
+    COMMAND $<TARGET_FILE:omegaslc> --link
+            ${LINK_FIXTURE_DIR}/link_a.omegasllib ${LINK_FIXTURE_DIR}/link_a.omegasllib
+            -o ${LINK_FIXTURE_DIR}/link_dup2.omegasllib)
+set_tests_properties(omegasl_link_dup_diag PROPERTIES FIXTURES_REQUIRED LINK_FIXTURE
+    PASS_REGULAR_EXPRESSION "duplicate shader name")
+
+# Negative: inputs built for different backends cannot be merged (the payoff of
+# the Phase 0 backend tag). Uses the backend-variant of link_a.
+add_test(NAME omegasl_link_backend_fail
+    COMMAND $<TARGET_FILE:omegaslc> --link
+            ${LINK_FIXTURE_DIR}/link_a.omegasllib ${LINK_FIXTURE_DIR}/link_a_variant.omegasllib
+            -o ${LINK_FIXTURE_DIR}/link_badbackend.omegasllib)
+set_tests_properties(omegasl_link_backend_fail PROPERTIES FIXTURES_REQUIRED LINK_FIXTURE WILL_FAIL TRUE)
+add_test(NAME omegasl_link_backend_diag
+    COMMAND $<TARGET_FILE:omegaslc> --link
+            ${LINK_FIXTURE_DIR}/link_a.omegasllib ${LINK_FIXTURE_DIR}/link_a_variant.omegasllib
+            -o ${LINK_FIXTURE_DIR}/link_badbackend2.omegasllib)
+set_tests_properties(omegasl_link_backend_diag PROPERTIES FIXTURES_REQUIRED LINK_FIXTURE
+    PASS_REGULAR_EXPRESSION "backend mismatch")
+
+# =============================================================
+# 6. Golden-file tests for HLSL codegen (DirectX only)
 # =============================================================
 
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/golden")

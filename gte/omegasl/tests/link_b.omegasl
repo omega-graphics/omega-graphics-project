@@ -1,0 +1,15 @@
+// Linker test input B (OmegaSL linker Phase 3). One compute entry point with a
+// name distinct from link_a's, so the two libs merge into a 2-entry library.
+
+struct LinkData {
+    float4 value;
+};
+
+buffer<LinkData> lb_in : 0;
+buffer<LinkData> lb_out : 1;
+
+[in lb_in, out lb_out]
+compute(x=1,y=1,z=1)
+void linkComputeB(uint3 tid : GlobalThreadID){
+    lb_out[0].value = lb_in[0].value;
+}

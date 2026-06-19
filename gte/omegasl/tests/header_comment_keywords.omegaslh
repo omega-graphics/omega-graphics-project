@@ -1,0 +1,24 @@
+// Stage keywords appear in this header ONLY inside comments and as a
+// substring of an identifier — never as a real token. A naive substring
+// scan would wrongly reject the header; the Lexer-driven token scan must
+// accept it. Keywords named in this line comment:
+//   vertex  fragment  compute  hull  domain  mesh
+
+/*
+ * Block comment naming a fragment stage and a vertex stage. Comments are
+ * consumed by the Lexer, so these produce no tokens at all.
+ */
+
+struct CommentGuardData {
+    float4 value;
+};
+
+buffer<CommentGuardData> cg_in : 0;
+buffer<CommentGuardData> cg_out : 1;
+
+// `fragment_like_helper` contains the substring "fragment" but lexes as a
+// single TOK_ID, not the `fragment` stage keyword — whole-token, not
+// substring, matching.
+float fragment_like_helper(float x){
+    return x * 2.0;
+}

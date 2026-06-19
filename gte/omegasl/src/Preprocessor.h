@@ -85,6 +85,18 @@ private:
     /// expression form supports bare identifiers as a degenerate case
     /// (`#if FOO` is interpreted as `#if defined(FOO)`).
     bool evaluateIfExpression(const std::string& expr) const;
+    /// Scan already-preprocessed `#include`d content for a shader entry
+    /// point. A header (`.omegaslh`) is textually inlined into every
+    /// translation unit that includes it, so a shader declared in one
+    /// would be compiled into — and collide across — each including unit.
+    /// Returns true (and fills `keywordOut` / `lineOut`) if a stage
+    /// keyword (`vertex` / `fragment` / `compute` / `hull` / `domain` /
+    /// `mesh`) appears as a real token. Drives the existing `Lexer` so
+    /// the same keyword spelled inside a comment, a string literal, or as
+    /// a substring of an identifier (`fragment_like_helper`) does *not*
+    /// trip it — single source of truth for "what is a stage keyword".
+    bool includeDeclaresShader(const std::string& processedContent,
+                               std::string& keywordOut, unsigned& lineOut) const;
 };
 
 } // namespace omegasl

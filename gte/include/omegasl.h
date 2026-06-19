@@ -352,6 +352,37 @@ struct omegasl_shader {
 /// @}
 
 
+/// ── On-disk `.omegasllib` container prefix (OmegaSL linker, Phase 0) ──────
+/// Every compiled `.omegasllib` archive begins with this fixed 12-byte prefix
+/// so a loader or link tool can (a) recognize the file as an OmegaSL library,
+/// (b) refuse a format version it does not understand, and (c) refuse to mix
+/// archives built for different backends. The writer is
+/// `CodeGen::linkShaderObjects` (omegasl/src/CodeGen.h); the reader is
+/// `OmegaGraphicsEngine::loadShaderLibraryFromInputStream` (gte/src/GE.cpp).
+/// The two MUST stay byte-identical — this header is the single source of
+/// truth for the magic and version so they cannot drift.
+///
+///   char[4]   magic           = OMEGASLLIB_MAGIC ("OSLL")
+///   uint32    format_version   = OMEGASLLIB_FORMAT_VERSION
+///   uint8     backend_id       (omegasl_backend_id; numeric == Target::Kind)
+///   uint8[3]  reserved         (zero)
+/// followed by the existing body (libname_size, libname, entry_count, …).
+#define OMEGASLLIB_MAGIC "OSLL"
+#define OMEGASLLIB_MAGIC_LEN 4
+#define OMEGASLLIB_FORMAT_VERSION 1u
+
+/// Backend that produced a `.omegasllib`. Numeric values match
+/// `omegasl::Target::Kind` (HLSL=0, MSL=1, GLSL=2) so the writer casts
+/// directly. The engine loader only ever loads its own backend's library, so
+/// it reads-and-skips this field; the link tool (later phase) uses it to
+/// reject a cross-backend merge loudly.
+enum omegasl_backend_id {
+    OMEGASL_BACKEND_ID_HLSL = 0,
+    OMEGASL_BACKEND_ID_MSL  = 1,
+    OMEGASL_BACKEND_ID_GLSL = 2
+};
+
+
 /// Build Library
 #include <omega-common/fs.h>
 

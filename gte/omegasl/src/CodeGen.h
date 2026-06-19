@@ -1,5 +1,6 @@
 #include "AST.h"
 #include "Target.h"
+#include "ShaderArchive.h"
 #include <omegasl.h>
 #include <cstring>
 #include <fstream>
@@ -502,135 +503,65 @@ namespace omegasl {
                 std::cerr << "error: cannot create output library: " << outputPath.str() << std::endl;
                 return false;
             }
-            size_t libname_size = libname.size();
-            out.write((char *)&libname_size,sizeof(libname_size));
-            out.write(libname.data(),libname.size());
-            unsigned int s = shaderMap.size();
-            out.write((char *)&s,sizeof(s));
+
+            /// Build the in-memory archive, then serialize it through the one
+            /// shared (de)serializer (`ShaderArchive`). The writer no longer
+            /// hand-rolls the byte layout — that and the engine reader both go
+            /// through `ShaderArchive`, collapsing the three-copies-must-match
+            /// drift hazard (OmegaSL-Linker-And-Headers-Plan §1.3.3). The Phase 0
+            /// container prefix (magic / version / backend id) is emitted by
+            /// `WriteShaderArchive`.
+            OmegaSLShaderArchive archive;
+            archive.name = std::string(libname.data(), libname.size());
+            /// `Target::Kind` is numerically HLSL=0 / MSL=1 / GLSL=2, matching
+            /// `omegasl_backend_id`, so the active target's kind *is* the id.
+            archive.backendId = (uint8_t)target->kind();
+            archive.formatVersion = OMEGASLLIB_FORMAT_VERSION;
+            archive.shaders.reserve(shaderMap.size());
 
             for(auto & p : shaderMap){
-                auto & shader_data = p.second;
-                /// Layer 1 stub path: the entry was recorded with no
-                /// backing object file because the active backend cannot
-                /// express one of the declared `#requires(...)` features.
-                /// Write a `dataSize == 0` record (header-only) plus the
-                /// `requiredFeatures` bitfield so the runtime can produce
-                /// a precise rejection diagnostic.
+                /// Shallow copy: the record's metadata pointers (name, pLayout,
+                /// vertex params) alias CodeGen-owned memory that stays alive for
+                /// this call; only the compiled bytecode is read into archive-
+                /// owned storage. A `stubShaderKeys` entry has no backing object
+                /// file — record it as a `dataSize == 0` stub (header-only), so
+                /// the runtime can produce a precise rejection diagnostic.
+                omegasl_shader rec = p.second;
                 bool isStub = stubShaderKeys.count(std::string(p.first)) > 0;
-
-                std::ifstream in;
-                if(!isStub){
-                    //0.  Pre-check: verify compiled shader object is readable before writing anything
-                    in.open(p.first,std::ios::in | std::ios::binary);
+                if(isStub){
+                    rec.data = nullptr;
+                    rec.dataSize = 0;
+                }
+                else {
+                    std::ifstream in(p.first,std::ios::in | std::ios::binary);
                     if(!in.is_open()){
                         std::cerr << "error: cannot open compiled shader object: " << p.first << std::endl;
                         return false;
                     }
-                }
-
-                //1.  Write Shader Type
-                out.write((char *)&shader_data.type,sizeof(shader_data.type));
-
-                //2.  Write Shader Name Size and Name
-                size_t shader_name_size = strlen(p.second.name);
-                out.write((char *)&shader_name_size,sizeof(shader_name_size));
-                out.write(shader_data.name,std::streamsize(shader_name_size));
-
-                //3.  Write Shader Data Size and Data
-                if(isStub){
-                    size_t dataSize = 0;
-                    out.write((char *)&dataSize,sizeof(dataSize));
-                }
-                else {
                     in.seekg(0,std::ios::end);
-                    size_t dataSize = in.tellg();
+                    std::streamoff sz = in.tellg();
                     in.seekg(0,std::ios::beg);
-                    out.write((char *)&dataSize,sizeof(dataSize));
-                    for(size_t i = 0;i < dataSize;i++){
-                        out << (char)in.get();
-                    }
-                    in.close();
-                }
-
-                //4. Write Shader Layout Length and Data
-                if(shader_data.nLayout > 0){
-                    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutDescArr {shader_data.pLayout,shader_data.pLayout + shader_data.nLayout};
-                    out.write((char *)&shader_data.nLayout,sizeof(shader_data.nLayout));
-                    for(auto & layout : layoutDescArr){
-                        // Zero-fill a serialization buffer so struct/union padding bytes are
-                        // deterministic on disk. The source struct may carry uninitialized
-                        // padding from heap allocation; copying it byte-wise leaks that.
-                        omegasl_shader_layout_desc serializedLayout;
-                        std::memset(&serializedLayout, 0, sizeof(serializedLayout));
-                        serializedLayout.type = layout.type;
-                        serializedLayout.gpu_relative_loc = layout.gpu_relative_loc;
-                        serializedLayout.io_mode = layout.io_mode;
-                        serializedLayout.location = layout.location;
-                        serializedLayout.offset = layout.offset;
-                        serializedLayout.sampler_desc.filter = layout.sampler_desc.filter;
-                        serializedLayout.sampler_desc.u_address_mode = layout.sampler_desc.u_address_mode;
-                        serializedLayout.sampler_desc.v_address_mode = layout.sampler_desc.v_address_mode;
-                        serializedLayout.sampler_desc.w_address_mode = layout.sampler_desc.w_address_mode;
-                        serializedLayout.sampler_desc.max_anisotropy = layout.sampler_desc.max_anisotropy;
-                        // constant_desc intentionally left zero: no codegen populates it today.
-                        out.write((char *)&serializedLayout,sizeof(serializedLayout));
-                    }
-                }
-                else {
-                    unsigned int len = 0;
-                    out.write((char *)&len,sizeof(len));
-                }
-
-                /// Stage-specific decoration only travels with shaders
-                /// that have a real body — stubs have no parameters /
-                /// threadgroup info to record.
-                if(!isStub){
-                    if(shader_data.type == OMEGASL_SHADER_VERTEX) {
-
-                        /// 5. (For Vertex Shaders) Write Shader Vertex Input Desc
-                        out.write((char *) &shader_data.vertexShaderInputDesc.useVertexID,
-                                  sizeof(shader_data.vertexShaderInputDesc.useVertexID));
-                        out.write((char *) &shader_data.vertexShaderInputDesc.nParam,
-                                  sizeof(shader_data.vertexShaderInputDesc.nParam));
-                        OmegaCommon::ArrayRef<omegasl_vertex_shader_param_desc> vertexShaderParamDescArr{
-                                shader_data.vertexShaderInputDesc.pParams,
-                                shader_data.vertexShaderInputDesc.pParams + shader_data.vertexShaderInputDesc.nParam};
-                        for (auto &param: vertexShaderParamDescArr) {
-                            size_t param_name_len = strlen(param.name);
-                            out.write((char *)&param_name_len,sizeof(param_name_len));
-                            out.write(param.name,std::streamsize(param_name_len));
-                            out.write((char *)&param.type,sizeof(param.type));
-                            out.write((char *)&param.offset,sizeof(param.offset));
+                    size_t dataSize = sz > 0 ? size_t(sz) : 0;
+                    unsigned char *dst = archive.internData(nullptr,dataSize);
+                    if(dataSize > 0){
+                        in.read((char *)dst,std::streamsize(dataSize));
+                        if(!in){
+                            std::cerr << "error: failed reading compiled shader object: " << p.first << std::endl;
+                            return false;
                         }
                     }
-                    else if(shader_data.type == OMEGASL_SHADER_COMPUTE){
-                        out.write((char *)&shader_data.threadgroupDesc.x,sizeof(unsigned int));
-                        out.write((char *)&shader_data.threadgroupDesc.y,sizeof(unsigned int));
-                        out.write((char *)&shader_data.threadgroupDesc.z,sizeof(unsigned int));
-                    }
-                    else if(shader_data.type == OMEGASL_SHADER_MESH){
-                        /// Mesh stage carries the per-meshlet workgroup size
-                        /// (like compute) followed by the meshlet output maxima
-                        /// and topology. GE.cpp reads these back in this order.
-                        /// Not yet exercised — mesh stubs at codegen until the
-                        /// per-backend emission phase lands — but the format is
-                        /// defined here so writer and reader stay in lockstep.
-                        out.write((char *)&shader_data.threadgroupDesc.x,sizeof(unsigned int));
-                        out.write((char *)&shader_data.threadgroupDesc.y,sizeof(unsigned int));
-                        out.write((char *)&shader_data.threadgroupDesc.z,sizeof(unsigned int));
-                        out.write((char *)&shader_data.meshDesc.max_vertices,sizeof(unsigned int));
-                        out.write((char *)&shader_data.meshDesc.max_primitives,sizeof(unsigned int));
-                        out.write((char *)&shader_data.meshDesc.topology,sizeof(int));
-                    }
+                    in.close();
+                    rec.data = dst;
+                    rec.dataSize = dataSize;
                 }
+                archive.shaders.push_back(rec);
+            }
 
-                /// 6. Per-shader required feature bitfield (Layer 1 of
-                /// the Backend Feature Gating system, §14.1/§14.3). The
-                /// runtime loader masks this against the device feature
-                /// bitmask and rejects only the shaders whose required
-                /// bits are not satisfied. Always written, even when 0.
-                out.write((char *)&shader_data.requiredFeatures,
-                          sizeof(shader_data.requiredFeatures));
+            std::string archiveErr;
+            if(!WriteShaderArchive(out,archive,archiveErr)){
+                std::cerr << "error: failed to serialize shader library `" << outputPath.str()
+                          << "`: " << archiveErr << std::endl;
+                return false;
             }
 
             out.close();

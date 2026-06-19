@@ -1,0 +1,13 @@
+// Comment/identifier false-positive guard (Phase 6): the included header
+// mentions stage keywords only inside comments and as a substring of an
+// identifier. It must compile clean — proving the shader-rejection scan is
+// token-based, not substring-based.
+#include "header_comment_keywords.omegaslh"
+
+[in cg_in, out cg_out]
+compute(x=1,y=1,z=1)
+void runCommentGuard(uint3 tid : GlobalThreadID){
+    float v = cg_in[0].value[0];
+    float r = fragment_like_helper(v);
+    cg_out[0].value = float4(r, v, 0.0, 1.0);
+}

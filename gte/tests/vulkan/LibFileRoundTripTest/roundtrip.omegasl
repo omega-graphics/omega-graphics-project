@@ -1,0 +1,18 @@
+// Fixture for the .omegasllib file round-trip test (OmegaSL linker Phase 0).
+// Compiled by omegaslc at build time into roundtrip.omegasllib, then loaded
+// back through OmegaGraphicsEngine::loadShaderLibrary to exercise the on-disk
+// container prefix (magic / version / backend id) writer↔reader lockstep.
+// A plain compute shader with no #requires so it loads on any device.
+
+struct RTData {
+    float4 value;
+};
+
+buffer<RTData> rt_in : 0;
+buffer<RTData> rt_out : 1;
+
+[in rt_in, out rt_out]
+compute(x=1,y=1,z=1)
+void roundTripCompute(uint3 tid : GlobalThreadID){
+    rt_out[0].value = rt_in[0].value;
+}

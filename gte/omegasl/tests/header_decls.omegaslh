@@ -1,0 +1,15 @@
+// A well-formed header (`.omegaslh`): shared declarations only — a struct,
+// buffer resource declarations, and a plain helper function. No shader
+// entry points, so the preprocessor inlines it into the including unit
+// without complaint (Phase 5 positive case).
+
+struct FuncData {
+    float4 value;
+};
+
+buffer<FuncData> hdr_src : 0;
+buffer<FuncData> hdr_dst : 1;
+
+float scale_value(float x, float k){
+    return x * k;
+}

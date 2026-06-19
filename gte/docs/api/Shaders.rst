@@ -97,6 +97,13 @@ at startup.
     inserted as rejection sentinels rather than dropping the load; sibling
     shaders in the same archive still resolve normally.
 
+    The archive begins with a fixed prefix — a ``"OSLL"`` magic, a format
+    version, and the backend that produced it. The loader validates it and
+    returns ``nullptr`` (with a diagnostic on ``stderr``) for a file that is
+    not an OmegaSL library or was written by an incompatible tool version,
+    rather than misreading arbitrary bytes. Recompile the library with a
+    matching ``omegaslc`` if the version is rejected.
+
 .. code-block:: cpp
 
     // Precompiled library shipped with the app
@@ -110,6 +117,116 @@ The library is the lifetime owner. Hold it for as long as any pipeline that
 references one of its shaders is in use. Letting the library go while a
 pipeline is still bound is undefined behaviour — the shader bytecode the
 pipeline points at vanishes.
+
+Sharing declarations with ``.omegaslh`` headers
+===============================================
+
+As a shader codebase grows you will want to share declarations — vertex and
+material ``struct``\ s, resource declarations, helper functions, constants —
+across several source files. OmegaSL borrows the C/C++ split:
+
+* An ``.omegasl`` file is a **translation unit**. It owns shader *entry
+  points* (``vertex`` / ``fragment`` / ``compute`` / ``hull`` / ``domain`` /
+  ``mesh`` functions) and compiles to one ``.omegasllib``.
+* An ``.omegaslh`` file is a **header** (the recommended extension). It holds
+  shared declarations *only* — ``struct``\ s, resource declarations
+  (``buffer<T>``, ``texture2d``, ``sampler2d``, …), plain helper ``func``\ s,
+  and constants. A header is ordinary OmegaSL minus the shader entry points.
+
+A unit pulls a header in with ``#include "path.omegaslh"``; the preprocessor
+resolves the path relative to the including file and inlines the header's
+declarations textually.
+
+.. code-block:: omegasl
+
+    // material.omegaslh — shared declarations, no entry points
+    struct Material {
+        float4 baseColor;
+        float4 params;
+    };
+
+    buffer<Material> materials : 0;
+
+    float3 tonemap(float3 c){ /* … */ }
+
+.. code-block:: omegasl
+
+    // surface.omegasl — a translation unit that uses the header
+    #include "material.omegaslh"
+
+    [in materials]
+    fragment float4 shadeSurface(Raster raster){
+        Material m = materials[0];
+        return float4(tonemap(/* … */), m.baseColor[3]);
+    }
+
+**A header must not declare a shader entry point.** Because a header is
+inlined into *every* unit that includes it, a ``fragment``/``vertex``/… entry
+point in a header would be compiled once per including unit — duplicating it,
+colliding on the entry-point name when the libraries are merged, and bloating
+the output. ``omegaslc`` rejects this at preprocess time with a precise
+diagnostic naming the header, the line, and the offending stage keyword, and
+fails the compile:
+
+.. code-block:: text
+
+    error: included header `material.omegaslh` declares a shader entry point
+    (`fragment` at line 9). Shader entry points must live in a translation
+    unit (`.omegasl`), not in an `#include`d header (`.omegaslh`) …
+
+The check is token-based, so a stage keyword that appears inside a comment, a
+string literal, or as a substring of an identifier (``fragment_like_helper``)
+does not trip it — only a real entry-point declaration does. The restriction
+applies to ``#include``\ d content only; the root translation unit declares
+its shaders freely.
+
+The ``.omegaslh`` extension is a *convention*, not a hard rule. Including a
+file under any other extension still works, but ``omegaslc`` emits an advisory
+warning nudging you toward ``.omegaslh`` — for example, including a
+``.omegasl`` as a header:
+
+.. code-block:: text
+
+    warning: `#include "shared_decls.omegasl"` does not use the recommended
+    `.omegaslh` header extension. …
+
+The warning is advisory only; the include is processed normally and the
+compile succeeds. The shader-content rejection above is the real guard — the
+extension is just the naming convention that signals intent.
+
+Linking libraries with ``omegaslc --link``
+==========================================
+
+Headers let you *share declarations* across translation units; the linker lets
+you *combine the compiled results*. The workflow is the C/C++ discipline
+applied to OmegaSL: put shared declarations in ``.omegaslh`` headers, split
+shader entry points across ``.omegasl`` translation units, compile each unit to
+its own ``.omegasllib``, then merge the units into one shippable archive:
+
+.. code-block:: bash
+
+    omegaslc -t tmp -o ui.omegasllib       ui.omegasl
+    omegaslc -t tmp -o post.omegasllib     post.omegasl
+    omegaslc --link ui.omegasllib post.omegasllib -o app.omegasllib
+
+``--link`` is a pure container merge — each compiled shader object is already
+self-contained (helper functions are inlined before transpilation, so there are
+no cross-entry references to resolve). It therefore invokes no shader toolchain
+(no dxc / metal / glslc) and needs no GPU device, so it runs on any host
+regardless of which backend the inputs were built for. ``--lib-name NAME`` sets
+the merged library's name (default: the output file name).
+
+The merge is strict — it fails loudly rather than emit a corrupt archive:
+
+* **Mismatched backend.** Merging a Direct3D (DXIL) archive with a Vulkan
+  (SPIR-V) one is rejected; the backend tag in each archive's header
+  (see *Loading a precompiled library*) is what makes this detectable.
+* **Duplicate entry-point name.** Two inputs that both define ``myVertex``
+  are rejected — the merged library's shader names must be unique, since that
+  is the key you resolve them by.
+
+At load time ``app.omegasllib`` is an ordinary library: every entry point from
+every merged unit resolves from its ``shaders`` map as usual.
 
 Compiling and loading at runtime
 ================================

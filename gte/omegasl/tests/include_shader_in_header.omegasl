@@ -1,0 +1,16 @@
+// Negative test (Phase 5/6): including a header that declares a `fragment`
+// entry point must fail the compile. The shader would otherwise be inlined
+// into this unit and collide at link time. The translation unit itself is
+// well-formed — the ONLY error is the shader declared in the header.
+#include "header_with_shader.omegaslh"
+
+buffer<Vtx> verts : 0;
+
+[in verts]
+vertex Raster goodVertex(uint vid : VertexID){
+    Vtx v = verts[vid];
+    Raster r;
+    r.pos = v.position;
+    r.color = v.color;
+    return r;
+}

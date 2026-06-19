@@ -21,6 +21,11 @@ Required:
 Options:
 
     --help ,    -h                  --> Show this message.
+    --link                          --> Link mode: merge several *.omegasllib archives into
+                                        one. Usage: omegaslc --link in1.omegasllib in2... -o
+                                        out.omegasllib [--lib-name NAME]. Pure container
+                                        merge (no toolchain, no GPU); rejects inputs of
+                                        mismatched backend and duplicate shader names.
     --tokens-only                   --> Show tokens of all input files.
     --interface-only                --> Emit interface of all input files.
     --emit-source-only, -S          --> Transpile to the target language and stop. Writes generated
@@ -63,7 +68,156 @@ GenMode defaultGenModeForHost(){
     #endif
 }
 
+static const char *backendIdName(uint8_t id){
+    switch(id){
+        case OMEGASL_BACKEND_ID_HLSL: return "hlsl";
+        case OMEGASL_BACKEND_ID_MSL:  return "metal";
+        case OMEGASL_BACKEND_ID_GLSL: return "glsl";
+        default: return "unknown";
+    }
+}
+
+/// `--link` mode: merge several `*.omegasllib` archives into one. Because each
+/// shader object is a self-contained compiled blob (no cross-entry symbols),
+/// linking is a pure container merge — `ar`, not `ld`. It reuses the shared
+/// `ShaderArchive` (de)serializer, so it invokes no shader toolchain and needs
+/// no GPU device; it can run on any host regardless of the archives' backend.
+/// Short-circuits the whole compile pipeline (no parse / preprocess / codegen).
+///
+///   omegaslc --link in1.omegasllib in2... -o out.omegasllib [--lib-name NAME]
+static int runLink(int argc, char *argv[]){
+    std::vector<std::string> inputs;
+    const char *outputLib = nullptr;
+    const char *libNameOverride = nullptr;
+
+    for(int i = 1; i < argc; i++){
+        OmegaCommon::StrRef arg{argv[i]};
+        if(arg == "--link"){
+            continue;
+        }
+        else if(arg == "--output" || arg == "-o"){
+            if(i + 1 < argc) outputLib = argv[++i];
+        }
+        else if(arg == "--lib-name"){
+            if(i + 1 < argc) libNameOverride = argv[++i];
+        }
+        else if(arg == "--temp-dir" || arg == "-t"){
+            /// Accepted but unused — linking writes no intermediate files.
+            if(i + 1 < argc) ++i;
+        }
+        else {
+            inputs.push_back(std::string(argv[i]));
+        }
+    }
+
+    if(outputLib == nullptr){
+        std::cerr << "error: --link requires an output path (-o out.omegasllib)." << std::endl;
+        return 1;
+    }
+    if(inputs.empty()){
+        std::cerr << "error: --link requires at least one input .omegasllib." << std::endl;
+        return 1;
+    }
+
+    /// Keep every parsed input archive alive until the merged write completes:
+    /// the merged record list aliases each input's owned name / layout / param
+    /// buffers (WriteShaderArchive reads through those pointers). `reserve` so
+    /// the vector never reallocates and move-invalidates a back-reference.
+    std::vector<omegasl::OmegaSLShaderArchive> archives;
+    archives.reserve(inputs.size());
+    omegasl::OmegaSLShaderArchive merged;
+    std::set<std::string> seenNames;
+    bool first = true;
+
+    for(const auto &path : inputs){
+        std::ifstream in(path, std::ios::in | std::ios::binary);
+        if(!in.is_open()){
+            std::cerr << "error: --link cannot open input `" << path << "`." << std::endl;
+            return 1;
+        }
+        omegasl::OmegaSLShaderArchive arc;
+        std::string err;
+        if(!omegasl::ReadShaderArchive(in, arc, err)){
+            std::cerr << "error: --link cannot read `" << path << "`: " << err << "." << std::endl;
+            return 1;
+        }
+        in.close();
+
+        /// Compatibility gate (the payoff of Phase 0): every input must share
+        /// the format version and backend. `ReadShaderArchive` already rejected
+        /// a bad magic / unknown version, so the only cross-input check left is
+        /// the backend — merging e.g. a DXIL and a SPIR-V archive would produce
+        /// a library that explodes at load time, so refuse it loudly here.
+        if(first){
+            merged.backendId = arc.backendId;
+            merged.formatVersion = arc.formatVersion;
+            first = false;
+        }
+        else if(arc.backendId != merged.backendId){
+            std::cerr << "error: --link backend mismatch: `" << path << "` is "
+                      << backendIdName(arc.backendId) << " but earlier inputs are "
+                      << backendIdName(merged.backendId)
+                      << "; cannot merge libraries built for different backends." << std::endl;
+            return 1;
+        }
+        else if(arc.formatVersion != merged.formatVersion){
+            std::cerr << "error: --link format-version mismatch: `" << path << "` is version "
+                      << arc.formatVersion << " but earlier inputs are version "
+                      << merged.formatVersion << "." << std::endl;
+            return 1;
+        }
+
+        archives.push_back(std::move(arc));
+        for(auto &shader : archives.back().shaders){
+            std::string name = shader.name != nullptr ? std::string(shader.name) : std::string();
+            if(!seenNames.insert(name).second){
+                std::cerr << "error: --link duplicate shader name `" << name << "` (from `" << path
+                          << "`); each entry point must be unique across the merged library."
+                          << std::endl;
+                return 1;
+            }
+            merged.shaders.push_back(shader);
+        }
+    }
+
+    OmegaCommon::FS::Path outPath(outputLib);
+    if(libNameOverride != nullptr){
+        merged.name = libNameOverride;
+    }
+    else {
+        OmegaCommon::String fn = outPath.filename();
+        merged.name = std::string(fn.data(), fn.size());
+    }
+
+    auto outputDir = OmegaCommon::FS::Path(OmegaCommon::FS::Path(outPath).dir());
+    if(!OmegaCommon::FS::exists(outputDir)){
+        OmegaCommon::FS::createDirectory(outputDir);
+    }
+
+    std::ofstream out(outPath.str(), std::ios::out | std::ios::binary);
+    if(!out.is_open()){
+        std::cerr << "error: --link cannot create output `" << outPath.str() << "`." << std::endl;
+        return 1;
+    }
+    std::string err;
+    if(!omegasl::WriteShaderArchive(out, merged, err)){
+        std::cerr << "error: --link failed to write `" << outPath.str() << "`: " << err << "." << std::endl;
+        return 1;
+    }
+    out.close();
+    return 0;
+}
+
 int main(int argc,char *argv[]){
+
+    /// `--link` merges existing `.omegasllib` archives and never touches the
+    /// compiler front-end, so short-circuit before it spins up (builtins,
+    /// parser, codegen). It runs on any host — no toolchain, no GPU device.
+    for(int i = 1; i < argc; i++){
+        if(OmegaCommon::StrRef(argv[i]) == "--link"){
+            return runLink(argc, argv);
+        }
+    }
 
     omegasl::ast::builtins::Initialize();
 
@@ -220,6 +374,19 @@ int main(int argc,char *argv[]){
     }
     preprocessor.setBackend(ppBackend);
     std::string processedSource = preprocessor.process(sourceContent, input_file_path.dir());
+
+    /// Abort before lex/parse/codegen if preprocessing failed loud — today
+    /// that is an `#include`d header (`.omegaslh`) declaring a shader entry
+    /// point (the preprocessor already printed the precise diagnostic naming
+    /// the header, line, and stage keyword). Without this gate the offending
+    /// include is silently dropped and the unit would compile to a library
+    /// missing those declarations, masking the real error. Mirrors the
+    /// runtime path's `hasErrors()` check in `omegasl_runtime.cpp`.
+    if(preprocessor.hasErrors()){
+        omegasl::ast::builtins::Cleanup();
+        return 1;
+    }
+
     uint64_t fileRequiredFeatures = preprocessor.requiredFeatures();
     uint64_t fileUnsatisfiedFeatures = preprocessor.unsatisfiedRequiredFeatures();
 

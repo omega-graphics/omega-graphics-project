@@ -1,0 +1,14 @@
+// Positive test (Phase 6): pull shared declarations from a header, then
+// declare this unit's own shader entry point that uses the header's buffer
+// resources and helper function. Must compile clean, proving a header's
+// declarations are usable from the including translation unit.
+#include "header_decls.omegaslh"
+
+[in hdr_src, out hdr_dst]
+compute(x=1,y=1,z=1)
+void useHeaderHelper(uint3 tid : GlobalThreadID){
+    float a = hdr_src[0].value[0];
+    float k = hdr_src[0].value[1];
+    float scaled = scale_value(a, k);
+    hdr_dst[0].value = float4(scaled, a, k, 1.0);
+}

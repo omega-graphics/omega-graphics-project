@@ -834,6 +834,46 @@ Options:
 
 The compiler selects the backend based on the build platform: HLSL on Windows, MSL on macOS/iOS, GLSL on Linux/Android.
 
+### `.omegasllib` container format
+
+A `.omegasllib` is a flat binary archive: a fixed prefix, then a library name, then a count followed by that many self-contained shader entries. The writer is `CodeGen::linkShaderObjects` (`gte/omegasl/src/CodeGen.h`); the reader is `OmegaGraphicsEngine::loadShaderLibraryFromInputStream` (`gte/src/GE.cpp`). The two must stay byte-identical; the prefix constants are defined once in `gte/include/omegasl.h`.
+
+Every archive begins with a 12-byte prefix:
+
+```
+[char × 4]   magic = "OSLL"
+[uint32]     format_version            (currently 1)
+[uint8]      backend_id                (0 = HLSL, 1 = MSL/Metal, 2 = GLSL)
+[uint8 × 3]  reserved (zero)
+```
+
+The loader rejects a file whose magic is not `"OSLL"` (not an OmegaSL library) or whose `format_version` it does not understand (built by an incompatible tool version), failing loudly instead of misparsing arbitrary bytes. `backend_id` records which backend produced the archive; the engine loads only its own backend's library, so it reads-and-skips this field — it exists so a future link tool can refuse to merge archives built for different backends. The prefix is followed by the body:
+
+```
+[size_t]               libname_size
+[bytes × libname_size]  libname
+[unsigned]             entry_count
+  ── per shader entry ──
+  [int] type, [size_t] name_len, name, [size_t] dataSize, data,
+  [unsigned] nLayout, layout descriptors,
+  stage-specific decoration (vertex params / compute+mesh workgroup), and
+  [unsigned long long] requiredFeatures
+```
+
+A `dataSize == 0` entry is a "stub" — the backend could not express one of the shader's `#requires(...)` features, so only the header travels and the runtime rejects it with a precise diagnostic.
+
+### Linking libraries with `--link`
+
+Several `.omegasllib` archives can be merged into one:
+
+```
+omegaslc --link in1.omegasllib in2.omegasllib [in3...] -o out.omegasllib [--lib-name NAME]
+```
+
+Because each compiled shader object is a self-contained blob (helper functions are inlined before transpilation, so there are no cross-entry references), linking is a pure container merge — `ar`, not `ld`. It invokes no shader toolchain and needs no GPU device, so it runs on any host. The reader/writer for the merge is the shared `ShaderArchive` (de)serializer (`gte/omegasl/src/ShaderArchive.{h,cpp}`), the same one the compiler's writer and the engine's loader use.
+
+`--link` fails loudly rather than emit a corrupt archive: inputs with a **mismatched `backend_id`** (e.g. a DXIL archive merged with a SPIR-V one) are rejected, as are **duplicate shader names** across inputs. `--lib-name` sets the merged library name (default: the output file name).
+
 ### Runtime via `OmegaSLCompiler`
 
 ```cpp
