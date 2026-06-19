@@ -76,12 +76,13 @@ namespace omegasl {
             out << formatFloatLit(expr->f_num.value());
         } else if (expr->isDouble()) {
             /// §4.3 — 17 significant digits (round-trips a 64-bit double) plus
-            /// the `lf` suffix so the downstream HLSL/GLSL compiler parses a
-            /// genuine `double` rather than rounding the literal through float
-            /// first. MSL never reaches here — a `double` shader stubs out,
-            /// since Metal has no double. (If dxc rejects `lf`, HLSL also
-            /// accepts a bare `l` — swap the suffix here.)
-            out << formatFloatLit(expr->d_num.value(), 17) << "lf";
+            /// the backend's double-literal suffix so the downstream compiler
+            /// parses a genuine `double` rather than rounding the literal
+            /// through float first. The spelling diverges (GLSL `lf` vs HLSL
+            /// `l` — each rejects the other), so the suffix comes from the
+            /// active target. MSL never reaches here — a `double` shader stubs
+            /// out, since Metal has no double.
+            out << formatFloatLit(expr->d_num.value(), 17) << target->doubleLiteralSuffix();
         } else if (expr->isInt()) {
             out << expr->i_num.value();
         } else if (expr->isUint()) {

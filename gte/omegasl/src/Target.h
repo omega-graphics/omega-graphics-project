@@ -404,6 +404,15 @@ namespace omegasl {
                                         ast::LiteralExpr */*expr*/,
                                         std::ostream &/*out*/) { return false; }
 
+        /// §4.3 — the suffix appended to a double-precision floating literal
+        /// so the downstream compiler parses a genuine `double` rather than
+        /// rounding the value through `float` first. The spelling diverges:
+        /// GLSL requires `lf`/`LF` (glslc rejects a bare `l`), while HLSL
+        /// requires `l`/`L` (dxc rejects `lf`). Default is `lf` (GLSL); the
+        /// HLSL target overrides to `l`. MSL never reaches this — a `double`
+        /// shader stubs out, since Metal has no double.
+        virtual const char *doubleLiteralSuffix() const { return "lf"; }
+
         /// Phase 10: per-stage compiled-object file extension recorded in
         /// the shader map. HLSL `.cso`, MSL `.metallib`, GLSL `.spv`.
         /// The shared SHADER_DECL handler uses this to build the entry's
@@ -448,6 +457,9 @@ namespace omegasl {
                             std::optional<unsigned> index,
                             std::ostream &out) override;
         OmegaCommon::StrRef renameBuiltin(OmegaCommon::StrRef name) override;
+        /// §4.3 — HLSL/dxc spells the double literal suffix `l` (it rejects
+        /// the GLSL `lf`). MSL/GLSL keep the `lf` default.
+        const char *doubleLiteralSuffix() const override { return "l"; }
         /// §5.1.0 — takes over `frexp` emission: HLSL's `frexp` writes a
         /// float exponent, but OmegaSL types the exponent out-param as
         /// int/intN, so the float exponent is captured in a temp and cast

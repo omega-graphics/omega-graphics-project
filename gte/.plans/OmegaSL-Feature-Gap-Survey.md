@@ -1189,30 +1189,34 @@ vectors + `make_double2/3/4` constructors. **No `double` matrices** — same
 rationale the half/int64 cuts used for skipping their matrix families; add
 them when a real workload needs `dmat`.
 
-**Literals.** Full-precision literals use an `lf` / `LF` suffix
-(`3.141592653589793lf`) — the GLSL convention — parsed via `std::stod`
-into `d_num` and emitted at 17 significant digits with the `lf` suffix so
-the downstream GLSL/HLSL compiler parses a genuine `double` rather than
-rounding through `float` first. An unsuffixed float literal still coerces
-into a `double` slot (at float precision), exactly like `half` (`1.0`).
-A `double` literal does *not* coerce into a `float`/`half` slot (that
-would silently drop precision — use an explicit cast).
+**Literals.** OmegaSL source spells the full-precision double literal with
+an `lf` / `LF` suffix (`3.141592653589793lf`), parsed via `std::stod` into
+`d_num` and emitted at 17 significant digits. The *emitted* suffix is
+**per-backend** — GLSL requires `lf`/`LF` (glslc rejects a bare `l`) and
+HLSL requires `l`/`L` (dxc rejects `lf` with "invalid suffix 'lf' on
+floating constant"), so the suffix comes from a `Target::doubleLiteralSuffix()`
+hook (default `lf`; `HLSLTarget` overrides to `l`). Without the suffix the
+downstream compiler rounds the literal through `float` first, defeating the
+point. An unsuffixed float literal still coerces into a `double` slot (at
+float precision), exactly like `half` (`1.0`). A `double` literal does *not*
+coerce into a `float`/`half` slot (that would silently drop precision — use
+an explicit cast).
 
-**Per backend.** HLSL `double` / `double2..4`; GLSL `double` / `dvec2..4`
-plus a `#extension GL_ARB_gpu_shader_fp64 : enable` line emitted on
+**Per backend.** HLSL `double` / `double2..4` (double literal suffix `l`);
+GLSL `double` / `dvec2..4` (suffix `lf`) plus a
+`#extension GL_ARB_gpu_shader_fp64 : enable` line emitted on
 `#requires(DOUBLE)` (mirrors the FLOAT16/INT64 extension pattern); MSL
 emits nothing (stub).
 
-**Verification.** Only Metal compiles on the macOS host, and a
+**Verification.** Only Metal compiles "natively" on the macOS host, and a
 `#requires(DOUBLE)` shader stubs on Metal — but Sema + the FeatureScanner
 still run there, so `omegasl_compile_numeric_double` exercises the whole
-front end locally. The HLSL `double2..4` and GLSL `dvec2..4` / fp64 /
-`lf`-suffix *source* emission is verified with
-`omegaslc -S --hlsl` / `-S --glsl` (the `-S` flag transpiles without
-invoking dxc/glslc). Real compile-through on dxc (Windows) and glslc
-(Linux) is the user's host-side confirmation — in particular the `lf`
-double-literal suffix on dxc (HLSL also accepts a bare `l`; switch the
-suffix in `CodeGen::emitLiteralValue` if dxc rejects `lf`).
+front end locally. The HLSL/GLSL output was additionally **compiled through
+real dxc and glslc on the dev host**: `omegaslc -S --hlsl` → dxc
+(`vs_6_0`/`ps_6_0`) → DXIL, and `omegaslc -S --glsl` → glslc → SPIR-V, both
+shaders, after the per-backend suffix fix. (The first cut emitted a uniform
+`lf`, which dxc rejected — the `Target::doubleLiteralSuffix()` split is what
+resolved it.)
 
 Test: `numeric_double.omegasl` (scalar + vector double, `lf` literal,
 int-literal + float-literal coercion, `(double)` cast, vector indexing),
