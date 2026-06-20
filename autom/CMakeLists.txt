@@ -60,13 +60,15 @@ endmacro()
 add_stdlib_module("fs" "modules/fs")
 # add_stdlib_module("bridge" "modules/bridge")  # modules/bridge dir does not exist
 
-file(GLOB STDLIB_MODS "${CMAKE_SOURCE_DIR}/modules/*.autom")
+set(AUTOM_CMAKE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH "Path to the directory containing CMakeLists.txt for AUTOM")
+
+file(GLOB STDLIB_MODS "${AUTOM_CMAKE_DIR}/modules/*.autom")
 if(WIN32)
-	file(GLOB PYTHON_TOOLS ${CMAKE_SOURCE_DIR}/tools/*.py ${CMAKE_SOURCE_DIR}/tools/*.bat)
+	file(GLOB PYTHON_TOOLS ${AUTOM_CMAKE_DIR}/tools/*.py ${AUTOM_CMAKE_DIR}/tools/*.bat)
 else()
-	file(GLOB PYTHON_TOOLS ${CMAKE_SOURCE_DIR}/tools/*.py ${CMAKE_SOURCE_DIR}/tools/autom-*)
+	file(GLOB PYTHON_TOOLS ${AUTOM_CMAKE_DIR}/tools/*.py ${AUTOM_CMAKE_DIR}/tools/autom-*)
 endif()
-set(DEFAULT_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/tools/default_toolchains.json")
+set(DEFAULT_TOOLCHAIN_FILE "${AUTOM_CMAKE_DIR}/tools/default_toolchains.json")
 
 install(FILES ${STDLIB_MODS} DESTINATION "modules")
 

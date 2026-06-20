@@ -88,6 +88,13 @@ namespace omegasl {
         bool hasErrors() const { return !errors.empty(); }
         unsigned getErrorCount() const { return (unsigned)errors.size(); }
         void report(std::ostream & out) const;
+        /// Structured access to the collected errors, for tooling that needs
+        /// each error's location and message independently rather than the
+        /// combined human-readable `report()` text — chiefly the language
+        /// server (`omegasl-lsp`), which maps every `Error::loc` /
+        /// `Error::format` to an LSP diagnostic. Read-only; the engine keeps
+        /// ownership.
+        const std::vector<std::unique_ptr<Error>> & getErrors() const { return errors; }
         void generateCodeView(std::ostream & out, const ErrorLoc & loc) const;
     };
 

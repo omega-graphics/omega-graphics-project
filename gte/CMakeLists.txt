@@ -120,6 +120,36 @@ if(OMEGA_HOST_TOOLS_ONLY OR NOT CMAKE_CROSSCOMPILING)
 	endif()
 endif()
 
+# omegasl-lsp: the OmegaSL language server. A compiler-driven LSP that reuses
+# the front-end (lexer / parser / Sem) to serve diagnostics, document symbols,
+# hover, and completion to editors. It shares omegaslc's front-end + codegen
+# sources (the parser depends on CodeGen, and a Target must link even though the
+# server runs frontend-only) but swaps the CLI main for the lsp/ sources and
+# their server entry point. Same host deps as omegaslc since it compiles the
+# same Target sources.
+set(OMEGASL_LSP_FRONTEND_SRCS ${OMEGASL_SRCS})
+list(FILTER OMEGASL_LSP_FRONTEND_SRCS EXCLUDE REGEX "omegasl/src/main\\.cpp$")
+file(GLOB OMEGASL_LSP_SRCS "omegasl/lsp/*.h" "omegasl/lsp/*.cpp")
+add_omega_graphics_tool("omegasl-lsp" SOURCES ${OMEGASL_LSP_FRONTEND_SRCS} ${OMEGASL_LSP_SRCS} LIBS "OmegaCommonCore")
+target_include_directories("omegasl-lsp" PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_definitions("omegasl-lsp" PUBLIC ${PUBLIC_DEFS})
+
+if(OMEGA_HOST_TOOLS_ONLY OR NOT CMAKE_CROSSCOMPILING)
+	if(TARGET_VULKAN)
+		set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps)
+		set(VULKAN_SDK_DIR ${THIRD_PARTY_DIR}/vulkan_sdk/1.3.283.0)
+		set(VULKAN_INCLUDE_DIRECTORY "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/include")
+
+		target_compile_definitions("omegasl-lsp" PRIVATE "OMEGASL_DEFAULT_GLSLC=\"${CMAKE_BINARY_DIR}/bin/glslc\"")
+		target_link_libraries("omegasl-lsp" PRIVATE "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/lib/libshaderc_shared.so.1")
+		target_include_directories("omegasl-lsp" PRIVATE ${VULKAN_INCLUDE_DIRECTORY})
+	endif()
+
+	if(TARGET_METAL)
+		target_link_system_frameworks("omegasl-lsp" Metal Foundation)
+	endif()
+endif()
+
 # Host-tools-only mode: stop here. The OmegaGTE library itself is not built
 # in this mode — its consumer (the cross-compile parent build) is what owns
 # OmegaGTE for the device.

@@ -1,7 +1,8 @@
 {
     "project": "OMEGAWTK",
     "variables": {
-        "third_party_dest": "./deps"
+        "third_party_dest": "./deps",
+        "components_dest":"./components"
     },
     "dependencies": [
         {
@@ -15,6 +16,24 @@
             "type": "git",
             "url": "https://github.com/Chlumsky/msdfgen.git",
             "dest": "$(third_party_dest)/msdfgen/code"
+        },
+        {
+            "name":"webview",
+            "type":"git",
+            "url": "https://github.com/omega-graphics/wtk-webview.git",
+            "dest": "$(components_dest)/webview"
+        },
+        {
+            "name":"mapview",
+            "type":"git",
+            "url": "https://github.com/omega-graphics/wtk-mapview.git",
+            "dest": "$(components_dest)/mapview"
+        },
+        {
+            "name":"pdfview",
+            "type":"git",
+            "url": "https://github.com/omega-graphics/wtk-pdfview.git",
+            "dest": "$(components_dest)/pdfview"
         }
     ]
 }

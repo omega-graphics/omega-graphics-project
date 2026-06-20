@@ -277,12 +277,20 @@ std::string Preprocessor::processInternal(const std::string& source, const std::
         while (start < line.size() && (line[start] == ' ' || line[start] == '\t')) ++start;
         if (start >= line.size()) {
             if (!skipping) out << line << "\n";
+            else if (linePreserving_) out << "\n";
             continue;
         }
         if (line[start] != '#') {
             if (!skipping) out << expandMacros(line) << "\n";
+            else if (linePreserving_) out << "\n";
             continue;
         }
+
+        /// Directive line. It produces no output of its own (an `#include`
+        /// that expands content is rejected when line-preserving is on — see
+        /// `setLinePreserving`), so emit a single blank line to keep output
+        /// line numbers aligned 1:1 with the source for tooling.
+        if (linePreserving_) out << "\n";
 
         size_t dirStart = start + 1;
         while (dirStart < line.size() && (line[dirStart] == ' ' || line[dirStart] == '\t')) ++dirStart;

@@ -211,6 +211,9 @@ namespace omegasl {
                     // Expected ID.
                 }
                 _decl->name = t.str;
+                /// Source location of the struct name token, for tooling
+                /// (document-symbol outline / hover in the language server).
+                _decl->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
 
                 t = lexer->nextTok();
 
@@ -746,6 +749,10 @@ namespace omegasl {
         }
 
         auto id_for_decl = t.str;
+        /// Hold onto the name token so the resource / function / shader
+        /// declarations below can record its source location for tooling
+        /// (document-symbol outline / hover in the language server).
+        Tok id_for_decl_tok = t;
         t = lexer->nextTok();
 
 
@@ -755,6 +762,7 @@ namespace omegasl {
                 auto res_decl = (ast::ResourceDecl *)node;
                 res_decl->typeExpr = ty_for_decl;
                 res_decl->name = id_for_decl;
+                res_decl->loc = ErrorLoc{ id_for_decl_tok.line, id_for_decl_tok.line, id_for_decl_tok.colStart, id_for_decl_tok.colEnd };
                 ast::ResourceDecl::StaticSamplerDesc samplerDesc {};
                 t = lexer->nextTok();
                 OmegaCommon::Vector<ResourceArgEntry> args;
@@ -826,6 +834,7 @@ namespace omegasl {
                 }
 
                 funcDecl->name = id_for_decl;
+                funcDecl->loc = ErrorLoc{ id_for_decl_tok.line, id_for_decl_tok.line, id_for_decl_tok.colStart, id_for_decl_tok.colEnd };
                 funcDecl->returnType = ty_for_decl;
                 t = lexer->nextTok();
 
@@ -1044,6 +1053,7 @@ namespace omegasl {
                 return nullptr;
             }
             resourceDecl->name = id_for_decl;
+            resourceDecl->loc = ErrorLoc{ id_for_decl_tok.line, id_for_decl_tok.line, id_for_decl_tok.colStart, id_for_decl_tok.colEnd };
             resourceDecl->typeExpr = ty_for_decl;
             t = lexer->nextTok();
             if(t.type != TOK_NUM_LITERAL){
@@ -2598,6 +2608,16 @@ namespace omegasl {
         while((decl = parseGlobalDecl()) != nullptr){
             if(sem->performSemForGlobalDecl(decl)){
                 foldConstantsInDecl(decl);
+                /// Frontend-only callers (the language server) stop here:
+                /// they want the AST + diagnostics, not transpiled source.
+                /// Skipping codegen avoids writing temp files and shelling
+                /// out to the shader toolchain on every edit.
+                if(ctxt.frontendOnly){
+                    if(ctxt.collectedDecls != nullptr){
+                        ctxt.collectedDecls->push_back(decl);
+                    }
+                    continue;
+                }
                 gen->generateDecl(decl);
                 if(!gen->generateInterfaceAndCompileShader(decl)){
                     break;

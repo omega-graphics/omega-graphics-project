@@ -4297,8 +4297,12 @@ breakdown. Developer decisions for this landing (2026-06-17):
 
 **H.1 — `FramePacer` skeleton + real `FrameTime` (no cadence change).**
 *[IMPLEMENTED 2026-06-17 — build-verified Linux/GTK + Vulkan; default-path
-smoke run renders identically and does not crash. Visual verify pending
-user handoff.]*
+smoke run renders identically and does not crash. RUNTIME-VERIFIED on
+macOS (Metal + `CADisplayLink`) 2026-06-19 — built and ran on this host;
+the default path renders identically and `ContainerClampAnimationTest`
+ticks against the same monotonic clock / per-frame index with no skipped
+or duplicated ticks. macOS visual verify satisfied (Windows still
+pending).]*
 New UI-private `wtk/src/UI/FramePacer.{h,cpp}` (peer of `FrameBuilder` /
 `AnimationScheduler`). `AppWindow::Impl` owns one; the ctor constructs it
 and binds it to `Native::displayLinkForScreen(currentScreen())`; Phase F's
@@ -4323,8 +4327,13 @@ clock + counter and is bound to the per-screen vsync source ready for H.2.
 *[IMPLEMENTED 2026-06-17 — build-verified Linux/GTK + Vulkan. Smoke run
 with `OMEGAWTK_VSYNC_PACING=1` produces frames through the new
 requestBuild → subscribe → onVsync → requestFrameFlush → flushFrame chain
-and does not crash/hang; idle-pause logic traced. Per-vsync cap, idle CPU
-drop, and visual identity pending user visual verify.]* Gated behind
+and does not crash/hang; idle-pause logic traced. RUNTIME-VERIFIED on
+macOS (Metal + `CADisplayLink`) 2026-06-19 — with `OMEGAWTK_VSYNC_PACING=1`
+the animation paces at the display refresh (≤ one build per vsync), the
+link pauses at rest (no idle CPU spin), and the default-off run is
+identical to pre-H.2. First on-platform confirmation that the macOS
+non-UI-thread `CADisplayLink` callback marshals correctly to the UI thread
+— the path the cross-platform note flagged as untrusted.]* Gated behind
 `OMEGAWTK_VSYNC_PACING` (read once at pacer construction). Default off ⇒
 the legacy free-running path (`requestFrame → requestFrameFlush`) is
 byte-for-byte unchanged, so this lands without a visible default-behavior
@@ -4357,23 +4366,264 @@ user-handoff per AGENTS.md). When on:
   each other's subscription. Acceptable for first landing (single-window
   test apps); multi-subscriber links are a §2.9 follow-up, out of Phase H.
 
-**H.3 — `PaceHint` + `FramePacingMonitor` load gating (DEFERRED).** Folds
-the stale `Frame-Pacing-Plan.md` mechanism (per-lane 100 ms windowed
-monitor, asymmetric hysteresis, discontinuity reset) onto the Compositor +
-adds `FramePacer::shouldBuildNextVsync(hint)` so a deferrable build is
-skipped under `Saturated`, with the resize / DPI / live-animation /
-first-paint critical exceptions never skipped. Not implemented this
-session.
+**H.3 — `PaceHint` + `FramePacingMonitor` load gating (PLANNED — phasing
+below, added 2026-06-19).** Folds the stale `Frame-Pacing-Plan.md`
+mechanism (100 ms windowed monitor, asymmetric hysteresis, discontinuity
+reset, the `PaceHint` enum) and adds `FramePacer::shouldBuildNextVsync(
+hint, class)` so a deferrable build is skipped under `Saturated`, with the
+resize / DPI / live-animation / first-paint critical exceptions never
+skipped. **The monitor machinery survives verbatim from the stale plan;
+its measurement *input* must be re-homed** because the Compositor the
+stale plan targeted no longer exists — see the pre-flight finding. The
+reviewable-increment phasing (H.3.1–H.3.6) follows.
+
+**H.3 pre-flight finding (2026-06-19) — the stale plan's Compositor
+foundation is gone.** The stale `Frame-Pacing-Plan.md` derived its
+per-lane frame time from `presentTimeCpu − submitTimeCpu` sampled at the
+`PacketLifecyclePhase::Presented` step of a queue-based,
+multiple-frames-in-flight compositor, behind a `waitForLaneAdmission`
+inner gate, drained via `onQueueDrained()`. **None of that survives
+post-Tier-4.** Confirmed against the live tree:
+- `Compositor` (`wtk/src/Composition/Compositor.h:121`) states *"Real lane
+  telemetry was removed with the queue-based render path"*;
+  `LaneTelemetrySnapshot` / `getLaneTelemetrySnapshot()` are a stub that
+  returns a default-constructed snapshot.
+- `LaneRuntimeState` and `PacketLifecyclePhase` no longer exist (absent
+  from the codedb symbol index).
+- The render path is now a per-window **mailbox**: a `CompositeFrame` is
+  deposited into the window's `CompositorSurface`, `frameDirty_` is set,
+  the `CompositorFrameWorker` wakes, and `drainWindowSurfaces()` →
+  `renderCompositeFrame()` renders the latest-deposited frame. Latest
+  deposit wins — there is no multi-frame queue to overflow and no
+  per-packet GPU-present timestamp.
+
+So the *machinery* (the 100 ms windowed `FramePacingMonitor` — windows,
+asymmetric hysteresis, discontinuity reset — plus the `PaceHint` enum) is
+ported verbatim, but its **input signal** (per-packet GPU present-minus-
+submit) and its **plumbing assumptions** (`packetTelemetryState`,
+`onQueueDrained`) cannot be. H.3's first job is to pick a replacement
+measurement that fits the mailbox model.
+
+**H.3 design decision — where to measure "the renderer is falling
+behind" (developer sign-off before H.3.2).** In a mailbox compositor,
+saturation is not "the queue is deep" (there is no queue) — it is "the
+worker cannot render deposited frames as fast as the UI thread produces
+them," which surfaces as either (a) `renderCompositeFrame()` wall-clock
+exceeding the vsync interval, or (b) a UI-thread deposit overwriting a
+mailbox frame the worker has not yet consumed (the renderer-fell-behind
+event). Both are observable post-Tier-4; the stale plan's GPU-present
+delta is not.
+
+- **Option A — Compositor-side monitor, owned per native surface
+  (recommended; see the placement decision below).** The `Compositor` is a
+  **global singleton** (`globalCompositor()` in
+  `wtk/src/UI/WidgetTreeHost.cpp`) shared by every window — and, once
+  [Panels-And-Window-Customization-Plan.md](Panels-And-Window-Customization-Plan.md)
+  Part A lands, every `AppPanel` too. So the `FramePacingMonitor` is owned
+  **per `CompositorSurface`** (the per-window / per-panel frame mailbox),
+  not as one field on the global compositor. Feed each surface's monitor
+  (a) the wall-clock of that surface's `renderCompositeFrame()` and (b) a
+  per-surface mailbox-overwrite counter. Route the hint back to the owning
+  UI thread through the existing `CompositorClientProxy` (one proxy + one
+  sync lane per surface). This measures the signal where it lives,
+  preserves the stale plan's routing, and scales to N surfaces for free.
+- **Option B — UI-only pacer monitor (rejected).** Measure build/flush
+  wall-clock entirely inside `FramePacer`, no Compositor change. Rejected:
+  UI-thread build time does not observe GPU/renderer saturation — the
+  renderer-fell-behind signal lives on the compositor side, so a UI-only
+  monitor would throttle on the wrong quantity (its own build cost, not
+  the renderer's backlog).
+- **Recommendation:** Option A; the phasing below is written for it. A
+  Compositor-untouched first cut is possible (land H.3.4's gate against a
+  conservative always-`Normal` hint, wire Option A later) but that ships
+  the gate with nothing to gate on, so it is not the recommended order.
+
+**H.3 monitor placement — per native surface, because the Compositor is
+global (decided 2026-06-19).** Pace state lives on the `CompositorSurface`,
+keyed to the native surface (an `AppWindow` today, an `AppPanel` once
+[Panels-And-Window-Customization-Plan.md](Panels-And-Window-Customization-Plan.md)
+Part A lands) — **never as a single monitor on the global `Compositor`**,
+or two windows would share one pace hint and a busy window would throttle
+an idle one. `Compositor::getPaceHint(syncLaneId)` resolves the lane → its
+`CompositorSurface` → that surface's monitor (the exact lane→surface lookup
+to confirm against `windowSurfaces_` / `observeLayerTree` at
+implementation). Because a panel is just a second `CompositorSurface` +
+`CompositorClientProxy` (Panels plan A.1, which mirrors the `AppWindow`
+hosting chain onto a different native surface), it picks up its own
+independent pacing with **no extra H.3 work** — the per-surface design is
+what makes that automatic.
+
+**Forward constraint — Panels plan Part C (shared queue / batched
+commit).** Part C will collapse the N per-window `GECommandQueue`s into one
+shared queue and batch GPU submission into a single `commitToGPU()` per
+worker tick; its **Open Question 9** explicitly asks whether frame pacing
+assumes per-window commit ordering. H.3's answer: **no.** H.3 times the
+*per-surface render* (`renderCompositeFrame` wall-clock) and counts
+per-surface mailbox overwrites — neither depends on commit granularity, so
+batched commit does not change the measurement. H.3.2 must take the
+per-surface timestamps *before* any Part C batching point, not around the
+shared `commitToGPU()`.
+
+**H.3 gating env gate (decision).** The `FramePacingMonitor` *measures*
+always-on (a few field updates per rendered frame — negligible). The
+*gating* (actually skipping a build) is only meaningful on the vsync
+path, so `shouldBuildNextVsync` is consulted **only when
+`OMEGAWTK_VSYNC_PACING` is on** — no new env flag, and default-off runs
+stay unchanged, consistent with H.2.
+
+Reviewable increments:
+
+**H.3.1 — `PaceHint` enum + `FramePacingMonitor` machinery (no wiring).**
+Port the `PaceHint` enum (`Normal` / `Throttled` / `Saturated`) and the
+`FramePacingMonitor` struct (100 ms quantised windows; `kThrottle` /
+`kSaturate` / `kRecoveryWindowThreshold`; throttle-up-fast /
+recover-slow asymmetric hysteresis; 3×-target discontinuity reset;
+`startupStabilized` ⇒ always `Normal` during startup) verbatim from the
+stale plan's "Pace hint computation" section. Header-only, no consumers
+yet — pure, unit-testable machinery.
+- *Files:* new `wtk/src/Composition/FramePacingMonitor.h` (private to
+  `OmegaWTK::Composition`).
+- *Validator:* compiles; a tiny driver feeding synthetic frame times
+  reproduces the documented throttle-at-2-windows / saturate-at-4 /
+  recover-at-10 transitions and the discontinuity reset.
+
+**H.3.2 — Per-surface measurement + real `getPaceHint(syncLaneId)`.** Give
+each `CompositorSurface` its own `FramePacingMonitor` (per native surface —
+the global `Compositor` holds no single monitor; this replaces the removed
+lane telemetry). Time that surface's `renderCompositeFrame()` wall-clock
+and record it into the surface's monitor; increment a per-surface
+mailbox-overwrite counter when a deposit lands on a still-unconsumed
+mailbox frame, and fold that into the saturation signal. Replace the stub
+with a real `PaceHint Compositor::getPaceHint(std::uint64_t syncLaneId)
+const` that resolves the lane → its surface → the surface's cached
+`currentHint`, read under the existing `mutex`.
+- *Files:* `Compositor.{h,cpp}`, `CompositorSurface.{h,cpp}` (overwrite
+  counter).
+- *Validator:* with a deliberately slow render the monitor escalates to
+  `Throttled` then `Saturated`; an idle app stays `Normal`.
+- *To confirm at implementation:* the exact hook points in
+  `drainWindowSurfaces` / `renderCompositeFrame` and the
+  `CompositorSurface` mailbox deposit (not yet read in full).
+
+**H.3.3 — Route the hint to the UI thread.** Add
+`CompositorClientProxy::getPaceHint()` (delegates to
+`frontend->getPaceHint(syncLaneId)`; returns `Normal` when no frontend is
+attached) and `FrameBuilder::compositorPaceHint()` reading the window
+proxy.
+- *Files:* `CompositorClient.{h,cpp}`, `FrameBuilder.{h,cpp}`.
+- *Validator:* the hint read at the FrameBuilder matches the compositor's
+  current hint under synthetic load.
+
+**H.3.4 — `PaceClass` plumbing + `FramePacer::shouldBuildNextVsync`.**
+The H.2 frame-request path (`AppWindow::requestFrame()` →
+`FramePacer::requestBuild()`) carries no reason today. Add a `PaceClass`
+(`Deferrable` / `Critical`) argument defaulting to `Deferrable`, set to
+`Critical` explicitly at the resize, DPI-scale-change, live-animation, and
+first-paint call sites. Add `bool FramePacer::shouldBuildNextVsync(
+PaceHint, PaceClass)`, consulted in `onVsync` (only when `vsyncPacing_`)
+before marshalling the flush: skip — leave `DirtyBits` set, do not flush
+this vsync — iff `hint == Saturated && class == Deferrable` (optionally
+also skip `Throttled` deferrables). `Critical` never skips.
+- *Files:* `FramePacer.{h,cpp}`, `AppWindow.cpp` (call-site
+  classification), the resize / DPI paths (Phase F), `AnimationScheduler`
+  (animation ⇒ `Critical`).
+- *Validator:* under a forced `Saturated` hint, background `StateChanged`
+  invalidations defer while resize / animation / first-paint frames still
+  build; deferred bits drain on recovery.
+- *To confirm at implementation:* whether `requestFrame` already threads a
+  `PaintReason` (`wtk/include/omegaWTK/UI/Widget.h:39`) that can be mapped
+  `PaintReason → PaceClass` instead of adding a parallel argument.
+
+**H.3.5 — Deferred-frame drain on the mailbox.** Re-home the stale plan's
+Phase 5b (`onQueueDrained` → window observer → rebuild-if-dirty) onto the
+mailbox: when the worker finishes a frame and the mailbox is empty, if any
+`DirtyBits` remain set, request a frame so a deferred repaint is
+eventually produced with no further user input. Deferral itself needs no
+new state — skipping a build leaves the bits set and `DirtyBits` already
+coalesce.
+- *Files:* `Compositor.cpp` (post-render empty-mailbox notify),
+  `AppWindow.cpp` (rebuild-if-dirty hook).
+- *Validator:* a frame deferred under load is produced after load drops
+  without further interaction.
+
+**H.3.6 — Telemetry + validators.** Expose a `FramePacingSnapshot`
+(`currentHint`, `currentWindowAvgMs`, `recentAvgFrameTimeMs`,
+`consecutiveOverBudget` / `consecutiveUnderBudget`, `targetFrameTimeMs`)
+through the existing diagnostics surface, plus throttle / saturate /
+discontinuity-reset counters, behind the existing stats env gate (the
+`OMEGAWTK_CONTENT_CACHE_STATS` analog).
+- *Files:* `Compositor.{h,cpp}`.
+- *Validator:* the snapshot reflects the synthetic-load transitions from
+  H.3.2.
+
+**H.3 critical exceptions (never skipped, any `PaceHint`)** — restated
+from the architecture section, now keyed to `PaceClass::Critical`: resize
+frames, DPI scale-change frames, live-animation frames
+(`AnimationScheduler::stats().activeProperty + activeCallback > 0`), and
+first paint.
+
+**H.3 sequencing & cross-platform.** H.3.1 is standalone. H.3.2–H.3.3
+(measure + route) are independent of the gate and land/verify first.
+H.3.4 (the gate) depends on H.3.3 **and** H.2's vsync path. H.3.5 / H.3.6
+follow. The monitor + gate are platform-agnostic: the hint is read on the
+UI thread at build time, so they add no new display-link-thread concern
+beyond H.2's. Verify on **macOS (this host)** + **Linux/GTK**; **Windows**
+is the usual native-run handoff (AGENTS.md "Building").
 
 **Cross-platform verification status (flagged per repo convention).**
-Authored and build/run-verified on **Linux/GTK + Vulkan** only.
-macOS (`CADisplayLink`) and Windows (`IDXGIOutput::WaitForVBlank` /
-`DCompositionWaitForCompositorClock`) display-link impls already exist in
-§2.9 but the FramePacer integration on those backends is **compile/run-
-unverified off-platform** — the UI-thread-only subscription discipline is
-written to be backend-agnostic, but the macOS/Win link callback fires on a
-non-UI thread (unlike GTK's main-loop timer), so the marshalling path there
-needs an on-platform run before it is trusted.
+Authored and build/run-verified on **Linux/GTK + Vulkan** (2026-06-17)
+and **macOS / Metal + `CADisplayLink`** (2026-06-19, this host). On both,
+the FramePacer integration runs end-to-end: H.1's monotonic-clock tick
+source and H.2's vsync-aligned production (`OMEGAWTK_VSYNC_PACING=1`). The
+macOS run is the first to exercise a **non-UI-thread** display-link
+callback (`CADisplayLink` fires off the UI thread, unlike GTK's main-loop
+timer), confirming the UI-thread-only subscribe/unsubscribe discipline and
+the callback→UI-thread marshalling path hold where it matters. **Windows**
+(`IDXGIOutput::WaitForVBlank` / `DCompositionWaitForCompositorClock`)
+remains **unverified** — the §2.9 display-link impl exists, but its callback
+also fires off the UI thread and the FramePacer integration there is
+compile/run-unverified. Per the WSL build constraint (AGENTS.md
+"Building"), the agent cannot drive that build; it needs a native-Windows
+run handed off to the user.
+
+###### Continuous integration (CI)
+
+Phase H has no pure-logic unit surface to assert in isolation — its
+contract is *cadence* (one build per vsync, the link pauses when idle,
+animations glued to display time), which only manifests in a running app
+against a real per-screen display link. "CI" for this phase is therefore
+the per-backend **build + on-hardware smoke run** matrix below — the same
+convention the content-cache phases use ("built + verified under CI", G.5.1
+/ G.5.4), not a separate test binary.
+
+The single load-bearing platform difference is **which thread the
+display-link callback fires on**, because that is exactly what the
+UI-thread-only subscribe/unsubscribe discipline has to survive:
+
+| Backend                | Display link                                                        | Callback thread     | Status                                    |
+|------------------------|--------------------------------------------------------------------|---------------------|-------------------------------------------|
+| Linux / GTK + Vulkan   | `g_timeout_add`                                                     | UI (GTK main loop)  | Verified — build + run 2026-06-17         |
+| macOS / Metal          | `CADisplayLink`                                                     | **non-UI**          | Verified — runtime 2026-06-19 (this host) |
+| Windows / D3D12        | `IDXGIOutput::WaitForVBlank` / `DCompositionWaitForCompositorClock` | **non-UI** (pacer)  | Unverified — needs native-Windows run     |
+
+Each platform run asserts the same two cases against the existing
+continuously-animating app (`ContainerClampAnimationTest`) — no new test
+binary:
+
+1. **Default path (H.1, `OMEGAWTK_VSYNC_PACING` unset).** Renders
+   identically to pre-Phase-H; the animation ticks against the monotonic
+   clock with no skipped or duplicated frames. This is the regression gate
+   — Phase H must be invisible when the flag is off.
+2. **Vsync path (H.2, `OMEGAWTK_VSYNC_PACING=1`).** The animation paces at
+   the display refresh interval (≤ one build per vsync), and the display
+   link **pauses at rest** (no per-vsync wakeups, no idle CPU spin) once
+   the animation settles.
+
+Because the macOS and Windows callbacks fire off the UI thread, the
+on-platform run is the *only* thing that proves the marshalling path — a
+clean build is necessary but not sufficient. Windows stays unverified until
+a native-Windows host runs both cases above and reports back (the agent
+cannot drive the WSL build — AGENTS.md "Building").
 
 ##### Phase 4.3 — `AnimationScheduler` lands alongside the old animator (folds Animation-Scheduler-Plan Tier A) [DONE]
 

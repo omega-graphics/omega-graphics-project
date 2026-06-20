@@ -43,6 +43,19 @@ public:
     /// exactly as before.
     void setRejectIncludes(bool reject) { rejectIncludes_ = reject; }
 
+    /// Emit one output line for every input line, so output line numbers
+    /// match the source 1:1. Normally the preprocessor drops directive lines
+    /// (`#define`, `#ifdef`, ...) and `#if`-skipped regions, which shifts the
+    /// line numbers of everything below them. Tooling that maps compiler
+    /// diagnostics back onto the *original* buffer — the language server
+    /// (`omegasl-lsp`) — needs the numbers to stay aligned, so it turns this
+    /// on. Consumed/skipped lines are replaced by an empty line instead of
+    /// being removed. Assumes `#include` expansion is disabled
+    /// (`setRejectIncludes(true)`): an expanded include emits more than one
+    /// line and would break the 1:1 mapping. Default (false) leaves the
+    /// `omegaslc` output byte-identical.
+    void setLinePreserving(bool preserve) { linePreserving_ = preserve; }
+
     /// True if any directive in the most-recently-processed source
     /// failed in a way that should abort downstream compilation
     /// (today: `#include` while `rejectIncludes_` is true). Sticky
@@ -70,6 +83,7 @@ private:
     uint64_t unsatisfiedFeatures_ = 0;
     bool backendSet_ = false;
     bool rejectIncludes_ = false;
+    bool linePreserving_ = false;
     bool hasErrors_ = false;
 
     std::string processInternal(const std::string& source, const std::string& currentPath, unsigned includeDepth);

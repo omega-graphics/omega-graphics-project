@@ -13,6 +13,22 @@ namespace omegasl {
         std::istream & in;
         SourceFile * sourceFile = nullptr;
         DiagnosticEngine * diagnostics = nullptr;
+
+        /// Frontend-only mode. When set, `parseContext` runs the parse +
+        /// semantic-analysis + constant-folding passes but skips code
+        /// generation and shader-toolchain invocation (`generateDecl` /
+        /// `generateInterfaceAndCompileShader`). Used by tooling that needs
+        /// the AST and diagnostics without transpiling — chiefly the
+        /// language server (`omegasl-lsp`), which must not write temp files
+        /// or shell out to dxc/metal/glslc on every edit. The default
+        /// (false) preserves the full `omegaslc` pipeline byte-for-byte.
+        bool frontendOnly = false;
+
+        /// When non-null and `frontendOnly` is set, each global declaration
+        /// that passes semantic analysis is appended here in source order.
+        /// The caller owns nothing — these alias the parser's AST nodes,
+        /// which live as long as the parse does.
+        std::vector<ast::Decl *> * collectedDecls = nullptr;
     };
 
     class Sem;
