@@ -1,12 +1,12 @@
 # JSON API Completion Plan
 
-> **Status: proposed, not started.** This plan completes the `OmegaCommon::JSON`
-> value type. Three design forks were resolved with the developer up front:
-> numbers become a **tagged int-or-double**, parse failures are reported through
-> a new **`TryParse` → `Result<JSON, String>`** (the house pattern, same as
-> `OmegaCommon::Img`'s `Result<BitmapImage, std::string>`), and the work ships as
-> **one phased plan** that fixes the ownership foundation first and layers the new
-> API on top. No code lands until this plan is reviewed.
+> **Status: Phase 1 landed + verified (2026-06-20). Phases 2–5 not started.**
+> This plan completes the `OmegaCommon::JSON` value type. Three design forks were
+> resolved with the developer up front: numbers become a **tagged int-or-double**,
+> parse failures are reported through a new **`TryParse` → `Result<JSON, String>`**
+> (the house pattern, same as `OmegaCommon::Img`'s `Result<BitmapImage,
+> std::string>`), and the work ships as **one phased plan** that fixes the
+> ownership foundation first and layers the new API on top.
 
 ## Current State
 
@@ -222,13 +222,34 @@ manual `toJSON`/`fromJSON` dance at each call site.
 
 ## Implementation Plan
 
-### Phase 1 — Ownership foundation (Tier 0, do first)
+### Phase 1 — Ownership foundation (Tier 0) — **Complete (2026-06-20)**
 
-Add destructor + copy/move ctor + copy/move assignment; wire `~JSON` to
-`Data::_destroy`. Convert `Num` storage scaffold so later phases don't re-touch
-the union. **Verification:** an ASan round-trip test that parses, copies,
-reassigns, and drops nested objects/arrays with zero leaks and zero double-frees.
-This phase fixes bugs #1 and #2 and is the prerequisite for everything else.
+Added the destructor + copy ctor + move ctor + copy/move assignment to
+`JSON` (`json.h` special-members block, `json.cpp` definitions) and wired
+`~JSON` to the previously-dead `Data::_destroy`. Copy deep-clones the active
+union arm (String via `Data(StrRef)`, Array/Map via the container copy ctors
+which recurse through `JSON`'s own copy ctor); move bitwise-steals the union and
+resets the source to `UNKNOWN` so its destructor is a no-op. Both assignments are
+self-assignment guarded; copy-assign clones before releasing so a throw leaves
+`*this` intact. Fixes bugs #1 (leak) and #2 (shallow-copy aliasing).
+
+The `Num` storage change was deliberately **deferred to Phase 2** — leaving the
+`int number` arm untouched kept Phase 1 to pure ownership and avoided writing
+copy/move logic for a number layout that Phase 2 replaces anyway. (Number arms
+copy trivially regardless, so Phase 2 does not re-touch the special members.)
+
+**Verification (all passing):**
+- `common/tests/JSONLifecycleTest.cpp` — 22/22 checks: deep-copy independence
+  (top-level + nested + array growth), move transfer + empty source, copy/move
+  assignment, self-assignment safety, copy-serializes-identically.
+- AddressSanitizer build: no double-free / use-after-free.
+- macOS `leaks --atExit`: `0 leaks for 0 total leaked bytes` (LSan is unreliable
+  on macOS, so the native `leaks` tool is the leak oracle here).
+- Regression: `omega-assetc` rebuilds clean and the 7 `assetc` integration tests
+  (which `JSON::parse` real configs) pass.
+- Test wired into both build descriptions: `common/tests/CMakeLists.txt`
+  (`add_subdirectory(tests)` in `common/CMakeLists.txt`, target
+  `common-core-tests`) and `common/AUTOM.build` (`json-lifecycle-test`).
 
 ### Phase 2 — Number model
 

@@ -124,6 +124,39 @@ void Preprocessor::define(const std::string& name, const std::string& value) {
     macros_[name] = value;
 }
 
+void Preprocessor::addIncludeDir(const std::string& dir) {
+    if (!dir.empty()) includeDirs_.push_back(dir);
+}
+
+std::string Preprocessor::resolveIncludePath(const std::string& currentPath,
+                                             const std::string& incPath) const {
+    /// `std::ifstream::good()` after construction is the cheapest portable
+    /// "can I open this file?" check available without pulling in <filesystem>
+    /// (the rest of this file already opens includes with std::ifstream).
+    auto canOpen = [](const std::string& p) {
+        std::ifstream f(p);
+        return f.good();
+    };
+    /// 1. Relative to the including file's own directory — the same path the
+    ///    preprocessor resolved against before `-I` existed, so an existing
+    ///    project's includes keep resolving exactly as they did.
+    if (!currentPath.empty()) {
+        std::string p = currentPath + "/" + incPath;
+        if (canOpen(p)) return p;
+    } else if (canOpen(incPath)) {
+        /// No including-file directory (top-level source named with no dir
+        /// component): try the path as written, relative to the CWD.
+        return incPath;
+    }
+    /// 2. Each `-I` search directory, in the order they were added.
+    for (const auto& dir : includeDirs_) {
+        if (dir.empty()) continue;
+        std::string p = dir + "/" + incPath;
+        if (canOpen(p)) return p;
+    }
+    return std::string();
+}
+
 bool Preprocessor::isDefined(const std::string& name) const {
     return macros_.find(name) != macros_.end();
 }
@@ -398,68 +431,104 @@ std::string Preprocessor::processInternal(const std::string& source, const std::
                 continue;
             }
             size_t q = line.find('"', argStart);
-            if (q != std::string::npos) {
-                size_t q2 = line.find('"', q + 1);
-                if (q2 != std::string::npos) {
-                    std::string incPath(line.begin() + q + 1, line.begin() + q2);
-                    std::string fullPath = currentPath.empty() ? incPath : (currentPath + "/" + incPath);
-                    std::ifstream incFile(fullPath);
-                    if (incFile) {
-                        /// Phase 4 advisory: a header — a file included for its
-                        /// shared declarations — should be named `*.omegaslh`.
-                        /// A `.omegasl` is a translation unit that owns shader
-                        /// entry points. Nudge toward the convention but keep
-                        /// processing (warn-only): hard-failing here would break
-                        /// any project that includes a file of pure declarations
-                        /// under a different extension. The real guard against a
-                        /// header carrying a shader is the rejection below.
-                        if (!hasOmegaslhExtension(incPath)) {
-                            std::cerr << "warning: `#include \"" << incPath
-                                      << "\"` does not use the recommended `.omegaslh` header "
-                                         "extension. Headers (files included for their shared "
-                                         "declarations) should be named `*.omegaslh`; a "
-                                         "`.omegasl` is a translation unit that owns shader "
-                                         "entry points. (Advisory — the include is still "
-                                         "processed.)" << std::endl;
-                        }
-                        std::string incContent((std::istreambuf_iterator<char>(incFile)),
-                                               std::istreambuf_iterator<char>());
-                        incFile.close();
-                        size_t slash = fullPath.find_last_of("/\\");
-                        std::string incDir = (slash != std::string::npos) ? fullPath.substr(0, slash) : "";
-                        std::string processedInclude = processInternal(incContent, incDir, includeDepth + 1);
-                        /// A header is textually inlined into every including
-                        /// translation unit. A shader entry point declared in
-                        /// one would therefore be compiled into each unit and
-                        /// collide by name at link time (and bloat the output).
-                        /// Reject it loudly here — name the header, the line,
-                        /// and the offending stage keyword — and drop the
-                        /// content rather than silently inline a duplicate that
-                        /// would surface as a cryptic link-time collision later.
-                        /// (Nested includes are covered: an inner header's
-                        /// shader is caught and stripped by the recursive
-                        /// `processInternal` above before this outer scan runs.)
-                        std::string stageKeyword;
-                        unsigned stageLine = 0;
-                        if (includeDeclaresShader(processedInclude, stageKeyword, stageLine)) {
-                            std::cerr << "error: included header `" << fullPath
-                                      << "` declares a shader entry point (`"
-                                      << stageKeyword << "` at line " << stageLine
-                                      << "). Shader entry points must live in a translation "
-                                         "unit (`.omegasl`), not in an `#include`d header "
-                                         "(`.omegaslh`): a header is inlined into every "
-                                         "including unit, so a shader in it is compiled "
-                                         "multiple times and collides at link time. Move the `"
-                                      << stageKeyword << "` entry point into a `.omegasl` "
-                                         "translation unit and keep only shared declarations "
-                                         "(structs, resources, helper functions) in the header."
-                                      << std::endl;
-                            hasErrors_ = true;
-                        } else {
-                            out << processedInclude;
-                        }
-                    }
+            size_t q2 = (q != std::string::npos) ? line.find('"', q + 1) : std::string::npos;
+            if (q == std::string::npos || q2 == std::string::npos) {
+                /// A `#include` with no parseable quoted path: a typo, or the
+                /// unsupported angle-bracket form (`#include <foo>`). It would
+                /// otherwise vanish silently — fail loud so it is visible.
+                std::cerr << "error: malformed `#include` directive `" << line
+                          << "` — expected a quoted path, e.g. "
+                             "`#include \"header.omegaslh\"`. OmegaSL resolves only "
+                             "quoted includes; the angle-bracket form "
+                             "(`#include <...>`) is not supported." << std::endl;
+                hasErrors_ = true;
+                continue;
+            }
+            std::string incPath(line.begin() + q + 1, line.begin() + q2);
+            /// Resolve against the including file's directory first, then the
+            /// `-I` search dirs (see `resolveIncludePath`).
+            std::string fullPath = resolveIncludePath(currentPath, incPath);
+            std::ifstream incFile;
+            if (!fullPath.empty()) incFile.open(fullPath);
+            /// `fullPath.empty()` means no candidate existed in any search dir;
+            /// `!incFile` additionally guards the rare case where the file was
+            /// probed open by `resolveIncludePath` but is no longer readable.
+            /// (A default-constructed, never-opened `ifstream` reports *good*,
+            /// so the empty-path case must be tested explicitly — `!incFile`
+            /// alone would let an unresolved include fall through.)
+            if (fullPath.empty() || !incFile) {
+                /// A well-formed include that resolves to no readable file used
+                /// to be dropped silently, surfacing far downstream as a cryptic
+                /// "undeclared identifier" for whatever the header declared.
+                /// Fail loud at the directive, naming the path and every place
+                /// searched so the fix — a `-I <dir>` or a corrected path — is
+                /// obvious.
+                std::ostringstream searched;
+                if (!currentPath.empty()) {
+                    searched << "\n    - the including file's directory: `" << currentPath << "`";
+                } else {
+                    searched << "\n    - the current working directory (include written as-is)";
                 }
+                for (const auto& dir : includeDirs_) {
+                    if (dir.empty()) continue;
+                    searched << "\n    - include search dir (-I): `" << dir << "`";
+                }
+                std::cerr << "error: cannot find included file `" << incPath
+                          << "`. Searched:" << searched.str()
+                          << "\n  Add the directory that contains `" << incPath
+                          << "` with `-I <dir>`, or correct the include path." << std::endl;
+                hasErrors_ = true;
+                continue;
+            }
+            /// Phase 4 advisory: a header — a file included for its shared
+            /// declarations — should be named `*.omegaslh`. A `.omegasl` is a
+            /// translation unit that owns shader entry points. Nudge toward the
+            /// convention but keep processing (warn-only): hard-failing here
+            /// would break any project that includes a file of pure
+            /// declarations under a different extension. The real guard against
+            /// a header carrying a shader is the rejection below.
+            if (!hasOmegaslhExtension(incPath)) {
+                std::cerr << "warning: `#include \"" << incPath
+                          << "\"` does not use the recommended `.omegaslh` header "
+                             "extension. Headers (files included for their shared "
+                             "declarations) should be named `*.omegaslh`; a "
+                             "`.omegasl` is a translation unit that owns shader "
+                             "entry points. (Advisory — the include is still "
+                             "processed.)" << std::endl;
+            }
+            std::string incContent((std::istreambuf_iterator<char>(incFile)),
+                                   std::istreambuf_iterator<char>());
+            incFile.close();
+            size_t slash = fullPath.find_last_of("/\\");
+            std::string incDir = (slash != std::string::npos) ? fullPath.substr(0, slash) : "";
+            std::string processedInclude = processInternal(incContent, incDir, includeDepth + 1);
+            /// A header is textually inlined into every including translation
+            /// unit. A shader entry point declared in one would therefore be
+            /// compiled into each unit and collide by name at link time (and
+            /// bloat the output). Reject it loudly here — name the header, the
+            /// line, and the offending stage keyword — and drop the content
+            /// rather than silently inline a duplicate that would surface as a
+            /// cryptic link-time collision later. (Nested includes are covered:
+            /// an inner header's shader is caught and stripped by the recursive
+            /// `processInternal` above before this outer scan runs.)
+            std::string stageKeyword;
+            unsigned stageLine = 0;
+            if (includeDeclaresShader(processedInclude, stageKeyword, stageLine)) {
+                std::cerr << "error: included header `" << fullPath
+                          << "` declares a shader entry point (`"
+                          << stageKeyword << "` at line " << stageLine
+                          << "). Shader entry points must live in a translation "
+                             "unit (`.omegasl`), not in an `#include`d header "
+                             "(`.omegaslh`): a header is inlined into every "
+                             "including unit, so a shader in it is compiled "
+                             "multiple times and collides at link time. Move the `"
+                          << stageKeyword << "` entry point into a `.omegasl` "
+                             "translation unit and keep only shared declarations "
+                             "(structs, resources, helper functions) in the header."
+                          << std::endl;
+                hasErrors_ = true;
+            } else {
+                out << processedInclude;
             }
         }
     }

@@ -245,6 +245,64 @@ void JSON::Data::_destroy(decltype(type) t) {
   }
 }
 
+JSON::JSON(const JSON &other) : type(other.type) {
+  switch (other.type) {
+  case STRING:
+    // Data(StrRef) allocates a fresh, null-terminated buffer and copies into it.
+    data = Data(StrRef(other.data.str));
+    break;
+  case ARRAY:
+    // Vector's copy constructor deep-copies each element via this same ctor.
+    data.array = other.data.array ? new Vector<JSON>(*other.data.array)
+                                  : new Vector<JSON>();
+    break;
+  case MAP:
+    data.map = other.data.map ? new Map<String, JSON>(*other.data.map)
+                              : new Map<String, JSON>();
+    break;
+  case NUMBER:
+    data.number = other.data.number;
+    break;
+  case BOOLEAN:
+    data.b = other.data.b;
+    break;
+  case UNKNOWN:
+  default:
+    break;
+  }
+}
+
+JSON::JSON(JSON &&other) noexcept : type(other.type), data(other.data) {
+  // Steal other's storage, then leave it an empty node so its destructor frees
+  // nothing (the buffers are now owned by *this).
+  other.type = UNKNOWN;
+}
+
+JSON &JSON::operator=(const JSON &other) {
+  if (this != &other) {
+    // Clone first (the only step that can throw) so a failure leaves *this
+    // untouched, then release our old storage and adopt the clone's.
+    JSON copy(other);
+    data._destroy(type);
+    type = copy.type;
+    data = copy.data;
+    copy.type = UNKNOWN;
+  }
+  return *this;
+}
+
+JSON &JSON::operator=(JSON &&other) noexcept {
+  if (this != &other) {
+    data._destroy(type);
+    type = other.type;
+    data = other.data;
+    other.type = UNKNOWN;
+  }
+  return *this;
+}
+
+JSON::~JSON() { data._destroy(type); }
+
 JSON::JSON(const char *c_str) : type(STRING), data(c_str) {}
 
 JSON::JSON(const String &str) : type(STRING), data(str) {}

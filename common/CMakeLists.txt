@@ -556,6 +556,7 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assetc/AssetTypes.json" DESTINATION b
 # Tests run target binaries; skip them when cross-compiling.
 if(NOT CMAKE_CROSSCOMPILING)
 	add_subdirectory(assetc/tests)
+	add_subdirectory(tests)
 endif()
 
 # add_omega_graphics_tool("lex-test" LIBS "OmegaCommonCore" SOURCES ${WRAPGEN_SRCS} "wrapgen/tests/lex-test.cpp")

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace omegasl {
 
@@ -32,6 +33,17 @@ public:
     void define(const std::string& name, const std::string& value = "1");
     bool isDefined(const std::string& name) const;
     std::string process(const std::string& source, const std::string& currentPath = "");
+
+    /// Append a directory to the `#include` search path. A quoted
+    /// `#include "foo.omegaslh"` is resolved against the including file's
+    /// own directory first (the `currentPath` handed to `process`), then
+    /// against each directory added here, in the order they were added —
+    /// matching a C preprocessor's `"..."` search order. The compiler
+    /// driver (`omegaslc`) populates these from its `-I` / `--include-dir`
+    /// options so a project can include shared headers that do not sit
+    /// next to the translation unit. Has no effect while `rejectIncludes_`
+    /// is set (the runtime path forbids `#include` outright).
+    void addIncludeDir(const std::string& dir);
 
     /// Reject `#include` directives during processing. The runtime
     /// `OmegaSLCompiler` flips this on because a runtime source string
@@ -79,6 +91,9 @@ public:
 
 private:
     std::map<std::string, std::string> macros_;
+    /// Extra `#include` search directories, in priority order (after the
+    /// including file's own directory). Populated by `addIncludeDir`.
+    std::vector<std::string> includeDirs_;
     uint64_t requiredFeatures_ = 0;
     uint64_t unsatisfiedFeatures_ = 0;
     bool backendSet_ = false;
@@ -87,6 +102,14 @@ private:
     bool hasErrors_ = false;
 
     std::string processInternal(const std::string& source, const std::string& currentPath, unsigned includeDepth);
+    /// Resolve a quoted `#include "incPath"` to an openable file path, or
+    /// the empty string if no candidate exists. Search order mirrors a C
+    /// preprocessor's `"..."` form: the including file's directory
+    /// (`currentPath`) first, then each directory from `addIncludeDir` in
+    /// order. When `currentPath` is empty (a top-level source with no
+    /// directory component) the bare `incPath` is tried before the search
+    /// dirs, preserving the original relative-to-CWD behavior.
+    std::string resolveIncludePath(const std::string& currentPath, const std::string& incPath) const;
     std::string expandMacros(const std::string& line) const;
     /// Parse a single argument list of the form `(NAME[, NAME...])` or
     /// `NAME` (bare). On success, OR each named feature's bit into

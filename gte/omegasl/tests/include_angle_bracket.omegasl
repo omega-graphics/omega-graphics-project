@@ -1,0 +1,14 @@
+// Negative test: OmegaSL resolves only quoted includes. The angle-bracket
+// form (`#include <...>`) would otherwise be silently dropped; it must fail
+// loud as a malformed directive. The fragment below is self-contained, so
+// the unsupported include is the only error.
+#include <some_header.omegaslh>
+
+struct AngleFrag_In internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+fragment float4 angleBracketFrag(AngleFrag_In raster){
+    return raster.color;
+}

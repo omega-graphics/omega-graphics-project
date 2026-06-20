@@ -1344,6 +1344,351 @@ draw. Validated through the window-scoped `DisplayList` path.
 
 ---
 
+## Phase 11 — Glass brushes
+
+**Goal:** Add `Brush::Type::Glass` — a fill brush that paints any
+shape (Rect / RoundedRect / Ellipse / Path) as a translucent **glass
+material**: a blurred, refracted sample of the backdrop *behind* the
+shape, tinted (solid → `ColoredGlass`, or gradient → `GradientGlass`),
+with a fresnel rim highlight and a specular streak. This is WTK's
+analogue of Apple's "Liquid Glass" material.
+
+**Scope decisions (locked at proposal time):**
+
+  - **Closed brush type, not an open shader-brush system.** Glass is a
+    fixed `Brush::Type::Glass` with a `GlassMaterial` payload. It is
+    *implemented* with a dedicated compositor shader, but there is **no
+    third-party shader registration, no runtime param reflection, no
+    user-authored `.omegaslh` snippets**. If a general `ShaderBrush`
+    mechanism is wanted later, this phase is its first concrete
+    instance and proves out the seams (shared SDF header, dedicated
+    pipeline, brush-payload marshalling) — but that generalization is
+    explicitly out of scope here.
+  - **Refraction-first for the high tier.** The default high-quality
+    `GlassBrush` (the `Full` tier, §11.2) captures and blurs the
+    backdrop and refracts it — it looks like real glass, not a tinted
+    translucent panel. Backdrop capture (§11.4) is the visual point of
+    the feature, so it lands in the first increment rather than being
+    deferred behind a cheaper approximation.
+  - **A cheap tier as a safety for weak/older hardware.** Per-shape
+    backdrop capture + blur + refraction is too expensive for genuinely
+    low-horsepower GPUs (older / entry-level parts). The `Cheap` tier
+    (§11.2) shares **one** window-scoped downsampled backdrop across all
+    glass shapes and skips per-shape refraction. It is an explicit
+    app/user setting (plus an optional adaptive frame-budget drop) —
+    **not** keyed on the integrated/discrete bit, since modern unified-
+    memory GPUs (Apple Silicon M-series Max/Ultra, current laptop parts)
+    run `Full` comfortably. This also subsumes the degenerate
+    "allocation failed" fallback.
+  - **Clear vs. Frosted finish.** Glass has two finishes (§11.1):
+    *Clear* (light blur, strong refraction — see shapes through it,
+    distorted) and *Frosted* (heavy blur, ~no refraction — diffuse,
+    colors-not-shapes). Frosted is the cheap-friendly finish: it reads
+    almost identically at the `Cheap` tier because diffuse blur hides
+    the shared-backdrop imprecision, whereas `Clear` loses its sharp
+    refraction when downgraded.
+
+**Why a brush, not a layer effect.** A glass fill is dispatched through
+the same `brush->type` switch as `Color` and `Gradient`
+([RenderTarget.cpp](../src/Composition/backend/RenderTarget.cpp) brush
+dispatch), so it composes with shape geometry (corner radius, ellipse,
+arbitrary vector path, border) and with the state stack in **one draw**.
+A `LayerBlur` ([Layer.h](../include/omegaWTK/Composition/Layer.h)) blurs
+a layer's *own* content; a glass brush blurs the *backdrop beneath an
+arbitrary shape* and tints/refracts it. They are complementary and
+share the scratch + compute-blur machinery (§11.4).
+
+**Op-type-agnostic.** Like Phases 8–10, glass lives in the brush model,
+`RenderTarget.cpp`, and the shader source — all reading payloads — so it
+is unaffected by the `VisualCommand` → `DrawOp` swap. **No new `DrawOp`
+variant**: a glass brush rides the existing `Core::SharedPtr<Brush>`
+slot on the shape ops.
+
+### 11.1 Brush model
+
+Add to `Brush` (`Brush.h` / `Brush.cpp`):
+
+- `Brush::Type::Glass` enum value.
+- A `GlassMaterial` payload:
+
+```cpp
+struct GlassMaterial {
+    enum class Tint    : uint8_t { Solid, Gradient } tintKind = Tint::Solid;
+    enum class Finish  : uint8_t { Clear, Frosted };   // §11.1 finish presets
+    enum class Quality : uint8_t { Auto, Full, Cheap }; // §11.2 perf tier
+
+    Finish   finish  = Finish::Clear;
+    Quality  quality = Quality::Auto;   // Auto resolves per-device (§11.2)
+
+    Color    color;        // ColoredGlass tint (tintKind == Solid)
+    Gradient gradient;     // GradientGlass tint (tintKind == Gradient)
+
+    // Raw knobs. Left at sentinel (< 0) they inherit from `finish`:
+    //   Clear   → backdropBlur ≈ 4,  refraction ≈ 0.06
+    //   Frosted → backdropBlur ≈ 20, refraction ≈ 0.0
+    float backdropBlur  = -1.f;   // frosted-ness; drives the §11.4 blur
+    float refraction    = -1.f;   // edge-bend strength of the backdrop sample
+    float edgeHighlight = 0.5f;   // fresnel rim sheen intensity [0,1]
+    float specular      = 0.4f;   // specular streak intensity   [0,1]
+    float lightAngle    = 0.785f; // streak direction (radians)
+    float tintOpacity   = 0.85f;  // how much tint vs. raw backdrop shows
+};
+```
+
+`finish` is a preset over `backdropBlur` + `refraction`; an explicit
+non-negative value on either knob overrides the preset. `finish` is
+orthogonal to both the tint source (solid / gradient) and the quality
+tier — you can have frosted gradient glass on the cheap tier.
+
+- Factories parallel to the existing `ColorBrush` / `GradientBrush`
+  free functions ([Brush.h:141](../include/omegaWTK/Composition/Brush.h:141)).
+  The `Finish` defaults to `Clear`; `FrostedGlassBrush` is the named
+  sugar for `Finish::Frosted` (discoverability — frosted is a first-
+  class option, not a flag a caller has to know to set):
+
+```cpp
+// Clear by default; pass Finish::Frosted for frosted.
+OMEGAWTK_EXPORT Core::SharedPtr<Brush> ColoredGlassBrush(const Color & tint,
+        GlassMaterial::Finish finish = GlassMaterial::Finish::Clear);
+OMEGAWTK_EXPORT Core::SharedPtr<Brush> GradientGlassBrush(const Gradient & tint,
+        GlassMaterial::Finish finish = GlassMaterial::Finish::Clear);
+
+// Named frosted convenience (solid + gradient overloads):
+OMEGAWTK_EXPORT Core::SharedPtr<Brush> FrostedGlassBrush(const Color & tint);
+OMEGAWTK_EXPORT Core::SharedPtr<Brush> FrostedGlassBrush(const Gradient & tint);
+
+// Full control (finish, quality, every knob):
+OMEGAWTK_EXPORT Core::SharedPtr<Brush> GlassBrush(const GlassMaterial & material);
+```
+
+**Union-destructor gotcha (must get right first).** `Brush` holds a
+`union { Color color; Gradient gradient; }` with a hand-written
+`~Brush()` that type-dispatches the placement-destruct. `GlassMaterial`
+embeds a `Gradient` (which owns an `OmegaCommon::Vector<GradientStop>`),
+so adding it to the union grows that destructor a `Glass` arm and the
+constructors a placement-`new` arm. Skipping this is a leak / UB, not a
+cosmetic miss. Mirror the existing `Gradient` arm exactly.
+
+### 11.2 Quality tiers & cheap fallback
+
+Per-shape backdrop capture + blur + refraction (§11.4) is the right
+look but the wrong cost on weak/older GPUs — it is a capture blit plus
+two compute passes plus a textured draw *per glass shape, per frame*.
+`GlassMaterial::Quality` selects the tier:
+
+  - **`Full`** — per-shape backdrop capture + blur + refraction (§11.4).
+    Highest fidelity, highest cost. The default on any modern GPU,
+    **integrated or discrete**.
+  - **`Cheap`** — capture **one** window-scoped, downsampled backdrop
+    **once per frame** (not per shape) and blur it once; every glass
+    shape samples that shared texture at its own bounds with tint + rim
+    + specular and *no* per-shape refraction. Cost is one capture + one
+    blur per frame regardless of how many glass shapes are on screen.
+    This also subsumes the §11.4 degenerate fallback.
+  - **`Auto`** (default) — `Full`. Modern GPUs, **integrated or
+    discrete**, run per-shape glass fine: unified-memory Apple Silicon
+    (M-series Max/Ultra) and current laptop GPUs are not "low-power" in
+    any sense that warrants downgrading, so `Auto` deliberately does
+    **not** key off `GTEDevice::type` — the integrated/discrete bit is
+    not a horsepower proxy. The drop to `Cheap` is a *safety for
+    genuinely weak/older hardware*, driven by:
+      - an explicit app/user low-power setting (compositor-level), and
+      - optionally an adaptive frame-budget watchdog — if glass frames
+        consistently overrun the target, drop the tier; a *measured*
+        signal beats guessing from the device descriptor.
+
+    A per-brush `quality` other than `Auto` overrides both. (`GTEDevice`
+    capability flags / `queryMemoryBudget()` —
+    [GTEDevice.h:151](../../gte/include/omegaGTE/GTEDevice.h:151) — can
+    still gate truly ancient parts, but are not the primary trigger.)
+
+**Why Cheap still looks like glass.** A single shared backdrop loses
+per-shape parallax and sharp refraction but keeps backdrop *color and
+luminance* under each shape — far better than a flat tint. **Frosted**
+finishes (§11.1) are near-indistinguishable from `Full` at this tier
+because their heavy diffuse blur hides the shared-backdrop imprecision;
+**Clear** finishes visibly lose their refraction, so a `Clear` material
+auto-downgraded to `Cheap` is the one case worth a design look.
+
+### 11.3 Shared shader header — `compositor_sdf.omegaslh`
+
+`.omegaslh` headers hold **declarations only** (no entry points — the
+OmegaSL preprocessor rejects a `fragment`/`vertex`/`compute` in a
+header; see `gte/omegasl/tests/include_shader_in_header.omegaslh`).
+Factor the closed-form distance helpers out of `compositor.omegasl`
+([sdfRect / sdfRoundedRect / sdfEllipse, lines 370–404](../src/Composition/backend/shaders/compositor.omegasl:370))
+into a new `compositor_sdf.omegaslh`, and add the glass helpers there:
+
+```
+// compositor_sdf.omegaslh — shared, no entry points
+float sdfRect(float2 p, float2 b);
+float sdfRoundedRect(float2 p, float2 b, float r);
+float sdfEllipse(float2 p, float2 r);
+
+float  fresnelEdge(float dist, float edgeWidth);          // rim sheen ramp
+float2 refractOffset(float2 local, float grad, float k);  // backdrop UV bend
+float  specularStreak(float2 local, float angle);         // directional highlight
+```
+
+`compositor.omegasl` `#include`s it (the existing `sdfFragment` keeps
+working unchanged — it now calls the helpers from the header), and the
+glass fragment (§11.5) includes the same header so it reuses the exact
+distance vocabulary. This is the "new path for shader brushes" seam:
+one shared header, distinct entry points per pipeline.
+
+### 11.4 Backdrop capture + blur (Full tier — the frame-graph piece)
+
+This is the `Full` tier (§11.2); the `Cheap` tier captures one shared
+backdrop per frame instead of doing this per shape. Glass is a
+**backdrop** effect, so the fragment must read pixels already
+composited *under* the shape. In the Direct-To-Drawable immediate pass,
+reading the drawable being written is undefined — so the backdrop is
+**snapshotted into a texture before the glass draw**. This reuses two
+existing mechanisms:
+
+  - the **`LayerBlurScratch` ping-pong + compute blur** path
+    (`renderBlurredSlice`, [RenderTarget.cpp:1675](../src/Composition/backend/RenderTarget.cpp:1675);
+    `gaussianBlurH/V` at [compositor.omegasl:211](../src/Composition/backend/shaders/compositor.omegasl:211)),
+    inverted: capture the **destination region under the shape's
+    bounds** instead of the layer's own content;
+  - the **Phase G content-capture marker** (capture at the shape's
+    layout rect), which already does drawable-subregion capture.
+
+Flow at a glass op:
+
+1. Flush prior ops in the shape's bound region to the drawable (glass
+   must refract everything beneath it in z-order — in immediate mode,
+   everything submitted so far this frame in that region).
+2. Blit the drawable subregion under the shape bounds (padded by the
+   refraction reach) into a `backdrop` scratch texture.
+3. Run `gaussianBlurH/V` on the scratch at `material.backdropBlur`
+   (skip when `backdropBlur <= 0`).
+4. Bind the blurred scratch as `backdropTex` for the glass draw.
+
+**Key risk — this is the only frame-graph change in the phase.** The
+ordering constraint (capture *after* prior siblings, *before* the glass
+shape) and read-after-write hazards on the drawable are the real work;
+the blur and composite are already-proven code. A degenerate fallback
+(allocation fails / no active frame) drops to the §11.2 `Cheap` path —
+tint + rim + specular over the shared backdrop, or straight alpha if
+even that is unavailable — so a shape never disappears, exactly as
+`renderBlurredSlice` falls back to the unblurred direct path today.
+
+### 11.5 Glass pipeline + `glassFragment`
+
+A **dedicated glass pipeline** (its own `glassParams` uniform buffer +
+`backdropTex` binding), not extra lanes on `OmegaWTKSdfDrawParams` —
+keeps the hot color-SDF path lean and gives the payload room for the
+full material. Reuse the existing `sdfVertex` local-coord varying
+([compositor.omegasl:362](../src/Composition/backend/shaders/compositor.omegasl:362)).
+
+`glassFragment` (new entry point in `compositor.omegasl`, including
+`compositor_sdf.omegaslh`):
+
+1. Evaluate the shape SDF for the primitive `kind` — **composes with
+   corner radius + border in one draw**, same as `sdfFragment`.
+2. Sample `backdropTex`: on `Full`, offset the UV by `refractOffset`
+   from the local gradient of `dist` (per-shape refraction); on `Cheap`,
+   sample the shared backdrop straight. A `quality` flag in `glassParams`
+   selects the branch.
+3. Tint: `Solid` → `material.color`; `Gradient` → the **SDF-native
+   analytic gradient evaluator from Phase 9.3** (so `GradientGlass` is
+   nearly free once 9.3 lands), modulated by the backdrop sample at
+   `tintOpacity`.
+4. Add `fresnelEdge` rim sheen and `specularStreak` along `lightAngle`.
+5. Mask the whole thing by the SDF fill coverage (and stroke band for a
+   bordered glass shape); multiply by `currentOpacity`.
+
+### 11.6 Backend dispatch
+
+Add the `Brush::Type::Glass` arm to the brush switch in
+[RenderTarget.cpp:1941](../src/Composition/backend/RenderTarget.cpp:1941),
+beside the `Color` (SDF-native) and gradient (texture-fallback) arms.
+Resolve the tier first (`material.quality`, or the §11.2 `Auto`
+policy), then:
+
+  - **`Full`** — **Rect / RoundedRect / Ellipse** run the §11.4 per-shape
+    capture, then the §11.5 glass pipeline (SDF-native; composes with
+    border + corner radius).
+  - **`Cheap`** — bind the once-per-frame shared backdrop (captured at
+    frame start when any glass shape is present) and run the same §11.5
+    pipeline with the refraction branch off.
+  - **VectorPath** — the tessellation + texture fallback that gradient
+    and bitmap brushes use; the glass fragment samples the backdrop with
+    the path's interpolated local coord. Lower priority — glass panels
+    are overwhelmingly rounded rects / capsules.
+
+### 11.7 Authoring surface
+
+No `StyleSheet` change: `elementBrush(tag, brush)` already accepts a
+`SharedHandle<Composition::Brush>` (same as Phase 8), so a glass brush
+flows through `UIView` element styling unchanged. A frosted capsule is
+then `elementBrush(tag, FrostedGlassBrush(Color::White.withAlpha(0.3f)))`;
+a clear tinted panel is `elementBrush(tag, ColoredGlassBrush(tint))`.
+
+### 11.8 Test
+
+A RootWidget scene with a colorful gradient/image backdrop and several
+glass shapes over it: a `RoundedRect` with clear `ColoredGlass` + a
+border (confirm the backdrop refracts and the fill respects corner
+radius + border in one draw), an `Ellipse` with clear `GradientGlass`
+(confirm the gradient tint modulates the backdrop and the rim sheen
+tracks `lightAngle`), and a `FrostedGlassBrush` panel (confirm the
+diffuse frosted blur). Render each at `Quality::Full` and
+`Quality::Cheap` and confirm the cheap tier still shows backdrop color
+from one shared capture (frosted near-identical; clear visibly less
+refractive). Validated through the window-scoped `DisplayList` path.
+**Visual verification is mandatory** (AGENTS.md §Visual Debugging) — a
+glass material that passes a pixel-diff but reads as flat acrylic has
+missed the point; hand a screenshot to the user.
+
+### Files touched
+
+- `wtk/include/omegaWTK/Composition/Brush.h` — `Type::Glass`,
+  `GlassMaterial` (incl. `Finish` / `Quality`), `ColoredGlassBrush` /
+  `GradientGlassBrush` / `FrostedGlassBrush` / `GlassBrush` factories.
+- `wtk/src/Composition/Brush.cpp` — factory impls; finish→knob preset
+  resolution; **union ctor/dtor `Glass` arm** (§11.1 gotcha).
+- `wtk/src/Composition/backend/shaders/compositor_sdf.omegaslh` —
+  **new** shared header: SDF distance helpers (moved out of
+  `compositor.omegasl`) + `fresnelEdge` / `refractOffset` /
+  `specularStreak`.
+- `wtk/src/Composition/backend/shaders/compositor.omegasl` — `#include`
+  the new header; **new** `glassFragment` + `glassParams` /
+  `backdropTex` bindings; `sdfFragment` switched to the header helpers.
+- `wtk/src/Composition/backend/RenderTarget.cpp` — `Type::Glass` brush
+  dispatch; `Quality::Auto` = Full, with an explicit low-power setting
+  (and optional adaptive frame-budget drop) selecting Cheap — not keyed
+  on the integrated/discrete bit; Full-tier per-shape capture (invert
+  `LayerBlurScratch`) + Cheap-tier shared once-per-frame backdrop; glass
+  pipeline state object + param marshalling.
+- `wtk/src/Composition/backend/RenderTarget.h` — glass pipeline / param
+  declarations.
+- A new `wtk/tests/.../GlassBrushTest` scene (per the
+  `gte/Tests/assets/<TestName>/` test-asset convention).
+
+**Cross-backend note.** The shader is authored once in OmegaSL and
+compiled to MSL / HLSL / GLSL by `omegaslc`; per-backend divergences
+only surface in the real compilers, so syntax-check the `-S` HLSL/GLSL
+output with local `dxc` + `glslc`, and hand Windows/Linux runtime builds
+to the user (WSL constraint). Only the Metal runtime compiles on the
+macOS host.
+
+### Dependencies / sequencing
+
+  - **Soft dep on Phase 9.3** (SDF-native gradient evaluator) for
+    `GradientGlass` — `ColoredGlass` ships without it; `GradientGlass`
+    reuses 9.3's analytic stop evaluation rather than a second copy.
+  - Reuses the **Phase G** content-capture marker and the existing
+    **`LayerBlur`** scratch + `gaussianBlurH/V` compute (§11.4) — no new
+    blur kernel.
+  - `Quality::Auto` defaults to `Full`; the `Cheap` safety drop is an
+    explicit setting or an optional frame-budget watchdog — it does
+    **not** key off `GTEDevice::type` (integrated ≠ low-power).
+  - Independent of the `Canvas` → `DrawOp` swap (op-type-agnostic).
+
+---
+
 ## Phase 7 — Future
 
 These items are deferred. They are listed to confirm the Phase 0–6 designs are forward-compatible.
@@ -1380,6 +1725,14 @@ Phase 10: MSDF scalable bitmaps (supersedes nine-slice for shape assets)
     └─→ generalizes §6.7 GlyphAtlas → MSDFAtlas; reuses msdfTextFragment
         reconstruction; composes with Phase 8 bitmap brushes (shape assets only;
         nine-slice / §6.6 stay as the raster fallback)
+
+Phase 11: Glass brushes (Brush::Type::Glass; closed, refraction-first; no new DrawOp)
+    └─→ inverts the LayerBlur scratch to capture+blur the backdrop under a shape;
+        new compositor_sdf.omegaslh shared header + dedicated glassFragment;
+        Clear/Frosted finish + Full/Cheap quality tier (Cheap = one shared
+        backdrop/frame, a safety drop for weak/older GPUs via explicit setting
+        or frame-budget watchdog — NOT the integrated/discrete bit);
+        soft dep on Phase 9.3 (SDF-native gradient eval) for GradientGlass
 
 Phase 3: Canvas drawing extensions — SUPERSEDED by the Canvas → DrawOp shift
     ├─→ border consolidation + drawLine/drawPolyline: DONE via SDF spine §6.5

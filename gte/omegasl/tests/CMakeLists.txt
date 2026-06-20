@@ -161,6 +161,35 @@ add_omegasl_compile_test(omegasl_compile_non_omegaslh_include include_non_omegas
 add_omegasl_diag_test(omegasl_warn_non_omegaslh_ext          include_non_omegaslh_header.omegasl
                       "does not use the recommended")
 
+# `-I` / `--include-dir` search path — include a header that lives in the
+# sibling `include/` subdirectory, NOT next to the translation unit. The
+# positive test passes `-I <tests>/include` and must compile clean; the
+# negative test omits the flag, so the include can't resolve, the helper /
+# resources go undefined, and the compile fails. The pair proves the driver
+# wires `-I` through to the preprocessor and that the dir is load-bearing.
+add_test(
+    NAME omegasl_include_search_dir
+    COMMAND $<TARGET_FILE:omegaslc>
+            -t ${OMEGASL_TEST_TEMP_DIR}
+            -o ${OMEGASL_TEST_TEMP_DIR}/omegasl_include_search_dir.omegasllib
+            -I ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/include_search_dir.omegasl
+)
+add_omegasl_fail_test(omegasl_include_search_dir_no_flag     include_search_dir.omegasl)
+
+# A `#include` that resolves to no file in any search dir is no longer
+# dropped silently — it fails loud with a "cannot find included file"
+# diagnostic naming every directory searched. The fail test asserts the
+# nonzero exit; the diag test asserts the message.
+add_omegasl_fail_test(omegasl_include_missing_header         include_missing_header.omegasl)
+add_omegasl_diag_test(omegasl_include_missing_header_diag    include_missing_header.omegasl
+                      "cannot find included file")
+# The unsupported angle-bracket include form is diagnosed as malformed
+# rather than silently ignored.
+add_omegasl_fail_test(omegasl_include_angle_bracket          include_angle_bracket.omegasl)
+add_omegasl_diag_test(omegasl_include_angle_bracket_diag     include_angle_bracket.omegasl
+                      "expected a quoted path")
+
 # --- Real-world shader tests (UI / game engine patterns) ---
 add_omegasl_compile_test(omegasl_compile_blinn_phong         blinn_phong.omegasl)
 add_omegasl_compile_test(omegasl_compile_gaussian_blur       gaussian_blur.omegasl)

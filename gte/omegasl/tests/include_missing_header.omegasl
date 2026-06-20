@@ -1,0 +1,15 @@
+// Negative test: a well-formed `#include` of a header that exists in no
+// search directory must fail loud with a "cannot find included file"
+// diagnostic instead of being silently dropped (which used to surface far
+// downstream as a cryptic "undeclared identifier"). The fragment below is
+// self-contained, so the unresolved include is the only error.
+#include "definitely_missing_header.omegaslh"
+
+struct MissingFrag_In internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+fragment float4 missingHeaderFrag(MissingFrag_In raster){
+    return raster.color;
+}

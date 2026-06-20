@@ -1,0 +1,19 @@
+// A header that deliberately lives in a sibling `include/` subdirectory,
+// NOT next to the translation unit that includes it. It can only be found
+// when its directory is added to the search path with `-I`, so a clean
+// compile of `include_search_dir.omegasl` proves `-I` resolution works
+// (and the matching no-`-I` test proves the dir is what makes it resolve).
+// Shared declarations only — a struct, buffer resources, and a helper
+// function — so the preprocessor inlines it without a shader-in-header
+// rejection.
+
+struct SearchData {
+    float4 value;
+};
+
+buffer<SearchData> search_src : 0;
+buffer<SearchData> search_dst : 1;
+
+float search_scale(float x, float k){
+    return x * k;
+}

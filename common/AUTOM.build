@@ -55,3 +55,7 @@ owrap_lex_test.output_dir = "tests"
 var owrap_parse_test = Executable(name:"owrap-parse-test",sources:["./wrapgen/tests/parse-test.cpp"])
 owrap_parse_test.deps = ["owrapgen"]
 owrap_parse_test.output_dir = "tests"
+
+var json_lifecycle_test = Executable(name:"json-lifecycle-test",sources:["./tests/JSONLifecycleTest.cpp"])
+json_lifecycle_test.deps = ["omega-common"]
+json_lifecycle_test.output_dir = "tests"

@@ -1,0 +1,17 @@
+// Positive test for `-I` include-search dirs: this unit includes a header
+// that lives in the sibling `include/` subdirectory, not next to this file.
+// The include resolves only when `include/` is on the search path
+// (`omegaslc -I <tests>/include ...`); compiling clean proves the driver
+// wires `-I` through to the preprocessor. The companion no-`-I` test
+// (omegasl_include_search_dir_no_flag) compiles the same source without the
+// flag and is expected to fail, proving the dir is what makes it resolve.
+#include "searchdir_header.omegaslh"
+
+[in search_src, out search_dst]
+compute(x=1,y=1,z=1)
+void useSearchHeader(uint3 tid : GlobalThreadID){
+    float a = search_src[0].value[0];
+    float k = search_src[0].value[1];
+    float scaled = search_scale(a, k);
+    search_dst[0].value = float4(scaled, a, k, 1.0);
+}

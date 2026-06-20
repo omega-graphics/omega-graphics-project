@@ -59,6 +59,18 @@ namespace OmegaCommon {
 
         JSON() = default;
 
+        /// @name Special members
+        /// Deep-copy value semantics. A JSON node owns its String, Array, and Map
+        /// storage on the heap; copying clones that storage so two nodes never
+        /// alias the same buffer, and moving transfers ownership and leaves the
+        /// source as an empty (UNKNOWN) node whose destructor is a no-op.
+        /// @{
+        JSON(const JSON & other);
+        JSON(JSON && other) noexcept;
+        JSON & operator=(const JSON & other);
+        JSON & operator=(JSON && other) noexcept;
+        /// @}
+
         /// Construct JSON as String
         JSON(const char *c_str);
 
@@ -118,7 +130,10 @@ namespace OmegaCommon {
 
         static void serialize(JSON & json,std::ostream & out);
 
-        ~JSON() = default;
+        /// Releases this node's owned String/Array/Map storage (recursively, via
+        /// the owned containers' own destructors). A no-op for Number, Boolean,
+        /// and the default UNKNOWN node.
+        ~JSON();
     };
 
     OMEGACOMMON_EXPORT std::istream & operator>>(std::istream & in,JSON & json);

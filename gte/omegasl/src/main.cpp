@@ -28,6 +28,12 @@ Options:
                                         mismatched backend and duplicate shader names.
     --tokens-only                   --> Show tokens of all input files.
     --interface-only                --> Emit interface of all input files.
+    -I<dir>, -I <dir>,              --> Add <dir> to the `#include` search path. May be
+    --include-dir <dir>                 repeated; directories are searched in the order
+                                        given. A quoted `#include "foo.omegaslh"` resolves
+                                        against the including file's own directory first,
+                                        then these dirs. Lets a translation unit pull in
+                                        shared headers that don't sit next to it.
     --emit-source-only, -S          --> Transpile to the target language and stop. Writes generated
                                         source files to --temp-dir; does not invoke dxc/metal/glslc
                                         and does not link a .omegasllib. Lets you cross-target HLSL
@@ -230,6 +236,10 @@ int main(int argc,char *argv[]){
 
     const char *glslc_cmd = nullptr,*dxc_cmd = nullptr;
 
+    /// `-I` / `--include-dir` search directories, collected in command-line
+    /// order and handed to the Preprocessor before it runs (see below).
+    std::vector<std::string> includeDirs;
+
     OmegaCommon::StrRef inputFile = argv[argc - 1];
 
     /// First pass: pick up `--emit-source-only` so the genMode-platform
@@ -299,6 +309,16 @@ int main(int argc,char *argv[]){
         }
         else if(arg == "--temp-dir" || arg == "-t"){
             tempDir = argv[++i];
+        }
+        else if(arg == "-I" || arg == "--include-dir"){
+            /// Separated form: `-I <dir>` / `--include-dir <dir>`. The input
+            /// file is always argv[argc-1], so a flag at the tail with no
+            /// following directory is a user error — guard the read.
+            if(i + 1 < argc) includeDirs.emplace_back(argv[++i]);
+        }
+        else if(argv[i][0] == '-' && argv[i][1] == 'I' && argv[i][2] != '\0'){
+            /// Attached GCC/Clang form: `-I<dir>` (no space).
+            includeDirs.emplace_back(argv[i] + 2);
         }
 
         if(genMode == GenMode::metal){
@@ -373,6 +393,12 @@ int main(int argc,char *argv[]){
         ppBackend = omegasl::PPBackend::MSL;
     }
     preprocessor.setBackend(ppBackend);
+    /// Register any `-I` / `--include-dir` search directories before
+    /// processing so `#include` resolution can fall back to them after the
+    /// including file's own directory.
+    for(const auto &dir : includeDirs){
+        preprocessor.addIncludeDir(dir);
+    }
     std::string processedSource = preprocessor.process(sourceContent, input_file_path.dir());
 
     /// Abort before lex/parse/codegen if preprocessing failed loud — today

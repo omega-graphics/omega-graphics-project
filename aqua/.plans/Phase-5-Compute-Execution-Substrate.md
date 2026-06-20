@@ -82,9 +82,18 @@ phases deferred to here, closed before any kernel runs:
   and *gating* GPU-vs-CPU needs `GTEDevice::features`
   ([GTEDevice.h:162](gte/include/omegaGTE/GTEDevice.h:162)). The queue exposes
   neither (`GECommandQueue` has no engine/device accessor — confirmed against
-  its 16-method surface). So Phase 5's first increment threads the engine
-  handle through `AQContext::Create` and down to `AQSpace::Impl`, behind the
-  pimpl, with the public surface otherwise unchanged.
+  its 16-method surface). So Phase 5's first increment makes the
+  `OmegaGraphicsEngine` a **required** constructor argument on
+  `AQContext::Create`, threaded down to `AQSpace::Impl` behind the pimpl. The
+  engine is mandatory, not optional: kREATE is a GPU-first 3D engine and always
+  has a live engine to hand AQUA, so there is no real "physics without a
+  graphics engine" configuration to keep a queue-only overload alive for. The
+  one existing queue-only call site ([AQContext.cpp](aqua/src/AQContext.cpp))
+  is migrated; the old overload is removed rather than deprecated (a clean
+  break is cheaper than a permanently-CPU-only escape hatch nobody should use).
+  Forcing the CPU path stays available — but through `setExecutionPath(CPU)`
+  and automatic fallback on a no-compute device (§7.1), not through a
+  degenerate engine-less context.
 - **The SoA body buffers the earlier phases promised actually get built.** The
   per-body state is still **AoS** today — `AQBodyState` is an aggregate
   ([AQIntegrator.h:29-57](aqua/include/aqua/AQIntegrator.h:29)) explicitly
@@ -342,13 +351,18 @@ The incumbents' constraints are not ours; each divergence is an opening
   The incumbents' `float4`-everywhere is not forced on us. (We do *not* cash
   this in Phase 5 — it's an opening noted, not taken; the port stays `float` to
   match the CPU `float` path.)
-- **Atomics are arriving in OmegaSL.** The pair-append bump allocator (§2 point
-  2) and any reduction want atomics; OmegaSL's atomic support is landing and
-  this phase is written assuming it is available. Where it is not yet, the
-  broadphase pair scan has a non-atomic fallback (the run-length approach Phase
-  2 §6 notes: count-then-scan-then-scatter, two passes, no atomic append) so the
-  port is not blocked on the atomic-feature timeline. This is an opening *and* a
-  hedge.
+- **OmegaSL atomics have landed (§5.6 complete).** `atomic_int`/`atomic_uint`
+  plus `atomic_add/min/max/and/or/xor/exchange`, `atomic_load`/`atomic_store`,
+  and strong `atomic_compare_exchange` are available now (GPU-verified on
+  Metal). So the pair-append bump allocator (§2 point 2) is a straight
+  `atomic_add(pairCount, 1)` and reductions/prefix-scatter can use real
+  intrinsics — no fallback needed. The one subtlety to state, not fight:
+  **atomic-append *order* is non-deterministic** (which slot a pair lands in
+  depends on race order), but it is **immaterial** here because the downstream
+  `sort+unique` (§6.C step 5) re-establishes the canonical `(a, b)` ordering —
+  the final pair list is deterministic regardless of append order. The
+  count-then-scatter form Phase 2 §6 notes is kept only as an optional
+  deterministic cross-check for the atomic path, not as a required fallback.
 
 ---
 
@@ -400,8 +414,9 @@ thread per body, no interaction.
 5. sortUnique(pair[]): radix sort pairs by (a<<32|b), then stream-compact duplicates
 ```
 Steps 2 and 5 are AQUA-owned radix-sort kernels (no GTE primitive exists);
-step 4's `atomicAdd` is the bump allocator (§5: non-atomic count-then-scatter
-fallback if atomics are unavailable). The output is Phase 2's ordered,
+step 4's `atomicAdd` is a straight `atomic_add` (OmegaSL §5.6 atomics are
+landed, §5). Its append order is non-deterministic but immaterial — step 5's
+`sort+unique` canonicalizes the list. The output is Phase 2's ordered,
 de-duplicated pair list — byte-identical ordering to the CPU broadphase because
 the sort is stable and the hash is the shared function (§8 determinism).
 
@@ -519,14 +534,16 @@ enum class AQExecPath : std::uint8_t {
     GPU,    ///< force the GPU path (diagnostic; falls back + warns if unusable)
 };
 ```
-`AQContext::Create` gains an `OmegaGraphicsEngine` handle (the groundwork from
-§1) so the context can make pipelines/buffers and query features; the existing
-queue-only overload stays for source compatibility but selects `AQExecPath::CPU`
-(no engine ⇒ no GPU):
+`AQContext::Create` **requires** an `OmegaGraphicsEngine` handle (the
+groundwork from §1) so the context can always make pipelines/buffers and query
+device features. The engine is mandatory — kREATE is GPU-first and always
+supplies one — so the old queue-only factory is **removed**, not kept as a
+CPU-only overload. Selecting the CPU path is `setExecutionPath(CPU)` or
+automatic fallback (§1), never an engine-less context:
 ```cpp
+// The ONLY factory. Engine is required; queue-only Create is removed.
 static SharedHandle<AQContext> Create(SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine,
                                       SharedHandle<OmegaGTE::GECommandQueue> commandQueue);
-// existing one-arg overload retained → CPU-only.
 void        setExecutionPath(AQExecPath path);   // default Auto
 AQExecPath  executionPath() const;               // the *resolved* path (never Auto)
 ```
@@ -716,8 +733,13 @@ Deliberately minimal — the whole design goal is that the GPU path is invisible
 to existing callers (`Physics-Roadmap.md` §3 principle 3). The additions, all on
 `AQContext` unless noted:
 
-- **`AQContext::Create(engine, queue)`** — the new two-arg factory (§7.1); the
-  existing one-arg overload is retained and resolves to CPU-only.
+- **`AQContext::Create(engine, queue)`** — now the **only** factory (§7.1). The
+  `OmegaGraphicsEngine` is a required argument; the old queue-only factory is
+  removed. This is a deliberate breaking change, justified by kREATE being a
+  GPU-first engine that always has a live `OmegaGraphicsEngine` — there is no
+  supported "AQUA without a graphics engine" configuration. CPU execution is
+  still fully reachable (forced via `setExecutionPath(CPU)`, or automatic on a
+  no-compute device), just not via an engine-less context.
 - **`AQExecPath` enum + `setExecutionPath(AQExecPath)` / `executionPath()`** —
   the path control (§7.1). `Auto` is the default; `executionPath()` returns the
   *resolved* path so kREATE can pin it for lockstep (§8).
@@ -783,12 +805,13 @@ a path — the user-facing version of the §8 determinism contract.
    device supports `GTEDEVICE_FEATURE_SHADER_FLOAT64`) is a real need for big
    kREATE levels but is a separable change that would widen the Phase 5 parity
    gap if done now.
-7. **Atomic-availability hedge — atomic pair-append vs. count-then-scatter.**
-   *Lean: atomic append (assuming OmegaSL atomics, per the project direction),
-   with the two-pass count-then-scatter as the committed fallback* so the
-   broadphase is not blocked on the atomic-feature landing date (§5). The
-   fallback is also useful as the deterministic reference for the atomic path
-   (same output, no atomic order-dependence).
+7. **Pair-append — atomic append vs. count-then-scatter.** *Lean: atomic
+   append.* OmegaSL §5.6 atomics have landed (§5), so this is settled rather
+   than hedged: the pair scan uses `atomic_add` for the bump allocator. The
+   append order is non-deterministic but immaterial because `sort+unique`
+   (§6.C) canonicalizes the list, so within-path determinism (§8) holds anyway.
+   Count-then-scatter is retained only as an optional deterministic cross-check
+   of the atomic path, not as a required fallback.
 
 ---
 
@@ -864,12 +887,16 @@ within-path #2, CPU-coloring-first #3, runtime-compile-first #4, per-sub-step-
 readback-first #5, `float` #6, atomic-append-with-scatter-fallback #7).
 
 - **5a — Engine/device plumbing + path selection (groundwork, lands first).**
-  Thread `OmegaGraphicsEngine` through `AQContext::Create` down to
-  `AQSpace::Impl` behind the pimpl; add `AQExecPath` + `setExecutionPath` /
-  `executionPath`; `AQComputeBackend::TryCreate` queries `GTEDevice::features`
-  and returns null on no-usable-compute. **No kernels yet** — every device
-  resolves to `AQExecPath::CPU` and behavior is byte-for-byte Phase 4. Proves
-  the plumbing and the fallback resolution in isolation.
+  Make `OmegaGraphicsEngine` a **required** argument on `AQContext::Create`,
+  threaded down to `AQSpace::Impl` behind the pimpl; **remove** the queue-only
+  factory and migrate its one call site ([AQContext.cpp](aqua/src/AQContext.cpp));
+  add `AQExecPath` + `setExecutionPath` / `executionPath`;
+  `AQComputeBackend::TryCreate` queries `GTEDevice::features` and returns null
+  on no-usable-compute. **No kernels yet** — every device resolves to
+  `AQExecPath::CPU` and behavior is byte-for-byte Phase 4. Proves the plumbing
+  and the fallback resolution in isolation. (This is the phase's one breaking
+  API change; landing it first means the rest of Phase 5 builds on the final
+  constructor shape.)
 - **5b — SoA store + buffer pool + kernel build wiring.** `AQBodySoA`
   (§7.2) with `gatherFrom`/`scatterTo`; migrate the CPU production step to read
   the SoA store (the AoS `double` instantiation stays the oracle); pooled GTE
