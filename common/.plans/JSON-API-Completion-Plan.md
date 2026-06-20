@@ -1,6 +1,6 @@
 # JSON API Completion Plan
 
-> **Status: Phase 1 landed + verified (2026-06-20). Phases 2–5 not started.**
+> **Status: Phases 1–3 landed + verified (2026-06-20). Phases 4–5 not started.**
 > This plan completes the `OmegaCommon::JSON` value type. Three design forks were
 > resolved with the developer up front: numbers become a **tagged int-or-double**,
 > parse failures are reported through a new **`TryParse` → `Result<JSON, String>`**
@@ -251,17 +251,61 @@ copy trivially regardless, so Phase 2 does not re-touch the special members.)
   (`add_subdirectory(tests)` in `common/CMakeLists.txt`, target
   `common-core-tests`) and `common/AUTOM.build` (`json-lifecycle-test`).
 
-### Phase 2 — Number model
+### Phase 2 — Number model — **Complete (2026-06-20)**
 
-Land the tagged `Num`, the `int`/`long long`/`double` constructors, `isInt`/
-`isReal`/`asInt`/`asDouble`, and the `fromRapid`/`writeNode` tag handling. Fixes
-#4 and #5. **Verification:** round-trip `3`, `2147483648`, `3.14`, `-0.0`,
-`1e308` through parse → serialize and assert exact text.
+Replaced the `int number` union arm with a tagged `struct Num { bool isReal;
+long long i; double d; }` (trivially copyable, so Phase 1's special members were
+untouched as predicted). Added `JSON(int)` / `JSON(long long)` / `JSON(double)`
+constructors, `isInt`/`isReal`, and `asInt`/`asDouble` (with `asFloat` retained,
+now narrowing `asDouble`). `fromRapid` routes Int/Uint/Int64 to the integer arm
+and doubles to the real arm, with unsigned values above the signed-64 range kept
+as reals rather than wrapping; `writeNode` emits `Int64` vs `Double` per the tag.
+Fixes #4 (lossy numbers) and #5 (no numeric ctor / `JSON(42)` becoming a bool).
 
-### Phase 3 — Null, bool, const reads, lookups
+**Verification (all passing):**
+- `common/tests/JSONNumberTest.cpp` (target `json-number-test`, wired in CMake +
+  `AUTOM.build`): exact-text round-trip of `3`, `2147483648`, `3.14`, `-0.0`,
+  `1e308`; integer/real tag + value checks; `-0.0` sign preserved (`signbit`);
+  the int/long long/double constructors; `asFloat` narrowing; and the footgun
+  fix (`JSON(42)` is a number, `JSON(true)` is still a bool).
+- AddressSanitizer: clean. macOS `leaks`: `0 leaks`.
+- Regression: `assetc` integration (7 tests) still green through the rewritten
+  `fromRapid`/`writeNode`.
 
-Add `NUL`, `JSON(nullptr_t)`, `isNull`/`isBool`, the `const` accessor overloads,
-and `contains`/`find`/`at`/`size`/`empty`. Fixes #6, #7, #8.
+**Follow-up surfaced (out of scope, flagged separately):**
+`gte/omegasl/lsp/LspServer.cpp` reads JSON-RPC request ids via `asFloat()`
+(`idToJson` ~L58, `getInt` ~L46) — float's 24-bit mantissa corrupts integer ids
+above 2^24. Now trivially fixable with the new `asInt()`. Tracked as a spawned
+task; not part of this phase (different module).
+
+### Phase 3 — Null, bool, const reads, lookups — **Complete (2026-06-20)**
+
+Added the `NUL` enum tag + `JSON(std::nullptr_t)` (explicit null, distinct from
+the default UNKNOWN node), `isNull`/`isBool`, and routed `fromRapid`'s `IsNull`
+to `JSON(nullptr)` so parsed `null` reports `isNull()` (writeNode already
+fell through to `Null()`, so NUL/UNKNOWN both serialize as `null`). Made the
+read accessors `const`-qualified (`asString`/`asVector`/`asMap`/`asInt`/
+`asDouble`/`asFloat`) — safe because the union holds raw pointers, so object
+constness does not propagate to the pointed-to container — and added a const
+`asBool()` returning by value alongside the existing mutable `bool& asBool()`.
+Added non-mutating lookups: `const operator[]` (asserts present, delegates to
+`at`), `contains`, `find`/`find const` (nullptr when absent), `at`/`at const`
+(assert present), `size`, `empty`. Fixes #6, #7, #8.
+
+**Verification (all passing):**
+- `common/tests/JSONLookupTest.cpp` (target `json-lookup-test`, wired in CMake +
+  `AUTOM.build`): explicit null vs default node + parsed/serialized null; `isBool`
+  and const `asBool`; full `const JSON&` read path (operator[]/at/asMap/asInt/
+  asDouble/asBool/size); `find`/`contains` locate-but-never-insert (size
+  unchanged) contrasted with mutating `operator[]` that does insert; mutate via
+  `find*`/`at` without growing the map; `size`/`empty` for maps and arrays.
+- AddressSanitizer: clean. macOS `leaks`: `0 leaks`.
+- Regression: `omega-assetc` rebuilt (its `main.cpp` calls the now-`const`
+  `asMap`/`asVector`/`asString`) and the 7 `assetc` integration tests pass.
+
+Note: the const accessors return the existing view types (`StrRef`/`ArrayRef`/
+`MapRef`); those are read-only interfaces, so handing one out from a const node
+is fine even though `MapRef`/`ArrayRef` wrap a non-const ref internally.
 
 ### Phase 4 — Error-returning parse
 

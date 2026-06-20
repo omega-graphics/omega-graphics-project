@@ -59,3 +59,11 @@ owrap_parse_test.output_dir = "tests"
 var json_lifecycle_test = Executable(name:"json-lifecycle-test",sources:["./tests/JSONLifecycleTest.cpp"])
 json_lifecycle_test.deps = ["omega-common"]
 json_lifecycle_test.output_dir = "tests"
+
+var json_number_test = Executable(name:"json-number-test",sources:["./tests/JSONNumberTest.cpp"])
+json_number_test.deps = ["omega-common"]
+json_number_test.output_dir = "tests"
+
+var json_lookup_test = Executable(name:"json-lookup-test",sources:["./tests/JSONLookupTest.cpp"])
+json_lookup_test.deps = ["omega-common"]
+json_lookup_test.output_dir = "tests"

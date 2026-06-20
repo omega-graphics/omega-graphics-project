@@ -266,3 +266,21 @@ add_metal_cli_test(
 target_link_options("PushConstantTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_push_constant COMMAND PushConstantTest)
+
+# GPU-Commit-Timing plan (P2 + Metal) — whole-commit GPU-timing integration test
+# (shared, backend-independent source under gte/tests/). Exercises the new
+# commitToGPUAndWaitTimed() (sync) and commitToGPU(handler) (async) API against a
+# compute commit and checks the reported GECommitCompletionInfo (status, buffer
+# count, GPU duration) on real hardware.
+add_metal_cli_test(
+    NAME
+    "CommitTimingTest"
+    SOURCES
+    "../commit_timing_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("CommitTimingTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_commit_timing COMMAND CommitTimingTest)

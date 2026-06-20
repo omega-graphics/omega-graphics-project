@@ -12,7 +12,25 @@ target_link_libraries(json-lifecycle-test PRIVATE OmegaCommonCore)
 
 add_test(NAME json_lifecycle COMMAND json-lifecycle-test)
 
+add_executable(json-number-test JSONNumberTest.cpp)
+set_target_properties(json-number-test PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_dependencies(json-number-test OmegaCommonCore)
+target_link_libraries(json-number-test PRIVATE OmegaCommonCore)
+
+add_test(NAME json_number COMMAND json-number-test)
+
+add_executable(json-lookup-test JSONLookupTest.cpp)
+set_target_properties(json-lookup-test PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_dependencies(json-lookup-test OmegaCommonCore)
+target_link_libraries(json-lookup-test PRIVATE OmegaCommonCore)
+
+add_test(NAME json_lookup COMMAND json-lookup-test)
+
 add_custom_target(common-core-tests
 	COMMAND json-lifecycle-test
-	DEPENDS json-lifecycle-test
+	COMMAND json-number-test
+	COMMAND json-lookup-test
+	DEPENDS json-lifecycle-test json-number-test json-lookup-test
 	COMMENT "Running OmegaCommon core-runtime unit tests")

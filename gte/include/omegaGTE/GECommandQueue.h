@@ -262,6 +262,36 @@ _NAMESPACE_BEGIN_
         /// @brief Schedules all enqueued command buffers to GTEDevice for sequential execution and waits for all command buffers to be completed.
         virtual void commitToGPUAndWait() = 0;
 
+        /// @brief Commits the enqueued batch and reports its GPU execution time
+        /// asynchronously. @p onComplete fires exactly once, after the whole
+        /// committed batch finishes on the GPU, with the batch's GPU span (see
+        /// @ref GECommitCompletionInfo). Does not block.
+        /// @paragraph The aggregate rides the existing per-buffer completion
+        /// path, so it composes with any per-buffer handler already set on the
+        /// batch. On Metal the GPU times are real immediately; on backends
+        /// whose per-buffer timing is not wired yet the status and buffer count
+        /// are correct but @ref GECommitCompletionInfo::gpuDurationSec is `0.0`
+        /// (see the GPU-Commit-Timing plan). Backends override this; the base
+        /// implementation is a safe blocking fallback that reports zero timing.
+        virtual void commitToGPU(const GECommitCompletionHandler & onComplete);
+
+        /// @brief Commits the enqueued batch, blocks until it completes on the
+        /// GPU, and returns its GPU execution time. Synchronous counterpart of
+        /// the @ref commitToGPU(const GECommitCompletionHandler&) overload.
+        virtual GECommitCompletionInfo commitToGPUAndWaitTimed();
+    protected:
+        /// @brief Backend-neutral helper for the
+        /// @ref commitToGPU(const GECommitCompletionHandler&) overload. Wraps
+        /// each buffer in @p batch with an internal per-buffer completion
+        /// handler (composing with any existing one) that accumulates the
+        /// per-buffer GPU spans, and invokes @p onComplete once after the last
+        /// buffer in the batch reports. A backend calls this with its own batch
+        /// immediately before committing. Thread-safe: the per-buffer callbacks
+        /// fire on backend-internal threads.
+        void installCommitAggregator(const std::vector<SharedHandle<GECommandBuffer>> & batch,
+                                     const GECommitCompletionHandler & onComplete);
+    public:
+
         /// @brief Signal a fence on this queue (e.g. after waitForGPU) for cross-queue sync when no command buffer is being submitted.
         virtual void signalFence(SharedHandle<GEFence> & fence) { (void)fence; }
 

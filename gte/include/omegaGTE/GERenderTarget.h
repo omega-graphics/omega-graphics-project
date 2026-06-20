@@ -35,6 +35,34 @@ _NAMESPACE_BEGIN_
     using GECommandBufferCompletionHandler =
             std::function<void(const GECommandBufferCompletionInfo &)>;
 
+    /// @brief GPU-timing result for a whole *commit* (the batch of command
+    /// buffers scheduled by one `GECommandQueue::commitToGPU` /
+    /// `commitToGPUAndWait`). Aggregated from the per-buffer
+    /// `GECommandBufferCompletionInfo`s: the span runs from the GPU-start of
+    /// the first buffer in the batch to the GPU-end of the last.
+    struct OMEGAGTE_EXPORT GECommitCompletionInfo {
+        /// `Error` if any buffer in the batch reported an error, else `Completed`.
+        GECommandBufferCompletionInfo::CompletionStatus status =
+            GECommandBufferCompletionInfo::CompletionStatus::Completed;
+        /// GPU-start of the first buffer in the committed batch (seconds).
+        double   gpuStartTimeSec    = 0.0;
+        /// GPU-end of the last buffer in the committed batch (seconds).
+        double   gpuEndTimeSec      = 0.0;
+        /// Number of command buffers that contributed to this commit.
+        unsigned commandBufferCount = 0;
+        /// @brief GPU wall-clock the committed batch occupied, in seconds.
+        /// @note `0.0` when the device lacks
+        /// `GTEDEVICE_FEATURE_TIMESTAMP_QUERIES`, or on a backend whose
+        /// per-buffer timing is not wired yet (Vulkan / D3D12 until the
+        /// GPU-Commit-Timing plan's P1 phase). Check the feature bit — do not
+        /// infer "instantaneous" from a zero here.
+        double gpuDurationSec() const { return gpuEndTimeSec - gpuStartTimeSec; }
+    };
+
+    /// @brief Callback fired once after a whole commit finishes on the GPU.
+    using GECommitCompletionHandler =
+            std::function<void(const GECommitCompletionInfo &)>;
+
     /**
      @brief A Reusable interface for directly uploading data and commands to a GTEDevice.
      */
@@ -348,6 +376,15 @@ _NAMESPACE_BEGIN_
         /// @brief Register a completion callback for this command buffer.
         virtual void setCompletionHandler(const GECommandBufferCompletionHandler & handler){
             (void)handler;
+        }
+
+        /// @brief Returns the per-buffer completion handler currently
+        /// registered (empty if none). Lets a command queue compose a
+        /// commit-level timing aggregator on top of an existing handler
+        /// (e.g. the WTK recycler's) instead of overwriting it. Backends that
+        /// store a handler override this to return it.
+        virtual GECommandBufferCompletionHandler getCompletionHandler() const {
+            return {};
         }
 
         virtual ~GECommandBuffer() = default;

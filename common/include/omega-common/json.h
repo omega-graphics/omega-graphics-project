@@ -1,4 +1,5 @@
 #include "utils.h"
+#include <cstddef>
 #include <initializer_list>
 #include <istream>
 #include <sstream>
@@ -23,6 +24,7 @@ namespace OmegaCommon {
             MAP,
             NUMBER,
             BOOLEAN,
+            NUL,
             UNKNOWN
         } type = UNKNOWN;
 
@@ -30,14 +32,22 @@ namespace OmegaCommon {
 
         typedef JSON *JArray;
 
-        typedef int JNumber;
+        /// A JSON number, tagged as either an integer or a real so that both
+        /// kinds round-trip losslessly. `isReal` selects which member is
+        /// authoritative: `d` for reals, `i` for integers. Trivially copyable,
+        /// so it lives in the Data union with no special destruction.
+        struct Num {
+            bool isReal;
+            long long i;
+            double d;
+        };
 
         union Data {
             JString str;
             bool b;
             OmegaCommon::Vector<JSON> *array;
             OmegaCommon::Map<String,JSON> *map;
-            JNumber number;
+            Num number;
             Data() = default;
             Data(decltype(type) t);
             Data(bool & b);
@@ -80,6 +90,19 @@ namespace OmegaCommon {
         /// Construct JSON as Boolean
         JSON(bool b);
 
+        /// Construct JSON as an explicit null (distinct from the default,
+        /// uninitialized node).
+        JSON(std::nullptr_t);
+
+        /// Construct JSON as Number (stored as an integer)
+        JSON(int v);
+
+        /// Construct JSON as Number (stored as an integer)
+        JSON(long long v);
+
+        /// Construct JSON as Number (stored as a real)
+        JSON(double v);
+
         /// Construct JSON as Array
         JSON(std::initializer_list<JSON> array);
         
@@ -92,30 +115,81 @@ namespace OmegaCommon {
 
         bool isNumber() const;
 
+        /// True when this is a number stored as an integer.
+        bool isInt() const;
+
+        /// True when this is a number stored as a real (floating-point).
+        bool isReal() const;
+
         bool isMap() const;
 
+        /// True when this is an explicit null node.
+        bool isNull() const;
+
+        /// True when this is a boolean node.
+        bool isBool() const;
+
         /// Get this JSON node as a String.
-        OmegaCommon::StrRef asString();
-        
-        /// Get this JSON node as a Vector 
+        OmegaCommon::StrRef asString() const;
+
+        /// Get this JSON node as a Vector
         /// (From a JSON Array).
-        ArrayRef<JSON> asVector();
+        ArrayRef<JSON> asVector() const;
 
         /// Get this JSON node as a Map.
-        MapRef<String,JSON> asMap();
+        MapRef<String,JSON> asMap() const;
 
-        float asFloat();
+        /// Get this number as a 64-bit integer (truncates a real value).
+        long long asInt() const;
 
+        /// Get this number as a double (widens an integer value).
+        double asDouble() const;
+
+        /// Get this number as a float (narrows asDouble()).
+        float asFloat() const;
+
+        /// Get a mutable reference to this boolean node.
         bool & asBool();
+
+        /// Get this boolean node's value (const).
+        bool asBool() const;
 
         // /// @name Mod Methods 
         // /// @{
 
         JSON & operator[](OmegaCommon::StrRef str);
 
+        /// Read-only map lookup. Asserts the key is present (never inserts).
+        const JSON & operator[](OmegaCommon::StrRef str) const;
+
         map_iterator insert(const std::pair<String,JSON> & p);
 
         void push_back(const JSON & j);
+
+        /// @}
+
+        /// @name Lookup
+        /// Non-mutating queries over a Map or Array node.
+        /// @{
+
+        /// True when this Map node holds `key`.
+        bool contains(OmegaCommon::StrRef key) const;
+
+        /// Find a Map member by key, or nullptr when absent. Never inserts.
+        JSON * find(OmegaCommon::StrRef key);
+
+        const JSON * find(OmegaCommon::StrRef key) const;
+
+        /// Access a Map member by key. Asserts the key is present (never inserts).
+        JSON & at(OmegaCommon::StrRef key);
+
+        const JSON & at(OmegaCommon::StrRef key) const;
+
+        /// Number of members (Map) or elements (Array).
+        size_t size() const;
+
+        /// True when this Map/Array node holds nothing.
+        bool empty() const;
 
         /// @}
 

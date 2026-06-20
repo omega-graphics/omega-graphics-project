@@ -146,6 +146,7 @@ _NAMESPACE_BEGIN_
                                            size_t argumentBufferOffset) override;
         void finishComputePass() override;
         void setCompletionHandler(const GECommandBufferCompletionHandler & handler) override;
+        GECommandBufferCompletionHandler getCompletionHandler() const override { return completionHandler; }
 
         GEMetalCommandBuffer(GEMetalCommandQueue *parentQueue);
         ~GEMetalCommandBuffer();
@@ -196,6 +197,7 @@ _NAMESPACE_BEGIN_
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &signalFence) override;
         void commitToGPU() override;
+        void commitToGPU(const GECommitCompletionHandler & onComplete) override;
         void commitToGPUAndWait() override;
     };
 _NAMESPACE_END_

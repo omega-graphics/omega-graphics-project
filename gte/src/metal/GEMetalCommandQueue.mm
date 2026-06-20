@@ -1400,6 +1400,22 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
        commandBuffers.clear();
     };
 
+    void GEMetalCommandQueue::commitToGPU(const GECommitCompletionHandler & onComplete){
+        if(!onComplete){
+            commitToGPU();
+            return;
+        }
+        // Compose an aggregating per-buffer completion handler onto the batch,
+        // then commit. Metal fills GECommandBufferCompletionInfo's
+        // gpu{Start,End}TimeSec from the MTLCommandBuffer's GPUStartTime /
+        // GPUEndTime (see _commit), so this yields real per-commit GPU time
+        // with no extra timestamp plumbing. installCommitAggregator must run
+        // before commitToGPU() because _commit consumes each buffer's
+        // completion handler at commit time.
+        installCommitAggregator(commandBuffers, onComplete);
+        commitToGPU();
+    };
+
     void GEMetalCommandQueue::commitToGPUAndPresent(NSSmartPtr & drawable){
         if(commandBuffers.empty()){
             // Caller-contract violation (Debug-Layer-Plan §4.3): present with no

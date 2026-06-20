@@ -7,8 +7,10 @@
 #include <rapidjson/prettywriter.h>
 
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 namespace OmegaCommon {
@@ -53,7 +55,11 @@ class RapidJSONBridge {
     }
 
     if (json.type == JSON::NUMBER) {
-      writer.Int(json.data.number);
+      if (json.data.number.isReal) {
+        writer.Double(json.data.number.d);
+      } else {
+        writer.Int64(json.data.number.i);
+      }
       return;
     }
 
@@ -100,24 +106,29 @@ public:
     }
 
     if (value.IsNumber()) {
-      JSON json {};
-      json.type = JSON::NUMBER;
       if (value.IsInt()) {
-        json.data.number = value.GetInt();
-      } else if (value.IsUint()) {
-        json.data.number = static_cast<int>(value.GetUint());
-      } else if (value.IsInt64()) {
-        json.data.number = static_cast<int>(value.GetInt64());
-      } else if (value.IsUint64()) {
-        json.data.number = static_cast<int>(value.GetUint64());
-      } else {
-        json.data.number = static_cast<int>(value.GetDouble());
+        return JSON(static_cast<long long>(value.GetInt()));
       }
-      return json;
+      if (value.IsUint()) {
+        return JSON(static_cast<long long>(value.GetUint()));
+      }
+      if (value.IsInt64()) {
+        return JSON(static_cast<long long>(value.GetInt64()));
+      }
+      if (value.IsUint64()) {
+        // Unsigned values above the signed-64 range cannot fit a long long;
+        // keep them as reals rather than wrapping to a negative integer.
+        uint64_t u = value.GetUint64();
+        if (u <= static_cast<uint64_t>(std::numeric_limits<long long>::max())) {
+          return JSON(static_cast<long long>(u));
+        }
+        return JSON(static_cast<double>(u));
+      }
+      return JSON(value.GetDouble());
     }
 
     if (value.IsNull()) {
-      return JSON {};
+      return JSON(nullptr);
     }
 
     fail("Unsupported RapidJSON value type");
@@ -171,27 +182,59 @@ bool JSON::isNumber() const {
   return type == NUMBER;
 }
 
-MapRef<String, JSON> JSON::asMap() {
+bool JSON::isInt() const {
+  return type == NUMBER && !data.number.isReal;
+}
+
+bool JSON::isReal() const {
+  return type == NUMBER && data.number.isReal;
+}
+
+bool JSON::isNull() const {
+  return type == NUL;
+}
+
+bool JSON::isBool() const {
+  return type == BOOLEAN;
+}
+
+MapRef<String, JSON> JSON::asMap() const {
   assert(isMap());
   return *data.map;
 }
 
-ArrayRef<JSON> JSON::asVector() {
+ArrayRef<JSON> JSON::asVector() const {
   assert(isArray());
   return *data.array;
 }
 
-StrRef JSON::asString() {
+StrRef JSON::asString() const {
   assert(isString());
   return {data.str};
 }
 
-float JSON::asFloat() {
+long long JSON::asInt() const {
   assert(isNumber());
-  return static_cast<float>(data.number);
+  return data.number.isReal ? static_cast<long long>(data.number.d)
+                            : data.number.i;
+}
+
+double JSON::asDouble() const {
+  assert(isNumber());
+  return data.number.isReal ? data.number.d
+                            : static_cast<double>(data.number.i);
+}
+
+float JSON::asFloat() const {
+  return static_cast<float>(asDouble());
 }
 
 bool &JSON::asBool() {
+  assert(type == BOOLEAN);
+  return data.b;
+}
+
+bool JSON::asBool() const {
   assert(type == BOOLEAN);
   return data.b;
 }
@@ -309,6 +352,32 @@ JSON::JSON(const String &str) : type(STRING), data(str) {}
 
 JSON::JSON(bool b) : type(BOOLEAN), data(b) {}
 
+JSON::JSON(std::nullptr_t) : type(NUL) {}
+
+JSON::JSON(int v) : type(NUMBER) {
+  Num n;
+  n.isReal = false;
+  n.i = v;
+  n.d = 0.0;
+  data.number = n;
+}
+
+JSON::JSON(long long v) : type(NUMBER) {
+  Num n;
+  n.isReal = false;
+  n.i = v;
+  n.d = 0.0;
+  data.number = n;
+}
+
+JSON::JSON(double v) : type(NUMBER) {
+  Num n;
+  n.isReal = true;
+  n.i = 0;
+  n.d = v;
+  data.number = n;
+}
+
 JSON::JSON(std::initializer_list<JSON> array)
     : type(ARRAY),
       data(ArrayRef<JSON>{const_cast<JSON *>(array.begin()),
@@ -319,6 +388,10 @@ JSON &JSON::operator[](OmegaCommon::StrRef str) {
   return data.map->operator[](str);
 }
 
+const JSON &JSON::operator[](OmegaCommon::StrRef str) const {
+  return at(str);
+}
+
 JSON::map_iterator JSON::insert(const std::pair<String, JSON> &j) {
   assert(isMap() && "Cannot insert pair unless object is Map");
   return data.map->insert(j).first;
@@ -327,6 +400,46 @@ JSON::map_iterator JSON::insert(const std::pair<String, JSON> &j) {
 void JSON::push_back(const JSON &j) {
   assert(isArray() && "Cannot push object unless is Array");
   data.array->push_back(j);
+}
+
+bool JSON::contains(OmegaCommon::StrRef key) const {
+  assert(isMap() && "contains requires a Map");
+  return data.map->find(key) != data.map->end();
+}
+
+JSON *JSON::find(OmegaCommon::StrRef key) {
+  assert(isMap() && "find requires a Map");
+  auto it = data.map->find(key);
+  return it == data.map->end() ? nullptr : &it->second;
+}
+
+const JSON *JSON::find(OmegaCommon::StrRef key) const {
+  assert(isMap() && "find requires a Map");
+  auto it = data.map->find(key);
+  return it == data.map->end() ? nullptr : &it->second;
+}
+
+JSON &JSON::at(OmegaCommon::StrRef key) {
+  assert(isMap() && "at requires a Map");
+  auto it = data.map->find(key);
+  assert(it != data.map->end() && "JSON::at key not present");
+  return it->second;
+}
+
+const JSON &JSON::at(OmegaCommon::StrRef key) const {
+  assert(isMap() && "at requires a Map");
+  auto it = data.map->find(key);
+  assert(it != data.map->end() && "JSON::at key not present");
+  return it->second;
+}
+
+size_t JSON::size() const {
+  assert((isMap() || isArray()) && "size requires a Map or Array");
+  return isMap() ? data.map->size() : data.array->size();
+}
+
+bool JSON::empty() const {
+  return size() == 0;
 }
 
 JSON::JSON(std::map<String, JSON> map) : type(MAP), data(map) {}
