@@ -1,11 +1,27 @@
 include(CMakeParseArguments)
 
+# Cross-backend test-window runtime (GTETestWindow-CrossBackend-Plan.md, Phase
+# 2). OBJECT library so the Cocoa windowing + run-loop implementation is
+# compiled once and folded into each windowed (bundled) test exe. PUBLIC_DEFS
+# (TARGET_METAL) is inherited from the parent gte/CMakeLists.txt; the Cocoa /
+# Metal / QuartzCore frameworks the implementation needs are linked by each test
+# exe through add_metal_test's FRAMEWORKS list.
+add_library(omegagte_testwindow_metal OBJECT GTETestWindow_Cocoa.mm)
+target_include_directories(omegagte_testwindow_metal PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/include")
+target_compile_definitions(omegagte_testwindow_metal PRIVATE ${PUBLIC_DEFS})
+
 function(add_metal_test)
-    cmake_parse_arguments("_ARG" "" "NAME;PLIST" "SOURCES;RESOURCES;FRAMEWORKS;LIBS" ${ARGN})
+    cmake_parse_arguments("_ARG" "" "NAME;PLIST" "SOURCES;RESOURCES;FRAMEWORKS;LIBS;ASSETS;SHADERS" ${ARGN})
     get_target_property(OMEGA_GTE_LIB "OmegaGTE" RUNTIME_OUTPUT_DIRECTORY)
     set(OMEGA_GTE_LIB "${OMEGA_GTE_LIB}/OmegaGTE.framework")
     message("${OMEGA_GTE_LIB}")
-    add_executable(${_ARG_NAME} MACOSX_BUNDLE ${_ARG_SOURCES} ${_ARG_RESOURCES})
+    add_executable(${_ARG_NAME} MACOSX_BUNDLE
+        ${_ARG_SOURCES}
+        ${_ARG_RESOURCES}
+        $<TARGET_OBJECTS:omegagte_testwindow_metal>)
     add_dependencies(${_ARG_NAME} "OmegaGTE")
     
     set(_FRAMEWORKS)
@@ -37,6 +53,42 @@ function(add_metal_test)
         COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/lib/libOmegaCommonCore.dylib" "${_BUNDLE_FRAMEWORKS}/libOmegaCommonCore.dylib"
         COMMENT "Embedding OmegaGTE.framework and OmegaCommonCore into ${_ARG_NAME}.app"
     )
+
+    # Stage runtime assets next to the bundle executable (Contents/MacOS), which
+    # is where the test resolves "./<file>" — it chdir's to getExecutableDir()
+    # at startup. $<TARGET_FILE_DIR> for a MACOSX_BUNDLE target is Contents/MacOS.
+    foreach(_asset IN LISTS _ARG_ASSETS)
+        if(NOT IS_ABSOLUTE "${_asset}")
+            set(_asset_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_asset}")
+        else()
+            set(_asset_abs "${_asset}")
+        endif()
+        get_filename_component(_asset_name "${_asset_abs}" NAME)
+        add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_asset_abs}" "$<TARGET_FILE_DIR:${_ARG_NAME}>/${_asset_name}")
+    endforeach()
+
+    # Compile each OmegaSL source to a .omegasllib and stage it next to the
+    # bundle executable. INCLUDE_DIRS points omegaslc at the shader's own
+    # directory so a shared `#include "*.omegaslh"` there resolves.
+    foreach(_shader IN LISTS _ARG_SHADERS)
+        if(NOT IS_ABSOLUTE "${_shader}")
+            set(_shader_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_shader}")
+        else()
+            set(_shader_abs "${_shader}")
+        endif()
+        get_filename_component(_shader_basename "${_shader_abs}" NAME_WE)
+        get_filename_component(_shader_dir "${_shader_abs}" DIRECTORY)
+        set(_shader_target "${_ARG_NAME}_${_shader_basename}_Shader")
+        set(_shader_output "${CMAKE_CURRENT_BINARY_DIR}/${_shader_basename}.omegasllib")
+        add_omegasl_lib("${_shader_target}" "${_shader_abs}" "${_shader_output}"
+            INCLUDE_DIRS "${_shader_dir}")
+        add_dependencies(${_ARG_NAME} "${_shader_target}")
+        add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_shader_output}" "$<TARGET_FILE_DIR:${_ARG_NAME}>/${_shader_basename}.omegasllib")
+    endforeach()
 endfunction()
 
 function(add_metal_cli_test)
@@ -57,19 +109,26 @@ function(add_metal_cli_test)
     )
 endfunction()
 
-add_omegasl_lib("2DTestShaders" "${CMAKE_CURRENT_SOURCE_DIR}/2DTest/shaders.omegasl" "${CMAKE_CURRENT_BINARY_DIR}/shaders.omegasllib")
-
-
+# 2DTest now builds from the shared, backend-neutral body at
+# gte/Tests/2DTest/main.cpp (Phase 2). The runtime assets (test.png, the OmegaSL
+# source) are the canonical shared copies under gte/Tests/assets/2DTest/; the
+# shader is precompiled here (Open Decision #2) and staged into the bundle, and
+# test.png is loaded portably via GETextureAsset. The local 2DTest/ subfolder
+# keeps only the Cocoa bundle template items (Info.plist, the .nib/.xib).
 add_metal_test(
-    NAME 
+    NAME
     "2DTest"
     SOURCES
-    "2DTest/main.mm"
+    "../2DTest/main.cpp"
     RESOURCES
     "2DTest/English.lproj/MainMenu.xib"
-    PLIST 
+    PLIST
     "${CMAKE_CURRENT_SOURCE_DIR}/2DTest/Info.plist"
-    FRAMEWORKS 
+    ASSETS
+    "../assets/2DTest/test.png"
+    SHADERS
+    "../assets/2DTest/shaders.omegasl"
+    FRAMEWORKS
     "Cocoa"
     "Metal"
     "QuartzCore"

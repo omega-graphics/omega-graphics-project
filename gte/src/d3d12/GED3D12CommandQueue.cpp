@@ -15,6 +15,41 @@ _NAMESPACE_BEGIN_
 #    define D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE                                                                   \
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
 #endif
+
+// Caller-contract guard for the command-buffer encoding methods — the D3D12
+// twin of Metal's `metalRequireOrReturn` (see GEMetalCommandQueue.mm). On a
+// contract violation it reports `DEBUG_CRITICAL` (which bypasses the master
+// debug gate, so it surfaces even in a release build with the layer off; see
+// Debug-Layer-Plan.md §4.1.6), trips the debug-build `assert`, then *returns
+// from the calling encoder method*. The early return is what closes the
+// release-build crash: with asserts compiled out, the old bare-`assert` sites
+// fell through and dereferenced a null pipeline-state / encoder one line
+// later. A contract violation that should be a clean no-op was instead a
+// crash. `OrReturn` keeps that control flow legible at the call site.
+//
+// `ok` must be a side-effect-free predicate — it is evaluated twice (once for
+// the branch, once inside the assert so the failed condition prints in debug).
+// A macro, not a function, because only a macro can `return` from the caller;
+// `do/while(0)` lets it be used as an ordinary `stmt;`. The
+// `…Value` twin returns `ret` for the non-void encoding methods.
+#define d3d12RequireOrReturn(ok, domain, what)                                 \
+    do {                                                                       \
+        if(!(ok)){                                                             \
+            DEBUG_CRITICAL((domain), (what));                                  \
+            assert((ok) && "GTE caller-contract violation; see the CRITICAL log line above"); \
+            return;                                                            \
+        }                                                                      \
+    } while(0)
+
+#define d3d12RequireOrReturnValue(ok, domain, what, ret)                       \
+    do {                                                                       \
+        if(!(ok)){                                                             \
+            DEBUG_CRITICAL((domain), (what));                                  \
+            assert((ok) && "GTE caller-contract violation; see the CRITICAL log line above"); \
+            return (ret);                                                      \
+        }                                                                      \
+    } while(0)
+
 // GED3D12CommandBuffer::GED3D12CommandBuffer(){};
 // void GED3D12CommandBuffer::commitToBuffer(){};
 
@@ -194,6 +229,7 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQ
     traceResourceId = ResourceTracking::Tracker::instance().nextResourceId();
     ResourceTracking::Tracker::instance().emit(ResourceTracking::EventType::Create, ResourceTracking::Backend::D3D12,
                                                "CommandQueue", traceResourceId, commandQueue.Get());
+    DEBUG_INFO(DEBUG_DOMAIN_QUEUE, "Queue created: queue=" << traceResourceId << " type=" << (int)desc.type);
 };
 
 std::uint32_t GED3D12CommandQueue::growPoolOnce() {
@@ -2398,6 +2434,8 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
     submitEvent.commandBufferId = d3d12_buffer->traceResourceId;
     submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(d3d12_buffer->commandList.Get());
     ResourceTracking::Tracker::instance().emit(submitEvent);
+    DEBUG_TRACE(DEBUG_DOMAIN_QUEUE,
+        "CB submit: queue=" << traceResourceId << " cb=" << d3d12_buffer->traceResourceId);
     retainedCommandBuffers.push_back(commandBuffer);
     commandLists.push_back(d3d12_buffer->commandList.Get());
     // G.5.1 D3D12 follow-up — stage this buffer's completion handler (if WTK
@@ -2434,6 +2472,8 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
     submitEvent.commandBufferId = d3d12_buffer->traceResourceId;
     submitEvent.nativeHandle = reinterpret_cast<std::uint64_t>(d3d12_buffer->commandList.Get());
     ResourceTracking::Tracker::instance().emit(submitEvent);
+    DEBUG_TRACE(DEBUG_DOMAIN_QUEUE,
+        "CB submit: queue=" << traceResourceId << " cb=" << d3d12_buffer->traceResourceId);
 
     // Preserve submission order: queued command lists must execute before the
     // fence signal command list so cross-queue waits observe rendered data.
@@ -2612,6 +2652,7 @@ void GED3D12CommandQueue::commitToGPUAndWait() {
         completeEvent.commandBufferId = traceId;
         completeEvent.nativeHandle = reinterpret_cast<std::uint64_t>(commandQueue.Get());
         ResourceTracking::Tracker::instance().emit(completeEvent);
+        DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "CB complete: cb=" << traceId << " queue=" << traceResourceId);
     }
     submittedTraceCommandBufferIds.clear();
     // Wait above guarantees every prior submit's retention-fence value has
@@ -2829,6 +2870,7 @@ ID3D12GraphicsCommandList6 *GED3D12CommandQueue::getLastCommandList() {
 GED3D12CommandQueue::~GED3D12CommandQueue() {
     ResourceTracking::Tracker::instance().emit(ResourceTracking::EventType::Destroy, ResourceTracking::Backend::D3D12,
                                                "CommandQueue", traceResourceId, commandQueue.Get());
+    DEBUG_INFO(DEBUG_DOMAIN_QUEUE, "Queue destroyed: queue=" << traceResourceId);
     // GPU Commit-Timing P1 structural fix #3 — stop the async-completion waiter
     // before tearing down the fence / containers it reads. The manual-reset stop
     // event unblocks any in-flight WaitForMultipleObjects; the CV wakes a waiter

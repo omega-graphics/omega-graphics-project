@@ -86,12 +86,12 @@ fragment float4 textureFragment(OmegaWTKTexturedRasterData raster){
 /// passthrough × opacity.
 struct OmegaWTKBitmapVertex {
     float4 pos;
-    float4 uvPad;
+    float2 uv;
 };
 
 struct OmegaWTKBitmapRasterData internal {
     float4 pos : Position;
-    float4 uvPad : Color;
+    float2 uv : TexCoord;
 };
 
 struct OmegaWTKBitmapDrawParams {
@@ -107,14 +107,13 @@ vertex OmegaWTKBitmapRasterData bitmapVertex(uint v_id : VertexID){
     OmegaWTKBitmapVertex v = v_buffer_bitmap[v_id];
     OmegaWTKBitmapRasterData r;
     r.pos = v.pos;
-    r.uvPad = v.uvPad;
+    r.uv = v.uv;
     return r;
 }
 
 [in bitmapTex, in mainSampler, in bitmapParams]
 fragment float4 bitmapFragment(OmegaWTKBitmapRasterData raster){
-    float2 uv = float2(raster.uvPad[0], raster.uvPad[1]);
-    float4 c = sample(mainSampler, bitmapTex, uv);
+    float4 c = sample(mainSampler, bitmapTex, raster.uv);
     float4 tint = bitmapParams[0].tintColor;
     float4 result;
     result[0] = c[0] * tint[0];
@@ -147,12 +146,12 @@ fragment float4 bitmapFragment(OmegaWTKBitmapRasterData raster){
 /// already folded into `textColor.a` by the C++ side.
 struct OmegaWTKTextVertex {
     float4 pos;
-    float4 uvPad;
+    float2 uv;
 };
 
 struct OmegaWTKTextRasterData internal {
     float4 pos : Position;
-    float4 uvPad : Color;
+    float2 uv : TexCoord;
 };
 
 struct OmegaWTKTextDrawParams {
@@ -169,14 +168,13 @@ vertex OmegaWTKTextRasterData textVertex(uint v_id : VertexID){
     OmegaWTKTextVertex v = v_buffer_text[v_id];
     OmegaWTKTextRasterData r;
     r.pos = v.pos;
-    r.uvPad = v.uvPad;
+    r.uv = v.uv;
     return r;
 }
 
 [in textAtlasTex, in mainSampler, in textParams]
 fragment float4 msdfTextFragment(OmegaWTKTextRasterData raster){
-    float2 uv = float2(raster.uvPad[0], raster.uvPad[1]);
-    float4 s = sample(mainSampler, textAtlasTex, uv);
+    float4 s = sample(mainSampler, textAtlasTex, raster.uv);
 
     // Median of the three MSDF distance channels. The median preserves
     // sharp corners that a single-channel SDF would round.

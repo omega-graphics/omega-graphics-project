@@ -45,7 +45,8 @@ GED3D12Texture::GED3D12Texture(GED3D12Engine *engine,
             resource.Get(),
             static_cast<float>(resource->GetDesc().Width),
             static_cast<float>(resource->GetDesc().Height));
-
+    DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Texture created: id=" << traceResourceId
+               << " " << resource->GetDesc().Width << "x" << resource->GetDesc().Height);
 }
 
 void GED3D12Texture::updateAndValidateStatus(ID3D12GraphicsCommandList *commandList) {
@@ -420,6 +421,7 @@ GED3D12Texture::~GED3D12Texture(){
             resource.Get(),
             static_cast<float>(resource->GetDesc().Width),
             static_cast<float>(resource->GetDesc().Height));
+    DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Texture destroyed: id=" << traceResourceId);
 
     // Phase 2: return shared-heap descriptor slots to the engine allocator
     // once every command list currently in flight on every live queue has

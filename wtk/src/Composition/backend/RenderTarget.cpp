@@ -730,16 +730,22 @@ void BackendRenderTargetContext::resetElementState() {
 
     namespace {
         /// Author a 6-vertex unit NDC quad into a fresh upload buffer using
-        /// the texture pipeline's vertex layout `(float4 pos, float2 uv,
-        /// float2 tintPad)`. The buffer is positioned by GPU viewport
-        /// remap, never by recalculating vertex coordinates. Used by the
-        /// per-layer blur composite path; allocated from the buffer pool
-        /// when one is available so the bytes return after the frame
-        /// completes.
+        /// the texture pipeline's vertex layout. The buffer is positioned by
+        /// GPU viewport remap, never by recalculating vertex coordinates.
+        /// Used by the per-layer blur composite path; allocated from the
+        /// buffer pool when one is available so the bytes return after the
+        /// frame completes.
         SharedHandle<OmegaGTE::GEBuffer>
         authorCompositeQuadBuffer(BufferPool *pool, std::size_t & outBytes){
+            // Stride is derived from the real shader struct
+            // OmegaWTKTexturedVertex {float4 pos; float4 texCoordTint;}, NOT
+            // a hand-padded {float4,float2,float2}. The encode below fills
+            // texCoordTint via writeFloat2(uv)+writeFloat2(tintPad) (its
+            // documented .xy=uv / .z=tintAlpha layout), but the element
+            // stride must mirror the struct so DX-structured (32) and
+            // std430 (32) agree with what the StructuredBuffer reads.
             const std::size_t structSize = OmegaGTE::omegaSLStructStride(
-                    {OMEGASL_FLOAT4, OMEGASL_FLOAT2, OMEGASL_FLOAT2});
+                    {OMEGASL_FLOAT4, OMEGASL_FLOAT4});
             const std::size_t totalBytes = structSize * 6;
             outBytes = totalBytes;
 
@@ -1063,9 +1069,12 @@ void BackendRenderTargetContext::resetElementState() {
         const float maxX = destRect.pos.x + destRect.w;
         const float maxY = destRect.pos.y + destRect.h;
 
-        // Vertex buffer: 6 vertices × (float4 pos, float4 uvPad).
+        // Vertex buffer: 6 vertices × (float4 pos, float2 uv). Matches
+        // OmegaWTKBitmapVertex in compositor.omegasl (tight float2 uv, no
+        // manual padding — DX structured-buffer alignment). A float4 uvPad
+        // here would over-stride every vertex and misalign the quad.
         const std::size_t vertexStride = OmegaGTE::omegaSLStructStride(
-                {OMEGASL_FLOAT4, OMEGASL_FLOAT4});
+                {OMEGASL_FLOAT4, OMEGASL_FLOAT2});
         const std::size_t vertexBytes  = vertexStride * 6;
 
         const bool hasTransform = !(currentTransform == OmegaGTE::FMatrix<4,4>::Identity());
@@ -1162,14 +1171,12 @@ void BackendRenderTargetContext::resetElementState() {
                 if(hasTransform){
                     pos = currentTransform * pos;
                 }
-                auto uvPad = OmegaGTE::FVec<4>::Create();
-                uvPad[0][0] = u;
-                uvPad[1][0] = v;
-                uvPad[2][0] = 0.f;
-                uvPad[3][0] = 0.f;
+                auto uv = OmegaGTE::FVec<2>::Create();
+                uv[0][0] = u;
+                uv[1][0] = v;
                 bufferWriter->structBegin();
                 bufferWriter->writeFloat4(pos);
-                bufferWriter->writeFloat4(uvPad);
+                bufferWriter->writeFloat2(uv);
                 bufferWriter->structEnd();
                 bufferWriter->sendToBuffer();
             };
@@ -1423,10 +1430,14 @@ void BackendRenderTargetContext::resetElementState() {
         const bool hasTransform = !(currentTransform == OmegaGTE::FMatrix<4,4>::Identity());
         const float opacityMul = std::clamp(currentOpacity, 0.f, 1.f);
 
-        // Vertex buffer: verts × (float4 pos, float4 uvPad) — same
-        // layout as the bitmap pipeline.
+        // Vertex buffer: verts × (float4 pos, float2 uv). Matches
+        // OmegaWTKTextVertex in compositor.omegasl. The MSDF vertex now
+        // carries a tight float2 uv (no manual padding): the buffer writer
+        // packs it per DX structured-buffer alignment, so the stride must
+        // be computed for {float4, float2} — a manual float4 uvPad here
+        // would over-stride every vertex and misalign the whole run.
         const std::size_t vertexStride = OmegaGTE::omegaSLStructStride(
-                {OMEGASL_FLOAT4, OMEGASL_FLOAT4});
+                {OMEGASL_FLOAT4, OMEGASL_FLOAT2});
         const std::size_t vertexBytes  = vertexStride * verts.size();
         SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
         if(bufferPool() != nullptr){
@@ -1486,14 +1497,12 @@ void BackendRenderTargetContext::resetElementState() {
             if(hasTransform){
                 pos = currentTransform * pos;
             }
-            auto uvPad = OmegaGTE::FVec<4>::Create();
-            uvPad[0][0] = vtx.u;
-            uvPad[1][0] = vtx.v;
-            uvPad[2][0] = 0.f;
-            uvPad[3][0] = 0.f;
+            auto uv = OmegaGTE::FVec<2>::Create();
+            uv[0][0] = vtx.u;
+            uv[1][0] = vtx.v;
             bufferWriter->structBegin();
             bufferWriter->writeFloat4(pos);
-            bufferWriter->writeFloat4(uvPad);
+            bufferWriter->writeFloat2(uv);
             bufferWriter->structEnd();
             bufferWriter->sendToBuffer();
         }
@@ -2269,7 +2278,11 @@ void BackendRenderTargetContext::resetElementState() {
 #endif
                 return;
             }
-            struct_size = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT2,OMEGASL_FLOAT2});
+            // Mirror the real OmegaWTKTexturedVertex {float4 pos; float4
+            // texCoordTint;}; the writeFloat2(uv)+writeFloat2(tintPad) encode
+            // fills texCoordTint, but the element stride is derived from the
+            // struct, not a hand-padded {float4,float2,float2}.
+            struct_size = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4,OMEGASL_FLOAT4});
         }
         else if(usePathRenderPipeline){
             // Path pipeline (Phase 6.4) — vertex layout `(pos, color, edgeTag)`.

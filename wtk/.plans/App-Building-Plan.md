@@ -38,7 +38,7 @@ OmegaWTKApp(
 | macOS | `target/macos/main.mm` | `target/macos/Info.plist.in` (→ `CFBundleIdentifier`), `MainMenu.nib`, ad-hoc codesign via `cmake/codesign.py` | builds a real `.app` bundle |
 | Win32 | `target/win32/mmain.cpp` | `target/win32/app.exe.manifest` (DPI, supportedOS), `manifest.rc.in`, `resource_script.rc.in` (icon, string table) | bare `.exe`, no installer |
 | Linux/GTK | `target/gtk/main.cpp` | *(none — no `.desktop`, no icon install)* | bare ELF |
-| iOS | `target/ios/main.mm` | `kreate/target/ios/Info.plist.in` | via kreate |
+| iOS | `target/ios/main.mm` | `target/ios/Info.plist.in` | via kreate |
 | Android | `target/android/app/main_app.cpp` | `build.gradle` (`applicationId 'com.example.myapp'`), `AndroidManifest.xml` | gradle project |
 
 The cross-platform bootstrap already exists: `target/AppEntryPoint.cpp` exposes
@@ -225,7 +225,7 @@ gradle `versionName`.
    the most uniform and avoids per-target resource plumbing.
 3. **kreate overlap.** iOS/Android identity already partly flows through kreate;
    confirm `OmegaWTKApp()` is the right owner for mobile identity or whether it
-   delegates to kreate.
+   delegates to kreate. (No kREATE.)
 4. **Capability granularity** — is `Notifications` one capability, or split into
    `LocalNotifications` / `RemotePush` (the latter being what pulls in
    `aps-environment` on Apple and FCM on Android)?

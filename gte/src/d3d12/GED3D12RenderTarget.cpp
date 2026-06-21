@@ -91,6 +91,8 @@ _NAMESPACE_BEGIN_
                 "NativeRenderTarget",
                 traceResourceId,
                 this->swapChain.Get());
+        DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "NativeRenderTarget created: id=" << traceResourceId
+                   << " " << sourceWidth_ << "x" << sourceHeight_);
     };
 
     GED3D12NativeRenderTarget::~GED3D12NativeRenderTarget(){
@@ -108,6 +110,7 @@ _NAMESPACE_BEGIN_
                 "NativeRenderTarget",
                 traceResourceId,
                 swapChain.Get());
+        DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "NativeRenderTarget destroyed: id=" << traceResourceId);
         // Back-buffer pointers arrive at +1 from `IDXGISwapChain3::GetBuffer`
         // and were never wrapped in ComPtrs — release them here so the swap
         // chain can actually be torn down.
@@ -339,6 +342,7 @@ _NAMESPACE_BEGIN_
         presentEvent.commandBufferId = presentedCommandBufferId;
         presentEvent.nativeHandle = reinterpret_cast<std::uint64_t>(swapChain.Get());
         ResourceTracking::Tracker::instance().emit(presentEvent);
+        DEBUG_TRACE(DEBUG_DOMAIN_RENDERTGT, "Present: rt=" << traceResourceId);
         queue->clearSubmittedTraceCommandBufferIds();
     };
 
@@ -352,7 +356,7 @@ _NAMESPACE_BEGIN_
                 "TextureRenderTarget",
                 traceResourceId,
                 this->texture != nullptr ? this->texture->resource.Get() : nullptr);
-
+        DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "TextureRenderTarget created: id=" << traceResourceId);
     }
 
     GED3D12TextureRenderTarget::~GED3D12TextureRenderTarget(){
@@ -362,6 +366,7 @@ _NAMESPACE_BEGIN_
                 "TextureRenderTarget",
                 traceResourceId,
                 texture != nullptr ? texture->resource.Get() : nullptr);
+        DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "TextureRenderTarget destroyed: id=" << traceResourceId);
     }
 
     SharedHandle<GETexture> GED3D12TextureRenderTarget::underlyingTexture() {

@@ -52,9 +52,11 @@ function(add_d3d12_test)
             set(_shader_abs "${_shader}")
         endif()
         get_filename_component(_shader_basename "${_shader_abs}" NAME_WE)
+        get_filename_component(_shader_dir "${_shader_abs}" DIRECTORY)
         set(_shader_target "${_ARG_NAME}_${_shader_basename}_Shader")
         set(_shader_output "${CMAKE_CURRENT_BINARY_DIR}/${_shader_basename}.omegasllib")
-        add_omegasl_lib("${_shader_target}" "${_shader_abs}" "${_shader_output}")
+        add_omegasl_lib("${_shader_target}" "${_shader_abs}" "${_shader_output}"
+            INCLUDE_DIRS "${_shader_dir}")
         add_dependencies(${_ARG_NAME} "${_shader_target}")
     endforeach()
 
@@ -62,19 +64,21 @@ function(add_d3d12_test)
 
 endfunction()
 
-# 2DTest now builds from the shared, backend-neutral body at
-# gte/Tests/2DTest/main.cpp (Phase 1). The runtime assets (test.png, the
-# OmegaSL source) still live under directx/2DTest/ for now — they relocate to
-# gte/Tests/assets/2DTest/ in Phase 4, once Metal and Vulkan also consume them.
+# 2DTest builds from the shared, backend-neutral body at
+# gte/Tests/2DTest/main.cpp. The runtime assets (test.png, the OmegaSL source)
+# are the canonical shared copies under gte/Tests/assets/2DTest/ (relocated in
+# Phase 2 when Metal began consuming them too); test.png is loaded portably via
+# GETextureAsset. The local directx/2DTest/ subfolder keeps only the Win32
+# manifest template items.
 add_d3d12_test(
     NAME
     "2DTest"
     SOURCES
     "../2DTest/main.cpp"
     ASSETS
-    "2DTest/test.png"
+    "../assets/2DTest/test.png"
     SHADERS
-    "2DTest/shaders.omegasl"
+    "../assets/2DTest/shaders.omegasl"
 )
 
 add_d3d12_test(

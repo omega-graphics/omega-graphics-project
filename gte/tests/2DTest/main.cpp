@@ -5,34 +5,23 @@
 #include <omegaGTE/GECommandQueue.h>
 #include <omegaGTE/GEPipeline.h>
 #include <omegaGTE/GERenderTarget.h>
+#include <omegaGTE/GETextureAsset.h>
 #include <omegaGTE/GTEMath.h>
+
+#include <omega-common/fs.h>
 
 #include <iostream>
 #include <sstream>
 
 // 2DTest — shared, backend-neutral body (GTETestWindow-CrossBackend-Plan.md,
-// Phase 1). The Win32 windowing / run-loop boilerplate that this file used to
-// own now lives behind OmegaGTETests::RunGTETestWindow; what remains here is
-// the render body (tessellate a rect, write the vertex buffer, encode one
-// render pass, present) plus the per-test resource teardown order.
-//
-// Phase 1 wires only the DirectX build through this body. The texture upload
-// is still WIC/COM (Win32) today — Metal and Vulkan render a flat-colored rect
-// with no texture in their current sibling sources, so the portable image path
-// that lets all three share this exact body is reconciled in Phases 2-3. That
-// is the only backend-specific island left in this file; everything else is
-// already pure OmegaGTE public API.
-
-#if defined(TARGET_DIRECTX)
-#include <windows.h>
-#include <pathcch.h>
-#include <wrl.h>
-#include <wincodec.h>
-
-#pragma comment(lib, "Pathcch.lib")
-#pragma comment(lib, "windowscodecs.lib")
-#pragma comment(lib, "runtimeobject.lib")
-#endif
+// Phases 1-2). The per-platform windowing / run-loop boilerplate lives behind
+// OmegaGTETests::RunGTETestWindow; the texture upload goes through the portable
+// GETextureAsset (DirectXTex on D3D12, MTKTextureLoader on Metal), so this body
+// is now fully platform-independent — no #ifdef islands. Both backends load the
+// same precompiled `shaders.omegasllib` (Open Decision #2 resolved: precompiled,
+// not runtime-string compilation) and sample `test.png`; the canonical copies of
+// both live under gte/Tests/assets/2DTest/ and are staged next to each backend's
+// executable at build time.
 
 #define VERTEX_SHADER "vertexFunc"
 #define FRAGMENT_SHADER "fragFunc"
@@ -43,6 +32,7 @@ static SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
 static SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> tessContext;
 static SharedHandle<OmegaGTE::GERenderPipelineState> renderPipelineState;
 static SharedHandle<OmegaGTE::GEBuffer> vertexBuffer;
+static SharedHandle<OmegaGTE::GETextureAsset> textureAsset;
 static SharedHandle<OmegaGTE::GETexture> texture;
 static SharedHandle<OmegaGTE::GEBufferWriter> bufferWriter;
 static SharedHandle<OmegaGTE::GECommandQueue> commandQueue;
@@ -132,68 +122,29 @@ void tessalate() {
 };
 
 GTE_TEST_ENTRY_POINT {
-#if defined(TARGET_DIRECTX)
+    (void)argc;
+
     // Point the working directory at the executable's folder so the relative
     // "./test.png" / "./shaders.omegasllib" loads below resolve regardless of
-    // where the test is launched from (lifted from the old WinMain body).
-    {
-        WCHAR moduleDir[MAX_PATH];
-        GetModuleFileNameW(GetModuleHandleW(nullptr), moduleDir, MAX_PATH);
-        PathCchRemoveFileSpec(moduleDir, MAX_PATH);
-        SetCurrentDirectoryW(moduleDir);
-    }
-#endif
+    // where the test is launched from. Portable across Win32 (GetModuleFileName),
+    // macOS (_NSGetExecutablePath, inside the .app bundle's Contents/MacOS), and
+    // Linux (/proc/self/exe).
+    OmegaCommon::FS::changeCWD(OmegaCommon::FS::getExecutableDir());
 
     gte = OmegaGTE::InitWithDefaultDevice();
 
-#if defined(TARGET_DIRECTX)
-    // ---- Win32/WIC texture upload (DX-only today; see file header) ----------
-    CoInitialize(NULL);
-    {
-        Microsoft::WRL::ComPtr<IWICImagingFactory> imageFactory;
-        CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
-                         IID_PPV_ARGS(&imageFactory));
-
-        Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
-        imageFactory->CreateDecoderFromFilename(L"./test.png", NULL, GENERIC_READ,
-                                                WICDecodeMetadataCacheOnDemand, &decoder);
-
-        IWICBitmapFrameDecode *decoded = nullptr;
-        decoder->GetFrame(0, &decoded);
-
-        // WIC's native frame format for a typical PNG is 32bppBGRA. Our texture
-        // is RGBA8Unorm_SRGB, so we run the frame through a format converter to
-        // swap channels before upload — otherwise R and B come out swapped.
-        Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
-        imageFactory->CreateFormatConverter(&converter);
-        converter->Initialize(decoded, GUID_WICPixelFormat32bppRGBA,
-                              WICBitmapDitherTypeNone, NULL, 0.f,
-                              WICBitmapPaletteTypeCustom);
-
-        UINT w, h;
-        decoded->GetSize(&w, &h);
-
-        OmegaGTE::TextureDescriptor textureDescriptor {};
-        textureDescriptor.usage = OmegaGTE::GETexture::ToGPU;
-        textureDescriptor.kind = OmegaGTE::TextureKind::Tex2D;
-        textureDescriptor.pixelFormat = OmegaGTE::TexturePixelFormat::RGBA8Unorm_SRGB;
-        textureDescriptor.width = w;
-        textureDescriptor.height = h;
-        textureDescriptor.storage_opts = OmegaGTE::Shared;
-
-        texture = gte.graphicsEngine->makeTexture(textureDescriptor);
-
-        size_t bitmapSize = w * 4 * h;
-        auto *buffer = new BYTE[bitmapSize];
-        converter->CopyPixels(NULL, w * 4, bitmapSize, buffer);
-        texture->copyBytes(static_cast<void *>(buffer), w * 4);
-        delete[] buffer;
-
-        decoded->Release();
+    // Portable texture load: GETextureAsset selects the backend image loader at
+    // runtime (DirectXTex on D3D12, MTKTextureLoader on Metal). Match the upload
+    // shape the verified DX path used — sRGB color data, no mip chain.
+    textureAsset = OmegaGTE::GETextureAsset::Create(gte.graphicsEngine);
+    OmegaGTE::GETextureAsset::LoadOptions textureLoadOptions {};
+    textureLoadOptions.sRGB = true;
+    textureLoadOptions.generateMipmaps = false;
+    if (!textureAsset->load("./test.png", textureLoadOptions)) {
+        std::cerr << "2DTest: failed to load ./test.png" << std::endl;
+        return 1;
     }
-    CoUninitialize();
-    // -------------------------------------------------------------------------
-#endif
+    texture = textureAsset->texture();
 
     library = gte.graphicsEngine->loadShaderLibrary("./shaders.omegasllib");
 
@@ -264,6 +215,7 @@ GTE_TEST_ENTRY_POINT {
         bufferWriter.reset();
         vertexBuffer.reset();
         texture.reset();
+        textureAsset.reset();
         renderPipelineState.reset();
         tessContext.reset();
         renderTarget.reset();

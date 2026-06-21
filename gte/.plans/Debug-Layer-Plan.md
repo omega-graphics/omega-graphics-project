@@ -431,6 +431,61 @@ validity predicates are the follow-up.
 
 D3D12/Vulkan remain unbuilt on this host; their §4.3 backfill is still owed.
 
+### D3D12 completion pass (2026-06-21) — §4.3 D3D12 text + Critical + guards
+
+**Starting state (audited 2026-06-21, corrects the "still owed" line above).**
+The "Debug Layer Foundation" commit already wired the *structured tracker
+events* for the D3D12 resource/queue/render-target classes, so the backfill
+is **not** from zero:
+
+- `GED3D12CommandQueue.cpp` — `Tracker::emit` for Queue + CommandBuffer
+  `Create`/`Destroy`, `Submit` (both overloads), `Complete`. ✓
+- `GED3D12RenderTarget.cpp` — Native RT `Create`/`Destroy`/`Present`,
+  Texture RT `Create`/`Destroy`. ✓
+- `GED3D12Texture.cpp` — Texture `Create`/`Destroy`. ✓
+
+What is **owed** (this pass):
+
+1. **Text-emission layer.** There are *zero* typed `DEBUG_INFO/TRACE/ERROR/
+   CRITICAL` macros anywhere in D3D12. The §4.5 pairing (structured event +
+   human line at the same site) is missing at every existing tracker emit.
+2. **`GED3D12.cpp` factory file** (167 KB) — no tracker `Create` events for
+   `makeBuffer`/`makeHeap`/`makeFence`/`makeSamplerState`/
+   `makeTextureRenderTarget`; 48 legacy `DEBUG_STREAM` failure lines to
+   retype; `DEBUG_CRITICAL` missing on the descriptor-invalid / feature-gate /
+   caller-contract rows.
+3. **Encoding guards (8d)** in `GED3D12CommandQueue.cpp` — ~20 bare `assert`s
+   plus unguarded pipeline/encoder dereferences (the same release-crash bug
+   the Metal hardening pass fixed). No `metalRequireOrReturn` twin exists.
+4. **Asset files + RT present-fail** — raw `std::cerr`/`std::cout` →
+   `DEBUG_CRITICAL(ASSET)` / `DEBUG_ERROR(RENDERTGT)`.
+
+**Execution slices (mirror the Metal rollout; the §4.3 table is the per-site
+breakdown).** Each lands as a reviewable increment:
+
+- **D1** — Introduce `d3d12RequireOrReturn(ok, domain, what)` (twin of
+  `metalRequireOrReturn`: `DEBUG_CRITICAL` + keep `assert` + `return` from the
+  void encoder method, closing the release crash-on-null-PSO path). Pair
+  `DEBUG_INFO`/`DEBUG_TRACE` next to the *already-wired* tracker emits in
+  `GED3D12CommandQueue.cpp` / `GED3D12RenderTarget.cpp` / `GED3D12Texture.cpp`.
+  Smallest slice; locks the convention before the factory-file fan-out.
+- **D2** — `GED3D12CommandQueue.cpp` encoding guards (route the asserts +
+  unguarded derefs through `d3d12RequireOrReturn`) and retype its 21
+  `DEBUG_STREAM` failure/validation sites per the §4.3 table.
+- **D3** — `GED3D12.cpp` factory file: add `Create` events + success
+  `DEBUG_INFO`, retype the 48 `DEBUG_STREAM`, add the `DEBUG_CRITICAL`/
+  `DEBUG_ERROR` rows, Init/Close.
+- **D4** — `GED3D12MeshAsset.cpp` / `GED3D12TextureAsset.cpp` (`ASSET`
+  domain) + the `GED3D12RenderTarget.cpp` present-fail `std::cout` block
+  (`DEBUG_ERROR(RENDERTGT)`).
+
+Same deferral as Metal applies: *new* descriptor-validation predicates
+(`makeBuffer` zero-size, `makeSamplerState` anisotropy-range, etc.) are an
+input-validation feature, not a logging migration — out of scope here; only
+the *existing* checks' reporting is migrated. Non-void encoding methods that
+need a guard take a `d3d12RequireOrReturnValue(ok, domain, what, ret)` twin.
+Vulkan §4.3 backfill is still owed after D3D12.
+
 ## 4. Engine-side API logging
 
 Native validation (D3D12 debug layer, Vulkan `VK_LAYER_KHRONOS_validation`)
