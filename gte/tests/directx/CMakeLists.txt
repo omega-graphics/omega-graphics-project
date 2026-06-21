@@ -1,9 +1,24 @@
 include(CMakeParseArguments)
 
+# Cross-backend test-window runtime (GTETestWindow-CrossBackend-Plan.md, Phase
+# 1). An OBJECT library so the Win32 windowing + run-loop implementation is
+# compiled once and folded directly into each test exe — no extra link target
+# for the tests to thread through. PUBLIC_DEFS (TARGET_DIRECTX / NOMINMAX) is
+# inherited from the parent gte/CMakeLists.txt the same way the shared CLI
+# tests pick it up; the include dirs mirror what OmegaGTE's headers need.
+add_library(omegagte_testwindow_d3d12 OBJECT GTETestWindow_Win32.cpp)
+target_include_directories(omegagte_testwindow_d3d12 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/include")
+target_compile_definitions(omegagte_testwindow_d3d12 PRIVATE ${PUBLIC_DEFS})
+
 function(add_d3d12_test)
     cmake_parse_arguments("_ARG" "" "NAME" "SOURCES;LIBS;ASSETS;SHADERS" ${ARGN})
 
-    add_executable(${_ARG_NAME} WIN32 ${_ARG_SOURCES})
+    add_executable(${_ARG_NAME} WIN32
+        ${_ARG_SOURCES}
+        $<TARGET_OBJECTS:omegagte_testwindow_d3d12>)
     target_link_libraries(${_ARG_NAME} PRIVATE "OmegaGTE" ${_ARG_LIBS})
 
     add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
@@ -47,11 +62,15 @@ function(add_d3d12_test)
 
 endfunction()
 
+# 2DTest now builds from the shared, backend-neutral body at
+# gte/Tests/2DTest/main.cpp (Phase 1). The runtime assets (test.png, the
+# OmegaSL source) still live under directx/2DTest/ for now — they relocate to
+# gte/Tests/assets/2DTest/ in Phase 4, once Metal and Vulkan also consume them.
 add_d3d12_test(
     NAME
     "2DTest"
     SOURCES
-    "2DTest/main.cpp"
+    "../2DTest/main.cpp"
     ASSETS
     "2DTest/test.png"
     SHADERS

@@ -265,8 +265,14 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
             state = D3D12_RESOURCE_STATE_GENERIC_READ;
             break;
         case BufferDescriptor::Readback:
+            // D3D12-CPU-Accessible-Buffer-Plan — mirror the engine makeBuffer
+            // Readback path. The heap's pool is DEFAULT-type (see makeHeap), so
+            // the primary is already UAV-capable; start it in COMMON (buffers
+            // promote to UNORDERED_ACCESS on first UAV use) and give it a
+            // READBACK companion below for the CPU read. COPY_DEST as the
+            // initial state was the old combination that predated the companion.
             flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-            state = D3D12_RESOURCE_STATE_COPY_DEST;
+            state = D3D12_RESOURCE_STATE_COMMON;
             break;
         case BufferDescriptor::GPUOnly:
             flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -302,10 +308,35 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
     // not own a per-resource shader-visible descriptor heap. See the
     // engine path above for the rationale.
 
-    auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation);
+    // D3D12-CPU-Accessible-Buffer-Plan — heap-backed Readback parity. The
+    // primary above is on the heap's DEFAULT pool (UAV-capable, not mappable),
+    // so a Readback buffer needs a READBACK companion the GPU copies into (at
+    // finishComputePass) and GEBufferReader maps. The companion can't come from
+    // this DEFAULT pool, so it's a committed READBACK resource from the engine
+    // allocator — mirrors the engine makeBuffer path. State COPY_DEST: the only
+    // UAV-free state a READBACK heap accepts and the role it plays.
+    ID3D12Resource *cpuSideRes = nullptr;
+    D3D12MA::Allocation *cpuSideAllocation = nullptr;
+    if(desc.usage == BufferDescriptor::Readback){
+        D3D12_RESOURCE_DESC companionDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferLen);
+        D3D12MA::ALLOCATION_DESC companionAllocDesc {};
+        companionAllocDesc.HeapType = D3D12_HEAP_TYPE_READBACK;
+        HRESULT chr = engine->memAllocator->CreateResource(
+            &companionAllocDesc, &companionDesc, D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr, &cpuSideAllocation, IID_PPV_ARGS(&cpuSideRes));
+        if(FAILED(chr)){
+            DEBUG_STREAM("GED3D12Heap::makeBuffer: Readback companion CreateResource failed");
+            if (cpuSideAllocation) cpuSideAllocation->Release();
+            if (allocation) allocation->Release();
+            buffer->Release();
+            return nullptr;
+        }
+    }
+
+    auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation,cpuSideRes,cpuSideAllocation);
     d3d12_buffer->role = desc.role;
     // Allocator-Lifetime-Hardening Phase 1 — keep the allocator alive as long
-    // as this allocation does.
+    // as this buffer's allocations do.
     d3d12_buffer->allocatorOwner = engine->allocatorOwner;
     return SharedHandle<GEBuffer>(d3d12_buffer);
 }
@@ -1453,7 +1484,10 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             if (pool) pool->Release();
             return nullptr;
         }
-        return SharedHandle<GEHeap>(new GED3D12Heap(this, pool, desc.len));
+        // Allocator-Lifetime-Hardening Phase 1 — hand the heap an allocator-owner
+        // ref so its `pool->Release()` in ~GED3D12Heap stays valid even if the
+        // engine is torn down first.
+        return SharedHandle<GEHeap>(new GED3D12Heap(this, pool, desc.len, allocatorOwner));
     }
 
     GED3D12AccelerationStruct::GED3D12AccelerationStruct(SharedHandle<GED3D12Buffer> & structBuffer,

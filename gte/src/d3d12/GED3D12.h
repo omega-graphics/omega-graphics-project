@@ -183,9 +183,16 @@ _NAMESPACE_BEGIN_
         // and offset tracking move into D3D12MA. Released in the destructor.
         D3D12MA::Pool *pool;
         size_t poolSize;
+        // Allocator-Lifetime-Hardening Phase 1 — keeps the D3D12MA allocator
+        // alive at least as long as this heap's `pool`. `D3D12MA::Pool` is
+        // created from the allocator and its `Release()` in the destructor needs
+        // the allocator still live, so the heap holds an owner ref exactly like
+        // allocator-created buffers / textures do.
+        std::shared_ptr<GED3D12AllocatorOwner> allocatorOwner;
     public:
-        GED3D12Heap(GED3D12Engine *engine, D3D12MA::Pool *pool, size_t poolSize)
-            : engine(engine), pool(pool), poolSize(poolSize) {};
+        GED3D12Heap(GED3D12Engine *engine, D3D12MA::Pool *pool, size_t poolSize,
+                    std::shared_ptr<GED3D12AllocatorOwner> allocatorOwner)
+            : engine(engine), pool(pool), poolSize(poolSize), allocatorOwner(std::move(allocatorOwner)) {};
         size_t currentSize() override { return poolSize; };
         SharedHandle<GEBuffer> makeBuffer(const BufferDescriptor &desc) override;
         SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc) override;

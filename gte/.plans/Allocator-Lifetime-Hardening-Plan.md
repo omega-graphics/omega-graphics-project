@@ -120,11 +120,11 @@ Vulkan's non-refcounted `VmaAllocator` with one mechanism.
   a null owner — it never allocated through D3D12MA.
 - Surfaced this on `commit_timing_test` (buffers held as outer-scope locals
   past `Close`), the same shape as the original `MatrixOpsTest` repro.
-- **Follow-up (not Phase 1):** `GED3D12Heap` owns a `D3D12MA::Pool *` it
-  `Release()`s in its destructor. A heap outliving the engine with no live
-  buffers/textures would still hit the old ordering hazard (the allocator could
-  be gone before `pool->Release()`). Give `GED3D12Heap` an `allocatorOwner` ref
-  too if heaps are ever held past `Close`; out of scope for the reported assert.
+- **Heap pool (resolved):** `GED3D12Heap` owns a `D3D12MA::Pool *` it
+  `Release()`s in its destructor. It now also holds an `allocatorOwner` ref
+  (threaded through its constructor from `GED3D12Engine::makeHeap`), so
+  `pool->Release()` stays valid even if the engine is torn down first — same
+  last-holder-frees-the-allocator guarantee as buffers / textures.
 
 ## Notes
 

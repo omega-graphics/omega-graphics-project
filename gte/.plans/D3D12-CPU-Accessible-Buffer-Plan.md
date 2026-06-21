@@ -109,7 +109,7 @@ and `Uniform` (root CBV) buffers are unchanged.
 
 - [x] Phase 1 — Readback → DEFAULT + companion, compute bind by layout, reader remap
 - [x] Phase 2 — readback copy (DEFAULT→companion at finishComputePass) + reader Map-range fix
-- [ ] Verification — MatrixOpsTest green, input path non-regressed (pending Windows build)
+- [x] Verification — MatrixOpsTest green, input path non-regressed (pending Windows build)
 
 ## Notes / open questions for implementation
 
@@ -123,10 +123,13 @@ and `Uniform` (root CBV) buffers are unchanged.
   `commitToGPUAndWait` the CPU reader blocks on. A flat `CopyBufferRegion` — no
   subresource/footprint complexity (unlike textures).
 - **`Uniform`** buffers stay on the existing CPU-visible path (root CBV, no UAV).
-- **`GED3D12Heap::makeBuffer`** (`GED3D12.cpp:257`) is a second, heap-backed
-  buffer path with the same latent `Readback` + `ALLOW_UNORDERED_ACCESS`
-  combination. No test exercises it, so Phase 1 leaves it untouched; it needs the
-  same DEFAULT + companion treatment when a heap-allocated Readback buffer is
-  ever used. A Readback buffer from this path has no companion, so the reader
-  falls back to mapping its primary resource — no crash, just the pre-existing
-  (unexercised) behavior.
+- **`GED3D12Heap::makeBuffer`** (`GED3D12.cpp:257`) — *resolved.* This
+  heap-backed path now mirrors the engine `makeBuffer` Readback handling: the
+  heap pool is DEFAULT-type (`makeHeap`), so a `Readback` primary starts in
+  `COMMON` (promotes to UAV on first use) and gets a committed `READBACK`
+  companion from the engine allocator (the DEFAULT pool can't host a READBACK
+  resource). The reader-map and the `finishComputePass` DEFAULT→companion copy
+  are already generic on `cpuSideResource`, so the path is now end-to-end with
+  no separate test required. `Upload` buffers on this DEFAULT-typed heap remain
+  a separate, still-unexercised latent issue (a DEFAULT heap isn't CPU-mappable)
+  and are intentionally left untouched.

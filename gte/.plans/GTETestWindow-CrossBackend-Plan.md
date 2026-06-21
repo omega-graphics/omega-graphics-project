@@ -1,6 +1,6 @@
 # GTETestWindow Cross-Backend Plan
 
-> Status: **proposal — not yet approved**. The Design section is a recommendation; the Open Decisions section flags places where your call should override mine before Phase 1 starts.
+> Status: **Phase 1 landed**. The API, the Win32 backend, and the DX 2DTest migration are shipped and visually confirmed (see Phase 1 below). Phases 2–6 are still proposals. Open Decisions #1/#4/#5 were resolved by recommendation during Phase 1; #2 (shader path) and #3 (D3D12 ComputeTest hidden window) are still open and bear on Phases 2–4.
 
 ## Goal
 
@@ -243,7 +243,18 @@ Tests that **don't** migrate (already headless / CLI, no swap chain):
 
 ## Phasing
 
-### Phase 1 — Land the API and the Win32 backend
+### Phase 1 — Land the API and the Win32 backend ✅ Done
+
+> Landed and visually confirmed: the DX 2DTest renders the textured rect through
+> `RunGTETestWindow` (single 300×300 window — the old 500×500 parent + 300×300
+> child shell collapsed; render content is identical). Resolved Open Decisions by
+> recommendation: #1 single shared body (`gte/Tests/2DTest/main.cpp`), #4 teardown
+> stays in the test body's `onClose`, #5 `Init`/`Close` stay in the test body. One
+> backend-specific island remains in the shared body: the WIC/COM PNG upload is
+> still `#ifdef TARGET_DIRECTX` (Metal/Vulkan render a flat rect today) — the
+> portable image path is reconciled in Phases 2–3 (Open Decision #2). Assets
+> (`test.png`, `shaders.omegasl`) still live under `directx/2DTest/`; they relocate
+> to `assets/2DTest/` in Phase 4.
 
 1. Write `gte/Tests/GTETestWindow.h` per the Design.
 2. Write `gte/Tests/directx/GTETestWindow_Win32.cpp`.
