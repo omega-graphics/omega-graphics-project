@@ -109,50 +109,50 @@ namespace OmegaCommon {
         /// Construct JSON as Map
         JSON(std::map<String,JSON> map);
 
-        bool isString() const;
+        OMEGACOMMON_NODISCARD bool isString() const;
 
-        bool isArray() const;
+        OMEGACOMMON_NODISCARD bool isArray() const;
 
-        bool isNumber() const;
+        OMEGACOMMON_NODISCARD bool isNumber() const;
 
         /// True when this is a number stored as an integer.
-        bool isInt() const;
+        OMEGACOMMON_NODISCARD bool isInt() const;
 
         /// True when this is a number stored as a real (floating-point).
-        bool isReal() const;
+        OMEGACOMMON_NODISCARD bool isReal() const;
 
-        bool isMap() const;
+        OMEGACOMMON_NODISCARD bool isMap() const;
 
         /// True when this is an explicit null node.
-        bool isNull() const;
+        OMEGACOMMON_NODISCARD bool isNull() const;
 
         /// True when this is a boolean node.
-        bool isBool() const;
+        OMEGACOMMON_NODISCARD bool isBool() const;
 
         /// Get this JSON node as a String.
-        OmegaCommon::StrRef asString() const;
+        OMEGACOMMON_NODISCARD OmegaCommon::StrRef asString() const;
 
         /// Get this JSON node as a Vector
         /// (From a JSON Array).
-        ArrayRef<JSON> asVector() const;
+        OMEGACOMMON_NODISCARD ArrayRef<JSON> asVector() const;
 
         /// Get this JSON node as a Map.
-        MapRef<String,JSON> asMap() const;
+        OMEGACOMMON_NODISCARD MapRef<String,JSON> asMap() const;
 
         /// Get this number as a 64-bit integer (truncates a real value).
-        long long asInt() const;
+        OMEGACOMMON_NODISCARD long long asInt() const;
 
         /// Get this number as a double (widens an integer value).
-        double asDouble() const;
+        OMEGACOMMON_NODISCARD double asDouble() const;
 
         /// Get this number as a float (narrows asDouble()).
-        float asFloat() const;
+        OMEGACOMMON_NODISCARD float asFloat() const;
 
         /// Get a mutable reference to this boolean node.
         bool & asBool();
 
         /// Get this boolean node's value (const).
-        bool asBool() const;
+        OMEGACOMMON_NODISCARD bool asBool() const;
 
         // /// @name Mod Methods 
         // /// @{
@@ -173,23 +173,23 @@ namespace OmegaCommon {
         /// @{
 
         /// True when this Map node holds `key`.
-        bool contains(OmegaCommon::StrRef key) const;
+        OMEGACOMMON_NODISCARD bool contains(OmegaCommon::StrRef key) const;
 
         /// Find a Map member by key, or nullptr when absent. Never inserts.
         JSON * find(OmegaCommon::StrRef key);
 
-        const JSON * find(OmegaCommon::StrRef key) const;
+        OMEGACOMMON_NODISCARD const JSON * find(OmegaCommon::StrRef key) const;
 
         /// Access a Map member by key. Asserts the key is present (never inserts).
         JSON & at(OmegaCommon::StrRef key);
 
-        const JSON & at(OmegaCommon::StrRef key) const;
+        OMEGACOMMON_NODISCARD const JSON & at(OmegaCommon::StrRef key) const;
 
         /// Number of members (Map) or elements (Array).
-        size_t size() const;
+        OMEGACOMMON_NODISCARD size_t size() const;
 
         /// True when this Map/Array node holds nothing.
-        bool empty() const;
+        OMEGACOMMON_NODISCARD bool empty() const;
 
         /// @}
 

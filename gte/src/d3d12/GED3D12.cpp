@@ -304,6 +304,9 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
 
     auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation);
     d3d12_buffer->role = desc.role;
+    // Allocator-Lifetime-Hardening Phase 1 — keep the allocator alive as long
+    // as this allocation does.
+    d3d12_buffer->allocatorOwner = engine->allocatorOwner;
     return SharedHandle<GEBuffer>(d3d12_buffer);
 }
 
@@ -492,6 +495,9 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     if(auto *d3d12Tex = static_cast<GED3D12Texture *>(result.get())){
         d3d12Tex->primarySrvDesc = res_view_desc;
         d3d12Tex->hasPrimarySrvDesc = true;
+        // Allocator-Lifetime-Hardening Phase 1 — keep the allocator alive as
+        // long as this texture's allocation does.
+        d3d12Tex->allocatorOwner = engine->allocatorOwner;
     }
     result->setShape(kind, arrayLayers, effectiveSampleCount);
     return result;
@@ -604,6 +610,10 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             DEBUG_STREAM("D3D12MA::CreateAllocator failed");
             exit(1);
         };
+        // Allocator-Lifetime-Hardening Phase 1 — wrap the raw allocator in the
+        // shared owner. Every allocator-created resource takes a copy of this,
+        // so the allocator outlives any resource that still references it.
+        allocatorOwner = std::make_shared<GED3D12AllocatorOwner>(memAllocator);
 
         gteDevice = std::static_pointer_cast<GTEDevice>(device);
         _deviceFeatures = gteDevice->features.featuresAsBitmask();
@@ -707,10 +717,16 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         resourceDescriptorAllocator.reset();
         samplerDescriptorAllocator.reset();
 
-        if(memAllocator){
-            memAllocator->Release();
-            memAllocator = nullptr;
-        }
+        // Allocator-Lifetime-Hardening Phase 1 — drop the engine's reference to
+        // the allocator owner instead of releasing the allocator outright. If
+        // every resource it produced has already been freed (the common case,
+        // and the only case the old explicit Release handled), this drops the
+        // last ref and the owner's destructor releases the allocator right
+        // here. If a caller still holds a GEBuffer / GETexture, that resource's
+        // copy keeps the allocator alive until the handle drops — so D3D12MA no
+        // longer asserts "Unfreed committed allocations found!" on teardown.
+        memAllocator = nullptr;
+        allocatorOwner.reset();
 
 #ifdef __ID3D12InfoQueue1_INTERFACE_DEFINED__
         if(debug_info_queue && debug_message_cookie != 0){
@@ -2864,6 +2880,9 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         DEBUG_STREAM("Will Return Texture");
 
         auto result = SharedHandle<GETexture>(new GED3D12Texture(this,kind,desc.usage,desc.pixelFormat,texture,cpuSideRes,srvSlot,uavSlot,rtvDescHeap,dsvDescHeap,res_states,texAllocation,cpuSideAllocation));
+        // Allocator-Lifetime-Hardening Phase 1 — keep the allocator alive as
+        // long as this texture's allocations do.
+        static_cast<GED3D12Texture *>(result.get())->allocatorOwner = allocatorOwner;
         // §6.1 — record the resolved shape on the texture so bind-time
         // validation (§6.3) and any future per-kind queries can read
         // it without having to re-derive from `type` + `sampleCount`.
@@ -2976,6 +2995,9 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation,cpuSideRes,cpuSideAllocation);
         d3d12_buffer->role = desc.role;
+        // Allocator-Lifetime-Hardening Phase 1 — keep the allocator alive as
+        // long as this buffer's allocations do.
+        d3d12_buffer->allocatorOwner = allocatorOwner;
         return SharedHandle<GEBuffer>(d3d12_buffer);
     }
 

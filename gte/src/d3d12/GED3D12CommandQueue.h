@@ -7,6 +7,9 @@
 #include <cstdint>
 #include <vector>
 #include <utility>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
 
 #ifndef OMEGAGTE_GED3D12COMMANDQUEUE_H
 #define OMEGAGTE_GED3D12COMMANDQUEUE_H
@@ -269,10 +272,14 @@ _NAMESPACE_BEGIN_
         // and *gated* to a concrete retentionFence value once the
         // ExecuteCommandLists that runs it is issued. `pollCompletions` fires
         // and drops every gated handler whose value the GPU has reached.
-        // All three are touched only on the queue's owning (compositor) thread
-        // — the same thread that submits, commits, and calls getAvailableBuffer
-        // — so no locking is needed; the cross-thread hand-off the plan warns
-        // about only applies to the waiter-thread alternative, not this poll.
+        // These are normally touched only on the queue's owning (compositor)
+        // thread — the one that submits, commits, and calls getAvailableBuffer.
+        // GPU Commit-Timing P1 structural fix #3 added the waiter-thread path
+        // (armed only by the standalone async commitToGPU(handler)), so once a
+        // waiter exists it can call pollCompletions concurrently with the frame
+        // thread. `completionMutex_` therefore guards every access to the staged
+        // / gated containers; it is uncontended on the frame path. Handlers fire
+        // *outside* the lock so a re-entrant handler can't self-deadlock.
         // GPU Commit-Timing P1 — each staged / gated completion carries the
         // pool slot whose GPU timestamps belong to it, so `pollCompletions`
         // can report this buffer's real start/end span instead of a shared
@@ -293,7 +300,42 @@ _NAMESPACE_BEGIN_
         // Fire + drop every gated handler whose retentionFence value the GPU
         // has reached. Cheap (one GetCompletedValue); safe to call at any
         // drain point. Reports Error to fired handlers if the device was lost.
+        // Takes `completionMutex_` for the container mutation, then fires the
+        // ready handlers after releasing it.
         void pollCompletions();
+
+        // GPU Commit-Timing P1 structural fix #3 — autonomous async completion.
+        // The poll seam above only fires from frame-loop entry points, so a
+        // standalone async commitToGPU(handler) (no later GPU activity to
+        // re-pump the poller) would never fire its handler — violating the
+        // "fires after the GPU finishes, without blocking" contract and
+        // deadlocking a caller waiting on the result. A lazily-started waiter
+        // thread watches `retentionFence` and drives pollCompletions when the
+        // GPU retires a gated submission. Started only on the first standalone
+        // async commit; the WTK frame loop and the synchronous
+        // commitToGPUAndWaitTimed never spin it up.
+        std::mutex              completionMutex_;
+        std::thread             completionWaiter_;
+        std::condition_variable waiterCv_;
+        HANDLE                  waiterStopEvent_   = nullptr;
+        std::uint64_t           waiterTargetValue_ = 0;     // highest gated fence value to wait for
+        bool                    waiterArmed_       = false; // a new target awaits the waiter
+        bool                    waiterStop_        = false; // teardown requested
+        bool                    waiterStarted_     = false; // thread created
+        // Start the waiter thread once (idempotent). Takes `completionMutex_`.
+        void ensureCompletionWaiter();
+        // Wake the waiter to watch this commit's `retentionFence` value. No-op
+        // when nothing is gated (empty batch already fired, or the GPU finished
+        // before we armed). Called only by the public async commitToGPU(handler).
+        void armCompletionWaiter();
+        // Waiter thread body: wait for the armed fence value (or stop), poll.
+        void completionWaiterLoop();
+        // Shared body of both timed-commit forms: install the aggregator, stage
+        // each batch buffer's fold handler, commit. When `autonomousWaiter` is
+        // true (the public async form) the waiter is armed so the handler fires
+        // without any further GPU activity; the sync form passes false and
+        // drives the fire itself via commitToGPUAndWait.
+        void commitTimedAsyncImpl(const GECommitCompletionHandler & onComplete, bool autonomousWaiter);
 
         ComPtr<ID3D12Fence> fence;
 

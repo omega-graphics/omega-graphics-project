@@ -2299,7 +2299,10 @@ void GED3D12CommandQueue::stageCompletionHandlerFrom(GED3D12CommandBuffer *cb) {
         PendingCompletion pending;
         pending.handler  = std::move(cb->completionHandler);
         pending.poolSlot = cb->poolSlot;
-        stagedCompletionHandlers_.push_back(std::move(pending));
+        {
+            std::lock_guard<std::mutex> lock(completionMutex_);
+            stagedCompletionHandlers_.push_back(std::move(pending));
+        }
         cb->completionHandler = nullptr;
     }
 }
@@ -2309,6 +2312,7 @@ void GED3D12CommandQueue::gateStagedCompletions(std::uint64_t signalValue) {
     // the ExecuteCommandLists that ran its command list. Once
     // GetCompletedValue() reaches `signalValue` the GPU is done with that
     // submission and pollCompletions can fire the handler.
+    std::lock_guard<std::mutex> lock(completionMutex_);
     for (auto & pending : stagedCompletionHandlers_) {
         gatedCompletionHandlers_.emplace_back(signalValue, std::move(pending));
     }
@@ -2316,38 +2320,44 @@ void GED3D12CommandQueue::gateStagedCompletions(std::uint64_t signalValue) {
 }
 
 void GED3D12CommandQueue::pollCompletions() {
-    if (gatedCompletionHandlers_.empty()) {
-        return;
-    }
-    const std::uint64_t completed = retentionFence ? retentionFence->GetCompletedValue() : 0;
-    // Collect the ready handlers and compact the survivors in one stable pass,
-    // then fire outside the loop so a handler can't observe a half-mutated
-    // container (the WTK handler only flips an atomic, but this keeps the
-    // mechanism re-entrancy-safe regardless of what a future handler does).
+    // Collect the ready handlers and compact the survivors in one stable pass
+    // *under the lock*, then fire outside it. Holding the lock only for the
+    // container mutation keeps the frame path cheap and — crucially — lets a
+    // fired handler call back into the queue without self-deadlocking on the
+    // non-recursive mutex (the waiter thread and the frame thread can both
+    // reach here once an async commit has armed the waiter).
     std::vector<PendingCompletion> ready;
-    std::size_t writeIdx = 0;
-    for (std::size_t readIdx = 0; readIdx < gatedCompletionHandlers_.size(); ++readIdx) {
-        auto & entry = gatedCompletionHandlers_[readIdx];
-        if (entry.first <= completed) {
-            if (entry.second.handler) {
-                ready.push_back(std::move(entry.second));
-            }
-        } else {
-            if (writeIdx != readIdx) {
-                gatedCompletionHandlers_[writeIdx] = std::move(gatedCompletionHandlers_[readIdx]);
-            }
-            ++writeIdx;
+    bool deviceRemoved = false;
+    {
+        std::lock_guard<std::mutex> lock(completionMutex_);
+        if (gatedCompletionHandlers_.empty()) {
+            return;
         }
+        const std::uint64_t completed = retentionFence ? retentionFence->GetCompletedValue() : 0;
+        std::size_t writeIdx = 0;
+        for (std::size_t readIdx = 0; readIdx < gatedCompletionHandlers_.size(); ++readIdx) {
+            auto & entry = gatedCompletionHandlers_[readIdx];
+            if (entry.first <= completed) {
+                if (entry.second.handler) {
+                    ready.push_back(std::move(entry.second));
+                }
+            } else {
+                if (writeIdx != readIdx) {
+                    gatedCompletionHandlers_[writeIdx] = std::move(gatedCompletionHandlers_[readIdx]);
+                }
+                ++writeIdx;
+            }
+        }
+        gatedCompletionHandlers_.resize(writeIdx);
+        if (ready.empty()) {
+            return;
+        }
+        // D3D12 has no per-command-buffer success/fail status the way Metal
+        // does; a failed GPU execution surfaces as device removal. Report Error
+        // to the handlers fired this pass if the device was lost, else Completed.
+        deviceRemoved = engine != nullptr && engine->d3d12_device != nullptr
+                        && engine->d3d12_device->GetDeviceRemovedReason() != S_OK;
     }
-    gatedCompletionHandlers_.resize(writeIdx);
-    if (ready.empty()) {
-        return;
-    }
-    // D3D12 has no per-command-buffer success/fail status the way Metal does;
-    // a failed GPU execution surfaces as device removal. Report Error to the
-    // handlers fired this pass if the device was lost, else Completed.
-    const bool deviceRemoved = engine != nullptr && engine->d3d12_device != nullptr
-                               && engine->d3d12_device->GetDeviceRemovedReason() != S_OK;
     const auto status = deviceRemoved ? GECommandBufferCompletionInfo::CompletionStatus::Error
                                       : GECommandBufferCompletionInfo::CompletionStatus::Completed;
     for (auto & entry : ready) {
@@ -2616,7 +2626,8 @@ void GED3D12CommandQueue::commitToGPUAndWait() {
     pollCompletions();
 }
 
-void GED3D12CommandQueue::commitToGPU(const GECommitCompletionHandler & onComplete) {
+void GED3D12CommandQueue::commitTimedAsyncImpl(const GECommitCompletionHandler & onComplete,
+                                              bool autonomousWaiter) {
     // GPU Commit-Timing P1 — async commit timing. The P2 aggregator
     // (installCommitAggregator) sets a fold handler on each buffer in the
     // pending batch; we then re-stage those buffers so the freshly-set handler
@@ -2635,20 +2646,104 @@ void GED3D12CommandQueue::commitToGPU(const GECommitCompletionHandler & onComple
         }
     }
     commitToGPU();
+    // P1 structural fix #3 — when there is no frame loop to re-pump the poller
+    // (standalone async commit), arm the waiter thread so the gated handler
+    // fires once the GPU retires this commit. The synchronous form passes
+    // false: its commitToGPUAndWait() drains and polls on the calling thread.
+    if (onComplete && autonomousWaiter) {
+        armCompletionWaiter();
+    }
+}
+
+void GED3D12CommandQueue::commitToGPU(const GECommitCompletionHandler & onComplete) {
+    commitTimedAsyncImpl(onComplete, /*autonomousWaiter=*/true);
 }
 
 GECommitCompletionInfo GED3D12CommandQueue::commitToGPUAndWaitTimed() {
     // GPU Commit-Timing P1 — sync counterpart. The base implementation drives
     // the async commitToGPU(handler) and blocks on a condition variable that
     // only pollCompletions can signal — but nothing pumps the poller while it
-    // blocks, so it would deadlock on this backend. Instead: issue the async
-    // commit (capturing its single fire), then commitToGPUAndWait(), whose
-    // fence wait drains the batch and whose terminal pollCompletions fires the
-    // gated aggregator handler on this thread with the GPU idle.
+    // blocks, so it would deadlock on this backend. Instead: issue the timed
+    // commit *without* the waiter (capturing its single fire), then
+    // commitToGPUAndWait(), whose fence wait drains the batch and whose terminal
+    // pollCompletions fires the gated aggregator handler on this thread with the
+    // GPU idle. Suppressing the waiter avoids spinning an idle thread for the
+    // synchronous one-shot path.
     GECommitCompletionInfo result {};
-    commitToGPU([&result](const GECommitCompletionInfo & info) { result = info; });
+    commitTimedAsyncImpl([&result](const GECommitCompletionInfo & info) { result = info; },
+                         /*autonomousWaiter=*/false);
     commitToGPUAndWait();
     return result;
+}
+
+void GED3D12CommandQueue::ensureCompletionWaiter() {
+    std::lock_guard<std::mutex> lock(completionMutex_);
+    if (waiterStarted_) {
+        return;
+    }
+    // Manual-reset stop event: once set it stays set, so a teardown can't race
+    // a fresh fence wait the loop is about to enter.
+    waiterStopEvent_ = CreateEvent(NULL, TRUE, FALSE, NULL);
+    waiterStarted_   = true;
+    completionWaiter_ = std::thread(&GED3D12CommandQueue::completionWaiterLoop, this);
+}
+
+void GED3D12CommandQueue::armCompletionWaiter() {
+    {
+        // Nothing gated means the handler already fired synchronously — an empty
+        // batch (installCommitAggregator's count==0 fast path) or a GPU that
+        // finished before commitToGPU()'s own pollCompletions ran. Don't start a
+        // thread we'd never need.
+        std::lock_guard<std::mutex> lock(completionMutex_);
+        if (gatedCompletionHandlers_.empty()) {
+            return;
+        }
+    }
+    ensureCompletionWaiter();
+    {
+        std::lock_guard<std::mutex> lock(completionMutex_);
+        if (nextSubmitValue > waiterTargetValue_) {
+            waiterTargetValue_ = nextSubmitValue;
+        }
+        waiterArmed_ = true;
+    }
+    waiterCv_.notify_one();
+}
+
+void GED3D12CommandQueue::completionWaiterLoop() {
+    // Auto-reset event reused across iterations for each SetEventOnCompletion.
+    HANDLE fenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    for (;;) {
+        std::uint64_t target;
+        {
+            std::unique_lock<std::mutex> lock(completionMutex_);
+            waiterCv_.wait(lock, [this] { return waiterStop_ || waiterArmed_; });
+            if (waiterStop_) {
+                break;
+            }
+            waiterArmed_ = false;
+            target = waiterTargetValue_;
+        }
+        // Wait (lock released) for the GPU to retire `target` or for teardown.
+        // ID3D12Fence::GetCompletedValue / SetEventOnCompletion are free-threaded.
+        if (retentionFence && retentionFence->GetCompletedValue() < target) {
+            retentionFence->SetEventOnCompletion(target, fenceEvent);
+            HANDLE handles[2] = { fenceEvent, waiterStopEvent_ };
+            WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+        }
+        {
+            std::lock_guard<std::mutex> lock(completionMutex_);
+            if (waiterStop_) {
+                break;
+            }
+        }
+        // pollCompletions takes completionMutex_ itself, so it must be called
+        // without holding it here.
+        pollCompletions();
+    }
+    if (fenceEvent) {
+        CloseHandle(fenceEvent);
+    }
 }
 
 SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer() {
@@ -2734,6 +2829,27 @@ ID3D12GraphicsCommandList6 *GED3D12CommandQueue::getLastCommandList() {
 GED3D12CommandQueue::~GED3D12CommandQueue() {
     ResourceTracking::Tracker::instance().emit(ResourceTracking::EventType::Destroy, ResourceTracking::Backend::D3D12,
                                                "CommandQueue", traceResourceId, commandQueue.Get());
+    // GPU Commit-Timing P1 structural fix #3 — stop the async-completion waiter
+    // before tearing down the fence / containers it reads. The manual-reset stop
+    // event unblocks any in-flight WaitForMultipleObjects; the CV wakes a waiter
+    // idling between arms; join guarantees no pollCompletions runs after this.
+    if (waiterStarted_) {
+        {
+            std::lock_guard<std::mutex> lock(completionMutex_);
+            waiterStop_ = true;
+        }
+        if (waiterStopEvent_) {
+            SetEvent(waiterStopEvent_);
+        }
+        waiterCv_.notify_all();
+        if (completionWaiter_.joinable()) {
+            completionWaiter_.join();
+        }
+        if (waiterStopEvent_) {
+            CloseHandle(waiterStopEvent_);
+            waiterStopEvent_ = nullptr;
+        }
+    }
     // G.5.1 D3D12 follow-up — any staged/gated completion handlers that never
     // fired are dropped here (their std::functions destruct, releasing the
     // captured shared_ptr<atomic<bool>>). We intentionally do NOT fire them:

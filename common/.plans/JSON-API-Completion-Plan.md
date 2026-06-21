@@ -123,7 +123,7 @@ JSON & operator=(JSON && other) noexcept;
 active arm; move transfers the pointer and resets the source to `UNKNOWN` so its
 destructor is a no-op.
 
-### 2. Number model — tagged int OR double
+### 2. Number model — tagged int OR double 
 
 The number arm becomes a small tagged value so integers and reals both round-trip
 losslessly:
@@ -148,7 +148,7 @@ float     asFloat();    // retained; narrows asDouble()
 `fromRapid` records `IsInt64/IsUint64` as integer and `IsDouble` as real;
 `writeNode` emits `Int64` vs `Double` per the tag.
 
-### 3. Null and bool
+### 3. Null and bool 
 
 ```cpp
 JSON(std::nullptr_t);   // explicit NULL node (distinct from default UNKNOWN)
@@ -159,7 +159,7 @@ bool isBool() const;
 A dedicated `NUL` enum member is added so "explicitly null" and "uninitialized"
 are distinguishable; the serializer writes `Null()` for both.
 
-### 4. Const-correct, non-mutating reads
+### 4. Const-correct, non-mutating reads 
 
 ```cpp
 // const overloads of every accessor

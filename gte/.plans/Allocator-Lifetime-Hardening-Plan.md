@@ -96,10 +96,35 @@ Vulkan's non-refcounted `VmaAllocator` with one mechanism.
 
 ## Status
 
-- [ ] Phase 1 — D3D12 shared allocator ownership
+- [x] Phase 1 — D3D12 shared allocator ownership *(awaiting Windows build verification)*
 - [ ] Phase 2 — Vulkan shared allocator ownership
 - [ ] Phase 3 — Metal n/a verification + doc
 - [ ] Verification — MatrixOpsTest passes with the band-aid reverted
+
+### Phase 1 implementation notes
+
+- Added `GED3D12AllocatorOwner` (owns `D3D12MA::Allocator *`, `Release()`s once
+  in its dtor, non-copyable) in `GED3D12.h`. The engine keeps the raw
+  `memAllocator` as a non-owning convenience pointer plus a
+  `shared_ptr<GED3D12AllocatorOwner> allocatorOwner`; `~GED3D12Engine` now drops
+  that ref (`memAllocator = nullptr; allocatorOwner.reset();`) instead of
+  calling `memAllocator->Release()`, keeping the drain-retention →
+  descriptor-allocators ordering ahead of it.
+- `GED3D12Buffer` and `GED3D12Texture` each gained a
+  `shared_ptr<GED3D12AllocatorOwner> allocatorOwner`, set at the four
+  allocator-creating sites (`GED3D12Heap::makeBuffer`/`makeTexture` and the
+  engine `makeBuffer`/`makeTexture`). The resource destructor bodies are
+  unchanged — they release the `D3D12MA::Allocation` while the `allocatorOwner`
+  member (destroyed only *after* the body) still guarantees the allocator is
+  live. The DirectXTK ScratchImage upload path (`GED3D12TextureAsset.cpp`) keeps
+  a null owner — it never allocated through D3D12MA.
+- Surfaced this on `commit_timing_test` (buffers held as outer-scope locals
+  past `Close`), the same shape as the original `MatrixOpsTest` repro.
+- **Follow-up (not Phase 1):** `GED3D12Heap` owns a `D3D12MA::Pool *` it
+  `Release()`s in its destructor. A heap outliving the engine with no live
+  buffers/textures would still hit the old ordering hazard (the allocator could
+  be gone before `pool->Release()`). Give `GED3D12Heap` an `allocatorOwner` ref
+  too if heaps are ever held past `Close`; out of scope for the reported assert.
 
 ## Notes
 

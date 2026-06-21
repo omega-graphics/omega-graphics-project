@@ -205,6 +205,30 @@ override issues the async commit (capturing its single fire), then calls
 `pollCompletions` (GPU idle) fires the gated aggregator handler on this thread
 before the call returns.
 
+**5. Autonomous async completion (structural fix #3).** The seam in #4 only
+*gates* the async handler to a `retentionFence` value; it is fired by
+`pollCompletions`, which D3D12 calls only from frame-loop entry points
+(`getAvailableBuffer` / `commitToGPU` / `commitToGPUAndWait`). That silently
+assumes a frame loop keeps re-pumping the poller. A standalone
+`commitToGPU(handler)` with no subsequent GPU activity is never re-polled, so the
+GPU finishes but the handler never fires — the public contract
+(`onComplete` "fires exactly once, after the whole committed batch finishes on
+the GPU … Does not block") is violated, and a caller blocked on the result (the
+async branch of `commit_timing_test`) deadlocks. The original poll-only model
+named this "the waiter-thread alternative" and deliberately skipped it because
+WTK always drives a frame loop; the test is the first caller to use the async
+form outside one. Fix: a **lazily-started per-queue waiter thread**, armed only
+by the public async `commitToGPU(handler)`. After that commit signals
+`retentionFence`, the waiter `SetEventOnCompletion`-waits for the committed value
+(or a stop event) and then calls `pollCompletions`, firing the gated handler with
+the GPU idle — matching Metal's driver-pumped `addCompletedHandler` behavior.
+Because the waiter can now poll concurrently with the frame thread, the
+staged/gated containers and `pollCompletions` take a `completionMutex_` (handlers
+fire *outside* the lock to keep user re-entry deadlock-free); the lock is
+uncontended on the frame path. The sync `commitToGPUAndWaitTimed` keeps its
+own fence-wait drive and does **not** start the waiter (no idle thread for the
+synchronous one-shot path).
+
 **Build / verify.** Windows/WSL build is handed to the user per AGENTS.md;
 `commit_timing_test` already exists and exercises both the sync and async forms —
 it will report real D3D12 times once this lands.

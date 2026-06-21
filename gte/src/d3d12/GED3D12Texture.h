@@ -71,6 +71,14 @@ public:
     D3D12MA::Allocation *d3d12maAllocation        = nullptr;
     D3D12MA::Allocation *d3d12maCpuSideAllocation = nullptr;
 
+    // Allocator-Lifetime-Hardening Phase 1 — keeps the D3D12MA allocator alive
+    // at least as long as this texture's allocations. Set by the
+    // allocator-creating makeTexture paths; null for textures made outside the
+    // allocator (imported swap-chain / DirectXTK ScratchImage uploads). The
+    // destructor releases the allocations above while this member still
+    // guarantees the allocator is live.
+    std::shared_ptr<GED3D12AllocatorOwner> allocatorOwner;
+
     D3D12_RESOURCE_STATES currentState;
 
     void downloadTextureToReadbackHeap(ID3D12GraphicsCommandList *commandList);

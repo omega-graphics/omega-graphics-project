@@ -31,6 +31,28 @@
 _NAMESPACE_BEGIN_
     using Microsoft::WRL::ComPtr;
 
+    // Allocator-Lifetime-Hardening Phase 1 — shared owner of the D3D12MA
+    // allocator. The engine and every allocator-created resource each hold a
+    // `shared_ptr<GED3D12AllocatorOwner>`; the underlying `D3D12MA::Allocator`
+    // is `Release()`d exactly once, when the last holder drops. That makes
+    // teardown order-independent: `Close()` (→ `~GED3D12Engine`) is safe even
+    // while a caller still holds `GEBuffer` / `GETexture` handles — whichever
+    // party outlives the other tears the allocator down. Resources created
+    // outside the allocator (heap-placed / imported swap-chain buffers) simply
+    // hold a null owner.
+    struct GED3D12AllocatorOwner {
+        D3D12MA::Allocator *allocator = nullptr;
+        explicit GED3D12AllocatorOwner(D3D12MA::Allocator *allocator): allocator(allocator) {}
+        ~GED3D12AllocatorOwner() {
+            if (allocator) {
+                allocator->Release();
+                allocator = nullptr;
+            }
+        }
+        GED3D12AllocatorOwner(const GED3D12AllocatorOwner &) = delete;
+        GED3D12AllocatorOwner & operator=(const GED3D12AllocatorOwner &) = delete;
+    };
+
     class GED3D12Buffer : public GEBuffer {
     public:
 
@@ -53,6 +75,14 @@ _NAMESPACE_BEGIN_
         // resource. Released alongside its allocation in the destructor.
         ComPtr<ID3D12Resource> cpuSideResource;
         D3D12MA::Allocation *cpuSideAllocation = nullptr;
+
+        // Allocator-Lifetime-Hardening Phase 1 — keeps the D3D12MA allocator
+        // alive at least as long as this buffer's allocations. Set by the
+        // allocator-creating makeBuffer paths; null for resources made outside
+        // the allocator. The destructor body releases the allocations above
+        // while this member (destroyed only after the body) still guarantees
+        // the allocator is live.
+        std::shared_ptr<GED3D12AllocatorOwner> allocatorOwner;
 
         void setName(OmegaCommon::StrRef name) override{
             ATL::CStringW wstr(name.data());
@@ -186,7 +216,15 @@ _NAMESPACE_BEGIN_
 #endif
         DWORD debug_message_cookie = 0;
         ComPtr<ID3D12Device8> d3d12_device;
+        // Raw, non-owning convenience pointer to the D3D12MA allocator used by
+        // every CreateResource / CreatePool call. Ownership lives in
+        // `allocatorOwner` (Allocator-Lifetime-Hardening Phase 1); this stays
+        // valid for as long as the engine holds its `allocatorOwner` ref.
         D3D12MA::Allocator *memAllocator = nullptr;
+        // Shared owner of `memAllocator`. Dropping the engine's ref in
+        // `~GED3D12Engine` no longer forces the allocator's release — any
+        // still-live resource keeps it alive until the last handle drops.
+        std::shared_ptr<GED3D12AllocatorOwner> allocatorOwner;
         SharedHandle<GTEDevice> gteDevice;
 
         // GPU-safe deferred-release queue. Encoders / submit paths hand
