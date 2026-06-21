@@ -18,6 +18,8 @@
 #include <omegaGTE/GTEMath.h>
 #include <omegaGTE/GTEShader.h>
 
+#include "GTETestEntryPoint.h"
+
 #include <cassert>
 #include <cmath>
 #include <future>
@@ -104,7 +106,7 @@ bool checkOutputDoubled(SharedHandle<GEBuffer> & outputBuffer) {
 
 } // namespace
 
-int main(int argc, const char * argv[]) {
+GTE_TEST_ENTRY_POINT {
     (void)argc;
     (void)argv;
 

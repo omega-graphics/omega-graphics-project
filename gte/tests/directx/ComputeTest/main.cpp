@@ -49,7 +49,11 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     OmegaGTE::BufferDescriptor inputDesc{OmegaGTE::BufferDescriptor::Upload, elementCount * structSize, structSize};
     auto inputBuffer = gte.graphicsEngine->makeBuffer(inputDesc);
 
-    OmegaGTE::BufferDescriptor outputDesc{OmegaGTE::BufferDescriptor::Upload, elementCount * structSize, structSize};
+    // outputBuf is declared `[out]` (a UAV) and read back on the CPU, so it is a
+    // Readback buffer — on D3D12 that maps to a DEFAULT-heap (UAV-capable)
+    // resource + READBACK companion (D3D12-CPU-Accessible-Buffer-Plan). Binding
+    // it from an UPLOAD heap was invalid (an UPLOAD buffer can't be a UAV).
+    OmegaGTE::BufferDescriptor outputDesc{OmegaGTE::BufferDescriptor::Readback, elementCount * structSize, structSize};
     auto outputBuffer = gte.graphicsEngine->makeBuffer(outputDesc);
 
     auto writer = OmegaGTE::GEBufferWriter::Create();

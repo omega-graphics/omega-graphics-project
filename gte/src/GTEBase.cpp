@@ -38,7 +38,15 @@ size_t omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> data,
     /// 16, the size of `simd_float3`) so the bytes match what MSL `device T*` /
     /// `constant T&` reads; only the per-member size differs, the alignment
     /// rule is identical.
-#if !defined(TARGET_METAL)
+#if defined(TARGET_DIRECTX)
+    /// D3D12 storage buffers are native `StructuredBuffer<T>`s — scalar (DX)
+    /// layout, matching the GED3D12BufferWriter/Reader and the shader's
+    /// StructuredBuffer element stride. std430's vec3→16 per-column matrix pad
+    /// does not exist in a StructuredBuffer, so sizing/stride must use the
+    /// tighter DX layout (e.g. float3x3 = 36, not 48) or multi-element indexing
+    /// and the host↔GPU member offsets disagree.
+    return structStride(data, BufferLayoutStd::DXStructured);
+#elif !defined(TARGET_METAL)
     return std430StructStride(data);
 #else
     size_t off = 0, structAlign = 1;

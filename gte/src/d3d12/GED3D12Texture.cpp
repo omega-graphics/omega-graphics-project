@@ -107,13 +107,28 @@ void GED3D12Texture::uploadTextureFromUploadHeap(ID3D12GraphicsCommandList *comm
 void GED3D12Texture::downloadTextureToReadbackHeap(ID3D12GraphicsCommandList *commandList) {
     assert(usage == FromGPU && "");
 
-    UINT64 bytes = GetRequiredIntermediateSize(resource.Get(),0,1);
-
     auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource.Get(),currentState,D3D12_RESOURCE_STATE_COPY_SOURCE);
-
     commandList->ResourceBarrier(1,&barrier);
+    currentState = D3D12_RESOURCE_STATE_COPY_SOURCE;
 
-    commandList->CopyBufferRegion(cpuSideresource.Get(),0,resource.Get(),0,bytes);
+    // A texture→buffer copy must go through CopyTextureRegion with a placed
+    // footprint — a texture's memory is tiled, so the old CopyBufferRegion
+    // (a raw byte copy treating the texture as a buffer) could not linearize
+    // it and left the readback companion full of zeros / garbage. The footprint
+    // computed here matches exactly what getBytes reads back. Mirrors the
+    // upload path (uploadTextureFromUploadHeap), reversed.
+    ID3D12Device *dev;
+    auto desc = resource->GetDesc();
+    cpuSideresource->GetDevice(__uuidof(*dev),(void **)&dev);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
+    dev->GetCopyableFootprints(&desc,0,1,0,&footprint,nullptr,nullptr,nullptr);
+
+    CD3DX12_TEXTURE_COPY_LOCATION srcLoc(resource.Get(),0);
+    CD3DX12_TEXTURE_COPY_LOCATION destLoc(cpuSideresource.Get(),footprint);
+    commandList->CopyTextureRegion(&destLoc,0,0,0,&srcLoc,nullptr);
+
+    dev->Release();
     onGpu = false;
 }
 
@@ -302,11 +317,6 @@ size_t GED3D12Texture::getBytes(void *bytes, size_t bytesPerRow) {
     }
 
 
-    D3D12_SUBRESOURCE_DATA subresourceData {};
-    subresourceData.pData = mem_ptr;
-    subresourceData.SlicePitch = (LONG_PTR)bytesPerRow * desc.Height;
-    subresourceData.RowPitch = (LONG_PTR)bytesPerRow;
-
     ID3D12Device *dev;
     cpuSideresource->GetDevice(__uuidof(*dev),(void **)&dev);
 
@@ -320,17 +330,34 @@ size_t GED3D12Texture::getBytes(void *bytes, size_t bytesPerRow) {
     dev->GetCopyableFootprints(&desc,0,1,0,&footprint,&rows,&rowSize,&totalBytes);
 
     if(bytes != nullptr) {
+        // The mapped readback heap is laid out at the D3D12-aligned footprint
+        // row pitch (a 256-byte multiple per D3D12_TEXTURE_DATA_PITCH_ALIGNMENT),
+        // NOT the caller's packed `bytesPerRow`. Read from that aligned source
+        // stride into the caller's tightly-packed destination, copying `rowSize`
+        // (the tight row width) per row.
+        //
+        // The source/destination row pitches were previously swapped: the
+        // aligned footprint pitch was used as the *destination* stride into the
+        // caller's packed buffer, so the trailing rows wrote past its end (an
+        // 8x8 RGBA8 readback strode 256*7+32 bytes into a 256-byte buffer —
+        // CRT heap corruption). footprint.Offset likewise belongs on the source
+        // (mapped heap), not the destination. This mirrors the upload path in
+        // copyBytes, inverted.
+        D3D12_MEMCPY_DEST dest{(PBYTE)bytes, (SIZE_T)bytesPerRow,
+                               (SIZE_T)bytesPerRow * rows};
+        D3D12_SUBRESOURCE_DATA src{};
+        src.pData      = (const BYTE *)mem_ptr + footprint.Offset;
+        src.RowPitch   = (LONG_PTR)footprint.Footprint.RowPitch;
+        src.SlicePitch = (LONG_PTR)footprint.Footprint.RowPitch * rows;
+        MemcpySubresource(&dest, &src, (SIZE_T)rowSize, rows, 1);
 
-        D3D12_MEMCPY_DEST dest{((PBYTE) bytes) + footprint.Offset, footprint.Footprint.RowPitch,
-                               footprint.Footprint.RowPitch * rows};
-        MemcpySubresource(&dest, &subresourceData, rowSize, rows, 1);
-    }
-
-    if(bytes != nullptr) {
         cpuSideresource->Unmap(0, nullptr);
     }
     dev->Release();
-    return totalBytes;
+    // Bytes written into the caller's packed buffer — not the alignment-padded
+    // GPU footprint total (`totalBytes`), which would over-report by the
+    // per-row 256-byte padding.
+    return (size_t)bytesPerRow * rows;
 }
 
     bool GED3D12Texture::needsValidation() {

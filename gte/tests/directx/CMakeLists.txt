@@ -11,6 +11,13 @@ function(add_d3d12_test)
             $<TARGET_RUNTIME_DLLS:${_ARG_NAME}> $<TARGET_FILE_DIR:${_ARG_NAME}>
         COMMAND_EXPAND_LISTS)
 
+    # TARGET_RUNTIME_DLLS only fans out DLLs CMake resolves through the link
+    # graph; it misses the third-party + sibling-module DLLs this project stages
+    # into ${CMAKE_BINARY_DIR}/bin (OmegaCommon, ICU, OmegaGTE's own runtime).
+    # omega_stage_runtime_dlls copies every *.dll from bin next to the test exe
+    # so it actually launches. See cmake/OmegaGraphicsSuite.cmake.
+    omega_stage_runtime_dlls(${_ARG_NAME})
+
     foreach(_asset IN LISTS _ARG_ASSETS)
         if(NOT IS_ABSOLUTE "${_asset}")
             set(_asset_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_asset}")
@@ -108,3 +115,17 @@ add_d3d12_test(
     "../matrix_ops_test.cpp"
 )
 add_test(NAME omegagte_matrix_ops COMMAND MatrixOpsTest)
+
+# GPU-Commit-Timing plan (P1 — D3D12) — whole-commit GPU-timing integration test
+# (shared, backend-independent source under gte/tests/). Exercises
+# commitToGPUAndWaitTimed() (sync) and commitToGPU(handler) (async) against a
+# compute commit and checks the reported GECommitCompletionInfo (status, buffer
+# count, GPU duration). With P1 wired, the D3D12 timestamp-heap path now reports
+# a real, non-zero GPU duration here on hardware that supports timestamp queries.
+add_d3d12_test(
+    NAME
+    "CommitTimingTest"
+    SOURCES
+    "../commit_timing_test.cpp"
+)
+add_test(NAME omegagte_commit_timing COMMAND CommitTimingTest)

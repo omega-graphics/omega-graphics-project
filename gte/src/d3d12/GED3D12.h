@@ -45,6 +45,15 @@ _NAMESPACE_BEGIN_
         // memory. Owned: ref-released exactly once in the destructor.
         D3D12MA::Allocation *d3d12maAllocation = nullptr;
 
+        // D3D12-CPU-Accessible-Buffer-Plan Phase 1 — CPU-side companion for a
+        // `Readback` buffer. The primary `buffer` lives on a DEFAULT heap (so
+        // the GPU can UAV-write it); this READBACK companion receives the
+        // GPU→CPU copy and is what `GEBufferReader` maps. nullptr for Upload /
+        // GPUOnly / Uniform buffers, which keep their CPU-visible primary
+        // resource. Released alongside its allocation in the destructor.
+        ComPtr<ID3D12Resource> cpuSideResource;
+        D3D12MA::Allocation *cpuSideAllocation = nullptr;
+
         void setName(OmegaCommon::StrRef name) override{
             ATL::CStringW wstr(name.data());
             buffer->SetName(wstr);
@@ -57,10 +66,12 @@ _NAMESPACE_BEGIN_
         size_t size() override{
             return buffer->GetDesc().Width;
         };
-        GED3D12Buffer(const BufferDescriptor::Usage & usage,ID3D12Resource *buffer, D3D12_RESOURCE_STATES currentState, D3D12MA::Allocation *d3d12maAllocation = nullptr):
+        GED3D12Buffer(const BufferDescriptor::Usage & usage,ID3D12Resource *buffer, D3D12_RESOURCE_STATES currentState, D3D12MA::Allocation *d3d12maAllocation = nullptr,
+                      ID3D12Resource *cpuSideResource = nullptr, D3D12MA::Allocation *cpuSideAllocation = nullptr):
         GEBuffer(usage),buffer(buffer),
         traceResourceId(ResourceTracking::Tracker::instance().nextResourceId()), currentState(currentState),
-        d3d12maAllocation(d3d12maAllocation){
+        d3d12maAllocation(d3d12maAllocation),
+        cpuSideResource(cpuSideResource), cpuSideAllocation(cpuSideAllocation){
 
             ResourceTracking::Tracker::instance().emit(
                     ResourceTracking::EventType::Create,
@@ -85,6 +96,14 @@ _NAMESPACE_BEGIN_
             if (d3d12maAllocation) {
                 d3d12maAllocation->Release();
                 d3d12maAllocation = nullptr;
+            }
+            // D3D12-CPU-Accessible-Buffer-Plan Phase 1 — release the Readback
+            // companion (if any) the same way: resource ref first, then its
+            // D3D12MA allocation.
+            cpuSideResource.Reset();
+            if (cpuSideAllocation) {
+                cpuSideAllocation->Release();
+                cpuSideAllocation = nullptr;
             }
         }
     };

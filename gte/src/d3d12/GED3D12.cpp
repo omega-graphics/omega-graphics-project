@@ -917,7 +917,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         size_t currentOffset = 0;
         /// §2.4 — std140 (HLSL `cbuffer`, column-major) when the bound buffer
         /// is a uniform/constant buffer; derived from its role.
-        BufferLayoutStd layoutStd = BufferLayoutStd::Std430;
+        BufferLayoutStd layoutStd = BufferLayoutStd::DXStructured;
     public:
         void setOutputBuffer(SharedHandle<GEBuffer> &buffer) override {
             // G.5.3: Unmap any prior binding first so re-pointing the
@@ -926,8 +926,12 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             // `flush` already nulled `_buffer`.
             clearOutputBuffer();
             _buffer = (GED3D12Buffer *)buffer.get();
+            // D3D12 storage buffers are native StructuredBuffers — scalar (DX)
+            // layout, NOT std430 (the std430 vec3→16 column pad does not exist
+            // in a StructuredBuffer, so float3x3/float2/etc. would land at the
+            // wrong offsets). Uniform buffers are cbuffers and keep std140.
             layoutStd = (_buffer->role == BufferDescriptor::Uniform)
-                            ? BufferLayoutStd::Std140 : BufferLayoutStd::Std430;
+                            ? BufferLayoutStd::Std140 : BufferLayoutStd::DXStructured;
             HRESULT hr = _buffer->buffer->Map(0, nullptr, (void **)&_data_buffer);
             {
                 char msg[256];
@@ -1146,7 +1150,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         D3DByte *_data_buffer = nullptr;
         size_t currentOffset = 0;
         /// §2.4 — matches the writer: std140 for uniform buffers.
-        BufferLayoutStd layoutStd = BufferLayoutStd::Std430;
+        BufferLayoutStd layoutStd = BufferLayoutStd::DXStructured;
         /// §2.4-1 — align-then-read: advance the cursor to the field's base
         /// alignment before each read, mirroring the writer's inter-member
         /// padding.
@@ -1160,11 +1164,27 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             clearInputBuffer();
             currentOffset = 0;
             _buffer = (GED3D12Buffer *)buffer.get();
+            // D3D12 storage buffers are native StructuredBuffers — scalar (DX)
+            // layout, NOT std430 (the std430 vec3→16 column pad does not exist
+            // in a StructuredBuffer, so float3x3/float2/etc. would land at the
+            // wrong offsets). Uniform buffers are cbuffers and keep std140.
             layoutStd = (_buffer->role == BufferDescriptor::Uniform)
-                            ? BufferLayoutStd::Std140 : BufferLayoutStd::Std430;
+                            ? BufferLayoutStd::Std140 : BufferLayoutStd::DXStructured;
             CD3DX12_RANGE range(0,0);
 
-            _buffer->buffer->Map(0,&range,(void **)&_data_buffer);
+            // D3D12-CPU-Accessible-Buffer-Plan Phase 1 — a Readback buffer's
+            // primary resource is on a DEFAULT heap (not CPU-mappable); map its
+            // READBACK companion instead. Upload / GPUOnly / Uniform buffers
+            // have no companion and map their primary resource as before.
+            ID3D12Resource *mapTarget = _buffer->cpuSideResource
+                                            ? _buffer->cpuSideResource.Get()
+                                            : _buffer->buffer.Get();
+            // Phase 2 — for a READBACK companion the CPU must declare it reads the
+            // data (nullptr = whole resource) so the GPU's writes are made
+            // visible; the empty (0,0) "will not read" range can leave the mapped
+            // bytes stale. Upload heaps are CPU-coherent, so keep the (0,0) hint.
+            const D3D12_RANGE *readRange = _buffer->cpuSideResource ? nullptr : &range;
+            mapTarget->Map(0,readRange,(void **)&_data_buffer);
         }
         void setStructLayout(OmegaCommon::Vector<omegasl_data_type> fields) override {
 
@@ -1314,7 +1334,10 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         void reset() override {
             _data_buffer = nullptr;
             currentOffset = 0;
-            _buffer->buffer->Unmap(0,nullptr);
+            // Unmap whichever resource setInputBuffer mapped (Readback companion
+            // when present, else the primary resource).
+            (_buffer->cpuSideResource ? _buffer->cpuSideResource.Get()
+                                      : _buffer->buffer.Get())->Unmap(0,nullptr);
             _buffer = nullptr;
         }
         void clearInputBuffer() override {
@@ -1324,7 +1347,8 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             // remains the existing end-of-read teardown.
             if(_buffer == nullptr) return;
             if(_data_buffer != nullptr){
-                _buffer->buffer->Unmap(0,nullptr);
+                (_buffer->cpuSideResource ? _buffer->cpuSideResource.Get()
+                                          : _buffer->buffer.Get())->Unmap(0,nullptr);
             }
             _data_buffer = nullptr;
             _buffer = nullptr;
@@ -2744,10 +2768,23 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             auto res = CD3DX12_RESOURCE_DESC::Buffer(size);
             D3D12MA::ALLOCATION_DESC cpuAllocDesc = {};
             cpuAllocDesc.HeapType = heap_prop.Type; // UPLOAD or READBACK matching desc.usage
+            // A READBACK-heap resource only accepts COMMON / COPY_DEST /
+            // RESOLVE_DEST as its state (D3D12 [ERROR id=741] otherwise). The
+            // FromGPU companion is a copy *destination* — the GPU copies the
+            // texture into it (copyTextureToTexture / getBytes), then the CPU
+            // maps and reads — so COPY_DEST is the correct creation state. The
+            // UPLOAD / DEFAULT companions (ToGPU staging, etc.) stay
+            // GENERIC_READ: the CPU writes them and the GPU reads. Previously
+            // every companion was created GENERIC_READ, which is invalid on a
+            // READBACK heap and failed cpuSideRes creation for FromGPU textures.
+            const D3D12_RESOURCE_STATES cpuSideState =
+                (heap_prop.Type == D3D12_HEAP_TYPE_READBACK)
+                    ? D3D12_RESOURCE_STATE_COPY_DEST
+                    : D3D12_RESOURCE_STATE_GENERIC_READ;
             hr = memAllocator->CreateResource(
                 &cpuAllocDesc,
                 &res,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
+                cpuSideState,
                 nullptr,
                 &cpuSideAllocation,
                 IID_PPV_ARGS(&cpuSideRes));
@@ -2858,9 +2895,17 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                 break;
             }
             case BufferDescriptor::Readback : {
-                heap_type = D3D12_HEAP_TYPE_READBACK;
+                // D3D12-CPU-Accessible-Buffer-Plan Phase 1 — a Readback buffer is
+                // GPU-written (UAV) then CPU-read. D3D12 READBACK heaps can't be
+                // UAVs (only COMMON / COPY_DEST / RESOLVE_DEST), so the primary
+                // resource lives on a DEFAULT heap (UAV-capable) and a separate
+                // READBACK companion (created below) receives the GPU→CPU copy.
+                // Buffers promote from COMMON to UNORDERED_ACCESS on first UAV
+                // use, so COMMON is the correct initial state. The previous
+                // READBACK + UNORDERED_ACCESS combination was invalid (id=741).
+                heap_type = D3D12_HEAP_TYPE_DEFAULT;
                 flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-                state = D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                state = D3D12_RESOURCE_STATE_COMMON;
                 break;
             }
             case BufferDescriptor::GPUOnly : {
@@ -2902,7 +2947,34 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         // ClearUAV path in fillBuffer rewrites a UAV into the engine's
         // shared helper heap on demand.
 
-        auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation);
+        // D3D12-CPU-Accessible-Buffer-Plan Phase 1 — a Readback buffer's primary
+        // resource is now on a DEFAULT heap (above), so it is not CPU-mappable.
+        // Create a READBACK companion the GPU copies into (Phase 2) and the CPU
+        // maps via GEBufferReader. State COPY_DEST — the only UAV-free state a
+        // READBACK heap accepts and the role it plays (copy destination).
+        ID3D12Resource *cpuSideRes = nullptr;
+        D3D12MA::Allocation *cpuSideAllocation = nullptr;
+        if(desc.usage == BufferDescriptor::Readback){
+            D3D12_RESOURCE_DESC companionDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferLen);
+            D3D12MA::ALLOCATION_DESC companionAllocDesc = {};
+            companionAllocDesc.HeapType = D3D12_HEAP_TYPE_READBACK;
+            HRESULT chr = memAllocator->CreateResource(
+                &companionAllocDesc,
+                &companionDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                &cpuSideAllocation,
+                IID_PPV_ARGS(&cpuSideRes));
+            if(FAILED(chr)){
+                DEBUG_STREAM("Failed to Create D3D12 Readback companion buffer via D3D12MA");
+                if (cpuSideAllocation) cpuSideAllocation->Release();
+                if (allocation) allocation->Release();
+                buffer->Release();
+                return nullptr;
+            }
+        }
+
+        auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation,cpuSideRes,cpuSideAllocation);
         d3d12_buffer->role = desc.role;
         return SharedHandle<GEBuffer>(d3d12_buffer);
     }

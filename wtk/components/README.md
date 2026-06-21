@@ -2,7 +2,7 @@
 
 `wtk/components/` houses opt-in widget/view libraries that ship as part of
 the OmegaWTK SDK rather than inside the core library. Each component
-compiles to its own shared library named `OmegaWTK.<name>` and is bundled
+compiles to its own shared library named `OmegaWTK_<name>` and is bundled
 alongside `OmegaWTK` so consumer apps see the whole SDK as one product —
 they never name a component on their own link line.
 
@@ -100,13 +100,13 @@ A component CMakeLists.txt must:
 
 1. Declare its opt-in flag (default OFF) and early-return when unset:
    ```cmake
-   option(OMEGAWTK_COMPONENT_<NAME> "Build OmegaWTK.<name> (...)" OFF)
+   option(OMEGAWTK_COMPONENT_<NAME> "Build OmegaWTK_<name> (...)" OFF)
    if(NOT OMEGAWTK_COMPONENT_<NAME>)
        return()
    endif()
    ```
 
-2. Build a SHARED target named **`OmegaWTK.<name>`** (CMake target name
+2. Build a SHARED target named **`OmegaWTK<name>`** (CMake target name
    == output base name).
 
 3. Set per-platform output directory on Windows/Linux to put the binary
@@ -120,7 +120,7 @@ A component CMakeLists.txt must:
 
 5. Register itself with the parent build:
    ```cmake
-   set_property(GLOBAL APPEND PROPERTY OMEGAWTK_COMPONENT_TARGETS OmegaWTK.<name>)
+   set_property(GLOBAL APPEND PROPERTY OMEGAWTK_COMPONENT_TARGETS OmegaWTK_<name>)
    ```
 
 The component does **not** link `OmegaWTK` from its own CMakeLists —
@@ -147,7 +147,7 @@ OmegaWTKApp(
     NAME      MyApp
     BUNDLE_ID "org.example.MyApp"
     SOURCES   main.cpp)
-# No need to mention OmegaWTK.gteview, OmegaWTK.webview, etc.
+# No need to mention OmegaWTK_GTEView, OmegaWTK_WebView, etc.
 # If they were configured in, the app links them.
 ```
 
@@ -169,7 +169,7 @@ When a component grows its own exported types, it ships an
 - Component public headers mark their exported classes / functions with
   `OMEGAWTK_<NAME>_EXPORT`.
 - The component's CMakeLists adds
-  `target_compile_definitions(OmegaWTK.<name> PRIVATE OMEGAWTK_<NAME>_BUILDING)`
+  `target_compile_definitions(OmegaWTK_<name> PRIVATE OMEGAWTK_<NAME>_BUILDING)`
   to flip the macro to dllexport during its own compilation.
 
 No component has reached this point yet; the gteview scaffold omits the

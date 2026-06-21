@@ -64,9 +64,39 @@ _NAMESPACE_BEGIN_
         ID3D12DescriptorHeap *currentResourceDescHeap = nullptr;  // CBV/SRV/UAV
         ID3D12DescriptorHeap *currentSamplerDescHeap = nullptr;   // SAMPLER
 
+        // Heaps actually bound on this command list via SetDescriptorHeaps (vs
+        // the *desired* current*DescHeap above). D3D12 invalidates every root
+        // descriptor-table binding whenever SetDescriptorHeaps changes the bound
+        // set, so `rebindDescriptorHeaps` re-issues the call ONLY when the set
+        // genuinely changes — otherwise binding a runtime sampler after a texture
+        // would re-issue SetDescriptorHeaps and silently invalidate the texture's
+        // already-set table (the runtime-sampler-renders-nothing bug). Reset to
+        // nullptr wherever the list's bound heaps are cleared (ClearState / list
+        // reset), alongside the current*DescHeap resets.
+        ID3D12DescriptorHeap *boundResourceDescHeap = nullptr;
+        ID3D12DescriptorHeap *boundSamplerDescHeap = nullptr;
+
+        // D3D12-CPU-Accessible-Buffer-Plan Phase 2 — Readback output buffers
+        // (DEFAULT primary + READBACK companion) bound as a UAV in the current
+        // compute pass. `finishComputePass` records a DEFAULT→companion copy for
+        // each so GEBufferReader (which maps the companion) sees the dispatch's
+        // writes, then clears the list.
+        std::vector<GED3D12Buffer *> pendingReadbackBuffers;
+
        friend class GED3D12CommandQueue;
 
        unsigned getRootParameterIndexOfResource(unsigned id,omegasl_shader &shader);
+       /// D3D12-CPU-Accessible-Buffer-Plan Phase 1 — how a buffer resource is
+       /// bound to a shader, derived from the shader layout (NOT the heap type):
+       /// a Uniform-role buffer is a CBV; a Storage buffer is an SRV when the
+       /// shader declares it `in`, a UAV when it declares it `out`.
+       enum class BufferRootKind { CBV, SRV, UAV };
+       BufferRootKind classifyBufferRootKind(unsigned id, omegasl_shader &shader);
+       /// Record a state transition for a DEFAULT-heap buffer (e.g. a Readback
+       /// output → UNORDERED_ACCESS for a UAV bind), updating its tracked state.
+       /// No-op for UPLOAD-heap buffers, which are permanently GENERIC_READ and
+       /// already satisfy shader-read, and when the buffer is already in `target`.
+       void transitionBufferState(GED3D12Buffer *buf, D3D12_RESOURCE_STATES target);
        /// Extension 8 — (re)bind whichever of the resource / sampler heaps are
        /// set, so both types can be visible to a single draw / dispatch.
        void rebindDescriptorHeaps();
@@ -243,8 +273,17 @@ _NAMESPACE_BEGIN_
         // — the same thread that submits, commits, and calls getAvailableBuffer
         // — so no locking is needed; the cross-thread hand-off the plan warns
         // about only applies to the waiter-thread alternative, not this poll.
-        std::vector<GECommandBufferCompletionHandler>                            stagedCompletionHandlers_;
-        std::vector<std::pair<std::uint64_t, GECommandBufferCompletionHandler>>  gatedCompletionHandlers_;
+        // GPU Commit-Timing P1 — each staged / gated completion carries the
+        // pool slot whose GPU timestamps belong to it, so `pollCompletions`
+        // can report this buffer's real start/end span instead of a shared
+        // zero. UINT32_MAX slot = untimed (defensive ad-hoc buffer, or the
+        // device/queue can't write timestamps).
+        struct PendingCompletion {
+            GECommandBufferCompletionHandler handler;
+            std::uint32_t                    poolSlot = UINT32_MAX;
+        };
+        std::vector<PendingCompletion>                            stagedCompletionHandlers_;
+        std::vector<std::pair<std::uint64_t, PendingCompletion>>  gatedCompletionHandlers_;
         // Move `cb`'s registered completion handler (if any) into the staged
         // list and clear it off the buffer. No-op when `cb` has no handler.
         void stageCompletionHandlerFrom(GED3D12CommandBuffer *cb);
@@ -286,6 +325,36 @@ _NAMESPACE_BEGIN_
         std::uint32_t                                    currentBufferIndex = 0;
         std::uint32_t                                    initialBufferHint  = 0;
         bool                                             poolGrowthWarned   = false;
+        // Hard ceiling on the growable pool. growPoolOnce refuses to grow past
+        // this; the timestamp heap / readback below are sized to it once so they
+        // never need recreating while in-flight resolves reference live indices.
+        static constexpr std::uint32_t                   kPoolCeiling       = 256;
+
+        // GPU Commit-Timing P1 — per-buffer GPU timestamps. One TIMESTAMP query
+        // heap + READBACK buffer sized to `kPoolCeiling` (2 queries per slot:
+        // slot*2 = start, slot*2+1 = end). `timestampsEnabled` is false when the
+        // device/queue can't write timestamps (e.g. a COPY queue, or
+        // GetTimestampFrequency failed) — every per-buffer time then stays 0.0,
+        // the documented degraded contract. The readback buffer is persistently
+        // mapped via `timestampMapped`; `timestampFrequency` is GPU ticks/sec.
+        ComPtr<ID3D12QueryHeap>                          timestampHeap;
+        ComPtr<ID3D12Resource>                           timestampReadback;
+        std::uint64_t                                   *timestampMapped     = nullptr;
+        std::uint64_t                                    timestampFrequency  = 0;
+        bool                                             timestampsEnabled   = false;
+
+        // Write this slot's start timestamp (query slot*2) as the first command
+        // on a freshly-reset list. No-op when timing disabled / slot untracked.
+        void writeStartTimestamp(ID3D12GraphicsCommandList6 *list, std::uint32_t slot);
+        // Write this slot's end timestamp (query slot*2+1) and resolve the
+        // [start,end] pair into the readback buffer. Call immediately before the
+        // matching list's Close(). No-op when timing disabled / slot untracked.
+        void writeEndTimestampAndResolve(ID3D12GraphicsCommandList6 *list, std::uint32_t slot);
+        // Read a retired slot's resolved [start,end] ticks and convert to GPU
+        // seconds. Returns false (outputs untouched) when timing is disabled, the
+        // slot is untracked, or the pair is stale/non-increasing — so a buffer
+        // that recorded no timestamps can't poison the aggregator's min/max fold.
+        bool resolveSlotTiming(std::uint32_t slot, double &startSec, double &endSec) const;
 
         D3D12_COMMAND_LIST_TYPE listType = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
@@ -340,6 +409,15 @@ _NAMESPACE_BEGIN_
         ID3D12GraphicsCommandList6 * getLastCommandList();
         void commitToGPU() override;
         void commitToGPUAndWait() override;
+        /// GPU Commit-Timing P1 — async commit timing. Installs the P2 commit
+        /// aggregator onto the pending batch's now-timed per-buffer seam, then
+        /// commits; `onComplete` fires once from `pollCompletions` with the
+        /// batch's real GPU span. See GPU-Commit-Timing-Plan P1.
+        void commitToGPU(const GECommitCompletionHandler & onComplete) override;
+        /// GPU Commit-Timing P1 — sync counterpart. The base version would
+        /// deadlock here (it blocks on a CV only `pollCompletions` can signal),
+        /// so D3D12 drives the async commit then drains + polls with the GPU idle.
+        GECommitCompletionInfo commitToGPUAndWaitTimed() override;
         void notifyCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &waitFence) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> & commandBuffer) override;
         void submitCommandBuffer(SharedHandle<GECommandBuffer> &commandBuffer, SharedHandle<GEFence> &signalFence) override;

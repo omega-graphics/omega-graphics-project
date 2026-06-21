@@ -33,6 +33,22 @@ static_assert(matrixSize(2, 2, Std::Std140) == 32, "float2x2 std140 = 2*16");
 static_assert(matrixSize(3, 2, Std::Std430) == 24, "float3x2 std430 = 3*8");
 static_assert(matrixSize(3, 2, Std::Std140) == 48, "float3x2 std140 = 3*16");
 
+// --- DirectX StructuredBuffer layout (BufferLayoutStd::DXStructured) — the
+//     scalar-aligned layout the D3D12 backend packs storage buffers in. Every
+//     member aligns to its 4-byte component (NO std430 vec3->16 column pad), so
+//     matrix columns pack tightly at R*4 (float3x3 = 36, not 48). float*x4
+//     columns are 16 either way, which is why float4x4 round-trips under either
+//     layout while float3x3 does not. Reference values per the DXIL rules. ---
+static_assert(matrixColumnStride(1, Std::DXStructured) == 4,  "DX mat*x1 column = 4");
+static_assert(matrixColumnStride(2, Std::DXStructured) == 8,  "DX mat*x2 column = 8");
+static_assert(matrixColumnStride(3, Std::DXStructured) == 12, "DX mat*x3 column = 12 (tight, no pad)");
+static_assert(matrixColumnStride(4, Std::DXStructured) == 16, "DX mat*x4 column = 16");
+static_assert(matrixSize(3, 3, Std::DXStructured) == 36, "float3x3 DX = 3*12");
+static_assert(matrixSize(2, 2, Std::DXStructured) == 16, "float2x2 DX = 2*8");
+static_assert(matrixSize(4, 4, Std::DXStructured) == 64, "float4x4 DX = 4*16 (matches std430)");
+static_assert(matrixSize(3, 4, Std::DXStructured) == 48, "float3x4 DX = 3*16");
+static_assert(matrixSize(4, 3, Std::DXStructured) == 48, "float4x3 DX = 4*12");
+
 int main() {
     // std140 struct stride: align each member, then round the struct to 16.
     assert(std140StructStride({OMEGASL_FLOAT4}) == 16);
@@ -61,6 +77,27 @@ int main() {
     assert(memberBaseAlignment(OMEGASL_FLOAT2x2, Std::Std430) == 8);   // vec2 columns
     assert(memberBaseAlignment(OMEGASL_FLOAT2x2, Std::Std140) == 16);  // forced to 16
     assert(memberBaseAlignment(OMEGASL_FLOAT4x4, Std::Std430) == 16);
+
+    // DirectX StructuredBuffer: every member aligns to its 4-byte component,
+    // matrices included — the legacy 16-byte column/struct rule is cbuffer-only.
+    assert(memberBaseAlignment(OMEGASL_FLOAT,    Std::DXStructured) == 4);
+    assert(memberBaseAlignment(OMEGASL_FLOAT2,   Std::DXStructured) == 4);
+    assert(memberBaseAlignment(OMEGASL_FLOAT3,   Std::DXStructured) == 4);
+    assert(memberBaseAlignment(OMEGASL_FLOAT4,   Std::DXStructured) == 4);
+    assert(memberBaseAlignment(OMEGASL_FLOAT3x3, Std::DXStructured) == 4);
+    assert(memberBaseAlignment(OMEGASL_FLOAT2x2, Std::DXStructured) == 4);
+    // DX struct stride: scalar-aligned, no final 16-byte rounding (matches DXIL
+    // StructureByteStride). The two canonical reference cases from the layout
+    // rules: {float, float4} = 20 (float4 @4, not @16); {float4, float3x3} = 52.
+    assert(dxStructuredStructStride({OMEGASL_FLOAT, OMEGASL_FLOAT4}) == 20);
+    assert(dxStructuredStructStride({OMEGASL_FLOAT4, OMEGASL_FLOAT3x3}) == 52);
+    // The matrix_ops_test structs: MatIn {float4x4,float3x3,float2x2,float4} and
+    // the mixed {float,float4,float2,float4x4,float} — host must size these to
+    // the DX layout so the GPU's StructuredBuffer reads line up.
+    assert(dxStructuredStructStride(
+        {OMEGASL_FLOAT4x4, OMEGASL_FLOAT3x3, OMEGASL_FLOAT2x2, OMEGASL_FLOAT4}) == 132);
+    assert(dxStructuredStructStride(
+        {OMEGASL_FLOAT, OMEGASL_FLOAT4, OMEGASL_FLOAT2, OMEGASL_FLOAT4x4, OMEGASL_FLOAT}) == 96);
 
     // alignOffset rounds up to the next multiple (no-op when already aligned).
     assert(alignOffset(0, 16) == 0);

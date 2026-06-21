@@ -142,6 +142,73 @@ void installCommitAggregator(const std::vector<SharedHandle<GECommandBuffer>> & 
 | Vulkan | Safe base default (status + count, zero timing). | Write `vkCmdWriteTimestamp` into a `VkQueryPool(TIMESTAMP)`; resolve after the retention timeline semaphore; mask to `timestampValidBits`; reset pool per reuse. |
 | D3D12 | Safe base default (status + count, zero timing). | `EndQuery(TIMESTAMP)` into a `D3D12_QUERY_HEAP_TYPE_TIMESTAMP`; `ResolveQueryData` → readback; read after the retention fence. |
 
+## P1 — D3D12 per-buffer timestamps (implementation)
+
+Scope: populate the per-buffer `GECommandBufferCompletionInfo` GPU-time fields
+that `GED3D12CommandQueue::pollCompletions` currently leaves at `0.0`, and route
+them up to commit-level timing via the existing P2 aggregator. Self-contained to
+the D3D12 backend; no public-API change. ~250–300 lines across one header + one
+`.cpp`.
+
+The work rides the *existing* G.5.1 completion seam (submit → stage → gate →
+`pollCompletions` fires), which already gates each command list's handler to a
+`retentionFence` value. P1 adds the GPU timestamps that seam reports, plus two
+structural fixes the current seam needs before it can carry real per-buffer
+times.
+
+**1. Timestamp resources (per queue, gated on timestamp support).** At
+construction, after the pool is built, query `commandQueue->GetTimestampFrequency`
+once. If it fails — or the queue is neither DIRECT nor COMPUTE — leave timing
+disabled and keep the current zero-timing behavior (COPY-queue timestamps need
+the separate copy-queue query type; out of scope). When enabled, create one
+`ID3D12QueryHeap` of type `D3D12_QUERY_HEAP_TYPE_TIMESTAMP` and one READBACK
+`ID3D12Resource`, both sized for the hard pool ceiling (256 slots × 2 queries =
+512 timestamps, 4 KB). Sizing to the ceiling up front avoids recreating the heap
+on `growPoolOnce` while in-flight resolves reference live indices. Persistently
+map the readback buffer. Each pool slot owns query indices `slot*2` (start) and
+`slot*2+1` (end), and readback byte offset `slot*16`.
+
+**2. Writing the timestamps.** Start timestamp = `EndQuery(heap, TIMESTAMP,
+slot*2)` written as the first command after a list is reset — in
+`getAvailableBuffer` (right after `poolSlot` is stamped on the fresh wrapper) and
+in `GED3D12CommandBuffer::reset` (re-used wrapper). End timestamp + resolve =
+`EndQuery(heap, TIMESTAMP, slot*2+1)` then `ResolveQueryData(heap, TIMESTAMP,
+slot*2, 2, readback, slot*16)`, written immediately before every `cl->Close()`.
+The three close sites — the batch loop in `commitToGPU`, the batch loop in the
+two-arg `submitCommandBuffer`, and that method's dedicated single-buffer close —
+each already know the slot: `commandLists[i]` is parallel to `pendingSlots[i]`,
+and the single buffer carries `poolSlot` directly. (Resolve targets a READBACK
+resource, permanently in `COPY_DEST`; no transition needed.)
+
+**3. Per-buffer info in `pollCompletions` (structural fix #1).** The staged /
+gated containers carry a bare `std::function` today, and `pollCompletions` fires
+one shared zero-timing `info` for every ready handler. Replace the element type
+with a small `{handler, poolSlot}` struct (gated adds the fence value). When an
+entry is ready, read its slot's two ticks from the mapped readback buffer,
+convert to seconds (`ticks / frequency`), and fire that handler with its own
+`GECommandBufferCompletionInfo` (status as today, real start/end). `UINT32_MAX`
+slot or timing-disabled → leave `0.0`, exactly the current contract.
+
+**4. Commit-level timing override (structural fix #2).** D3D12 still uses the
+base `commitToGPU(handler)` fallback, so the aggregator never runs. Override it:
+call `installCommitAggregator(retainedCommandBuffers, onComplete)` to set the
+fold handler on each batch buffer, then `stageCompletionHandlerFrom` each of
+those buffers so the freshly-set handler is staged *with its slot* and gated at
+this commit's Execute. The WTK recycler's per-buffer handler was already staged
+at submit time and fires independently from its own copy, so this composes
+rather than clobbers. The sync form `commitToGPUAndWaitTimed` **must** be
+overridden too: the base version drives the now-async `commitToGPU(handler)` and
+then blocks on a condition variable that only `pollCompletions` can signal — but
+nothing pumps the poller while it blocks, so it would deadlock. The D3D12
+override issues the async commit (capturing its single fire), then calls
+`commitToGPUAndWait`, whose fence wait drains the batch and whose terminal
+`pollCompletions` (GPU idle) fires the gated aggregator handler on this thread
+before the call returns.
+
+**Build / verify.** Windows/WSL build is handed to the user per AGENTS.md;
+`commit_timing_test` already exists and exercises both the sync and async forms —
+it will report real D3D12 times once this lands.
+
 ## Verification
 
 `gte/tests/commit_timing_test.cpp` (shared CLI test, registered via

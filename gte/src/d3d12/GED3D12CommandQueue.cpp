@@ -123,6 +123,65 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQ
         poolSubmissionIndex.push_back(0);
     }
 
+    // GPU Commit-Timing P1 — per-buffer GPU timestamp infrastructure. Only
+    // DIRECT / COMPUTE queues can write graphics/compute TIMESTAMP queries; a
+    // COPY queue needs the separate copy-queue timestamp path (out of scope),
+    // so timing stays disabled there. Disable silently — keeping the documented
+    // zero-timing fallback — if the device won't report a frequency or any
+    // resource create fails. Sized to `kPoolCeiling` (2 queries per slot) once
+    // so the heap never needs recreating as the pool grows.
+    if (listType == D3D12_COMMAND_LIST_TYPE_DIRECT
+        || listType == D3D12_COMMAND_LIST_TYPE_COMPUTE) {
+        UINT64 freq = 0;
+        if (SUCCEEDED(commandQueue->GetTimestampFrequency(&freq)) && freq > 0) {
+            D3D12_QUERY_HEAP_DESC heapDesc{};
+            heapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            heapDesc.Count = kPoolCeiling * 2;
+            heapDesc.NodeMask = engine->d3d12_device->GetNodeCount();
+            ComPtr<ID3D12QueryHeap> heap;
+            if (SUCCEEDED(engine->d3d12_device->CreateQueryHeap(&heapDesc, IID_PPV_ARGS(&heap)))) {
+                const UINT64 readbackBytes =
+                    static_cast<UINT64>(kPoolCeiling) * 2 * sizeof(std::uint64_t);
+                D3D12_HEAP_PROPERTIES rbProps{};
+                rbProps.Type = D3D12_HEAP_TYPE_READBACK;
+                rbProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+                rbProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+                rbProps.CreationNodeMask = engine->d3d12_device->GetNodeCount();
+                rbProps.VisibleNodeMask = engine->d3d12_device->GetNodeCount();
+                D3D12_RESOURCE_DESC rbDesc{};
+                rbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                rbDesc.Alignment = 0;
+                rbDesc.Width = readbackBytes;
+                rbDesc.Height = 1;
+                rbDesc.DepthOrArraySize = 1;
+                rbDesc.MipLevels = 1;
+                rbDesc.Format = DXGI_FORMAT_UNKNOWN;
+                rbDesc.SampleDesc.Count = 1;
+                rbDesc.SampleDesc.Quality = 0;
+                rbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                rbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+                ComPtr<ID3D12Resource> readback;
+                if (SUCCEEDED(engine->d3d12_device->CreateCommittedResource(
+                        &rbProps, D3D12_HEAP_FLAG_NONE, &rbDesc,
+                        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback)))) {
+                    void *mapped = nullptr;
+                    // Map for the queue's lifetime; the read range spans the whole
+                    // buffer — pollCompletions only reads a slot after its
+                    // retention-fence value retires, so the GPU's resolve write is
+                    // already visible.
+                    D3D12_RANGE readRange{0, static_cast<SIZE_T>(readbackBytes)};
+                    if (SUCCEEDED(readback->Map(0, &readRange, &mapped))) {
+                        timestampHeap      = std::move(heap);
+                        timestampReadback  = std::move(readback);
+                        timestampMapped    = static_cast<std::uint64_t *>(mapped);
+                        timestampFrequency = freq;
+                        timestampsEnabled  = true;
+                    }
+                }
+            }
+        }
+    }
+
     // Shared-Descriptor-Heap-Plan Phase 3 — per-queue transient descriptor
     // ring for one-shot dispatches (tessellation + mipmap generation).
     // Pre-Phase-3 these paths each called CreateDescriptorHeap per call;
@@ -138,7 +197,6 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQ
 };
 
 std::uint32_t GED3D12CommandQueue::growPoolOnce() {
-    constexpr std::uint32_t kPoolCeiling = 256;
     if (poolAllocators.size() >= kPoolCeiling) {
         std::cerr << "GED3D12CommandQueue: pool at ceiling (" << kPoolCeiling
                   << ") and every slot is still in flight — refusing to grow; "
@@ -181,6 +239,52 @@ void GED3D12CommandQueue::stampPendingSlots(std::uint64_t signalValue) {
         }
     }
     pendingSlots.clear();
+}
+
+void GED3D12CommandQueue::writeStartTimestamp(ID3D12GraphicsCommandList6 *list,
+                                              std::uint32_t slot) {
+    // GPU Commit-Timing P1 — start of the buffer's GPU span. Written as the
+    // first command after a list reset so it brackets the whole execution.
+    if (!timestampsEnabled || list == nullptr
+        || slot == UINT32_MAX || slot >= kPoolCeiling) {
+        return;
+    }
+    list->EndQuery(timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2);
+}
+
+void GED3D12CommandQueue::writeEndTimestampAndResolve(ID3D12GraphicsCommandList6 *list,
+                                                      std::uint32_t slot) {
+    // GPU Commit-Timing P1 — end of the buffer's GPU span plus a resolve of the
+    // [start,end] pair into this slot's 16-byte region of the readback buffer.
+    // Recorded just before Close(), so the resolve runs after both timestamps.
+    if (!timestampsEnabled || list == nullptr
+        || slot == UINT32_MAX || slot >= kPoolCeiling) {
+        return;
+    }
+    list->EndQuery(timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 + 1);
+    list->ResolveQueryData(timestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                           slot * 2, 2, timestampReadback.Get(),
+                           static_cast<UINT64>(slot) * 2 * sizeof(std::uint64_t));
+}
+
+bool GED3D12CommandQueue::resolveSlotTiming(std::uint32_t slot,
+                                            double &startSec, double &endSec) const {
+    if (!timestampsEnabled || timestampMapped == nullptr || timestampFrequency == 0
+        || slot == UINT32_MAX || slot >= kPoolCeiling) {
+        return false;
+    }
+    const std::uint64_t startTicks = timestampMapped[slot * 2];
+    const std::uint64_t endTicks   = timestampMapped[slot * 2 + 1];
+    // A slot whose list recorded no timestamps (a defensive ad-hoc buffer) or a
+    // pair that hasn't been written this cycle leaves stale / zero ticks. Reject
+    // any non-increasing pair so it can't poison the aggregator's min/max fold.
+    if (endTicks <= startTicks) {
+        return false;
+    }
+    const double inv = 1.0 / static_cast<double>(timestampFrequency);
+    startSec = static_cast<double>(startTicks) * inv;
+    endSec   = static_cast<double>(endTicks) * inv;
+    return true;
 }
 
 Retention::FenceGate GED3D12CommandQueue::gateForNextSubmit() {
@@ -324,6 +428,49 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
     return idx;
 }
 
+GED3D12CommandBuffer::BufferRootKind
+GED3D12CommandBuffer::classifyBufferRootKind(unsigned id, omegasl_shader &shader) {
+    // D3D12-CPU-Accessible-Buffer-Plan Phase 1 — mirror the SRV/UAV/CBV decision
+    // getRootParameterIndexOfResource already makes from the shader layout, so a
+    // buffer's binding is driven by what the shader declares, not by which heap
+    // the resource happens to live on.
+    OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layoutArr{shader.pLayout, shader.pLayout + shader.nLayout};
+    for (auto &l : layoutArr) {
+        if (l.location == id) {
+            if (l.type == OMEGASL_SHADER_UNIFORM_DESC) {
+                return BufferRootKind::CBV;
+            }
+            if (l.type == OMEGASL_SHADER_BUFFER_DESC) {
+                return (l.io_mode == OMEGASL_SHADER_DESC_IO_IN) ? BufferRootKind::SRV
+                                                                : BufferRootKind::UAV;
+            }
+            break;
+        }
+    }
+    // Unexpected / missing layout entry — default to a read-only SRV bind, the
+    // safest fallback (never promotes a buffer to writable UAV access by accident).
+    return BufferRootKind::SRV;
+}
+
+void GED3D12CommandBuffer::transitionBufferState(GED3D12Buffer *buf, D3D12_RESOURCE_STATES target) {
+    if (buf == nullptr || buf->buffer == nullptr) {
+        return;
+    }
+    // UPLOAD-heap buffers are permanently GENERIC_READ — they can't be
+    // transitioned and already satisfy shader-read. Only DEFAULT-heap buffers
+    // (the Readback outputs this plan introduces) transition.
+    D3D12_HEAP_PROPERTIES heapProps;
+    D3D12_HEAP_FLAGS heapFlags;
+    buf->buffer->GetHeapProperties(&heapProps, &heapFlags);
+    if (heapProps.Type != D3D12_HEAP_TYPE_DEFAULT || buf->currentState == target) {
+        return;
+    }
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(buf->buffer.Get(),
+                                                        buf->currentState, target);
+    commandList->ResourceBarrier(1, &barrier);
+    buf->currentState = target;
+}
+
 // Pipeline-Completion-Extension-Plan §6.3 — locate the layout-desc that
 // owns the given bind location and run the kind/sample-count check
 // against the bound texture. Logs a diagnostic on mismatch and returns
@@ -358,11 +505,33 @@ static bool checkSamplerBindAgainstShader(unsigned int location,
 }
 
 void GED3D12CommandBuffer::rebindDescriptorHeaps() {
+    // Bind BOTH engine-wide heaps together, defaulting whichever isn't bound yet
+    // to its block-0 heap, and re-issue SetDescriptorHeaps ONLY when the bound
+    // set actually changes. D3D12 invalidates all root descriptor-table bindings
+    // whenever SetDescriptorHeaps changes the heap set: previously the texture
+    // bind set [resource] and a later runtime-sampler bind set [resource,sampler],
+    // so adding the sampler heap re-issued the call and silently invalidated the
+    // texture's already-set table — the sampled texture then read nothing and the
+    // RT kept its clear color (runtime sampler "renders nothing"; static samplers,
+    // which need no heap, were unaffected). Binding both up front and skipping the
+    // no-op keeps the heap set constant for the whole pass.
+    auto *engine = parentQueue->engine;
+    ID3D12DescriptorHeap *resourceHeap =
+        currentResourceDescHeap ? currentResourceDescHeap
+                                : engine->resourceDescriptorAllocator->heap(0);
+    ID3D12DescriptorHeap *samplerHeap =
+        currentSamplerDescHeap ? currentSamplerDescHeap
+                               : engine->samplerDescriptorAllocator->heap(0);
+    if (resourceHeap == boundResourceDescHeap && samplerHeap == boundSamplerDescHeap) {
+        return;  // already bound this set — re-issuing would invalidate live tables
+    }
     ID3D12DescriptorHeap *heaps[2];
     unsigned n = 0;
-    if (currentResourceDescHeap) heaps[n++] = currentResourceDescHeap;
-    if (currentSamplerDescHeap)  heaps[n++] = currentSamplerDescHeap;
+    if (resourceHeap) heaps[n++] = resourceHeap;
+    if (samplerHeap)  heaps[n++] = samplerHeap;
     if (n) commandList->SetDescriptorHeaps(n, heaps);
+    boundResourceDescHeap = resourceHeap;
+    boundSamplerDescHeap  = samplerHeap;
 }
 
 D3D12_RESOURCE_STATES
@@ -464,13 +633,24 @@ void GED3D12CommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, Sh
     if (destText->currentState != D3D12_RESOURCE_STATE_COPY_DEST) {
         resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
             destText->resource.Get(), destText->currentState, D3D12_RESOURCE_STATE_COPY_DEST));
-        srcText->currentState = D3D12_RESOURCE_STATE_COPY_DEST;
+        // Track the *dest's* new state (was erroneously assigning srcText's,
+        // which both lost the dest's COPY_DEST and corrupted the src's state —
+        // breaking any follow-on transition such as the readback download below).
+        destText->currentState = D3D12_RESOURCE_STATE_COPY_DEST;
     }
 
     if (!resourceBarriers.empty()) {
         commandList->ResourceBarrier(resourceBarriers.size(), resourceBarriers.data());
     }
     commandList->CopyResource(destText->resource.Get(), srcText->resource.Get());
+
+    // If the destination is a CPU-readback texture, getBytes reads its READBACK
+    // companion — which CopyResource above does NOT touch (it writes the DEFAULT
+    // primary). Populate the companion now via the texture→buffer download, or
+    // the readback returns the companion's uninitialised zeros.
+    if (destText->isReadbackTexture() && destText->cpuSideresource) {
+        destText->downloadTextureToReadbackHeap(commandList.Get());
+    }
 }
 
 void GED3D12CommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest,
@@ -497,7 +677,7 @@ void GED3D12CommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, Sh
 
         resourceBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
             destText->resource.Get(), destText->currentState, D3D12_RESOURCE_STATE_COPY_DEST));
-        srcText->currentState = D3D12_RESOURCE_STATE_COPY_DEST;
+        destText->currentState = D3D12_RESOURCE_STATE_COPY_DEST;
     }
 
     if (!resourceBarriers.empty()) {
@@ -509,6 +689,12 @@ void GED3D12CommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, Sh
     CD3DX12_BOX _region((LONG)region.x, top_pos, LONG(region.x + region.w), LONG(top_pos + region.h));
     commandList->CopyTextureRegion(&destLoc, (UINT)destCoord.x, (UINT)destCoord.y, (UINT)destCoord.z, &srcLoc,
                                    &_region);
+
+    // Keep a readback destination's CPU companion in sync (see the whole-texture
+    // overload above).
+    if (destText->isReadbackTexture() && destText->cpuSideresource) {
+        destText->downloadTextureToReadbackHeap(commandList.Get());
+    }
 }
 
 void GED3D12CommandBuffer::copyBufferToBuffer(SharedHandle<GEBuffer> &src, SharedHandle<GEBuffer> &dest,
@@ -1841,6 +2027,10 @@ void GED3D12CommandBuffer::finishRenderPass() {
     currentRootSignature = nullptr;
     currentResourceDescHeap = nullptr;
     currentSamplerDescHeap = nullptr;
+    // The command list's bound heaps are cleared here too (ClearState / list
+    // reset), so the next pass's first rebindDescriptorHeaps re-establishes them.
+    boundResourceDescHeap = nullptr;
+    boundSamplerDescHeap = nullptr;
 };
 
 void GED3D12CommandBuffer::startComputePass(const GEComputePassDescriptor &desc) {
@@ -1858,28 +2048,46 @@ void GED3D12CommandBuffer::setComputePipelineState(SharedHandle<GEComputePipelin
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int id) {
     assert(inComputePass && "");
     auto *d3d12_buffer = (GED3D12Buffer *)buffer.get();
-    D3D12_HEAP_PROPERTIES heap_props;
-    D3D12_HEAP_FLAGS heapFlags;
-    d3d12_buffer->buffer->GetHeapProperties(&heap_props, &heapFlags);
-    // Phase 1 (Shared-Descriptor-Heap-Plan): see bindResourceAtVertexShader
-    // for why the per-buffer SetDescriptorHeaps call was removed.
-    if (d3d12_buffer->role == BufferDescriptor::Uniform) {
-        // §2.4 constant buffer — root CBV.
-        commandList->SetComputeRootConstantBufferView(
-            getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
-            d3d12_buffer->buffer->GetGPUVirtualAddress());
-    } else if (heap_props.Type == D3D12_HEAP_TYPE_UPLOAD) {
-        commandList->SetComputeRootShaderResourceView(
-            getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
-            d3d12_buffer->buffer->GetGPUVirtualAddress());
-    } else if (heap_props.Type == D3D12_HEAP_TYPE_READBACK) {
-        auto resource_barrier = CD3DX12_RESOURCE_BARRIER::Transition(d3d12_buffer->buffer.Get(),
-                                                                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        commandList->ResourceBarrier(1, &resource_barrier);
-        commandList->SetComputeRootUnorderedAccessView(
-            getRootParameterIndexOfResource(id, currentComputePipeline->computeShader->internal),
-            d3d12_buffer->buffer->GetGPUVirtualAddress());
+    auto &shader = currentComputePipeline->computeShader->internal;
+    const unsigned rootParam = getRootParameterIndexOfResource(id, shader);
+    // D3D12-CPU-Accessible-Buffer-Plan Phase 1 — classify the bind from the
+    // shader layout (in→SRV, out→UAV, Uniform→CBV), NOT the buffer's heap type.
+    // The old heap-type heuristic bound a Storage `out` buffer that lived on an
+    // UPLOAD heap as an SRV, contradicting the root signature's UAV parameter
+    // (D3D12 [ERROR id=711]). Phase 1 (Shared-Descriptor-Heap-Plan): root-view
+    // binds consult the GPU virtual address, not any descriptor heap.
+    const BufferRootKind kind = (d3d12_buffer->role == BufferDescriptor::Uniform)
+                                    ? BufferRootKind::CBV
+                                    : classifyBufferRootKind(id, shader);
+    switch (kind) {
+        case BufferRootKind::CBV:
+            // §2.4 constant buffer — root CBV.
+            commandList->SetComputeRootConstantBufferView(
+                rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
+            break;
+        case BufferRootKind::SRV:
+            transitionBufferState(d3d12_buffer, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            commandList->SetComputeRootShaderResourceView(
+                rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
+            break;
+        case BufferRootKind::UAV:
+            transitionBufferState(d3d12_buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            commandList->SetComputeRootUnorderedAccessView(
+                rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
+            // D3D12-CPU-Accessible-Buffer-Plan Phase 2 — a Readback output (has a
+            // READBACK companion) needs its DEFAULT primary copied into the
+            // companion at finishComputePass so the CPU can read the results.
+            // Track it once per pass.
+            if (d3d12_buffer->cpuSideResource) {
+                bool already = false;
+                for (auto *b : pendingReadbackBuffers) {
+                    if (b == d3d12_buffer) { already = true; break; }
+                }
+                if (!already) {
+                    pendingReadbackBuffers.push_back(d3d12_buffer);
+                }
+            }
+            break;
     }
 }
 
@@ -2028,12 +2236,35 @@ void GED3D12CommandBuffer::dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> &
 }
 
 void GED3D12CommandBuffer::finishComputePass() {
+    // D3D12-CPU-Accessible-Buffer-Plan Phase 2 — copy each Readback output's
+    // DEFAULT primary into its READBACK companion so GEBufferReader (which maps
+    // the companion) observes the dispatch's UAV writes. Recorded after the
+    // dispatch(es) and outside any render pass; the UNORDERED_ACCESS→COPY_SOURCE
+    // transition also flushes the UAV writes before the copy reads them. The
+    // companion is COPY_DEST (its creation state), so no companion barrier is
+    // needed. CopyBufferRegion is a flat buffer→buffer copy — no footprint
+    // (unlike the texture readback path).
+    for (auto *buf : pendingReadbackBuffers) {
+        if (buf == nullptr || buf->cpuSideResource == nullptr) {
+            continue;
+        }
+        transitionBufferState(buf, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        commandList->CopyBufferRegion(buf->cpuSideResource.Get(), 0,
+                                      buf->buffer.Get(), 0,
+                                      buf->buffer->GetDesc().Width);
+    }
+    pendingReadbackBuffers.clear();
+
     commandList->ClearState(nullptr);
     inComputePass = false;
     currentComputePipeline = nullptr;
     currentRootSignature = nullptr;
     currentResourceDescHeap = nullptr;
     currentSamplerDescHeap = nullptr;
+    // The command list's bound heaps are cleared here too (ClearState / list
+    // reset), so the next pass's first rebindDescriptorHeaps re-establishes them.
+    boundResourceDescHeap = nullptr;
+    boundSamplerDescHeap = nullptr;
 };
 
 //    void GED3D12CommandBuffer::waitForFence(SharedHandle<GEFence> &fence,unsigned val) {
@@ -2063,7 +2294,12 @@ void GED3D12CommandQueue::stageCompletionHandlerFrom(GED3D12CommandBuffer *cb) {
     // the queue now owns firing it. No-op for the common (non-frame) CB that
     // never had a handler registered.
     if (cb != nullptr && cb->completionHandler) {
-        stagedCompletionHandlers_.push_back(std::move(cb->completionHandler));
+        // GPU Commit-Timing P1 — carry the buffer's pool slot so pollCompletions
+        // can read its resolved timestamps when this handler fires.
+        PendingCompletion pending;
+        pending.handler  = std::move(cb->completionHandler);
+        pending.poolSlot = cb->poolSlot;
+        stagedCompletionHandlers_.push_back(std::move(pending));
         cb->completionHandler = nullptr;
     }
 }
@@ -2073,8 +2309,8 @@ void GED3D12CommandQueue::gateStagedCompletions(std::uint64_t signalValue) {
     // the ExecuteCommandLists that ran its command list. Once
     // GetCompletedValue() reaches `signalValue` the GPU is done with that
     // submission and pollCompletions can fire the handler.
-    for (auto & handler : stagedCompletionHandlers_) {
-        gatedCompletionHandlers_.emplace_back(signalValue, std::move(handler));
+    for (auto & pending : stagedCompletionHandlers_) {
+        gatedCompletionHandlers_.emplace_back(signalValue, std::move(pending));
     }
     stagedCompletionHandlers_.clear();
 }
@@ -2088,12 +2324,12 @@ void GED3D12CommandQueue::pollCompletions() {
     // then fire outside the loop so a handler can't observe a half-mutated
     // container (the WTK handler only flips an atomic, but this keeps the
     // mechanism re-entrancy-safe regardless of what a future handler does).
-    std::vector<GECommandBufferCompletionHandler> ready;
+    std::vector<PendingCompletion> ready;
     std::size_t writeIdx = 0;
     for (std::size_t readIdx = 0; readIdx < gatedCompletionHandlers_.size(); ++readIdx) {
         auto & entry = gatedCompletionHandlers_[readIdx];
         if (entry.first <= completed) {
-            if (entry.second) {
+            if (entry.second.handler) {
                 ready.push_back(std::move(entry.second));
             }
         } else {
@@ -2109,16 +2345,22 @@ void GED3D12CommandQueue::pollCompletions() {
     }
     // D3D12 has no per-command-buffer success/fail status the way Metal does;
     // a failed GPU execution surfaces as device removal. Report Error to the
-    // handlers fired this pass if the device was lost, else Completed. GPU
-    // timestamps are left at their defaults (0.0) — not wired on D3D12 yet
-    // ("if available" in the plan); the WTK recycler ignores them.
-    GECommandBufferCompletionInfo info {};
+    // handlers fired this pass if the device was lost, else Completed.
     const bool deviceRemoved = engine != nullptr && engine->d3d12_device != nullptr
                                && engine->d3d12_device->GetDeviceRemovedReason() != S_OK;
-    info.status = deviceRemoved ? GECommandBufferCompletionInfo::CompletionStatus::Error
-                                : GECommandBufferCompletionInfo::CompletionStatus::Completed;
-    for (auto & handler : ready) {
-        handler(info);
+    const auto status = deviceRemoved ? GECommandBufferCompletionInfo::CompletionStatus::Error
+                                      : GECommandBufferCompletionInfo::CompletionStatus::Completed;
+    for (auto & entry : ready) {
+        // GPU Commit-Timing P1 — fold in this buffer's own resolved GPU span.
+        // resolveSlotTiming leaves the fields at 0.0 (the degraded contract)
+        // when timing is disabled, the slot was untracked, or its retention
+        // fence retired but the buffer recorded no usable timestamp pair.
+        GECommandBufferCompletionInfo info {};
+        info.status = status;
+        if (status == GECommandBufferCompletionInfo::CompletionStatus::Completed) {
+            resolveSlotTiming(entry.poolSlot, info.gpuStartTimeSec, info.gpuEndTimeSec);
+        }
+        entry.handler(info);
     }
 }
 
@@ -2186,8 +2428,14 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
     // Preserve submission order: queued command lists must execute before the
     // fence signal command list so cross-queue waits observe rendered data.
     if (!commandLists.empty()) {
-        for (auto &cl : commandLists) {
+        for (std::size_t i = 0; i < commandLists.size(); ++i) {
+            auto *cl = commandLists[i];
             if (cl != nullptr) {
+                // GPU Commit-Timing P1 — end timestamp + resolve before Close;
+                // `pendingSlots` is parallel to `commandLists`.
+                const std::uint32_t slot = i < pendingSlots.size()
+                                               ? pendingSlots[i] : UINT32_MAX;
+                writeEndTimestampAndResolve(cl, slot);
                 cl->Close();
             }
         }
@@ -2212,6 +2460,9 @@ void GED3D12CommandQueue::submitCommandBuffer(SharedHandle<GECommandBuffer> &com
     // above. (WTK only sets handlers on the frame CB, so this is normally a
     // no-op for the two-arg / scratch path, but keep the contract general.)
     stageCompletionHandlerFrom(d3d12_buffer);
+    // GPU Commit-Timing P1 — end timestamp + resolve for this buffer's own
+    // dedicated Execute before its Close().
+    writeEndTimestampAndResolve(d3d12_buffer->commandList.Get(), d3d12_buffer->poolSlot);
     d3d12_buffer->commandList->Close();
     commandQueue->ExecuteCommandLists(1, (ID3D12CommandList *const *)d3d12_buffer->commandList.GetAddressOf());
     {
@@ -2268,14 +2519,27 @@ void GED3D12CommandBuffer::reset() {
     closed = false;
     currentResourceDescHeap = nullptr;
     currentSamplerDescHeap = nullptr;
+    // The command list's bound heaps are cleared here too (ClearState / list
+    // reset), so the next pass's first rebindDescriptorHeaps re-establishes them.
+    boundResourceDescHeap = nullptr;
+    boundSamplerDescHeap = nullptr;
     commandList->Reset(commandAllocator.Get(), nullptr);
     commandAllocator->Reset();
+    // GPU Commit-Timing P1 — re-recorded buffer: re-arm the start timestamp as
+    // the first command on the reset list (mirrors getAvailableBuffer).
+    parentQueue->writeStartTimestamp(commandList.Get(), poolSlot);
 };
 
 void GED3D12CommandQueue::commitToGPU() {
     if (!multiQueueSync) {
-        for (auto &cl : commandLists) {
+        for (std::size_t i = 0; i < commandLists.size(); ++i) {
+            auto *cl = commandLists[i];
             if (cl != nullptr) {
+                // GPU Commit-Timing P1 — close out this buffer's GPU span just
+                // before Close(). `pendingSlots` is parallel to `commandLists`.
+                const std::uint32_t slot = i < pendingSlots.size()
+                                               ? pendingSlots[i] : UINT32_MAX;
+                writeEndTimestampAndResolve(cl, slot);
                 cl->Close();
             }
         }
@@ -2352,6 +2616,41 @@ void GED3D12CommandQueue::commitToGPUAndWait() {
     pollCompletions();
 }
 
+void GED3D12CommandQueue::commitToGPU(const GECommitCompletionHandler & onComplete) {
+    // GPU Commit-Timing P1 — async commit timing. The P2 aggregator
+    // (installCommitAggregator) sets a fold handler on each buffer in the
+    // pending batch; we then re-stage those buffers so the freshly-set handler
+    // is staged with the buffer's pool slot and gated to this commit's Execute.
+    // pollCompletions later fires each with its resolved per-buffer GPU span,
+    // and the aggregator fires `onComplete` once with the whole-batch span.
+    //
+    // The handlers are staged at *commit* time here, deliberately separate from
+    // the WTK recycler handler that submitCommandBuffer already staged at submit
+    // time — both gate to the same Execute and fire independently, so this
+    // composes with the recycler rather than clobbering it.
+    if (onComplete) {
+        installCommitAggregator(retainedCommandBuffers, onComplete);
+        for (auto & handle : retainedCommandBuffers) {
+            stageCompletionHandlerFrom(static_cast<GED3D12CommandBuffer *>(handle.get()));
+        }
+    }
+    commitToGPU();
+}
+
+GECommitCompletionInfo GED3D12CommandQueue::commitToGPUAndWaitTimed() {
+    // GPU Commit-Timing P1 — sync counterpart. The base implementation drives
+    // the async commitToGPU(handler) and blocks on a condition variable that
+    // only pollCompletions can signal — but nothing pumps the poller while it
+    // blocks, so it would deadlock on this backend. Instead: issue the async
+    // commit (capturing its single fire), then commitToGPUAndWait(), whose
+    // fence wait drains the batch and whose terminal pollCompletions fires the
+    // gated aggregator handler on this thread with the GPU idle.
+    GECommitCompletionInfo result {};
+    commitToGPU([&result](const GECommitCompletionInfo & info) { result = info; });
+    commitToGPUAndWait();
+    return result;
+}
+
 SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer() {
     // G.5.1 D3D12 follow-up — fire any frame-completion handlers the GPU has
     // retired. This runs at the start of every frame (FrameRenderPass::begin),
@@ -2414,6 +2713,9 @@ SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer() {
     auto wrapper = SharedHandle<GECommandBuffer>(new GED3D12CommandBuffer(list.Get(), alloc.Get(), this));
     auto * d3d12_buffer = static_cast<GED3D12CommandBuffer *>(wrapper.get());
     d3d12_buffer->poolSlot = chosenSlot;
+    // GPU Commit-Timing P1 — bracket this buffer's GPU span: write the start
+    // timestamp now, as the first command on the freshly-reset list.
+    writeStartTimestamp(list.Get(), chosenSlot);
     currentBufferIndex = (chosenSlot + 1) % static_cast<std::uint32_t>(poolAllocators.size());
     return wrapper;
 };
@@ -2440,6 +2742,13 @@ GED3D12CommandQueue::~GED3D12CommandQueue() {
     // depend on the teardown firing — BackendRenderTargetContext's destructor
     // returns every still-pending PendingReleaseBatch directly to the
     // BufferPool (which outlives the per-window context), so no buffer leaks.
+    // GPU Commit-Timing P1 — release the persistent readback mapping before the
+    // ComPtr drops the resource. CPU never wrote to it, so an empty written
+    // range is correct.
+    if (timestampReadback && timestampMapped != nullptr) {
+        timestampReadback->Unmap(0, nullptr);
+        timestampMapped = nullptr;
+    }
     CloseHandle(cpuEvent);
 }
 

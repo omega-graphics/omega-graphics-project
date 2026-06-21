@@ -40,7 +40,19 @@ namespace OmegaGTE {
     /// a 16-byte multiple. Metal reads constant buffers with its natural
     /// (std430-equivalent) layout, so the Metal backend always passes
     /// `Std430` regardless of buffer role.
-    enum class BufferLayoutStd { Std430, Std140 };
+    ///
+    /// `DXStructured` is native Direct3D `StructuredBuffer<T>` layout, used by
+    /// the D3D12 backend for *storage* buffers. It is scalar-aligned: every
+    /// scalar / vector / matrix aligns to its 4-byte component, NOT to its
+    /// vector size — so a `float3`/`float4` aligns to 4 (size 12 / 16), and a
+    /// `column_major floatCxR` matrix packs its columns tightly at `R*4` stride
+    /// (e.g. `float3x3` = 36 bytes, not std430's 48). It deliberately does NOT
+    /// apply the legacy cbuffer 16-byte column/struct padding — that rule is
+    /// `Std140` (D3D12 `cbuffer` / Uniform buffers still use `Std140`). This
+    /// matches what DXIL produces for `StructuredBuffer<T>` element access, so
+    /// the host bytes line up with the shader's reads. (Metal/Vulkan keep
+    /// `Std430`, which matches their GPU storage-buffer layouts.)
+    enum class BufferLayoutStd { Std430, Std140, DXStructured };
 
     /// Column stride for an OmegaSL `floatCxR` matrix under the given
     /// standard. OmegaSL matrices are stored as C column vectors.
@@ -51,6 +63,9 @@ namespace OmegaGTE {
     /// See OmegaSL-Feature-Gap-Survey §2.4 / §12.2.
     inline constexpr std::size_t matrixColumnStride(unsigned rows, BufferLayoutStd std) noexcept {
         if (std == BufferLayoutStd::Std140) return 16;
+        // DX StructuredBuffer: columns pack tightly at R*4 — no vec3→16 pad
+        // (float3x3 column stride is 12, not 16). See the enum doc.
+        if (std == BufferLayoutStd::DXStructured) return static_cast<std::size_t>(rows) * 4u;
         if (rows == 1) return 4;
         if (rows == 2) return 8;
         return 16; // 3 (padded) or 4
@@ -61,9 +76,12 @@ namespace OmegaGTE {
         return static_cast<std::size_t>(cols) * matrixColumnStride(rows, std);
     }
 
-    /// A matrix's base alignment is its column alignment — same rule as the
-    /// column stride.
+    /// A matrix's base alignment. For std430 / std140 it is the column
+    /// alignment (same rule as the column stride). For DX StructuredBuffer it is
+    /// the 4-byte component alignment — DX never aligns a matrix to its column
+    /// size — so a matrix member only needs 4-byte placement.
     inline constexpr std::size_t matrixAlignment(unsigned rows, BufferLayoutStd std) noexcept {
+        if (std == BufferLayoutStd::DXStructured) return 4;
         return matrixColumnStride(rows, std);
     }
 
@@ -228,6 +246,11 @@ namespace OmegaGTE {
     /// std430/std140 pack it as 12 — so each backend keeps its own size
     /// convention and only borrows this alignment rule.
     inline std::size_t memberBaseAlignment(omegasl_data_type d, BufferLayoutStd std) noexcept {
+        // DX StructuredBuffer aligns *everything* to its 4-byte component — a
+        // float2/float3/float4 or any matrix all need only 4-byte placement.
+        if (std == BufferLayoutStd::DXStructured) {
+            return 4;
+        }
         if (isMatrixDataType(d)) {
             return matrixAlignment(matrixDims(d).second, std);
         }
@@ -258,15 +281,18 @@ namespace OmegaGTE {
     inline std::size_t structStride(const Iterable &fields, BufferLayoutStd std) noexcept {
         std::size_t off = 0, maxAlign = 1;
         for (auto d : fields) {
-            std::size_t align, size;
+            // Alignment is standard-aware via memberBaseAlignment (DXStructured
+            // collapses every member to 4-byte alignment); only the *size*
+            // varies by type and is the same across std430 / DXStructured for
+            // scalars/vectors (vec3 = 12, vec4 = 16) and follows the column
+            // stride for matrices.
+            const std::size_t align = memberBaseAlignment(d, std);
+            std::size_t size;
             if (isMatrixDataType(d)) {
                 auto dims = matrixDims(d);
-                align = matrixAlignment(dims.second, std);
-                size  = matrixSize(dims.first, dims.second, std);
+                size = matrixSize(dims.first, dims.second, std);
             } else {
-                auto av = std140ScalarVec(d); // scalar/vec size identical in both stds
-                align = av.first;
-                size  = av.second;
+                size = std140ScalarVec(d).second; // scalar/vec size identical across stds
             }
             if (align > maxAlign) maxAlign = align;
             off = alignOffset(off, align);
@@ -294,6 +320,17 @@ namespace OmegaGTE {
     }
     inline std::size_t std430StructStride(std::initializer_list<omegasl_data_type> fields) noexcept {
         return structStride<std::initializer_list<omegasl_data_type>>(fields, BufferLayoutStd::Std430);
+    }
+
+    /// Native DirectX `StructuredBuffer<T>` flat-struct stride (scalar-aligned,
+    /// no std430 column / struct 16-byte padding). Used by the D3D12 storage
+    /// path; see the `BufferLayoutStd::DXStructured` enum doc.
+    template<class Iterable>
+    inline std::size_t dxStructuredStructStride(const Iterable &fields) noexcept {
+        return structStride(fields, BufferLayoutStd::DXStructured);
+    }
+    inline std::size_t dxStructuredStructStride(std::initializer_list<omegasl_data_type> fields) noexcept {
+        return structStride<std::initializer_list<omegasl_data_type>>(fields, BufferLayoutStd::DXStructured);
     }
 
     /// Map a (C, R) shape to the matching `omegasl_data_type`

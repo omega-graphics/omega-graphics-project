@@ -76,6 +76,11 @@ public:
     void downloadTextureToReadbackHeap(ID3D12GraphicsCommandList *commandList);
     void uploadTextureFromUploadHeap(ID3D12GraphicsCommandList *commandList);
 
+    /// True for a CPU-readback texture (its `getBytes` maps the READBACK
+    /// companion). Exposes the protected `usage` so the command-buffer copy
+    /// paths can populate that companion after writing the primary resource.
+    bool isReadbackTexture() const { return usage == FromGPU; }
+
     void updateAndValidateStatus(ID3D12GraphicsCommandList *commandList);
     bool needsValidation();
 

@@ -223,7 +223,11 @@ GTE_TEST_ENTRY_POINT {
     const size_t outSize = omegaSLStructStride(outLayout);
 
     auto inBuf = gte.graphicsEngine->makeBuffer({BufferDescriptor::Upload, inSize, inSize});
-    auto outBuf = gte.graphicsEngine->makeBuffer({BufferDescriptor::Upload, outSize, outSize});
+    // outBuf is GPU-written (UAV) then CPU-read, so it is a Readback buffer. On
+    // D3D12 that maps to a DEFAULT-heap (UAV-capable) resource + a READBACK
+    // companion (D3D12-CPU-Accessible-Buffer-Plan); on Metal/Vulkan it is a
+    // shared/host-visible buffer, same as before.
+    auto outBuf = gte.graphicsEngine->makeBuffer({BufferDescriptor::Readback, outSize, outSize});
 
     // Write the input matrices.
     auto a4 = FMatrix<4, 4>::Create();
@@ -352,7 +356,8 @@ GTE_TEST_ENTRY_POINT {
     const size_t mixSize = omegaSLStructStride(mixLayout);
 
     auto mixIn = gte.graphicsEngine->makeBuffer({BufferDescriptor::Upload, mixSize, mixSize});
-    auto mixOut = gte.graphicsEngine->makeBuffer({BufferDescriptor::Upload, mixSize, mixSize});
+    // mixOut is GPU-written then CPU-read — a Readback buffer (see outBuf above).
+    auto mixOut = gte.graphicsEngine->makeBuffer({BufferDescriptor::Readback, mixSize, mixSize});
 
     // Known inputs. Distinct values per field so a wrong offset surfaces.
     float mS0 = 1.5f;
@@ -430,6 +435,20 @@ GTE_TEST_ENTRY_POINT {
         std::cerr << "  FAIL mixed.s1 = " << oS1 << " expected " << mS1 * 2.f << "\n";
         failFlag() = true;
     }
+
+    // Release every engine-allocated resource before tearing the engine down.
+    // OmegaGTE::Close destroys the D3D12 backend's D3D12MA allocator, which
+    // asserts ("Unfreed committed allocations found!") if any allocation it
+    // made is still alive — and these Upload buffers are D3D12MA committed
+    // allocations held in this outer scope. (SamplerBindTest avoids the same
+    // assert by scoping its resources inside helper functions that return
+    // before Close.) A follow-up hardens the engine so Close() is safe with
+    // outstanding handles regardless; see
+    // gte/.plans/Allocator-Lifetime-Hardening-Plan.md.
+    inBuf.reset();
+    outBuf.reset();
+    mixIn.reset();
+    mixOut.reset();
 
     OmegaGTE::Close(gte);
 
