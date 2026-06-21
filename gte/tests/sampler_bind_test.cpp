@@ -90,11 +90,16 @@ fragment float4 mixedFragment(QuadRaster r){
 
 constexpr unsigned kRTSize = 8;
 
-// Quad vertex struct stride. Mirrors the BlitTest layout: float4 pos + float2
-// uv, padded to a 16-byte multiple (the array stride the GPU expects), so we
-// write an explicit trailing float2 of padding per vertex.
+// Quad vertex element stride: the stride the GPU's StructuredBuffer<QuadVertex>
+// actually uses for the `{float4 pos; float2 uv;}` struct the shader declares.
+// This is NOT a fixed 16-byte multiple — Metal / std430 round the element to 32
+// bytes, but a D3D12 StructuredBuffer is scalar-aligned and keeps it at 24.
+// Deriving it from the *real* struct (not a hand-padded {float4,float2,float2})
+// keeps the host element stride matched to the shader's on every backend; the
+// previous fixed-32 stride wrote 32-byte vertices that a 24-byte-stride D3D12
+// StructuredBuffer read misaligned, collapsing the quad to the clear color.
 size_t quadStructStride() {
-    return omegaSLStructStride({OMEGASL_FLOAT4, OMEGASL_FLOAT2, OMEGASL_FLOAT2});
+    return omegaSLStructStride({OMEGASL_FLOAT4, OMEGASL_FLOAT2});
 }
 
 void writeQuadVertex(SharedHandle<GEBufferWriter> &w, float x, float y, float u, float v) {
@@ -102,12 +107,9 @@ void writeQuadVertex(SharedHandle<GEBufferWriter> &w, float x, float y, float u,
     pos[0][0] = x; pos[1][0] = y; pos[2][0] = 0.f; pos[3][0] = 1.f;
     auto uv = FVec<2>::Create();
     uv[0][0] = u; uv[1][0] = v;
-    auto pad = FVec<2>::Create();
-    pad[0][0] = 0.f; pad[1][0] = 0.f;
     w->structBegin();
-    w->writeFloat4(pos);
-    w->writeFloat2(uv);
-    w->writeFloat2(pad);
+    w->writeFloat4(pos);                       // @0, 16 bytes
+    w->writeFloat2(uv);                        // @16, 8 bytes -> 24
     w->structEnd();
     w->sendToBuffer();
 }

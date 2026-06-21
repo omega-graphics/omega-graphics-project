@@ -3047,7 +3047,19 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                     // sampler (space1) resolves at bind time via
                     // getRootParameterIndexOfResource (Extension 8).
                     auto sampler_range = new CD3DX12_DESCRIPTOR_RANGE1();
-                    sampler_range->Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,1,l.gpu_relative_loc,registerSpace);
+                    // DESCRIPTORS_VOLATILE for the same reason the texture range
+                    // below sets it: samplers live in the engine's shared,
+                    // mostly-uninitialised SAMPLER heap whose slots are authored
+                    // at runtime. The root-sig-1.1 default (DESCRIPTORS_STATIC)
+                    // lets the driver assume the heap's descriptors are fixed /
+                    // prefetchable at SetDescriptorTable time, which is invalid
+                    // for a shared bindless-style heap and left the runtime
+                    // sampler reading an undefined descriptor (the sample
+                    // returned nothing and the RT kept its clear color). Static
+                    // samplers are baked into the root signature and use no range,
+                    // so they were unaffected.
+                    sampler_range->Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,1,l.gpu_relative_loc,registerSpace,
+                                        D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
                     parameter1.InitAsDescriptorTable(1,sampler_range);
                 }
                 else if(l.type == OMEGASL_SHADER_STATIC_SAMPLER2D_DESC || l.type == OMEGASL_SHADER_STATIC_SAMPLER3D_DESC
@@ -3212,6 +3224,15 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         samplerDesc.AddressW = convertAddressModeGTE(desc.wAddressMode);
         samplerDesc.Filter = filter;
         samplerDesc.MaxAnisotropy = desc.maxAnisotropy;
+        // Zero-init left these at invalid / overly-restrictive defaults that the
+        // static-sampler path (CD3DX12_STATIC_SAMPLER_DESC) sets correctly:
+        // MaxLOD=0 clamps sampling to mip 0 only, and ComparisonFunc=0 is not a
+        // valid D3D12_COMPARISON_FUNC. Give a non-comparison sampler the standard
+        // full-mip-range defaults.
+        samplerDesc.MinLOD        = 0.f;
+        samplerDesc.MaxLOD        = D3D12_FLOAT32_MAX;
+        samplerDesc.MipLODBias    = 0.f;
+        samplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
 
         d3d12_device->CreateSampler(&samplerDesc, slot.cpu);
 
