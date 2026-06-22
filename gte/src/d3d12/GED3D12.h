@@ -110,6 +110,8 @@ _NAMESPACE_BEGIN_
                     traceResourceId,
                     this->buffer.Get(),
                     static_cast<float>(this->buffer != nullptr ? this->buffer->GetDesc().Width : 0));
+            DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Buffer created: id=" << traceResourceId
+                       << " size=" << (this->buffer != nullptr ? this->buffer->GetDesc().Width : 0));
         };
         ~GED3D12Buffer() override {
             ResourceTracking::Tracker::instance().emit(
@@ -119,6 +121,7 @@ _NAMESPACE_BEGIN_
                     traceResourceId,
                     this->buffer.Get(),
                     static_cast<float>(this->buffer != nullptr ? this->buffer->GetDesc().Width : 0));
+            DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Buffer destroyed: id=" << traceResourceId);
             // Drop the COM ref to the resource before releasing the
             // allocation so D3D12MA's leak validator sees the resource
             // already destroyed when the allocation goes away.

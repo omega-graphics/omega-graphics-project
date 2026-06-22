@@ -486,6 +486,33 @@ the *existing* checks' reporting is migrated. Non-void encoding methods that
 need a guard take a `d3d12RequireOrReturnValue(ok, domain, what, ret)` twin.
 Vulkan §4.3 backfill is still owed after D3D12.
 
+**✅ DONE (2026-06-21, code landed — Windows build owed to user).** All four
+slices landed; D1 built clean on the user's Windows host before the D2–D4
+fan-out. Totals across the backend: 23 `DEBUG_CRITICAL`, 77 `DEBUG_ERROR`,
+24 `DEBUG_INFO`, 12 `DEBUG_TRACE`, 46 `d3d12RequireOrReturn` call sites
+(matching Metal's 44 encoding guards + the two pipeline-factory value-returns)
+and one `ResizeRebuild` tracker emit added on the native-RT rebuild path.
+The `d3d12RequireOrReturn` / `d3d12RequireOrReturnValue` guard macros live
+TU-local in `GED3D12CommandQueue.cpp` (the Metal-parity placement). Buffer
+Create/Destroy already had tracker events (foundation commit); D1 only paired
+the `DEBUG_INFO` lines. No tracker *schema* change was needed — Heap/Fence/
+SamplerState/pipeline coverage is text-only `DEBUG_INFO`, matching Metal.
+
+**Intentionally left as raw `DEBUG_STREAM` (out of the §4.3 public-API surface,
+mirroring Metal's `MetalTEContext.mm` carve-out):**
+- `GED3D12.cpp:623` — the native-validation message-callback funnel (the
+  D3D12 debug-layer bridge, not engine-side logging).
+- `D3D12TEContext.cpp` — tessellation-engine internal context (direct analog
+  of the deferred `MetalTEContext.mm`).
+- `D3D12DescriptorAllocator.{cpp}` / `D3D12DescriptorRing.cpp` — internal
+  descriptor-heap infrastructure with no public-API or Metal analog. A future
+  `MEMORY`-domain pass could migrate these; not required for §4.3 parity.
+
+Deferred (same as Metal): *new* descriptor-validation predicates, and the
+fence-lifetime / double-acquire / empty-present CRITICAL rows that have no
+existing check today (those are new validation logic, not a reporting
+migration).
+
 ## 4. Engine-side API logging
 
 Native validation (D3D12 debug layer, Vulkan `VK_LAYER_KHRONOS_validation`)

@@ -44,11 +44,10 @@ TexturePixelFormat mapDxgiToEngineFormat(DXGI_FORMAT fmt) {
         case DXGI_FORMAT_R16G16B16A16_UNORM:    return TexturePixelFormat::RGBA16Unorm;
         default:
             if (!warned) {
-                std::cerr << "[GETextureAsset/D3D12] warning: DXGI format " << (int)fmt
+                DEBUG_INFO(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] warning: DXGI format " << (int)fmt
                           << " is not modelled in TexturePixelFormat; "
                              "descriptor() reports RGBA8Unorm. The texture "
-                             "still binds correctly via its native SRV heap."
-                          << std::endl;
+                             "still binds correctly via its native SRV heap.");
                 warned = true;
             }
             return TexturePixelFormat::RGBA8Unorm;
@@ -164,7 +163,7 @@ class GED3D12TextureAsset : public GETextureAsset {
             &uploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ,
             nullptr, IID_PPV_ARGS(&upload));
         if (FAILED(hr)) {
-            std::cerr << "[GETextureAsset/D3D12] upload heap creation failed." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] upload heap creation failed.");
             return false;
         }
 
@@ -174,19 +173,19 @@ class GED3D12TextureAsset : public GETextureAsset {
         qdesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         ComPtr<ID3D12CommandQueue> queue;
         if (FAILED(device->CreateCommandQueue(&qdesc, IID_PPV_ARGS(&queue)))) {
-            std::cerr << "[GETextureAsset/D3D12] CreateCommandQueue failed." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] CreateCommandQueue failed.");
             return false;
         }
         ComPtr<ID3D12CommandAllocator> alloc;
         if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                                   IID_PPV_ARGS(&alloc)))) {
-            std::cerr << "[GETextureAsset/D3D12] CreateCommandAllocator failed." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] CreateCommandAllocator failed.");
             return false;
         }
         ComPtr<ID3D12GraphicsCommandList> list;
         if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
                                              alloc.Get(), nullptr, IID_PPV_ARGS(&list)))) {
-            std::cerr << "[GETextureAsset/D3D12] CreateCommandList failed." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] CreateCommandList failed.");
             return false;
         }
 
@@ -207,7 +206,7 @@ class GED3D12TextureAsset : public GETextureAsset {
         ComPtr<ID3D12Fence> fence;
         if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
                                        IID_PPV_ARGS(&fence)))) {
-            std::cerr << "[GETextureAsset/D3D12] CreateFence failed." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] CreateFence failed.");
             return false;
         }
         if (FAILED(queue->Signal(fence.Get(), 1))) return false;
@@ -226,12 +225,12 @@ public:
 
     bool load(const std::string & path, const LoadOptions & options) override {
         if (engine == nullptr) {
-            std::cerr << "[GETextureAsset/D3D12] error: no engine bound." << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] error: no engine bound.");
             return false;
         }
         auto *d3dEngine = dynamic_cast<GED3D12Engine *>(engine.get());
         if (!d3dEngine || !d3dEngine->d3d12_device) {
-            std::cerr << "[GETextureAsset/D3D12] error: engine is not a D3D12 engine." << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] error: engine is not a D3D12 engine.");
             return false;
         }
         ID3D12Device *device = d3dEngine->d3d12_device.Get();
@@ -240,8 +239,8 @@ public:
         DirectX::ScratchImage scratch;
         HRESULT hr = loadScratchImage(path, md, scratch);
         if (FAILED(hr)) {
-            std::cerr << "[GETextureAsset/D3D12] failed to decode '" << path
-                      << "' (hr=0x" << std::hex << hr << std::dec << ")" << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] failed to decode '" << path
+                      << "' (hr=0x" << std::hex << hr << std::dec << ")");
             return false;
         }
 
@@ -273,8 +272,8 @@ public:
                 upload = &withMips;
                 md = withMips.GetMetadata();
             } else {
-                std::cerr << "[GETextureAsset/D3D12] mipgen failed (hr=0x"
-                          << std::hex << hr << std::dec << "); using base mip only." << std::endl;
+                DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] mipgen failed (hr=0x"
+                          << std::hex << hr << std::dec << "); using base mip only.");
             }
         }
 
@@ -286,8 +285,8 @@ public:
                                       DirectX::CREATETEX_DEFAULT,
                                       &resource);
         if (FAILED(hr)) {
-            std::cerr << "[GETextureAsset/D3D12] CreateTextureEx failed (hr=0x"
-                      << std::hex << hr << std::dec << ")" << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] CreateTextureEx failed (hr=0x"
+                      << std::hex << hr << std::dec << ")");
             return false;
         }
         // Transition target to COPY_DEST inside the upload list. Its
@@ -303,7 +302,7 @@ public:
         hr = DirectX::PrepareUpload(device, upload->GetImages(),
                                     upload->GetImageCount(), md, subs);
         if (FAILED(hr)) {
-            std::cerr << "[GETextureAsset/D3D12] PrepareUpload failed." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GETextureAsset/D3D12] PrepareUpload failed.");
             return false;
         }
 
@@ -319,7 +318,7 @@ public:
         // engine's CBV/SRV/UAV heap with every other texture.
         D3D12DescriptorHandle srvSlot = d3dEngine->resourceDescriptorAllocator->allocate(1);
         if (!srvSlot.valid()) {
-            std::cerr << "[GETextureAsset/D3D12] resourceDescriptorAllocator exhausted." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "[GETextureAsset/D3D12] resourceDescriptorAllocator exhausted.");
             return false;
         }
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};

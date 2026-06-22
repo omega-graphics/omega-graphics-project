@@ -112,7 +112,7 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQ
         // entitlement still get a functional queue. The user's requested
         // priority remains visible via priority() — it's the achieved type
         // that controls dedication, not priority.
-        DEBUG_STREAM("CreateCommandQueue: GLOBAL_REALTIME denied (no entitlement); retrying at HIGH");
+        DEBUG_INFO(DEBUG_DOMAIN_QUEUE, "CreateCommandQueue: GLOBAL_REALTIME denied (no entitlement); retrying at HIGH");
         d3dDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
         hr = engine->d3d12_device->CreateCommandQueue(&d3dDesc, IID_PPV_ARGS(&commandQueue));
     }
@@ -141,12 +141,12 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQ
         ComPtr<ID3D12CommandAllocator> alloc;
         ComPtr<ID3D12GraphicsCommandList6> list;
         if (FAILED(engine->d3d12_device->CreateCommandAllocator(listType, IID_PPV_ARGS(&alloc)))) {
-            DEBUG_STREAM("GED3D12CommandQueue: CreateCommandAllocator (pool) failed; queue construction aborted");
+            DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "GED3D12CommandQueue: CreateCommandAllocator (pool) failed; queue construction aborted");
             std::exit(1);
         }
         if (FAILED(engine->d3d12_device->CreateCommandList(engine->d3d12_device->GetNodeCount(),
                                                             listType, alloc.Get(), nullptr, IID_PPV_ARGS(&list)))) {
-            DEBUG_STREAM("GED3D12CommandQueue: CreateCommandList (pool) failed; queue construction aborted");
+            DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "GED3D12CommandQueue: CreateCommandList (pool) failed; queue construction aborted");
             std::exit(1);
         }
         // CreateCommandList returns the list in recording state; close it now
@@ -234,20 +234,20 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQ
 
 std::uint32_t GED3D12CommandQueue::growPoolOnce() {
     if (poolAllocators.size() >= kPoolCeiling) {
-        std::cerr << "GED3D12CommandQueue: pool at ceiling (" << kPoolCeiling
+        DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "GED3D12CommandQueue: pool at ceiling (" << kPoolCeiling
                   << ") and every slot is still in flight — refusing to grow; "
-                     "check for missed commitToGPU / over-submission." << std::endl;
+                     "check for missed commitToGPU / over-submission.");
         return UINT32_MAX;
     }
     ComPtr<ID3D12CommandAllocator> alloc;
     ComPtr<ID3D12GraphicsCommandList6> list;
     if (FAILED(engine->d3d12_device->CreateCommandAllocator(listType, IID_PPV_ARGS(&alloc)))) {
-        DEBUG_STREAM("GED3D12CommandQueue: CreateCommandAllocator (grow) failed");
+        DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "GED3D12CommandQueue: CreateCommandAllocator (grow) failed");
         return UINT32_MAX;
     }
     if (FAILED(engine->d3d12_device->CreateCommandList(engine->d3d12_device->GetNodeCount(),
                                                         listType, alloc.Get(), nullptr, IID_PPV_ARGS(&list)))) {
-        DEBUG_STREAM("GED3D12CommandQueue: CreateCommandList (grow) failed");
+        DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "GED3D12CommandQueue: CreateCommandList (grow) failed");
         return UINT32_MAX;
     }
     // Same close-after-create as the ctor: keep new slots in the closed
@@ -259,10 +259,9 @@ std::uint32_t GED3D12CommandQueue::growPoolOnce() {
     poolSubmissionIndex.push_back(0);
     if (!poolGrowthWarned && initialBufferHint > 0
         && poolAllocators.size() > 4ull * initialBufferHint) {
-        std::cerr << "GED3D12CommandQueue: pool grew to " << poolAllocators.size()
+        DEBUG_INFO(DEBUG_DOMAIN_QUEUE, "GED3D12CommandQueue: pool grew to " << poolAllocators.size()
                   << " (initial hint=" << initialBufferHint
-                  << "); consider raising desc.maxBufferCount on this queue."
-                  << std::endl;
+                  << "); consider raising desc.maxBufferCount on this queue.");
         poolGrowthWarned = true;
     }
     return slot;
@@ -605,7 +604,7 @@ GED3D12CommandBuffer::getRequiredResourceStateForResourceID(unsigned int &id, om
                 // §2.4 constant buffer — read-only on the GPU.
                 state = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
             } else {
-                DEBUG_STREAM("This resource cannot be transitioned");
+                DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "This resource cannot be transitioned");
                 exit(1);
             }
             return state;
@@ -649,10 +648,11 @@ GED3D12CommandBuffer::resolveEffectiveSwizzle(const TextureSwizzle & runtime,uns
 
 void GED3D12CommandBuffer::startBlitPass() {
     inBlitPass = true;
+    DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "BlitPass begin");
 };
 
 void GED3D12CommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest) {
-    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    d3d12RequireOrReturn(inBlitPass, DEBUG_DOMAIN_RESOURCE, "copyTextureToTexture called outside a blit pass");
     auto *srcText = (GED3D12Texture *)src.get(), *destText = (GED3D12Texture *)dest.get();
     /// Resource Synchronization Checks
     OmegaCommon::Vector<D3D12_RESOURCE_BARRIER> resourceBarriers;
@@ -691,7 +691,7 @@ void GED3D12CommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, Sh
 
 void GED3D12CommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, SharedHandle<GETexture> &dest,
                                                 const TextureRegion &region, const GPoint3D &destCoord) {
-    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    d3d12RequireOrReturn(inBlitPass, DEBUG_DOMAIN_RESOURCE, "copyTextureToTexture (region) called outside a blit pass");
     auto *srcText = (GED3D12Texture *)src.get(), *destText = (GED3D12Texture *)dest.get();
 
     /// Resource Synchronization Checks
@@ -735,7 +735,7 @@ void GED3D12CommandBuffer::copyTextureToTexture(SharedHandle<GETexture> &src, Sh
 
 void GED3D12CommandBuffer::copyBufferToBuffer(SharedHandle<GEBuffer> &src, SharedHandle<GEBuffer> &dest,
                                               size_t size, size_t srcOffset, size_t destOffset) {
-    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    d3d12RequireOrReturn(inBlitPass, DEBUG_DOMAIN_RESOURCE, "copyBufferToBuffer called outside a blit pass");
     auto *srcBuf = (GED3D12Buffer *)src.get();
     auto *destBuf = (GED3D12Buffer *)dest.get();
 
@@ -771,7 +771,7 @@ void GED3D12CommandBuffer::copyBufferToTexture(SharedHandle<GEBuffer> &src, Shar
                                                size_t bytesPerRow, size_t bytesPerImage,
                                                const TextureRegion &destRegion, size_t srcBufferOffset) {
     (void)bytesPerImage;
-    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    d3d12RequireOrReturn(inBlitPass, DEBUG_DOMAIN_RESOURCE, "copyBufferToTexture called outside a blit pass");
     auto *srcBuf = (GED3D12Buffer *)src.get();
     auto *destTex = (GED3D12Texture *)dest.get();
 
@@ -828,7 +828,7 @@ void GED3D12CommandBuffer::copyTextureToBuffer(SharedHandle<GETexture> &src, Sha
                                                size_t bytesPerRow, size_t bytesPerImage,
                                                const TextureRegion &srcRegion, size_t destBufferOffset) {
     (void)bytesPerImage;
-    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    d3d12RequireOrReturn(inBlitPass, DEBUG_DOMAIN_RESOURCE, "copyTextureToBuffer called outside a blit pass");
     auto *srcTex = (GED3D12Texture *)src.get();
     auto *destBuf = (GED3D12Buffer *)dest.get();
 
@@ -881,7 +881,7 @@ void GED3D12CommandBuffer::copyTextureToBuffer(SharedHandle<GETexture> &src, Sha
 }
 
 void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
-    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    d3d12RequireOrReturn(inBlitPass, DEBUG_DOMAIN_RESOURCE, "generateMipmaps called outside a blit pass");
     auto *tex = (GED3D12Texture *)texture.get();
     const auto texDesc = tex->resource->GetDesc();
     if (texDesc.MipLevels <= 1) {
@@ -889,13 +889,13 @@ void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
     }
     if (texDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
         texDesc.DepthOrArraySize != 1) {
-        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: only 2D, single-slice "
+        DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "GED3D12CommandBuffer::generateMipmaps: only 2D, single-slice "
                      "textures are supported by the box-filter compute kernel. tex="
                      << tex);
         return;
     }
     if ((texDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0) {
-        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: texture was not created "
+        DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "GED3D12CommandBuffer::generateMipmaps: texture was not created "
                      "with ALLOW_UNORDERED_ACCESS; cannot bind mip levels as UAVs. tex="
                      << tex);
         return;
@@ -903,7 +903,7 @@ void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
 
     auto *engine = parentQueue->engine;
     if (!engine->ensureMipmapGenPipeline()) {
-        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: pipeline init failed.");
+        DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "GED3D12CommandBuffer::generateMipmaps: pipeline init failed.");
         return;
     }
 
@@ -942,7 +942,7 @@ void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
     D3D12DescriptorHandle ringSlot = parentQueue->transientRing->allocate(
         slotsNeeded, parentQueue->gateForNextSubmit());
     if (!ringSlot.valid()) {
-        DEBUG_STREAM("GED3D12CommandBuffer::generateMipmaps: transient ring "
+        DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "GED3D12CommandBuffer::generateMipmaps: transient ring "
                      "exhausted (need=" << slotsNeeded
                      << ", capacity=" << parentQueue->transientRing->capacity() << ")");
         return;
@@ -1023,7 +1023,7 @@ void GED3D12CommandBuffer::generateMipmaps(SharedHandle<GETexture> &texture) {
 
 void GED3D12CommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t value,
                                       size_t offset, size_t size) {
-    assert(inBlitPass && "Not in Blit Pass! Exiting...");
+    d3d12RequireOrReturn(inBlitPass, DEBUG_DOMAIN_RESOURCE, "fillBuffer called outside a blit pass");
     auto *buf = (GED3D12Buffer *)buffer.get();
     const auto bufDesc = buf->buffer->GetDesc();
     const UINT64 totalSize = bufDesc.Width;
@@ -1035,7 +1035,7 @@ void GED3D12CommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t v
         // ClearUnorderedAccessViewUint requires the buffer to have been created
         // as a UAV. Buffers without UAV access need either a staging upload path
         // or a compute shader fill; neither is currently wired up.
-        DEBUG_STREAM("GED3D12CommandBuffer::fillBuffer: buffer was not created "
+        DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "GED3D12CommandBuffer::fillBuffer: buffer was not created "
                      "with ALLOW_UNORDERED_ACCESS; fill skipped. Requires UAV-"
                      "capable buffer or compute-shader path. buffer="
                      << buf);
@@ -1063,7 +1063,7 @@ void GED3D12CommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t v
     // to a fence-keyed ring.
     ID3D12DescriptorHeap *heap = parentQueue->engine->clearUavHelperHeap.Get();
     if (heap == nullptr) {
-        DEBUG_STREAM("GED3D12CommandBuffer::fillBuffer: engine clearUavHelperHeap "
+        DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "GED3D12CommandBuffer::fillBuffer: engine clearUavHelperHeap "
                      "is null; cannot resolve UAV handle.");
         return;
     }
@@ -1091,6 +1091,7 @@ void GED3D12CommandBuffer::fillBuffer(SharedHandle<GEBuffer> &buffer, uint32_t v
 
 void GED3D12CommandBuffer::finishBlitPass() {
     inBlitPass = false;
+    DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "BlitPass end");
 };
 
 void GED3D12CommandBuffer::blitWithPipeline(SharedHandle<GEBlitPipelineState> &pipelineState,
@@ -1109,15 +1110,12 @@ void GED3D12CommandBuffer::blitWithPipeline(SharedHandle<GEBlitPipelineState> &p
                                             const TextureRegion &srcRegion,
                                             const TextureRegion &destRegion) {
     (void)srcRegion;
-    assert(!inRenderPass && !inBlitPass && !inComputePass &&
-           "blitWithPipeline must not be called inside an existing pass scope");
-    if (!pipelineState) {
-        DEBUG_STREAM("blitWithPipeline: pipelineState is null");
-        return;
-    }
+    d3d12RequireOrReturn(!inRenderPass && !inBlitPass && !inComputePass, DEBUG_DOMAIN_RENDERTGT,
+                         "blitWithPipeline must not be called inside an existing pass scope");
+    d3d12RequireOrReturn(pipelineState, DEBUG_DOMAIN_PIPELINE, "blitWithPipeline: pipelineState is null");
     auto *blitPipe = (GED3D12BlitPipelineState *)pipelineState.get();
     if (!blitPipe->renderPipeline) {
-        DEBUG_STREAM("blitWithPipeline: underlying render pipeline is null");
+        DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "blitWithPipeline: underlying render pipeline is null");
         return;
     }
 
@@ -1128,7 +1126,7 @@ void GED3D12CommandBuffer::blitWithPipeline(SharedHandle<GEBlitPipelineState> &p
     trtDesc.texture = dest;
     auto trtSh = parentQueue->engine->makeTextureRenderTarget(trtDesc);
     if (!trtSh) {
-        DEBUG_STREAM("blitWithPipeline: makeTextureRenderTarget failed");
+        DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "blitWithPipeline: makeTextureRenderTarget failed");
         return;
     }
 
@@ -1255,8 +1253,10 @@ void GED3D12CommandBuffer::finishAccelStructPass() {
 }
 
 void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
+    d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_RENDERTGT,
+                         "startRenderPass called while a compute pass is active");
     inRenderPass = true;
-    assert(!inComputePass && "Cannot start a Render Pass while in a compute pass.");
+    DEBUG_TRACE(DEBUG_DOMAIN_RENDERTGT, "RenderPass begin");
     static constexpr unsigned kMaxRT = 8;
     D3D12_RENDER_PASS_RENDER_TARGET_DESC rt_descs[kMaxRT] = {};
     D3D12_RENDER_PASS_DEPTH_STENCIL_DESC ds_desc;
@@ -1423,7 +1423,7 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
         if (i == 0 && (attachment == nullptr || attachment->texture == nullptr)) {
             attachmentHandle = cpu_handle;
         } else {
-            assert(attachment != nullptr && attachment->texture != nullptr &&
+            d3d12RequireOrReturn(attachment != nullptr && attachment->texture != nullptr, DEBUG_DOMAIN_RENDERTGT,
                    "Color attachments beyond index 0 must supply an explicit texture.");
             auto *attachTexture = (GED3D12Texture *)attachment->texture.get();
             if (attachTexture->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
@@ -1572,7 +1572,8 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
 };
 
 void GED3D12CommandBuffer::setRenderPipelineState(SharedHandle<GERenderPipelineState> &pipelineState) {
-    assert(!inComputePass && "Cannot set Render Pipeline State while in Compute Pass");
+    d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_PIPELINE, "setRenderPipelineState called while a compute pass is active");
+    DEBUG_TRACE(DEBUG_DOMAIN_PIPELINE, "PSO set");
     auto *d3d12_pipeline_state = (GED3D12RenderPipelineState *)pipelineState.get();
     commandList->SetPipelineState(d3d12_pipeline_state->pipelineState.Get());
     currentRenderPipeline = d3d12_pipeline_state;
@@ -1583,17 +1584,18 @@ void GED3D12CommandBuffer::setRenderPipelineState(SharedHandle<GERenderPipelineS
 void GED3D12CommandBuffer::reportTransitionInsideRenderPass(const char *resourceKind,
                                                             D3D12_RESOURCE_STATES fromState,
                                                             D3D12_RESOURCE_STATES toState) const {
-    std::cerr << "[GED3D12CommandBuffer] " << resourceKind
+    DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "[GED3D12CommandBuffer] " << resourceKind
               << " state transition requested inside an active render pass scope — skipping "
                  "(D3D12 forbids transition barriers between BeginRenderPass/EndRenderPass). from=0x"
               << std::hex << (unsigned)fromState << " to=0x" << (unsigned)toState << std::dec
-              << ". The frontend must reach the required state before the pass begins." << std::endl;
+              << ". The frontend must reach the required state before the pass begins.");
     assert(false && "D3D12 resource transition requested inside an active render pass; "
                     "reach the required state before binding this resource in the pass.");
 }
 
 void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned int index) {
-    assert((!inComputePass && !inBlitPass) && "Cannot set Resource Const at a Vertex Func when not in render pass");
+    d3d12RequireOrReturn(!inComputePass && !inBlitPass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtVertexShader(buffer) called outside a render pass");
     auto *d3d12_buffer = (GED3D12Buffer *)buffer.get();
 
     auto required_state = getRequiredResourceStateForResourceID(index, currentRenderPipeline->vertexShader->internal);
@@ -1636,7 +1638,8 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GEBuffer> &bu
 
 void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &texture, unsigned int index,
                                                        const TextureSwizzle & swizzle) {
-    assert((!inComputePass && !inBlitPass) && "Cannot set Resource Const at a Vertex Func when not in render pass");
+    d3d12RequireOrReturn(!inComputePass && !inBlitPass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtVertexShader(texture) called outside a render pass");
     auto *d3d12_texture = (GED3D12Texture *)texture.get();
 
     checkTextureBindAgainstShader(index, currentRenderPipeline->vertexShader->internal, *d3d12_texture);
@@ -1688,10 +1691,12 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GETexture> &t
 };
 
 void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
-    assert((!inComputePass && !inBlitPass) && "Cannot bind sampler at a Vertex Func when not in render pass");
+    d3d12RequireOrReturn(!inComputePass && !inBlitPass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtVertexShader(sampler) called outside a render pass");
     auto *d3d12_sampler = (GED3D12SamplerState *)sampler.get();
     bool ok = checkSamplerBindAgainstShader(id, currentRenderPipeline->vertexShader->internal);
-    assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+    d3d12RequireOrReturn(ok, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtVertexShader(sampler): sampler bound to a static or non-sampler slot");
     if (!ok) return;
     // Phase 2 — samplers live in the engine's shared SAMPLER heap;
     // each GED3D12SamplerState carries its slot's GPU handle and block.
@@ -1702,7 +1707,8 @@ void GED3D12CommandBuffer::bindResourceAtVertexShader(SharedHandle<GESamplerStat
 };
 
 void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &buffer, unsigned int index) {
-    assert((!inComputePass && !inBlitPass) && "Cannot set Resource Const a Fragment Func when not in render pass");
+    d3d12RequireOrReturn(!inComputePass && !inBlitPass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtFragmentShader(buffer) called outside a render pass");
     auto *d3d12_buffer = (GED3D12Buffer *)buffer.get();
 
     auto required_state = getRequiredResourceStateForResourceID(index, currentRenderPipeline->fragmentShader->internal);
@@ -1743,7 +1749,8 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GEBuffer> &
 
 void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned int index,
                                                          const TextureSwizzle & swizzle) {
-    assert((!inComputePass && !inBlitPass) && "Cannot set Resource Const a Fragment Func when not in render pass");
+    d3d12RequireOrReturn(!inComputePass && !inBlitPass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtFragmentShader(texture) called outside a render pass");
     auto *d3d12_texture = (GED3D12Texture *)texture.get();
 
     checkTextureBindAgainstShader(index, currentRenderPipeline->fragmentShader->internal, *d3d12_texture);
@@ -1793,10 +1800,12 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GETexture> 
 };
 
 void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
-    assert((!inComputePass && !inBlitPass) && "Cannot bind sampler at a Fragment Func when not in render pass");
+    d3d12RequireOrReturn(!inComputePass && !inBlitPass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtFragmentShader(sampler) called outside a render pass");
     auto *d3d12_sampler = (GED3D12SamplerState *)sampler.get();
     bool ok = checkSamplerBindAgainstShader(id, currentRenderPipeline->fragmentShader->internal);
-    assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+    d3d12RequireOrReturn(ok, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtFragmentShader(sampler): sampler bound to a static or non-sampler slot");
     if (!ok) return;
     currentSamplerDescHeap = parentQueue->engine->samplerDescriptorAllocator->heap(d3d12_sampler->samplerHandle.block);
     rebindDescriptorHeaps();
@@ -1824,9 +1833,11 @@ static bool findPushConstantLocation(const omegasl_shader &shader, unsigned &out
 }
 
 void GED3D12CommandBuffer::setRenderConstants(const void *data, unsigned size, unsigned offset) {
-    assert(currentRenderPipeline && "setRenderConstants requires a bound render pipeline");
+    d3d12RequireOrReturn(currentRenderPipeline, DEBUG_DOMAIN_PIPELINE,
+                         "setRenderConstants requires a bound render pipeline");
     // Root 32-bit constants are DWORD-granular.
-    assert((size % 4) == 0 && (offset % 4) == 0 && "D3D12 root constants are 32-bit; size and offset must be 4-byte aligned");
+    d3d12RequireOrReturn((size % 4) == 0 && (offset % 4) == 0, DEBUG_DOMAIN_PIPELINE,
+                         "setRenderConstants: D3D12 root constants are 32-bit; size and offset must be 4-byte aligned");
     // Each stage that declared the push constant has its own root-constants
     // param (vertex at space0, fragment at space1 from HLSL codegen), so set
     // both with the same bytes — mirrors Metal's setVertexBytes/setFragmentBytes.
@@ -1844,7 +1855,8 @@ void GED3D12CommandBuffer::setRenderConstants(const void *data, unsigned size, u
             size / 4, data, offset / 4);
         any = true;
     }
-    assert(any && "setRenderConstants: bound pipeline declares no `constant<T>` push constant");
+    d3d12RequireOrReturn(any, DEBUG_DOMAIN_PIPELINE,
+                         "setRenderConstants: bound pipeline declares no `constant<T>` push constant");
     (void)any;
 }
 
@@ -1916,7 +1928,7 @@ static D3D12_PRIMITIVE_TOPOLOGY d3d12TopologyForPolygonType(GECommandBuffer::Pol
 
 void GED3D12CommandBuffer::drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount,
                                         size_t startIdx) {
-    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_QUEUE, "draw call issued while a compute pass is active");
     commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
     commandList->DrawInstanced(vertexCount, 1, startIdx, 0);
 };
@@ -1933,7 +1945,7 @@ void GED3D12CommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, Rende
 void GED3D12CommandBuffer::drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
                                                unsigned indexCount, size_t startIndex,
                                                int baseVertex) {
-    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_QUEUE, "draw call issued while a compute pass is active");
     commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
     commandList->DrawIndexedInstanced(indexCount, 1, UINT(startIndex), baseVertex, 0);
 }
@@ -1941,7 +1953,7 @@ void GED3D12CommandBuffer::drawIndexedPolygons(RenderPassDrawPolygonType polygon
 void GED3D12CommandBuffer::drawPolygonsInstanced(RenderPassDrawPolygonType polygonType,
                                                  unsigned vertexCount, size_t startIdx,
                                                  unsigned instanceCount, unsigned firstInstance) {
-    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_QUEUE, "draw call issued while a compute pass is active");
     commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
     commandList->DrawInstanced(vertexCount, instanceCount, UINT(startIdx), firstInstance);
 }
@@ -1950,7 +1962,7 @@ void GED3D12CommandBuffer::drawIndexedPolygonsInstanced(RenderPassDrawPolygonTyp
                                                         unsigned indexCount, size_t startIndex,
                                                         int baseVertex, unsigned instanceCount,
                                                         unsigned firstInstance) {
-    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_QUEUE, "draw call issued while a compute pass is active");
     commandList->IASetPrimitiveTopology(d3d12TopologyForPolygonType(polygonType));
     commandList->DrawIndexedInstanced(indexCount, instanceCount, UINT(startIndex), baseVertex, firstInstance);
 }
@@ -1969,11 +1981,11 @@ static void transitionBufferForIndirectArgs(ID3D12GraphicsCommandList6 *commandL
 void GED3D12CommandBuffer::drawPolygonsIndirect(RenderPassDrawPolygonType polygonType,
                                                 SharedHandle<GEBuffer> & argumentBuffer,
                                                 size_t argumentBufferOffset) {
-    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_QUEUE, "draw call issued while a compute pass is active");
     auto *argBuf = (GED3D12Buffer *)argumentBuffer.get();
     auto *sig = parentQueue->engine->getDrawIndirectSignature();
     if (sig == nullptr) {
-        DEBUG_STREAM("drawPolygonsIndirect: draw indirect signature unavailable");
+        DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "drawPolygonsIndirect: draw indirect signature unavailable");
         return;
     }
     transitionBufferForIndirectArgs(commandList.Get(), argBuf);
@@ -1986,11 +1998,11 @@ void GED3D12CommandBuffer::drawPolygonsIndirect(RenderPassDrawPolygonType polygo
 void GED3D12CommandBuffer::drawIndexedPolygonsIndirect(RenderPassDrawPolygonType polygonType,
                                                        SharedHandle<GEBuffer> & argumentBuffer,
                                                        size_t argumentBufferOffset) {
-    assert(!inComputePass && "Cannot Draw Polygons while in Compute Pass");
+    d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_QUEUE, "draw call issued while a compute pass is active");
     auto *argBuf = (GED3D12Buffer *)argumentBuffer.get();
     auto *sig = parentQueue->engine->getDrawIndexedIndirectSignature();
     if (sig == nullptr) {
-        DEBUG_STREAM("drawIndexedPolygonsIndirect: indexed draw indirect signature unavailable");
+        DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "drawIndexedPolygonsIndirect: indexed draw indirect signature unavailable");
         return;
     }
     transitionBufferForIndirectArgs(commandList.Get(), argBuf);
@@ -2001,7 +2013,8 @@ void GED3D12CommandBuffer::drawIndexedPolygonsIndirect(RenderPassDrawPolygonType
 }
 
 void GED3D12CommandBuffer::finishRenderPass() {
-    assert(inRenderPass && "");
+    d3d12RequireOrReturn(inRenderPass, DEBUG_DOMAIN_RENDERTGT, "finishRenderPass called with no active render pass");
+    DEBUG_TRACE(DEBUG_DOMAIN_RENDERTGT, "RenderPass end");
     commandList->EndRenderPass();
     commandList->ClearState(nullptr);
 
@@ -2071,9 +2084,13 @@ void GED3D12CommandBuffer::finishRenderPass() {
 
 void GED3D12CommandBuffer::startComputePass(const GEComputePassDescriptor &desc) {
     inComputePass = true;
+    DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "ComputePass begin");
 };
 
 void GED3D12CommandBuffer::setComputePipelineState(SharedHandle<GEComputePipelineState> &pipelineState) {
+    d3d12RequireOrReturn(inComputePass, DEBUG_DOMAIN_PIPELINE,
+                         "setComputePipelineState called outside an active compute pass");
+    DEBUG_TRACE(DEBUG_DOMAIN_PIPELINE, "Compute PSO set");
     auto *d3d12_pipeline_state = (GED3D12ComputePipelineState *)pipelineState.get();
     commandList->SetPipelineState(d3d12_pipeline_state->pipelineState.Get());
     commandList->SetComputeRootSignature(d3d12_pipeline_state->rootSignature.Get());
@@ -2082,7 +2099,8 @@ void GED3D12CommandBuffer::setComputePipelineState(SharedHandle<GEComputePipelin
 };
 
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &buffer, unsigned int id) {
-    assert(inComputePass && "");
+    d3d12RequireOrReturn(inComputePass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtComputeShader(buffer) called outside a compute pass");
     auto *d3d12_buffer = (GED3D12Buffer *)buffer.get();
     auto &shader = currentComputePipeline->computeShader->internal;
     const unsigned rootParam = getRootParameterIndexOfResource(id, shader);
@@ -2129,7 +2147,8 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &b
 
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &texture, unsigned int id,
                                                         const TextureSwizzle & swizzle) {
-    assert(inComputePass && "");
+    d3d12RequireOrReturn(inComputePass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtComputeShader(texture) called outside a compute pass");
     auto *d3d12_texture = (GED3D12Texture *)texture.get();
 
     checkTextureBindAgainstShader(id, currentComputePipeline->computeShader->internal, *d3d12_texture);
@@ -2160,11 +2179,12 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GETexture> &
 }
 
 void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
-    assert(inComputePass && "Cannot bind sampler at a Compute Func when not in compute pass");
+    d3d12RequireOrReturn(inComputePass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtComputeShader(sampler) called outside a compute pass");
     auto *d3d12_sampler = (GED3D12SamplerState *)sampler.get();
     bool ok = checkSamplerBindAgainstShader(id, currentComputePipeline->computeShader->internal);
-    assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
-    if (!ok) return;
+    d3d12RequireOrReturn(ok, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtComputeShader(sampler): sampler bound to a static or non-sampler slot");
     currentSamplerDescHeap = parentQueue->engine->samplerDescriptorAllocator->heap(d3d12_sampler->samplerHandle.block);
     rebindDescriptorHeaps();
     commandList->SetComputeRootDescriptorTable(
@@ -2181,12 +2201,14 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEAccelerati
 }
 
 void GED3D12CommandBuffer::setComputeConstants(const void *data, unsigned size, unsigned offset) {
-    assert(currentComputePipeline && "setComputeConstants requires a bound compute pipeline");
-    assert((size % 4) == 0 && (offset % 4) == 0 && "D3D12 root constants are 32-bit; size and offset must be 4-byte aligned");
+    d3d12RequireOrReturn(currentComputePipeline, DEBUG_DOMAIN_PIPELINE,
+                         "setComputeConstants requires a bound compute pipeline");
+    d3d12RequireOrReturn((size % 4) == 0 && (offset % 4) == 0, DEBUG_DOMAIN_PIPELINE,
+                         "setComputeConstants: D3D12 root constants are 32-bit; size and offset must be 4-byte aligned");
     unsigned loc = 0;
     bool found = findPushConstantLocation(currentComputePipeline->computeShader->internal, loc);
-    assert(found && "setComputeConstants: bound pipeline declares no `constant<T>` push constant");
-    if (!found) return;
+    d3d12RequireOrReturn(found, DEBUG_DOMAIN_PIPELINE,
+                         "setComputeConstants: bound pipeline declares no `constant<T>` push constant");
     commandList->SetComputeRoot32BitConstants(
         getRootParameterIndexOfResource(loc, currentComputePipeline->computeShader->internal),
         size / 4, data, offset / 4);
@@ -2206,22 +2228,22 @@ void GED3D12CommandBuffer::drawMeshTasks(uint32_t groupCountX,
     /// polygon draws. `commandList` is already `ID3D12GraphicsCommandList6`
     /// so `DispatchMesh` is in scope without a header bump.
     if(!parentQueue->engine->gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
-        DEBUG_STREAM("drawMeshTasks: device does not advertise "
+        DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "drawMeshTasks: device does not advertise "
                      "GTEDEVICE_FEATURE_MESH_SHADER");
         return;
     }
-    assert(inRenderPass
-           && "drawMeshTasks: must be called inside a render pass");
-    assert(currentRenderPipeline != nullptr
-           && "drawMeshTasks: no pipeline bound (call setRenderPipelineState first)");
-    assert(currentRenderPipeline->isMesh
-           && "drawMeshTasks: bound pipeline is a graphics pipeline, not a mesh pipeline. "
-              "Use makeMeshPipelineState to build a mesh-variant PSO.");
+    d3d12RequireOrReturn(inRenderPass, DEBUG_DOMAIN_QUEUE,
+                         "drawMeshTasks: must be called inside a render pass");
+    d3d12RequireOrReturn(currentRenderPipeline != nullptr, DEBUG_DOMAIN_QUEUE,
+                         "drawMeshTasks: no pipeline bound (call setRenderPipelineState first)");
+    d3d12RequireOrReturn(currentRenderPipeline->isMesh, DEBUG_DOMAIN_PIPELINE,
+                         "drawMeshTasks: bound pipeline is a graphics pipeline, not a mesh pipeline. "
+                         "Use makeMeshPipelineState to build a mesh-variant PSO.");
     commandList->DispatchMesh(groupCountX, groupCountY, groupCountZ);
 }
 
 void GED3D12CommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned int z) {
-    assert(inComputePass && "Must be in a compute pass to dispatch rays");
+    d3d12RequireOrReturn(inComputePass, DEBUG_DOMAIN_QUEUE, "dispatchRays called outside a compute pass");
     D3D12_DISPATCH_RAYS_DESC rays{};
     rays.Width = x;
     rays.Height = y;
@@ -2243,12 +2265,12 @@ void GED3D12CommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned
 }
 
 void GED3D12CommandBuffer::dispatchThreadgroups(unsigned int x, unsigned int y, unsigned int z) {
-    assert(inComputePass && "");
+    d3d12RequireOrReturn(inComputePass, DEBUG_DOMAIN_QUEUE, "dispatchThreadgroups called outside a compute pass");
     commandList->Dispatch(x, y, z);
 }
 
 void GED3D12CommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsigned int z) {
-    assert(inComputePass && "");
+    d3d12RequireOrReturn(inComputePass, DEBUG_DOMAIN_QUEUE, "dispatchThreads called outside a compute pass");
     auto &tg = currentComputePipeline->computeShader->internal.threadgroupDesc;
     unsigned gx = (x + tg.x - 1) / tg.x;
     unsigned gy = (y + tg.y - 1) / tg.y;
@@ -2258,11 +2280,11 @@ void GED3D12CommandBuffer::dispatchThreads(unsigned int x, unsigned int y, unsig
 
 void GED3D12CommandBuffer::dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> & argumentBuffer,
                                                         size_t argumentBufferOffset) {
-    assert(inComputePass && "Must be in a compute pass to dispatch threadgroups");
+    d3d12RequireOrReturn(inComputePass, DEBUG_DOMAIN_QUEUE, "dispatchThreadgroupsIndirect called outside a compute pass");
     auto *argBuf = (GED3D12Buffer *)argumentBuffer.get();
     auto *sig = parentQueue->engine->getDispatchIndirectSignature();
     if (sig == nullptr) {
-        DEBUG_STREAM("dispatchThreadgroupsIndirect: dispatch indirect signature unavailable");
+        DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "dispatchThreadgroupsIndirect: dispatch indirect signature unavailable");
         return;
     }
     transitionBufferForIndirectArgs(commandList.Get(), argBuf);
@@ -2293,6 +2315,7 @@ void GED3D12CommandBuffer::finishComputePass() {
 
     commandList->ClearState(nullptr);
     inComputePass = false;
+    DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "ComputePass end");
     currentComputePipeline = nullptr;
     currentRootSignature = nullptr;
     currentResourceDescHeap = nullptr;
@@ -2838,11 +2861,11 @@ SharedHandle<GECommandBuffer> GED3D12CommandQueue::getAvailableBuffer() {
     auto & alloc = poolAllocators[chosenSlot];
     auto & list  = poolLists[chosenSlot];
     if (FAILED(alloc->Reset())) {
-        DEBUG_STREAM("GED3D12CommandQueue::getAvailableBuffer: allocator reset failed on slot " << chosenSlot);
+        DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "GED3D12CommandQueue::getAvailableBuffer: allocator reset failed on slot " << chosenSlot);
         return nullptr;
     }
     if (FAILED(list->Reset(alloc.Get(), nullptr))) {
-        DEBUG_STREAM("GED3D12CommandQueue::getAvailableBuffer: list reset failed on slot " << chosenSlot);
+        DEBUG_ERROR(DEBUG_DOMAIN_QUEUE, "GED3D12CommandQueue::getAvailableBuffer: list reset failed on slot " << chosenSlot);
         return nullptr;
     }
 

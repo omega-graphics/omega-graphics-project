@@ -12,11 +12,14 @@ namespace {
 // 60 Hz fallback when no display link is bound (or the link reports 0).
 constexpr std::uint64_t kNominalIntervalNs = 16'666'666ull;
 
-// Phase H.2 env gate. Default off ⇒ the legacy free-running frame path is
-// byte-for-byte unchanged. Any non-empty value other than "0" enables it.
+// Phase H.2 env gate. Default on.
 bool readVsyncPacingEnv(){
-    const char * v = std::getenv("OMEGAWTK_VSYNC_PACING");
-    return v != nullptr && v[0] != '\0' && v[0] != '0';
+    return true;
+    // auto v = OmegaCommon::getEnvVar("OMEGAWTK_VSYNC_PACING");
+    // if(!v.has_value()){
+    //     return false;
+    // }
+    // return v != "0";
 }
 
 }

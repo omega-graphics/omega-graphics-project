@@ -22,12 +22,12 @@ public:
 
     bool load(const std::string & path, const LoadOptions & options) override {
         if (engine == nullptr) {
-            std::cerr << "[GEMeshAsset/D3D12] error: no engine bound." << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "[GEMeshAsset/D3D12] error: no engine bound.");
             return false;
         }
         auto *d3dEngine = dynamic_cast<GED3D12Engine *>(engine.get());
         if (!d3dEngine) {
-            std::cerr << "[GEMeshAsset/D3D12] error: engine is not a D3D12 engine." << std::endl;
+            DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "[GEMeshAsset/D3D12] error: engine is not a D3D12 engine.");
             return false;
         }
 
@@ -47,7 +47,7 @@ public:
         bdesc.opts         = Shared;
         SharedHandle<GEBuffer> vbuf = engine->makeBuffer(bdesc);
         if (!vbuf) {
-            std::cerr << "[GEMeshAsset/D3D12] error: makeBuffer failed." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GEMeshAsset/D3D12] error: makeBuffer failed.");
             return false;
         }
 
@@ -55,13 +55,13 @@ public:
         // Metal `mtlBuf.contents` direct-write path.
         auto *d3dBuf = static_cast<GED3D12Buffer *>(vbuf.get());
         if (!d3dBuf || !d3dBuf->buffer) {
-            std::cerr << "[GEMeshAsset/D3D12] error: native buffer is null." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GEMeshAsset/D3D12] error: native buffer is null.");
             return false;
         }
         void *mapped = nullptr;
         D3D12_RANGE noRead{0, 0};
         if (FAILED(d3dBuf->buffer->Map(0, &noRead, &mapped)) || !mapped) {
-            std::cerr << "[GEMeshAsset/D3D12] error: buffer Map failed." << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_ASSET, "[GEMeshAsset/D3D12] error: buffer Map failed.");
             return false;
         }
         std::memcpy(mapped, parsed.packed.data(),
@@ -88,8 +88,8 @@ public:
                 }
                 loadedTextures.push_back(texAsset);
             } else {
-                std::cerr << "[GEMeshAsset/D3D12] warning: base-color texture '"
-                          << parsed.baseColorTexturePath << "' failed to load." << std::endl;
+                DEBUG_INFO(DEBUG_DOMAIN_ASSET, "[GEMeshAsset/D3D12] warning: base-color texture '"
+                          << parsed.baseColorTexturePath << "' failed to load.");
             }
         }
 

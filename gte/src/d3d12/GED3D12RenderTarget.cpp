@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <sstream>
 #include <vector>
 
 namespace {
@@ -192,8 +193,9 @@ _NAMESPACE_BEGIN_
                 if (SUCCEEDED(sr)) {
                     sourceWidth_  = width;
                     sourceHeight_ = height;
-                    DEBUG_STREAM("[F-G] SetSourceSize " << width << "x" << height
-                                 << " (buffer " << curBufW << "x" << curBufH << ")");
+                    DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "Swapchain SetSourceSize: rt=" << traceResourceId
+                               << " " << width << "x" << height
+                               << " (buffer " << curBufW << "x" << curBufH << ")");
                     return;
                 }
                 // Unexpected (source <= buffer should always succeed) — fall
@@ -208,7 +210,14 @@ _NAMESPACE_BEGIN_
             HRESULT sr = swapChain->SetSourceSize(width, height);
             sourceWidth_  = width;
             sourceHeight_ = height;
-            DEBUG_STREAM("[F-G] ResizeBuffers -> bucket " << bufW << "x" << bufH
+            ResourceTracking::Tracker::instance().emit(
+                    ResourceTracking::EventType::ResizeRebuild,
+                    ResourceTracking::Backend::D3D12,
+                    "NativeRenderTarget",
+                    traceResourceId,
+                    swapChain.Get());
+            DEBUG_INFO(DEBUG_DOMAIN_RENDERTGT, "Swapchain rebuild: rt=" << traceResourceId
+                         << " bucket " << bufW << "x" << bufH
                          << ", SetSourceSize " << width << "x" << height
                          << (SUCCEEDED(sr) ? "" : " (SetSourceSize FAILED)"));
             return;
@@ -289,11 +298,17 @@ _NAMESPACE_BEGIN_
         params.pScrollRect = NULL;
         hr = swapChain->Present1(1,0,&params);
         if(FAILED(hr) || hr == DXGI_STATUS_OCCLUDED){
-            std::cout << "[GED3D12Engine_Internal] - Failed to Present SwapChain hr=0x"
-                      << std::hex << static_cast<unsigned long>(hr) << std::dec;
+            // Accumulate the (variable-length) present-failure diagnostic into one
+            // string so it lands as a single gated DEBUG_ERROR line rather than a
+            // chain of raw std::cout writes. The macro adds the
+            // "[GED3D12Engine_Internal] - ERROR RENDERTGT" prefix and trailing
+            // newline, so the message itself starts at "Failed to Present …".
+            std::ostringstream oss;
+            oss << "Failed to Present SwapChain hr=0x"
+                << std::hex << static_cast<unsigned long>(hr) << std::dec;
 
             if(hr == DXGI_STATUS_OCCLUDED){
-                std::cout << " (DXGI_STATUS_OCCLUDED)";
+                oss << " (DXGI_STATUS_OCCLUDED)";
             }
             else if(commandList != nullptr) {
                 ComPtr<ID3D12Device> device;
@@ -301,8 +316,8 @@ _NAMESPACE_BEGIN_
                 if(SUCCEEDED(devHr) && device != nullptr){
                     const HRESULT removedReason = device->GetDeviceRemovedReason();
                     if(removedReason != S_OK){
-                        std::cout << " deviceRemoved=0x"
-                                  << std::hex << static_cast<unsigned long>(removedReason) << std::dec;
+                        oss << " deviceRemoved=0x"
+                            << std::hex << static_cast<unsigned long>(removedReason) << std::dec;
                     }
 
                     ComPtr<ID3D12InfoQueue> infoQueue;
@@ -311,7 +326,7 @@ _NAMESPACE_BEGIN_
                         if(msgCount > 0){
                             const UINT64 maxDump = 8;
                             const UINT64 first = msgCount > maxDump ? (msgCount - maxDump) : 0;
-                            std::cout << " d3d12Messages=" << msgCount;
+                            oss << " d3d12Messages=" << msgCount;
                             for(UINT64 i = first; i < msgCount; i++){
                                 SIZE_T msgLength = 0;
                                 if(FAILED(infoQueue->GetMessage(i,nullptr,&msgLength)) || msgLength == 0){
@@ -320,7 +335,7 @@ _NAMESPACE_BEGIN_
                                 std::vector<char> storage(msgLength);
                                 auto *msg = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
                                 if(SUCCEEDED(infoQueue->GetMessage(i,msg,&msgLength)) && msg != nullptr && msg->pDescription){
-                                    std::cout << "\n  [D3D12Message] " << msg->pDescription;
+                                    oss << "\n  [D3D12Message] " << msg->pDescription;
                                 }
                             }
                             infoQueue->ClearStoredMessages();
@@ -328,7 +343,7 @@ _NAMESPACE_BEGIN_
                     }
                 }
             }
-            std::cout << std::endl;
+            DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, oss.str());
         }
         else
             frameIndex = swapChain->GetCurrentBackBufferIndex();

@@ -299,7 +299,7 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
         &allocDesc, &d3d12_desc, state, nullptr,
         &allocation, IID_PPV_ARGS(&buffer));
     if(FAILED(hr)){
-        DEBUG_STREAM("GED3D12Heap::makeBuffer: D3D12MA CreateResource failed");
+        DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "GED3D12Heap::makeBuffer: D3D12MA CreateResource failed");
         if (allocation) allocation->Release();
         return nullptr;
     }
@@ -325,7 +325,7 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
             &companionAllocDesc, &companionDesc, D3D12_RESOURCE_STATE_COPY_DEST,
             nullptr, &cpuSideAllocation, IID_PPV_ARGS(&cpuSideRes));
         if(FAILED(chr)){
-            DEBUG_STREAM("GED3D12Heap::makeBuffer: Readback companion CreateResource failed");
+            DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "GED3D12Heap::makeBuffer: Readback companion CreateResource failed");
             if (cpuSideAllocation) cpuSideAllocation->Release();
             if (allocation) allocation->Release();
             buffer->Release();
@@ -413,7 +413,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         &allocDesc, &d3d12_desc, res_states, nullptr,
         &allocation, IID_PPV_ARGS(&texture));
     if(FAILED(hr)){
-        DEBUG_STREAM("GED3D12Heap::makeTexture: D3D12MA CreateResource failed");
+        DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "GED3D12Heap::makeTexture: D3D12MA CreateResource failed");
         if (allocation) allocation->Release();
         return nullptr;
     }
@@ -421,7 +421,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
     // Phase 2: suballocate an SRV slot from the engine's shared heap.
     D3D12DescriptorHandle srvSlot = engine->resourceDescriptorAllocator->allocate(1);
     if(!srvSlot.valid()){
-        DEBUG_STREAM("GED3D12Heap::makeTexture: resourceDescriptorAllocator exhausted");
+        DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "GED3D12Heap::makeTexture: resourceDescriptorAllocator exhausted");
         if(texture)    texture->Release();
         if(allocation) allocation->Release();
         return nullptr;
@@ -638,7 +638,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         allocatorDesc.Flags = D3D12MA::ALLOCATOR_FLAG_DEFAULT_POOLS_NOT_ZEROED;
         hr = D3D12MA::CreateAllocator(&allocatorDesc, &memAllocator);
         if(FAILED(hr)){
-            DEBUG_STREAM("D3D12MA::CreateAllocator failed");
+            DEBUG_ERROR(DEBUG_DOMAIN_GENERAL, "D3D12MA::CreateAllocator failed");
             exit(1);
         };
         // Allocator-Lifetime-Hardening Phase 1 — wrap the raw allocator in the
@@ -660,7 +660,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             helperDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
             hr = d3d12_device->CreateDescriptorHeap(&helperDesc, IID_PPV_ARGS(&clearUavHelperHeap));
             if(FAILED(hr)){
-                DEBUG_STREAM("Failed to create clearUavHelperHeap");
+                DEBUG_ERROR(DEBUG_DOMAIN_GENERAL, "Failed to create clearUavHelperHeap");
                 exit(1);
             }
         }
@@ -679,7 +679,7 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
             D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
             /*capacity=*/2048u);
 
-        DEBUG_STREAM("GED3D12Engine Intialized!");
+        DEBUG_INFO(DEBUG_DOMAIN_GENERAL, "Init: GED3D12Engine created");
 
     };
 
@@ -823,28 +823,28 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         try {
             auto compiler = OmegaSLCompiler::Create(gteDevice);
             if (!compiler) {
-                DEBUG_STREAM("ensureBlitFullscreenVs: OmegaSLCompiler::Create returned null");
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureBlitFullscreenVs: OmegaSLCompiler::Create returned null");
                 return false;
             }
             OmegaCommon::String src(kBlitFullscreenVsOmegaSL);
             auto source = OmegaSLCompiler::Source::fromString(src);
             blitFullscreenVsLib = compiler->compile({source});
             if (!blitFullscreenVsLib || blitFullscreenVsLib->header.entry_count == 0) {
-                DEBUG_STREAM("ensureBlitFullscreenVs: OmegaSL compile produced no shaders");
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureBlitFullscreenVs: OmegaSL compile produced no shaders");
                 blitFullscreenVsLib.reset();
                 return false;
             }
             omegasl_shader *shaderDesc = &blitFullscreenVsLib->shaders[0];
             auto shader = _loadShaderFromDesc(shaderDesc, true);
             if (!shader) {
-                DEBUG_STREAM("ensureBlitFullscreenVs: _loadShaderFromDesc failed");
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureBlitFullscreenVs: _loadShaderFromDesc failed");
                 blitFullscreenVsLib.reset();
                 return false;
             }
             blitFullscreenVs = shader;
             return true;
         } catch (const std::exception &e) {
-            DEBUG_STREAM("ensureBlitFullscreenVs: exception: " << e.what());
+            DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureBlitFullscreenVs: exception: " << e.what());
             blitFullscreenVs.reset();
             blitFullscreenVsLib.reset();
             return false;
@@ -857,7 +857,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         try {
             auto compiler = OmegaSLCompiler::Create(gteDevice);
             if (!compiler) {
-                DEBUG_STREAM("ensureMipmapGenPipeline: OmegaSLCompiler::Create returned null");
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureMipmapGenPipeline: OmegaSLCompiler::Create returned null");
                 return false;
             }
 
@@ -866,7 +866,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
             mipmapGenShaderLib = compiler->compile({source});
             if (!mipmapGenShaderLib || mipmapGenShaderLib->header.entry_count == 0) {
-                DEBUG_STREAM("ensureMipmapGenPipeline: OmegaSL compile produced no shaders");
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureMipmapGenPipeline: OmegaSL compile produced no shaders");
                 mipmapGenShaderLib.reset();
                 return false;
             }
@@ -875,7 +875,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             omegasl_shader *shaderDesc = &mipmapGenShaderLib->shaders[0];
             auto shader = _loadShaderFromDesc(shaderDesc, true);
             if (!shader) {
-                DEBUG_STREAM("ensureMipmapGenPipeline: _loadShaderFromDesc failed");
+                DEBUG_ERROR(DEBUG_DOMAIN_SHADER, "ensureMipmapGenPipeline: _loadShaderFromDesc failed");
                 mipmapGenShaderLib.reset();
                 return false;
             }
@@ -886,13 +886,13 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
             mipmapGenPipeline = makeComputePipelineState(desc);
             if (!mipmapGenPipeline) {
-                DEBUG_STREAM("ensureMipmapGenPipeline: makeComputePipelineState returned null");
+                DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "ensureMipmapGenPipeline: makeComputePipelineState returned null");
                 mipmapGenShaderLib.reset();
                 return false;
             }
             return true;
         } catch (const std::exception &e) {
-            DEBUG_STREAM("ensureMipmapGenPipeline: exception: " << e.what());
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "ensureMipmapGenPipeline: exception: " << e.what());
             mipmapGenPipeline.reset();
             mipmapGenShaderLib.reset();
             return false;
@@ -911,7 +911,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         HRESULT hr = d3d12_device->CreateCommandSignature(&sigDesc, nullptr,
                                                           IID_PPV_ARGS(&drawIndirectSignature));
         if (FAILED(hr)) {
-            DEBUG_STREAM("getDrawIndirectSignature: CreateCommandSignature failed hr=" << std::hex << hr);
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "getDrawIndirectSignature: CreateCommandSignature failed hr=" << std::hex << hr);
             return nullptr;
         }
         return drawIndirectSignature.Get();
@@ -929,7 +929,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         HRESULT hr = d3d12_device->CreateCommandSignature(&sigDesc, nullptr,
                                                           IID_PPV_ARGS(&drawIndexedIndirectSignature));
         if (FAILED(hr)) {
-            DEBUG_STREAM("getDrawIndexedIndirectSignature: CreateCommandSignature failed hr=" << std::hex << hr);
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "getDrawIndexedIndirectSignature: CreateCommandSignature failed hr=" << std::hex << hr);
             return nullptr;
         }
         return drawIndexedIndirectSignature.Get();
@@ -947,7 +947,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         HRESULT hr = d3d12_device->CreateCommandSignature(&sigDesc, nullptr,
                                                           IID_PPV_ARGS(&dispatchIndirectSignature));
         if (FAILED(hr)) {
-            DEBUG_STREAM("getDispatchIndirectSignature: CreateCommandSignature failed hr=" << std::hex << hr);
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "getDispatchIndirectSignature: CreateCommandSignature failed hr=" << std::hex << hr);
             return nullptr;
         }
         return dispatchIndirectSignature.Get();
@@ -1414,14 +1414,14 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         ComPtr<IDXGISwapChain1> swapChain1;
         HRESULT hr = dxgi_factory->CreateSwapChainForComposition(d3d12_queue->commandQueue.Get(),desc,nullptr,&swapChain1);
         if(FAILED(hr)){
-            DEBUG_STREAM("CreateSwapChainForComposition failed hr=0x"
+            DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "CreateSwapChainForComposition failed hr=0x"
                          << std::hex << static_cast<unsigned long>(hr) << std::dec);
             return nullptr;
         }
         ComPtr<IDXGISwapChain3> swapChain3;
         hr = swapChain1.As(&swapChain3);
         if(FAILED(hr)){
-            DEBUG_STREAM("QueryInterface(IDXGISwapChain3) failed hr=0x"
+            DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "QueryInterface(IDXGISwapChain3) failed hr=0x"
                          << std::hex << static_cast<unsigned long>(hr) << std::dec);
             return nullptr;
         }
@@ -1433,7 +1433,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         ComPtr<IDXGISwapChain1> swapChain1;
         HRESULT hr = dxgi_factory->CreateSwapChainForHwnd(d3d12_queue->commandQueue.Get(),hwnd,desc,nullptr,nullptr,&swapChain1);
         if(FAILED(hr)){
-            DEBUG_STREAM("CreateSwapChainForHwnd failed hr=0x"
+            DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "CreateSwapChainForHwnd failed hr=0x"
                          << std::hex << static_cast<unsigned long>(hr) << std::dec);
             return nullptr;
         }
@@ -1446,7 +1446,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         ComPtr<IDXGISwapChain3> swapChain3;
         hr = swapChain1.As(&swapChain3);
         if(FAILED(hr)){
-            DEBUG_STREAM("QueryInterface(IDXGISwapChain3) failed hr=0x"
+            DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "QueryInterface(IDXGISwapChain3) failed hr=0x"
                          << std::hex << static_cast<unsigned long>(hr) << std::dec);
             return nullptr;
         }
@@ -1460,6 +1460,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
     SharedHandle<GEFence> GED3D12Engine::makeFence(){
         ID3D12Fence *f;
         d3d12_device->CreateFence(0,D3D12_FENCE_FLAG_SHARED,IID_PPV_ARGS(&f));
+        DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Fence created");
         return SharedHandle<GEFence>(new GED3D12Fence(f));
     }
 
@@ -1480,13 +1481,14 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         D3D12MA::Pool *pool = nullptr;
         HRESULT hr = memAllocator->CreatePool(&poolDesc, &pool);
         if(FAILED(hr)){
-            DEBUG_STREAM("Failed to create D3D12MA Pool");
+            DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "Failed to create D3D12MA Pool");
             if (pool) pool->Release();
             return nullptr;
         }
         // Allocator-Lifetime-Hardening Phase 1 — hand the heap an allocator-owner
         // ref so its `pool->Release()` in ~GED3D12Heap stays valid even if the
         // engine is torn down first.
+        DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Heap created");
         return SharedHandle<GEHeap>(new GED3D12Heap(this, pool, desc.len, allocatorOwner));
     }
 
@@ -1497,7 +1499,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
     SharedHandle<GEBuffer> GED3D12Engine::createBoundingBoxesBuffer(OmegaCommon::ArrayRef<GERaytracingBoundingBox> boxes){
         if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
-            DEBUG_STREAM("Raytracing not supported on this device");
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "Raytracing not supported on this device");
             return nullptr;
         }
         std::vector<D3D12_RAYTRACING_AABB> aabbs;
@@ -1523,7 +1525,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
     SharedHandle<GEAccelerationStruct> GED3D12Engine::allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc){
         if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
-            DEBUG_STREAM("Raytracing not supported on this device");
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "Raytracing not supported on this device");
             return nullptr;
         }
         std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
@@ -1707,11 +1709,11 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         std::vector<D3D12_INPUT_ELEMENT_DESC> inputs;
 
-        assert(desc.vertexFunc && "Vertex Function is not provided");
-        assert(desc.fragmentFunc && "Fragment Function is not provided");
+        if(!(desc.vertexFunc)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Vertex Function is not provided"); assert((desc.vertexFunc) && "Vertex Function is not provided"); return nullptr; }
+        if(!(desc.fragmentFunc)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Fragment Function is not provided"); assert((desc.fragmentFunc) && "Fragment Function is not provided"); return nullptr; }
 
-        assert(vertexFunc.type == OMEGASL_SHADER_VERTEX && "Function is not a vertex function");
-        assert(fragmentFunc.type == OMEGASL_SHADER_FRAGMENT && "Function is not a fragment function");
+        if(!(vertexFunc.type == OMEGASL_SHADER_VERTEX)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Function is not a vertex function"); assert((vertexFunc.type == OMEGASL_SHADER_VERTEX) && "Function is not a vertex function"); return nullptr; }
+        if(!(fragmentFunc.type == OMEGASL_SHADER_FRAGMENT)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Function is not a fragment function"); assert((fragmentFunc.type == OMEGASL_SHADER_FRAGMENT) && "Function is not a fragment function"); return nullptr; }
 
         D3D12_INPUT_LAYOUT_DESC inputLayoutDesc {};
         if(vertexFunc.vertexShaderInputDesc.useVertexID){
@@ -1851,7 +1853,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         bool b = createRootSignatureFromOmegaSLShaders(2,shaders,&rootSigDesc,&signature);
 
         if(!b){
-            DEBUG_STREAM("Failed to Create Root Signature");
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "Failed to Create Root Signature");
             exit(1);
         }
 
@@ -1965,6 +1967,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         };
         ATL::CStringW wstr(desc.name.data());
         state->SetName(wstr);
+        DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Render pipeline created: '" << desc.name << "'");
         return SharedHandle<GERenderPipelineState>(new GED3D12RenderPipelineState(desc.vertexFunc,desc.fragmentFunc,state,signature,rootSigDesc));
     };
     SharedHandle<GEComputePipelineState> GED3D12Engine::makeComputePipelineState(ComputePipelineDescriptor &desc){
@@ -1990,17 +1993,18 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             d.pRootSignature = signature;
         }
         else {
-            DEBUG_STREAM("Failed to Create Root Signature");
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "Failed to Create Root Signature");
             exit(1);
         }
 
         hr = d3d12_device->CreateComputePipelineState(&d,IID_PPV_ARGS(&state));
         if(FAILED(hr)){
-            DEBUG_STREAM("Failed to Create Compute Pipeline State");
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "Failed to Create Compute Pipeline State");
             exit(1);
         }
         ATL::CStringW wstr(desc.name.data());
         state->SetName(wstr);
+        DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Compute pipeline created");
         return SharedHandle<GEComputePipelineState>(new GED3D12ComputePipelineState(desc.computeFunc,state,signature,rootSignatureDesc1));
     };
 
@@ -2014,7 +2018,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         /// call. Feature-gate first, same idiom as the raytracing
         /// pattern at `createBoundingBoxesBuffer`.
         if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER)){
-            DEBUG_STREAM("makeMeshPipelineState: device does not advertise "
+            DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: device does not advertise "
                          "GTEDEVICE_FEATURE_MESH_SHADER ('" << desc.name << "')");
             return nullptr;
         }
@@ -2030,7 +2034,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         /// dispatch-children builtins) does not land until Phase 5.
         /// Fail loud here rather than silently dropping the stage.
         if(desc.amplificationFunc){
-            DEBUG_STREAM("makeMeshPipelineState: amplification stage is Phase 5 "
+            DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: amplification stage is Phase 5 "
                          "(payload + dispatch-children machinery pending); "
                          "passing `amplificationFunc` is not supported yet ('"
                          << desc.name << "')");
@@ -2039,10 +2043,8 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         auto &meshShaderDesc = desc.meshFunc->internal;
         auto &fragmentDesc   = desc.fragmentFunc->internal;
-        assert(meshShaderDesc.type == OMEGASL_SHADER_MESH
-               && "Mesh slot does not hold a mesh shader");
-        assert(fragmentDesc.type == OMEGASL_SHADER_FRAGMENT
-               && "Fragment slot does not hold a fragment shader");
+        if(!(meshShaderDesc.type == OMEGASL_SHADER_MESH)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Mesh slot does not hold a mesh shader"); assert((meshShaderDesc.type == OMEGASL_SHADER_MESH) && "Mesh slot does not hold a mesh shader"); return nullptr; }
+        if(!(fragmentDesc.type == OMEGASL_SHADER_FRAGMENT)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Fragment slot does not hold a fragment shader"); assert((fragmentDesc.type == OMEGASL_SHADER_FRAGMENT) && "Fragment slot does not hold a fragment shader"); return nullptr; }
 
         // DEBUG_STREAM("Making D3D12 mesh-shader pipeline '" << desc.name << "'");
 
@@ -2055,7 +2057,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         ID3D12RootSignature *signature = nullptr;
         D3D12_ROOT_SIGNATURE_DESC1 rootSigDesc{};
         if(!createRootSignatureFromOmegaSLShaders(2, shaders, &rootSigDesc, &signature)){
-            DEBUG_STREAM("makeMeshPipelineState: failed to create root signature ('"
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: failed to create root signature ('"
                          << desc.name << "')");
             return nullptr;
         }
@@ -2182,7 +2184,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         ID3D12PipelineState *state = nullptr;
         HRESULT hr = d3d12_device->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&state));
         if(FAILED(hr)){
-            DEBUG_STREAM("makeMeshPipelineState: CreatePipelineState failed hr=0x"
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: CreatePipelineState failed hr=0x"
                          << std::hex << (unsigned)hr << std::dec
                          << " ('" << desc.name << "')");
             if(signature){ signature->Release(); }
@@ -2190,6 +2192,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         }
         ATL::CStringW wstr(desc.name.data());
         state->SetName(wstr);
+        DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Mesh pipeline created");
         return SharedHandle<GERenderPipelineState>(
             new GED3D12RenderPipelineState(desc.meshFunc, desc.fragmentFunc,
                                            state, signature, rootSigDesc,
@@ -2201,7 +2204,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             return nullptr;
         }
         if (!ensureBlitFullscreenVs()) {
-            DEBUG_STREAM("makeBlitPipelineState: ensureBlitFullscreenVs failed");
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeBlitPipelineState: ensureBlitFullscreenVs failed");
             return nullptr;
         }
 
@@ -2218,9 +2221,10 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         auto rp = makeRenderPipelineState(rpDesc);
         if (!rp) {
-            DEBUG_STREAM("makeBlitPipelineState: underlying makeRenderPipelineState failed");
+            DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeBlitPipelineState: underlying makeRenderPipelineState failed");
             return nullptr;
         }
+        DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Blit pipeline created");
         return SharedHandle<GEBlitPipelineState>(new GED3D12BlitPipelineState(rp));
     };
 
@@ -2231,12 +2235,12 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         // the API boundary rather than silently substituted, so the caller
         // sees the misconfiguration instead of an unexpected color buffer.
         if(!isPortableNativeRenderTargetFormat(desc.pixelFormat)){
-            DEBUG_STREAM("makeNativeRenderTarget: requested pixelFormat is not in the portable swap-chain set; rejecting.");
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: requested pixelFormat is not in the portable swap-chain set; rejecting.");
             return nullptr;
         }
 
         if(presentQueue == nullptr){
-            DEBUG_STREAM("makeNativeRenderTarget: null presentQueue");
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: null presentQueue");
             return nullptr;
         }
 
@@ -2247,7 +2251,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         // E_INVALIDARG that doesn't surface the actual cause. Reject up
         // front so the descriptor parse fails loudly.
         if(presentQueue->type() == GECommandQueueDesc::Type::Transfer){
-            DEBUG_STREAM("makeNativeRenderTarget: presentQueue is a Transfer queue; D3D12 swap chains require DIRECT");
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: presentQueue is a Transfer queue; D3D12 swap chains require DIRECT");
             return nullptr;
         }
 
@@ -2280,7 +2284,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         ComPtr<ID3D12DescriptorHeap> renderTargetHeap;
         hr = d3d12_device->CreateDescriptorHeap(&heap_desc,IID_PPV_ARGS(&renderTargetHeap));
         if(FAILED(hr)){
-            DEBUG_STREAM("Failed to create RTV descriptor heap hr=0x"
+            DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "Failed to create RTV descriptor heap hr=0x"
                          << std::hex << static_cast<unsigned long>(hr) << std::dec);
             return nullptr;
         }
@@ -2294,7 +2298,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             dsv_heap_desc.NumDescriptors = kBackBufferCount;
             hr = d3d12_device->CreateDescriptorHeap(&dsv_heap_desc,IID_PPV_ARGS(&dsvDescHeap));
             if(FAILED(hr)){
-                DEBUG_STREAM("Failed to create DSV descriptor heap hr=0x"
+                DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "Failed to create DSV descriptor heap hr=0x"
                              << std::hex << static_cast<unsigned long>(hr) << std::dec);
                 return nullptr;
             }
@@ -2311,7 +2315,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         RECT rc{};
         if(desc.isHwnd){
             if(desc.hwnd == nullptr || !GetClientRect(desc.hwnd, &rc)){
-                DEBUG_STREAM("makeNativeRenderTarget: GetClientRect failed for hwnd=" << desc.hwnd);
+                DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: GetClientRect failed for hwnd=" << desc.hwnd);
                 return nullptr;
             }
         }
@@ -2321,7 +2325,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         const LONG widthLong = rc.right - rc.left;
         const LONG heightLong = rc.bottom - rc.top;
         if(widthLong <= 0 || heightLong <= 0){
-            DEBUG_STREAM("makeNativeRenderTarget: non-positive client rect "
+            DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: non-positive client rect "
                          << widthLong << "x" << heightLong);
             return nullptr;
         }
@@ -2347,7 +2351,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             rawSwapChain = createSwapChainForComposition(&swapChaindesc, presentQueue);
         }
         if(rawSwapChain == nullptr){
-            DEBUG_STREAM("makeNativeRenderTarget: swap chain creation returned null");
+            DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: swap chain creation returned null");
             return nullptr;
         }
         // Adopt ownership in a ComPtr so any failure below releases it.
@@ -2369,7 +2373,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             ID3D12Resource *backBuffer = nullptr;
             hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer));
             if(FAILED(hr) || backBuffer == nullptr){
-                DEBUG_STREAM("makeNativeRenderTarget: GetBuffer(" << i
+                DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "makeNativeRenderTarget: GetBuffer(" << i
                              << ") failed hr=0x"
                              << std::hex << static_cast<unsigned long>(hr) << std::dec);
                 for(auto *r : rtvs) if(r) r->Release();
@@ -2446,7 +2450,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         bool isDSV =  bool(desc.usage == GETexture::RenderTargetAndDepthStencil || desc.usage == GETexture::GPUAccessOnly);
 
         if(desc.usage == GETexture::RenderTargetAndDepthStencil && desc.kind == TextureKind::Tex3D){
-            DEBUG_STREAM("Cannot create a 3D Texture with Depth Stencil Properties");
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "Cannot create a 3D Texture with Depth Stencil Properties");
             return nullptr;
         }
 
@@ -2793,7 +2797,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             &texAllocation,
             IID_PPV_ARGS(&texture));
         if(FAILED(hr)){
-            DEBUG_STREAM("Failed to make D3D12 Texture via D3D12MA");
+            DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "Failed to make D3D12 Texture via D3D12MA");
             if (texAllocation) texAllocation->Release();
             return nullptr;
         };
@@ -2839,7 +2843,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                 &cpuSideAllocation,
                 IID_PPV_ARGS(&cpuSideRes));
             if(FAILED(hr)){
-                DEBUG_STREAM("Failed to make D3D12 Texture transition heap via D3D12MA");
+                DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "Failed to make D3D12 Texture transition heap via D3D12MA");
                 if (cpuSideAllocation) cpuSideAllocation->Release();
                 cpuSideAllocation = nullptr;
                 cpuSideRes        = nullptr;
@@ -2865,7 +2869,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         if(isSRV){
             srvSlot = resourceDescriptorAllocator->allocate(1);
             if(!srvSlot.valid()){
-                DEBUG_STREAM("makeTexture: resourceDescriptorAllocator exhausted (SRV)");
+                DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "makeTexture: resourceDescriptorAllocator exhausted (SRV)");
                 releaseTextureResources();
                 return nullptr;
             }
@@ -2875,7 +2879,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         if(isUAV){
             uavSlot = resourceDescriptorAllocator->allocate(1);
             if(!uavSlot.valid()){
-                DEBUG_STREAM("makeTexture: resourceDescriptorAllocator exhausted (UAV)");
+                DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "makeTexture: resourceDescriptorAllocator exhausted (UAV)");
                 if(srvSlot.valid()) resourceDescriptorAllocator->free(srvSlot);
                 releaseTextureResources();
                 return nullptr;
@@ -2892,7 +2896,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
             hr = d3d12_device->CreateDescriptorHeap(&descHeapDesc,IID_PPV_ARGS(&rtvDescHeap));
             if(FAILED(hr)){
-                DEBUG_STREAM("Failed to Create RTV Desc Heap");
+                DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "Failed to Create RTV Desc Heap");
             };
 
             d3d12_device->CreateRenderTargetView(texture,&view_desc,rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
@@ -2905,13 +2909,11 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             descHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
             hr = d3d12_device->CreateDescriptorHeap(&descHeapDesc, IID_PPV_ARGS(&dsvDescHeap));
             if(FAILED(hr)){
-                DEBUG_STREAM("Failed to Create DSV Desc Heap");
+                DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "Failed to Create DSV Desc Heap");
             }
 
             d3d12_device->CreateDepthStencilView(texture,&dsv_view_desc,dsvDescHeap->GetCPUDescriptorHandleForHeapStart());
         }
-
-        DEBUG_STREAM("Will Return Texture");
 
         auto result = SharedHandle<GETexture>(new GED3D12Texture(this,kind,desc.usage,desc.pixelFormat,texture,cpuSideRes,srvSlot,uavSlot,rtvDescHeap,dsvDescHeap,res_states,texAllocation,cpuSideAllocation));
         // Allocator-Lifetime-Hardening Phase 1 — keep the allocator alive as
@@ -2988,7 +2990,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             IID_PPV_ARGS(&buffer));
 
         if(FAILED(hr)){
-            DEBUG_STREAM("Failed to Create D3D12 Buffer via D3D12MA");
+            DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "Failed to Create D3D12 Buffer via D3D12MA");
             if (allocation) allocation->Release();
             return nullptr;
         };
@@ -3019,7 +3021,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                 &cpuSideAllocation,
                 IID_PPV_ARGS(&cpuSideRes));
             if(FAILED(chr)){
-                DEBUG_STREAM("Failed to Create D3D12 Readback companion buffer via D3D12MA");
+                DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "Failed to Create D3D12 Readback companion buffer via D3D12MA");
                 if (cpuSideAllocation) cpuSideAllocation->Release();
                 if (allocation) allocation->Release();
                 buffer->Release();
@@ -3271,7 +3273,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         // nullptr so callers can fall back gracefully.
         D3D12DescriptorHandle slot = samplerDescriptorAllocator->allocate(1);
         if(!slot.valid()){
-            DEBUG_STREAM("makeSamplerState: samplerDescriptorAllocator exhausted");
+            DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "makeSamplerState: samplerDescriptorAllocator exhausted");
             return nullptr;
         }
         D3D12_SAMPLER_DESC samplerDesc {};
@@ -3292,6 +3294,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         d3d12_device->CreateSampler(&samplerDesc, slot.cpu);
 
+        DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "SamplerState created");
         return SharedHandle<GESamplerState>(new GED3D12SamplerState(this, slot, samplerDesc));
     }
 

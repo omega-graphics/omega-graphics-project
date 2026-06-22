@@ -1,6 +1,6 @@
 # GTETestWindow Cross-Backend Plan
 
-> Status: **Phase 1 landed**. The API, the Win32 backend, and the DX 2DTest migration are shipped and visually confirmed (see Phase 1 below). Phases 2–6 are still proposals. Open Decisions #1/#4/#5 were resolved by recommendation during Phase 1; #2 (shader path) and #3 (D3D12 ComputeTest hidden window) are still open and bear on Phases 2–4.
+> Status: **Phase 1 landed & verified; Phase 2 implemented (pending Mac verification).** Phase 1 (API + Win32 + DX 2DTest) is shipped and visually confirmed. Phase 2 (Cocoa backend + Metal 2DTest, converged onto precompiled shaders and the portable GETextureAsset for both backends, assets relocated to `assets/2DTest/`) is written but not yet built — this is a Windows host, so Metal needs a macOS build, and the DX texture path change needs a re-screenshot. Open Decisions #1/#4/#5 (Phase 1) and #2 (precompiled, Phase 2) are resolved; #3 (D3D12 ComputeTest hidden window) remains for Phase 4. Phases 3–6 are still proposals.
 
 ## Goal
 
@@ -263,7 +263,40 @@ Tests that **don't** migrate (already headless / CLI, no swap chain):
 5. Pick the smallest test (2DTest is fine) and rewrite **its DirectX build only** through the new API as a smoke test. Other backends still build from their current copies; nothing else moves yet.
 6. Run the DX 2DTest, screenshot via user (per AGENTS.md Visual Debugging), confirm the rect renders identically to today.
 
-### Phase 2 — Metal backend
+### Phase 2 — Metal backend ✅ Done (pending Mac verification)
+
+> Implemented (not yet built/screenshotted — this is a Windows host; Metal needs
+> a macOS build to verify). What landed:
+> - `gte/Tests/metal/GTETestWindow_Cocoa.mm` — Cocoa backend (NSWindow + NSView +
+>   CAMetalLayer, NSApplication run loop). onReady fires from
+>   `-applicationDidFinishLaunching`, onClose from `-applicationWillTerminate`.
+>   MRR (no ARC), matching the rest of the Metal backend. Layer forced to 1:1
+>   contentsScale at 300×300 so the drawable matches the shared body's 300×300
+>   viewport (retina-crisp viewport tracking left as a follow-up).
+> - **Open Decision #2 resolved → precompiled.** Metal 2DTest dropped the inline
+>   runtime-string shader + `loadShaderLibraryRuntime`; both backends now
+>   `loadShaderLibrary("./shaders.omegasllib")`.
+> - **Texture convergence (your call): GETextureAsset for both backends.** The
+>   shared body's WIC/COM `#ifdef TARGET_DIRECTX` island is gone — texture load is
+>   now portable `GETextureAsset` (DirectXTex on D3D12, MTKTextureLoader on Metal).
+>   cwd setup unified onto `OmegaCommon::FS::changeCWD(getExecutableDir())`. The
+>   shared body is now fully platform-independent (no #ifdef islands).
+> - **2DTest assets relocated to `gte/Tests/assets/2DTest/`** (test.png +
+>   shaders.omegasl, deduped onto the DX-canonical shader) — pulled Phase 4's
+>   relocation forward for this test because Phase 2 makes both backends consume
+>   them. Both backends' `<TestName>/` now hold only OS template files.
+> - **`add_omegasl_lib` gained an optional `INCLUDE_DIRS` keyword** (forwards
+>   `-I <dir>` to omegaslc); backward compatible, used by both backends' 2DTest
+>   shader compile. `add_metal_test` gained `ASSETS`/`SHADERS` (mirrors
+>   `add_d3d12_test`) + a `omegagte_testwindow_metal` OBJECT lib injection;
+>   assets/shader lib stage into the bundle's `Contents/MacOS`.
+> - **DX re-verify needed:** the DX texture path changed (WIC → GETextureAsset),
+>   so the DX 2DTest screenshot should be re-confirmed alongside the Metal one.
+> - **Risk flagged:** the shared body is a `.cpp` (no `__OBJC__`), so its view of
+>   `NativeRenderTargetDescriptor` omits the `metalLayer` field (which is
+>   `#if defined(TARGET_METAL) && defined(__OBJC__)`). Safe because the body only
+>   passes the descriptor by reference and never touches `metalLayer`; if the Mac
+>   build complains, compile `2DTest/main.cpp` as OBJCXX on Metal.
 
 1. Write `gte/Tests/metal/GTETestWindow_Cocoa.mm`.
 2. Mirror Phase 1's CMake plumbing (`add_metal_test` injects the object lib).

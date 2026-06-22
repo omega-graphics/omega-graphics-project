@@ -140,7 +140,7 @@ void GED3D12Texture::copyBytes(void *bytes,size_t bytesPerRow){
     // in makeTexture's D3D12MA call) would access-violate at Map.
     // bytes/bytesPerRow at zero produce a no-op that wastes the Map.
     if(cpuSideresource.Get() == nullptr || bytes == nullptr || bytesPerRow == 0){
-        DEBUG_STREAM("GED3D12Texture::copyBytes: null upload heap or bad input");
+        DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "GED3D12Texture::copyBytes: null upload heap or bad input");
         return;
     }
 
@@ -173,7 +173,7 @@ void GED3D12Texture::copyBytes(void *bytes,size_t bytesPerRow){
                 dev->Release();
             }
         }
-        DEBUG_STREAM("GED3D12Texture::copyBytes: Map failed hr=0x"
+        DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "GED3D12Texture::copyBytes: Map failed hr=0x"
                      << std::hex << hr
                      << " removedReason=0x" << removedReason << std::dec
                      << " (cpuSideresource=" << cpuSideresource.Get()
@@ -229,7 +229,7 @@ void GED3D12Texture::copyBytes(void *bytes, size_t bytesPerRow, const TextureReg
     void *mem_ptr = nullptr;
     HRESULT hr = cpuSideresource->Map(0,nullptr,&mem_ptr);
     if(FAILED(hr)){
-        DEBUG_STREAM("Failed to Map Memory Ptr to Texture");
+        DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "Failed to Map Memory Ptr to Texture");
         return;
     }
 
@@ -246,7 +246,7 @@ void GED3D12Texture::copyBytes(void *bytes, size_t bytesPerRow, const TextureReg
     const UINT subresource = D3D12CalcSubresource(destRegion.mipLevel, destRegion.arrayLayer,
                                                   0, desc.MipLevels, arraySz);
     if(subresource >= numSubresources){
-        DEBUG_STREAM("GED3D12Texture::copyBytes(region): subresource out of range");
+        DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "GED3D12Texture::copyBytes(region): subresource out of range");
         cpuSideresource->Unmap(0,nullptr);
         dev->Release();
         return;
@@ -303,7 +303,7 @@ size_t GED3D12Texture::getBytes(void *bytes, size_t bytesPerRow) {
 
     if(bytes != nullptr) {
         if(cpuSideresource.Get() == nullptr){
-            DEBUG_STREAM("GED3D12Texture::getBytes: null readback heap");
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "GED3D12Texture::getBytes: null readback heap");
             return 0;
         }
         HRESULT hr = cpuSideresource->Map(0, nullptr, &mem_ptr);
@@ -311,7 +311,7 @@ size_t GED3D12Texture::getBytes(void *bytes, size_t bytesPerRow) {
             // Previously exit(1) — same fatal-from-worker-thread issue
             // as copyBytes. Return 0 (no bytes read) and log the HR so
             // the caller can detect the failure.
-            DEBUG_STREAM("GED3D12Texture::getBytes: Map failed hr=0x"
+            DEBUG_ERROR(DEBUG_DOMAIN_RESOURCE, "GED3D12Texture::getBytes: Map failed hr=0x"
                          << std::hex << hr << std::dec);
             return 0;
         }
