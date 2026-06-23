@@ -21,10 +21,11 @@ This document proposes the API additions and changes needed to bring the WTK Nat
 | **2.11 NativeNote / NotificationCenter** | Permissions, scheduling, callbacks, removal, categories — macOS UN, Win32 ToastNotificationManager, GTK libnotify | **Done** |
 | **2.12 NativeMenu / Menu** | Shortcuts, check/radio items, contextual menus, dynamic updates, validation delegate — macOS NSMenu, Win32 HMENU, GTK GtkMenu | **Done** (icons deferred) |
 | **2.13 Linux/X11 direct surface ownership** | WTK owns its X11 surfaces directly. Root NativeItem falls through to the GTKAppWindow's toplevel `Window`; NativeViewHost child surfaces are X11 child Windows managed by `X11SurfaceHost` (no `GtkDrawingArea`, no `GtkSocket`, no `GTKItem` in the embedding path). | **Source-complete, compile-verified.** Run-verified: BasicAppTest comes up, `ResizeSession Completed w=600 h=500` flows through configure-event, no warnings. - **Done (Verified by Developer seperately)**|
-| 2.14 NativeVisualTree  | Per-window compositor tree moves from Composition → Native. Owned by `AppWindow`, called directly by `FrameBuilder` during layout (no compositor in the loop). Decouples `Visual` from `BackendRenderTargetContext`. Removes the carve-out drain machinery. Includes the `VKFallbackVisualTree` → `VKVisualTree` rename, `MTLCALayerTree` → `MTLVisualTree` rename, and the `CALayerTree`/`DCVisualTree`/`VKLayerTree.cpp` file moves into `wtk/src/Native/{macos,win,gtk}`. | Not finished |
+| 2.13a Linux/Wayland runtime backend selection | Wayland counterpart to §2.13: a `WaylandSurfaceHost` sibling to `X11SurfaceHost` (behind a shared `SurfaceHost` interface), a Wayland branch in the §2.14 `VKVisualTree`/binder, and **runtime windowing-system detection** (`GDK_IS_X11_DISPLAY` vs `GDK_IS_WAYLAND_DISPLAY`) so one binary serves both X11 and Wayland sessions. Lifts §2.13's `GDK_BACKEND=x11` constraint. GTE is already runtime-ready (surface creation dispatches by populated handle) — only its CMake co-define is needed. | **Proposed — not started.** |
+| 2.14 NativeVisualTree  | Per-window compositor tree moves from Composition → Native. Owned by `AppWindow`, called directly by `FrameBuilder` during layout (no compositor in the loop). Decouples `Visual` from `BackendRenderTargetContext`. Removes the carve-out drain machinery. Includes the `VKFallbackVisualTree` → `VKVisualTree` rename, `MTLCALayerTree` → `MTLVisualTree` rename, and the `CALayerTree`/`DCVisualTree`/`VKLayerTree.cpp` file moves into `wtk/src/Native/{macos,win,gtk}`. | **Pass 1 Done** (Linux run-verified; macOS/Win32 compile-unverified off-platform). Pass 2 (`NativeContentNode` + `reconfigureContentNode`) deferred to `NativeViewHost-Adoption-Plan.md` V2/G2. |
 | 2.2 NativeWindow | Full window control (minimize/maximize/fullscreen, scaleFactor, opacity, cursor sink, DPI scale change events) | **Mostly done.** Header surface complete (`NativeWindow.h`), `WindowScaleFactorChanged` event type + params in `NativeEvent.h`, all three backends (`CocoaAppWindow.mm`, `WinAppWindow.cpp`, `GTKAppWindow.cpp`) implement every method and emit the scale-change event on the right native trigger. **Remaining (owned by [UIView-Render-Redesign-Plan Phase F](UIView-Render-Redesign-Plan.md#phase-f-follow-up--window-resize-always-relayouts--repaints-no-resize-opt-in)):** the `AppWindow` consumer that subscribes to `WindowScaleFactorChanged`, runs the three-step coupling (renderTarget resize → Compositor scale propagation → full-tree repaint that re-rasterizes every element, not just text), and shares its implementation with the resize handler. §2.2 ships the native-side surface and emit; Phase F owns the cross-platform consumer. Plus the `ViewRenderTarget::scaleChanged()` rebuild trigger (cross-plan to `DPI-Aware-Text-Plan.md`'s per-monitor-DPI section), which Phase F's handler will call. |
 | ~~2.3 NativeItem~~ | **Obsolete under virtual view model — no new NativeItem APIs.** See §2.3 below. | Removed |
-| 2.3a View / Widget / TreeHost focus + cursor + tooltip | Virtual focus manager, declarative cursor shape, virtual tooltip popups | Not started |
+| 2.3a View / Widget / TreeHost focus + cursor + tooltip | Virtual focus manager, declarative cursor shape, virtual tooltip popups | **F1 done** (Linux compile-verified — `OmegaWTK.so` links clean). `View::FocusPolicy` + bitmask `\|`/`&` operators + free `FocusReason` enum + `setFocusPolicy`/`focusPolicy`/`isFocusable`/`isClickFocusable`/`isTabFocusable`/`isFocused`/`focus(reason)`/`blur`/`lastFocusReason` landed on `View` (`View.h`, `ViewImpl.h` storage `policy_`/`lastReason_`/`focused_`, `View.Core.cpp`). `focus()`/`blur()` are stubs pending F2's FocusManager. F2–F6 / M1 / C1 / T1 not started. |
 | **2.4 NativeApp / NativeTimer** | Delegate (`onAppReady`/`onAppWillTerminate`/`onOpenFile`/`onOpenURL`), `launchArgs` + `commandLineArgs`, `NativeTimer` (main-thread, `NSTimer` / `SetTimer` / `g_timeout_add`) | **Source-complete across all three backends, macOS compile-verified.** Header (`wtk/include/omegaWTK/Native/NativeApp.h`) adds `NativeAppDelegate` + `setDelegate` / `launchArgs` / `commandLineArgs` with shared protected storage so backends only fire delegate hooks. New header `wtk/include/omegaWTK/Native/NativeTimer.h` with `make_native_timer(intervalSec, repeats, callback)`. **macOS** (`CocoaApp.mm` + new `CocoaTimer.mm`) **compile-verified** — `NSApplicationDelegate` forwarder + `NSTimer` on `NSRunLoopCommonModes`, BasicAppTest.app links and bundles. **Win32** (`WinApp.cpp` + new `WinTimer.cpp`) source-complete — `onAppReady`/`onAppWillTerminate` fire around the message pump; `commandLineArgs` falls back to `CommandLineToArgvW`; `SetTimer(NULL, …, TimerProc)` with a static `UINT_PTR → WinTimer*` registry. `onOpenFile`/`onOpenURL` intentionally unwired in v0 (file-association IPC out of scope; first launch readable via `commandLineArgs()`). **GTK** (`GTKApp.cpp` + new `GTKTimer.cpp`) source-complete — `activate`/`shutdown`/`open` signals + `G_APPLICATION_HANDLES_OPEN`; `g_timeout_add` with `G_SOURCE_REMOVE` for one-shots. Win32 / GTK pending developer verification on their respective hosts. |
 | 2.6 NativeClipboard | New subsystem | Not started |
 | 2.7 NativeDragDrop | New subsystem | Not started |
@@ -509,7 +510,7 @@ Phase IDs are stable across the doc — Widget-Stub-Implementation-Plan Phase 4B
 
 | Phase | What lands | Files touched | Est. LOC | Depends on | Unblocks |
 |-------|------------|---------------|----------|------------|----------|
-| **F1** | `View::FocusPolicy` enum (NoFocus / ClickFocus / TabFocus / StrongFocus / WheelFocus) + bitmask `\|`/`&` operator overloads + `FocusReason` enum (Mouse / Tab / Backtab / Shortcut / ActiveWindow / Popup / Restore / Other) + `View::setFocusPolicy`/`focusPolicy`/`isFocusable`/`isClickFocusable`/`isTabFocusable`/`isFocused`/`focus(reason)`/`blur`/`lastFocusReason`. Storage on `View::Impl`: `FocusPolicy policy_ = NoFocus`, `FocusReason lastReason_ = Other`, `bool focused_ = false`. **`View::focus(reason)` and `View::blur()` are stubs** at this phase — they store the reason on the View but cannot call into the FocusManager (which doesn't exist yet). F2 retrofits them to route through `treeHost->focusManager()`. Default `NoFocus` preserves today's behavior (no one is focusable until a widget opts in). | `wtk/include/omegaWTK/UI/View.h`, `wtk/src/UI/ViewImpl.h`, `wtk/src/UI/View.Core.cpp` | ~110 | — | F2, F3, M1 |
+| **F1** ✅ **landed** (Linux compile-verified) | `View::FocusPolicy` enum (NoFocus / ClickFocus / TabFocus / StrongFocus / WheelFocus) + bitmask `\|`/`&` operator overloads + `FocusReason` enum (Mouse / Tab / Backtab / Shortcut / ActiveWindow / Popup / Restore / Other) + `View::setFocusPolicy`/`focusPolicy`/`isFocusable`/`isClickFocusable`/`isTabFocusable`/`isFocused`/`focus(reason)`/`blur`/`lastFocusReason`. Storage on `View::Impl`: `FocusPolicy policy_ = NoFocus`, `FocusReason lastReason_ = Other`, `bool focused_ = false`. **`View::focus(reason)` and `View::blur()` are stubs** at this phase — they store the reason on the View but cannot call into the FocusManager (which doesn't exist yet). F2 retrofits them to route through `treeHost->focusManager()`. Default `NoFocus` preserves today's behavior (no one is focusable until a widget opts in). | `wtk/include/omegaWTK/UI/View.h`, `wtk/src/UI/ViewImpl.h`, `wtk/src/UI/View.Core.cpp` | ~110 | — | F2, F3, M1 |
 | **F2** | `FocusManager` class skeleton — new files. API: `setFocus(View*, FocusReason)`, `focusedView()`, `lastFocusReason()`, `clearFocus()`. Owns a `View * currentlyFocused_` plus the last-reason scalar. `setFocus` writes `view->impl_->focused_ = true` and emits `NativeEvent::FocusGained` (params: previous View*) on the new view's emitter, then `NativeEvent::FocusLost` on the previous view's emitter. `WidgetTreeHost` owns a `Core::UniquePtr<FocusManager> focusManager_` constructed in the host ctor (same pattern as `overlayHost_`); public accessor `WidgetTreeHost::focusManager()`. F1's `View::focus(reason)` / `View::blur` retrofit to call `treeHost->focusManager().setFocus(this, reason)` / `clearFocus()` when `treeHost` is non-null (a detached view's `focus()` is a no-op — matches what the Focus-Reason `Mouse`/`Tab`/`Popup`/etc. semantics imply: focus only matters when the view is in a host). | `wtk/include/omegaWTK/UI/FocusManager.h` (new), `wtk/src/UI/FocusManager.cpp` (new), `wtk/src/UI/WidgetTreeHost.h`, `wtk/src/UI/WidgetTreeHost.cpp`, `wtk/src/UI/View.Core.cpp` (F1 retrofit) | ~160 | F1 | F3, F4, F5, F6, M1, O4, Widget-Stub Phase 4B |
 | **F3** | `WidgetTreeHost::dispatchInputEvent` routes `KeyDown`/`KeyUp` to `focusManager_->focusedView()->emit(event)` instead of to the root widget. **Replaces** the current root-broadcast at `WidgetTreeHost.cpp:707–715` (the TODO comment "route to focused widget once focus tracking exists" is the exact line). If `focusedView() == nullptr`, the event is dropped — a no-focus state means no consumer, which is what the broadcast was masking. F4's Tab/Shift-Tab interception layers on top in the next phase; F3 ships pure routing only. | `wtk/src/UI/WidgetTreeHost.cpp` | ~30 | F2 | TextInput v0 ([Widget-Stub Phase 4B](Widget-Stub-Implementation-Plan.md#phase-4b-textinput--blocked-on-focusmanager)) |
 | **M1** | Mouse-click focus on `LMouseDown`. In `dispatchInputEvent`, after `target = hitTest(pos)` and before `target->emit(event)`, walk up the view chain from `target` to find the nearest view with `policy & (ClickFocus \| StrongFocus)`; if found, call `focusManager_->setFocus(view, FocusReason::Mouse)`. Walking up matches AppKit's "focus the nearest focusable ancestor" — a button containing a non-focusable Label child still focuses the button when the Label is clicked. M1 is logically independent of F3/F4 (mouse-driven focus does not require key routing), so it lands as its own phase to keep F3 a one-line edit. | `wtk/src/UI/WidgetTreeHost.cpp` | ~30 | F1, F2 | full click-focus semantics |
@@ -1187,6 +1188,216 @@ under their existing `#if` guards.
 
 The interim primary-monitor anchoring described at the bottom of this section is superseded by §2.9 NativeScreen when that lands; §2.13 can ship using the interim and §2.9 retrofits later (no order dependency between §2.13 and §2.9).
 
+> **Wayland is no longer permanently out of scope.** The "X11-only" decision above (the `GDK_BACKEND=x11` requirement, the `GDK_IS_X11_DISPLAY` refuse-with-error path at `GTKAppWindow.cpp:733`) was the right call for §2.13 in isolation — it let the X11 surface-ownership collapse land and be verified without dragging in a second protocol. **§2.13a below lifts that constraint**: it adds a `WaylandSurfaceHost` sibling to `X11SurfaceHost`, a Wayland branch to the §2.14 `VKVisualTree`, and runtime windowing-system detection so a single binary supports both. §2.13 stays the historical record of the X11 path; §2.13a is where the co-build story lives.
+
+---
+
+### 2.13a Linux/Wayland — Runtime Backend Selection (X11 + Wayland Co-build)
+
+**Status: Proposed — not started.** This is the Wayland counterpart to §2.13 plus the §2.14 Linux branch's Wayland integration, unified under a single runtime-detection model so one build of `OmegaWTK_Native` serves both X11 and Wayland sessions.
+
+**Goal:** Build the X11 and Wayland native paths into the *same* binary and pick between them at runtime from the live `GdkDisplay`, instead of the current configure-time `WTK_NATIVE_X11` *xor* `WTK_NATIVE_WAYLAND` selection. A user on a GNOME-Wayland session and a user on an X11 session run the same shipped library; the surface host, the visual-tree handle plumbing, and the GTE swap-chain descriptor are all chosen by what the compositor actually is, not by what `XDG_SESSION_TYPE` happened to be at `cmake` time.
+
+#### Why this is mostly a *wiring* change, not a new renderer
+
+The hard part — creating a Vulkan surface on either protocol — is **already runtime-capable in GTE today**. The observed facts:
+
+- `GEVulkan.cpp:4197–4233` creates the surface by *populated handle*, not by macro: it tries `vkCreateWaylandSurfaceKHR` when `desc.wl_display && desc.wl_surface` are set, and falls back to `vkCreateXlibSurfaceKHR` when `desc.x_display && desc.x_window` are set. With both `VK_USE_PLATFORM_*` macros defined, *both* blocks compile and the fall-through already is the runtime switch.
+- `GEVulkan.cpp:154–163` pushes `VK_KHR_wayland_surface` and `VK_KHR_xlib_surface` independently under their own `#ifdef VK_USE_PLATFORM_*` — both get requested when both are defined.
+- `GE.h:610–620` gates `x_window`/`x_display` and `wl_surface`/`wl_display`/`width`/`height` under *independent* `#ifdef`s, so when both `VULKAN_TARGET_*` are defined the descriptor carries **both** field sets simultaneously. (`width`/`height` is only declared in the Wayland block, which is correct — Vulkan WSI on Wayland reports no surface extent, `currentExtent == 0xFFFFFFFF`, so the swap chain must be sized from the descriptor; X11 reads extent from the `Window`.)
+
+So **GTE needs no source change** — only its CMake must be allowed to define both `VULKAN_TARGET_X11` and `VULKAN_TARGET_WAYLAND` at once (which flips on both `VK_USE_PLATFORM_*` via `GEVulkan.h:3–9`). All the runtime work is on the WTK side, where today's code is still `#if WTK_NATIVE_WAYLAND … #elif WTK_NATIVE_X11`.
+
+#### The four blockers to a co-build (all WTK-side)
+
+| # | Blocker | Where | Fix |
+|---|---------|-------|-----|
+| 1 | Mutually-exclusive defines | `wtk/CMakeLists.txt:90–96`, `gte/CMakeLists.txt:72–77` | Add a `BOTH` backend mode that defines `WTK_NATIVE_X11` **and** `WTK_NATIVE_WAYLAND` (+ both `VULKAN_TARGET_*`); make it the `AUTO` default when both dev-package sets are present. |
+| 2 | `GTKItem::getDisplay()` return-type collision | `GTKItem.h`, `GTKItem.cpp:298–354` | On Wayland it returns `wl_display*`; on X11 it returns `Display*`. The two cannot coexist under one name. Rename to protocol-explicit accessors (`getWaylandSurface`/`getWaylandDisplay`, `getX11Display`/`getX11Window`) each behind its *own* `#if` (not `#elif`), and make `getBinding()` dispatch at runtime. |
+| 3 | `surfaceHost_` is X11-only | `GTKAppWindow.cpp:175, 394–405, 722–738` | `X11SurfaceHost` is X11-specific (it already no-ops on Wayland builds). Introduce a `SurfaceHost` interface, add `WaylandSurfaceHost`, and construct the right one from the detected backend; the realize handler drives whichever is live. |
+| 4 | `fillDescriptor` is compile-time gated | `VKVisualBinder.cpp:24–53` | Dispatch on the `VKVisual`'s runtime protocol: populate `wl_*` + `width`/`height` for a Wayland visual, `x_*` for an X11 visual. Both accessor sets on `VKVisual` compile in. |
+
+#### Runtime detection — GDK is authoritative
+
+The windowing system is **knowable at runtime from the opened display**, with no env-var guessing:
+
+```cpp
+// wtk/src/Native/private_include/NativePrivate/gtk/GTKWindowing.h  (new)
+namespace OmegaWTK::Native::GTK {
+
+enum class WindowingBackend { Unknown, X11, Wayland };
+
+/// Resolve the live windowing protocol from a realized-or-unrealized
+/// GdkDisplay. GDK has already bound to exactly one backend by the time
+/// any GdkDisplay exists, so this is deterministic — no XDG_SESSION_TYPE
+/// fallback needed (that env var is advisory and can lie under XWayland).
+inline WindowingBackend detectWindowingBackend(GdkDisplay *display) {
+#if WTK_NATIVE_WAYLAND
+    if (display != nullptr && GDK_IS_WAYLAND_DISPLAY(display))
+        return WindowingBackend::Wayland;
+#endif
+#if WTK_NATIVE_X11
+    if (display != nullptr && GDK_IS_X11_DISPLAY(display))
+        return WindowingBackend::X11;
+#endif
+    return WindowingBackend::Unknown;
+}
+
+}
+```
+
+The `#if` guards mean an X11-only build (blocker-1 mode `X11`) still compiles this to "X11 or Unknown", a Wayland-only build to "Wayland or Unknown", and a co-build to the full three-way. `GDK_IS_X11_DISPLAY` is already the check `GTKAppWindow.cpp:727` uses; this just generalizes it and adds the Wayland arm. Under XWayland (an X11 app on a Wayland compositor) GDK reports an **X11** display, which is correct — the app genuinely talks X11 to XWayland, and the X11 surface host is the right choice.
+
+#### SurfaceHost — the abstraction `X11SurfaceHost` becomes one of
+
+`GTKAppWindow` currently owns `std::unique_ptr<X11SurfaceHost> surfaceHost_` (`GTKAppWindow.cpp:175`) and `VKVisualTree` is handed it for child-surface allocation in §2.14 Pass 2. To hold either backend behind one pointer, lift the shape `X11SurfaceHost` already exposes into an interface:
+
+```cpp
+// wtk/src/Native/private_include/NativePrivate/gtk/SurfaceHost.h  (new)
+class SurfaceHost {
+public:
+    virtual ~SurfaceHost() = default;
+
+    // Realize gate — identical contract to X11SurfaceHost's today.
+    virtual bool isRealized() const = 0;
+    virtual void runOnRealize(std::function<void()> action) = 0;
+
+    // Pass-2 child-surface API (NativeViewHost adoption). Present on
+    // the interface now, lit up by §2.14 Pass 2 — exactly the staging
+    // X11SurfaceHost already follows (its child API shipped ahead of
+    // its caller). hostId is the NativeContentNode key; the platform
+    // child handle (::Window / wl_subsurface*) stays inside the impl.
+    virtual void reconfigureChild(std::uint64_t hostId,
+                                  const Composition::Rect &rectPx,
+                                  int zOrder) = 0;
+    virtual void destroyChild(std::uint64_t hostId) = 0;
+
+    WindowingBackend backend() const { return backend_; }
+protected:
+    explicit SurfaceHost(WindowingBackend b) : backend_(b) {}
+    WindowingBackend backend_;
+};
+```
+
+`X11SurfaceHost` already implements `isRealized` / `runOnRealize` and an X11-window child registry — it adopts this interface with no behavioral change (the existing `createChildWindow`/`reconfigureChildWindow`/`destroyChildWindow` become the X11 impl of the `hostId`-keyed virtuals). `onToplevelRealized(::Window)` / `display()` / `toplevel()` stay as X11-specific concrete methods the realize handler reaches through a downcast — they are not on the interface.
+
+> **Design note — keep `X11SurfaceHost` exactly as §2.13 verified it.** §2.13 was developer-verified end-to-end. The interface is *additive*: `X11SurfaceHost` gains a base class and two `hostId`-keyed forwarders over its existing child registry; none of its verified X11 logic is rewritten. This is the "clean uniform fix" rule — the Wayland sibling is built to the same contract rather than special-casing the consumer.
+
+#### WaylandSurfaceHost — the new sibling
+
+```cpp
+// wtk/src/Native/gtk/WaylandSurfaceHost.{h,cpp}  (new, under Native)
+class WaylandSurfaceHost : public SurfaceHost {
+public:
+    explicit WaylandSurfaceHost(wl_display *dpy, wl_compositor *comp,
+                                wl_subcompositor *subcomp);
+    ~WaylandSurfaceHost() override;
+
+    // Called from GTKAppWindow's realize handler with the toplevel's
+    // GDK-owned wl_surface (gdk_wayland_window_get_wl_surface). Drains
+    // runOnRealize queue, same semantics as X11SurfaceHost.
+    void onToplevelRealized(wl_surface *toplevelSurface);
+
+    bool isRealized() const override;
+    void runOnRealize(std::function<void()> action) override;
+    void reconfigureChild(std::uint64_t hostId,
+                          const Composition::Rect &rectPx,
+                          int zOrder) override;
+    void destroyChild(std::uint64_t hostId) override;
+
+    wl_display *display() const { return dpy_; }
+    wl_surface *toplevel() const { return toplevel_; }
+private:
+    wl_display       *dpy_ = nullptr;
+    wl_compositor    *comp_ = nullptr;     // for wl_compositor.create_surface
+    wl_subcompositor *subcomp_ = nullptr;  // for child wl_subsurfaces
+    wl_surface       *toplevel_ = nullptr;
+    // hostId -> { wl_surface*, wl_subsurface* }; reconfigure =
+    //   wl_subsurface.set_position (parent-relative) +
+    //   wl_subsurface.place_above/below for z; commit in desync mode.
+    // (Pass-2 — present but unused until NativeViewHost lands, matching
+    //  X11SurfaceHost's child-window registry today.)
+};
+```
+
+**Why child surfaces differ from X11 and what stays the same.** X11 child surfaces are real `Window`s (`XCreateWindow` + `XMoveResizeWindow` + `XRestackWindows`). Wayland has no child windows; the analog is `wl_subsurface` — a `wl_surface` created via `wl_compositor.create_surface`, parented with `wl_subcompositor.get_subsurface`, positioned parent-relative with `wl_subsurface.set_position`, and stacked with `place_above`/`place_below`. Put subsurfaces in **desync** mode so a content node can commit independently of the toplevel. The *registry shape* — `hostId → platform handle`, reconfigure-on-layout, destroy-on-teardown — is identical to `X11SurfaceHost`, which is exactly why the `SurfaceHost` interface fits both.
+
+**Pass-1 reality check.** §2.14 shipped **root-only**; child content nodes are Pass 2 (deferred to `NativeViewHost-Adoption-Plan.md` V2/G2). So `WaylandSurfaceHost`'s subsurface registry, like `X11SurfaceHost`'s child-window registry, is *present-but-unused* in the first cut — Pass 1 of §2.13a only needs the realize gate and the root `wl_surface` path. The subsurface machinery is written to the interface but not exercised until the same consumer that lights up the X11 child path lights up the Wayland one.
+
+**GDK-ownership nuance.** The toplevel `wl_surface` is owned by GDK (`gdk_wayland_window_get_wl_surface`), just as the toplevel `Window` is owned by GDK on X11. We render the root Vulkan swap chain directly into GDK's `wl_surface` (this is already what the current Wayland-only build does). `wl_compositor`/`wl_subcompositor` for child subsurfaces are obtained by binding the global registry off `gdk_wayland_display_get_wl_display` — a one-time roundtrip at host construction.
+
+#### VKVisual / binder — runtime protocol on the visual
+
+`VKVisual` (`VKVisualTree.h:26`) already declares distinctly-named accessors (`waylandSurface`/`waylandDisplay` vs `x11Display`/`x11Window`); they just need to compile *together* and carry a runtime tag:
+
+```cpp
+class VKVisual : public Native::Visual {
+public:
+    VKVisual(SharedHandle<GTKItem> item, Composition::Rect rect,
+             WindowingBackend backend);
+    WindowingBackend backend() const { return backend_; }
+
+#if WTK_NATIVE_WAYLAND
+    wl_surface *waylandSurface() const;   // item_->getWaylandSurface()
+    wl_display *waylandDisplay() const;   // item_->getWaylandDisplay()
+#endif
+#if WTK_NATIVE_X11
+    ::Display  *x11Display() const;       // item_->getX11Display()
+    ::Window    x11Window()  const;       // item_->getX11Window()
+#endif
+private:
+    SharedHandle<GTKItem> item_;
+    WindowingBackend backend_;
+};
+```
+
+The `#elif` becomes two independent `#if`s so both sets exist in a co-build. `make_native_visual_tree` (`VKVisualTree.cpp:39`) resolves the backend once via `detectWindowingBackend(gtk_widget_get_display(...))` and stamps it onto the visual. `fillDescriptor` (`VKVisualBinder.cpp:35–52`) then switches on `visual.backend()` at runtime: Wayland fills `wl_*` + `width`/`height`, X11 fills `x_*`. The pre-realize "return false → caller retries" contract is unchanged.
+
+#### Per-file change summary
+
+- `wtk/CMakeLists.txt` / `gte/CMakeLists.txt` — add `BOTH` to `OMEGA_LINUX_VK_BACKEND`; in `BOTH` (and the new `AUTO`-when-both-present default) define `WTK_NATIVE_X11` + `WTK_NATIVE_WAYLAND` + `VULKAN_TARGET_X11` + `VULKAN_TARGET_WAYLAND`. Existing `X11` / `WAYLAND` single modes preserved for constrained builds. Link both `X11`/`xcb` and `wayland-client` when `BOTH`.
+- `wtk/src/Native/private_include/NativePrivate/gtk/GTKWindowing.h` (new) — `WindowingBackend` enum + `detectWindowingBackend(GdkDisplay*)`.
+- `wtk/src/Native/private_include/NativePrivate/gtk/SurfaceHost.h` (new) — abstract `SurfaceHost` interface (realize gate + `hostId`-keyed child API).
+- `wtk/src/Native/private_include/NativePrivate/gtk/X11SurfaceHost.h` + `wtk/src/Native/gtk/X11SurfaceHost.cpp` — derive from `SurfaceHost`; add the two `hostId`-keyed forwarders over the existing child-window registry. **No change to verified X11 logic.**
+- `wtk/src/Native/gtk/WaylandSurfaceHost.{h,cpp}` (new) — Wayland `SurfaceHost` impl: realize gate + `wl_subsurface` child registry (Pass-2-aligned).
+- `wtk/src/Native/private_include/NativePrivate/gtk/GTKItem.h` + `wtk/src/Native/gtk/GTKItem.cpp` — rename accessors to `getWaylandSurface`/`getWaylandDisplay` + `getX11Display`/`getX11Window`, each behind its own `#if`; `getBinding()` dispatches on `detectWindowingBackend`.
+- `wtk/src/Native/gtk/GTKAppWindow.cpp` — own `std::unique_ptr<SurfaceHost>`; construct `X11SurfaceHost` or `WaylandSurfaceHost` from the detected backend (replacing the `#if WTK_NATIVE_X11` block at `:722–738` and its "requires GDK_BACKEND=x11" refusal); realize handler (`:389–405`) hands the toplevel handle to whichever host is live. Update the `gtk_x11_surface_host_from_native` helper (`:1218`) to a backend-agnostic `surface_host_from_native` (or keep both typed accessors).
+- `wtk/src/Native/private_include/NativePrivate/gtk/VKVisualTree.h` + `wtk/src/Native/gtk/VKVisualTree.cpp` — `VKVisual` carries `WindowingBackend`; both accessor sets behind independent `#if`s; `make_native_visual_tree` stamps the detected backend.
+- `wtk/src/Composition/backend/vk/VKVisualBinder.cpp` — `fillDescriptor` switches on `visual.backend()` at runtime instead of `#if/#elif`.
+- **GTE: no source change.** Only the CMake co-define (above) is needed; `GE.h` descriptor and `GEVulkan.cpp` surface creation are already runtime-correct under both `VULKAN_TARGET_*`.
+
+#### Risks / open questions
+
+1. **XWayland mislabeling.** An X11 build of WTK run under a Wayland compositor talks to XWayland; GDK correctly reports an X11 display and the X11 host is selected. This is *correct* but means the "native Wayland" path only engages when GDK itself chose the Wayland backend (i.e. `GDK_BACKEND` not forced to x11, and the GTK build has Wayland support). Document that forcing `GDK_BACKEND=x11` deterministically gives the X11 path even on a Wayland session — useful as an escape hatch and for reproducing the §2.13-verified path.
+2. **`wl_subsurface` desync + Vulkan present cadence.** A child subsurface in desync mode commits independently, but its first map must be coordinated with the parent's commit. This only matters at Pass 2 (NativeViewHost); Pass 1 (root only) renders into GDK's toplevel `wl_surface` exactly as the current Wayland-only build does, so the cadence question is deferred with the rest of the child path.
+3. **Fractional scale.** Wayland fractional scaling (`wp_fractional_scale_v1`) interacts with the swap-chain `width`/`height` the descriptor must carry. §2.2 and §2.9 already flag fractional-scale as deferred future work; §2.13a inherits that deferral — Pass 1 sizes the surface from `rect × integerScale` exactly as the current Wayland build does.
+4. **Binary size / link surface.** A `BOTH` build links both `libX11`/`libxcb` and `libwayland-client`. Both are tiny and already transitively present via GTK on any modern Linux desktop; the cost is negligible. Single-protocol embedders who care can still configure `OMEGA_LINUX_VK_BACKEND=X11` or `=WAYLAND`.
+5. **Verification.** Linux is the agent's native target, so both arms are run-verifiable on this host — but only one session type at a time. Mark each arm with the session it was verified under (e.g. "X11 arm run-verified on an X11 session; Wayland arm run-verified on a GNOME-Wayland session") per the "mark unverified backends" rule. A `BOTH` binary that boots on an X11 session exercises the X11 arm and the *detection* logic; the Wayland arm needs a separate Wayland-session run to claim run-verified.
+
+#### Implementation phasing
+
+§2.13a lands in 6 reviewable steps. Steps W1–W2 are pure plumbing that leave single-protocol builds byte-identical; the co-build only becomes selectable once W5 lands.
+
+1. **W1 — Build: `BOTH` mode (opt-in, no behavior change).** Add `BOTH` to `OMEGA_LINUX_VK_BACKEND` in both CMake files; define both `WTK_NATIVE_*` + `VULKAN_TARGET_*` and link both protocol libs. Leave `AUTO` defaulting to single-protocol for now (flipped in W6). With the code still `#if/#elif`, `BOTH` does not yet *build clean* — that is the point of W2–W5; W1 is the smallest reviewable CMake-only diff and is validated by `X11` / `WAYLAND` single modes still configuring + building exactly as before.
+2. **W2 — Runtime detection helper + GTKItem de-collide.** Add `GTKWindowing.h`. Rename `GTKItem` accessors to protocol-explicit names behind independent `#if`s; runtime `getBinding()`. Update the two existing callers (`VKVisual`, anything reading `getBinding()`). Single-protocol builds unchanged (each still compiles exactly one accessor set).
+3. **W3 — `SurfaceHost` interface + `X11SurfaceHost` adoption.** Add `SurfaceHost.h`; make `X11SurfaceHost` derive from it with the two `hostId`-keyed forwarders. Zero behavior change on X11 (developer-verified path preserved).
+4. **W4 — `WaylandSurfaceHost`.** New files: realize gate + root path (subsurface registry present, Pass-2-aligned, unexercised).
+5. **W5 — GTKAppWindow + VKVisual/binder runtime dispatch.** `GTKAppWindow` owns `unique_ptr<SurfaceHost>` and constructs by detected backend; realize handler drives the live host; the `GDK_BACKEND=x11` refusal is removed. `VKVisual` carries the backend tag; `fillDescriptor` switches at runtime. **This is the step where a `BOTH` build first compiles and runs.**
+6. **W6 — Build + smoke test on both sessions; flip `AUTO` default.** Configure + ninja the `BOTH` build with clang++. Run BasicAppTest on an X11 session and on a Wayland session; confirm window + input + Vulkan present on each. Once green, make `AUTO` default to `BOTH` when both dev-package sets are present (single-protocol packages still degrade to that protocol).
+
+**Mark status:** compile-verified for `BOTH`; run-verified per session arm (X11 arm and Wayland arm flagged separately per the rule above).
+
+#### Dependencies
+
+**§2.13a depends on:**
+- **§2.13** — adopts `X11SurfaceHost` into the `SurfaceHost` interface; reuses its realize-gate semantics verbatim.
+- **§2.14 (Linux branch)** — extends `VKVisual` / `VKVisualBinder` / `make_native_visual_tree`. §2.14 Pass 1 is shipped, so this is additive.
+
+**§2.13a enables:**
+- **A single shipped `OmegaWTK_Native` that runs on both X11 and Wayland sessions** — the headline outcome.
+- **`NativeViewHost-Adoption-Plan.md` Wayland paths** — once Pass 2 lands child content nodes, the Wayland branch allocates `wl_subsurface`s through `WaylandSurfaceHost` exactly as the X11 branch allocates child `Window`s through `X11SurfaceHost`.
+- **§2.2 / §2.9 Wayland follow-ups** (`wp_fractional_scale_v1`, `wp_presentation_feedback` display-link) — they attach to the now-live Wayland surface path instead of a hypothetical one.
+
 ---
 
 ### 2.14 NativeVisualTree — Per-window Compositor Tree, Owned by Native — ✅ Pass 1 Done
@@ -1414,6 +1625,7 @@ Two project-wide gotchas surfaced during Pass 1; both are now in the agent's mem
 | ~~P1~~ **Done** | 2.11 NativeNote / NotificationCenter | Implemented |
 | ~~P1~~ **Done** | 2.12 NativeMenu / Menu | Implemented |
 | **P1** | 2.13 Linux/X11 direct surface ownership (root + NativeViewHost) + `X11SurfaceHost` | Pairs with §2.2/§2.9 and `NativeViewHost-Adoption-Plan.md` — locks Linux to a single, canonical surface-ownership model before per-platform features and the NativeViewHost-based widgets (`VideoViewWidget`, `GTEViewWidget`) start landing |
+| **P2** | 2.13a Linux/Wayland runtime backend selection (X11 + Wayland co-build) | Extends §2.13/§2.14 additively. Mostly WTK-side wiring — GTE's Vulkan surface creation already dispatches by populated handle. Ships a single binary that runs on both X11 and Wayland sessions; unblocks the Wayland arms of §2.2/§2.9 follow-ups and `NativeViewHost-Adoption-Plan.md`. |
 | ~~P1~~ **Pass 1 done (Linux verified; macOS/Win32 compile-unverified off-platform)** | 2.14 NativeVisualTree (Composition → Native move, drain removal, legacy factory retirement) | Pass 1 shipped on all three backends — `Native::VisualTree` owns the platform layer topology, the Composition binder owns the GTE / RTC pairing, AppWindow drives both directly. Pass 2 (`Native::NativeContentNode` + `reconfigureContentNode`) deferred until `NativeViewHost-Adoption-Plan.md` Phase V2/G2 picks it up. |
 | **P3** | 2.10 NativeAccessibility | Stub now, implement per-platform over time |
 
@@ -1445,6 +1657,18 @@ Two project-wide gotchas surfaced during Pass 1; both are now in the agent's mem
 - `wtk/src/Native/gtk/GTKAppWindow.cpp` — install root event masks + button/motion/key/scroll/enter/leave/configure/realize handlers directly on the GtkWindow; route emissions through the AppWindow `eventEmitter()`; turn on `app_paintable` + double-buffer-off on the toplevel; menu-bar inset tracking
 - `wtk/src/Native/gtk/GTKItem.cpp` — root NativeItem binds to the toplevel GdkWindow; remove `gtk_drawing_area_new()` path for the root; non-root construction becomes unreachable under the virtual view model
 - `wtk/include/omegaWTK/NativePrivate/gtk/GTKItem.h` / `GTKAppWindow.h` — drop the child-of-`GTKItem` constructor; expose `GTKAppWindow::menuBarInset()` for the hover dispatcher
+
+### GTK backend — §2.13a (Wayland + runtime backend selection)
+- `wtk/CMakeLists.txt` / `gte/CMakeLists.txt` — add `BOTH` to `OMEGA_LINUX_VK_BACKEND`; define both `WTK_NATIVE_X11`/`WTK_NATIVE_WAYLAND` + `VULKAN_TARGET_X11`/`VULKAN_TARGET_WAYLAND` and link both protocol libs in `BOTH`/`AUTO`-both
+- `wtk/src/Native/private_include/NativePrivate/gtk/GTKWindowing.h` (new) — `WindowingBackend` enum + `detectWindowingBackend(GdkDisplay*)`
+- `wtk/src/Native/private_include/NativePrivate/gtk/SurfaceHost.h` (new) — abstract `SurfaceHost` interface (realize gate + `hostId`-keyed child API)
+- `wtk/src/Native/gtk/WaylandSurfaceHost.{h,cpp}` (new) — Wayland `SurfaceHost` impl (realize gate + `wl_subsurface` child registry, Pass-2-aligned)
+- `wtk/src/Native/private_include/NativePrivate/gtk/X11SurfaceHost.h` / `X11SurfaceHost.cpp` — derive from `SurfaceHost`; add `hostId`-keyed forwarders over the existing child-window registry (no change to verified X11 logic)
+- `wtk/src/Native/gtk/GTKItem.{h,cpp}` — protocol-explicit accessors (`getWaylandSurface`/`getWaylandDisplay` + `getX11Display`/`getX11Window`) behind independent `#if`s; runtime `getBinding()`
+- `wtk/src/Native/gtk/GTKAppWindow.cpp` — own `unique_ptr<SurfaceHost>`; construct by detected backend; realize handler drives the live host; remove the `GDK_BACKEND=x11` refusal
+- `wtk/src/Native/gtk/VKVisualTree.{h,cpp}` — `VKVisual` carries `WindowingBackend`; both accessor sets behind independent `#if`s; `make_native_visual_tree` stamps the detected backend
+- `wtk/src/Composition/backend/vk/VKVisualBinder.cpp` — `fillDescriptor` switches on `visual.backend()` at runtime
+- **GTE: no source change** — only the CMake co-define
 
 ### NativeVisualTree — §2.14 (Composition → Native move, all platforms)
 - `wtk/include/omegaWTK/Native/NativeVisualTree.h` (new) — abstract `Native::VisualTree`, `Native::Visual`, content-node factories

@@ -95,7 +95,8 @@ public, backend-neutral `OmegaGraphicsEngine` surface, exactly like `Init()`
 - **No cross-device memory path.** Discrete GPUs don't share memory and there
   is no peer-to-peer copy API. All cross-device movement goes **through host
   memory** via `Upload`/`Readback` staging. Accepted as the only portable
-  transport; P2P/NVLink-style fast paths are explicitly out of scope.
+  transport; P2P / vendor-interconnect fast paths (NVLink / xGMI / Xe Link) are
+  out of scope for the *base* pipeline — pursued separately in Appendix A.6.
 - **No cross-device sync primitive.** `GEFence` is created by one engine
   (`makeFence`, `GE.h:456`) and is device-local. Lanes therefore **cannot**
   be joined with a GPU fence — the join is host-side (completion handlers +
@@ -319,6 +320,17 @@ the `OMEGASL_FEATURE_BIT_*` machinery therefore stay outside the macro.
     `TARGET_VULKAN` (the P2P path is Linux-only), i.e. effectively
     `OMEGA_BUILD_ML && TARGET_VULKAN`. On a non-Linux ML build the collectives
     still work — they just run the host-ring transport with no bridge.
+  - Appendix **A.9** *distributed* GEMM orchestration — the multi-GPU fan-out
+    (partition + scatter `A` + broadcast `B` + gather `C`). Multi-GPU runtime, so
+    gated like the rest of the orchestrator. Its single-device kernel is **not**
+    gated (below).
+  - Appendix **A.9** *vendor GEMM-library fast paths* — each behind its own
+    per-vendor sub-option (`OMEGA_ML_CUBLAS`, `OMEGA_ML_HIPBLASLT`,
+    `OMEGA_ML_ONEMKL`; all **default `OFF`**, each requiring that vendor's toolkit —
+    CUDA / ROCm / oneAPI — present at build time). They reuse the A.6 exportable-
+    buffer + external-semaphore seam, so they share A.6's Linux + `TARGET_VULKAN`
+    envelope. With none enabled, the portable `coopmatrix` GEMM is the only path —
+    and still correct.
 - **NOT gated (always built) — all OmegaSL language features:**
   - Appendix **A.2** subgroup/wave ops — a general language feature useful for any
     compute/fragment shader.
@@ -327,6 +339,10 @@ the `OMEGASL_FEATURE_BIT_*` machinery therefore stay outside the macro.
     let a kernel use tensor cores on a single device through the normal compute
     pipeline, independent of any multi-GPU orchestration. Ships regardless of
     `OMEGA_BUILD_ML`.
+  - Appendix **A.9**'s *single-device* tiled GEMM **kernel** — just an OmegaSL
+    kernel over the A.3 `coopmatrix` primitive, dispatched through the ordinary
+    single-device compute path. Like any ML kernel it ships in every build; only
+    its multi-GPU fan-out (gated, above) needs `OMEGA_BUILD_ML`.
 - **Public-header discipline.** Types that only exist under `OMEGA_BUILD_ML`
   (e.g. `GEParallelComputePipeline`, the `exportable` flag) must be `#ifdef`-guarded
   in the public headers so a consumer built without the macro sees a coherent,
@@ -360,8 +376,9 @@ the `OMEGASL_FEATURE_BIT_*` machinery therefore stay outside the macro.
 - Peer-to-peer cross-GPU copies in the *base* pipeline (it always stages
   through host). Direct GPU↔GPU transfer is pursued separately as a Linux-only,
   feasibility-gated sub-track — see Appendix A.6 (`gpu-databridge`), which rides
-  **NVLink/NVSwitch when present on NVIDIA hardware** and direct PCIe P2P
-  otherwise.
+  each vendor's high-bandwidth GPU interconnect when present — **NVLink/NVSwitch**
+  on NVIDIA, **xGMI / Infinity Fabric** on AMD, **Xe Link** on Intel — and falls
+  back to direct PCIe P2P otherwise.
 - Halo / stencil kernels that need neighbor data across shard boundaries.
 - Integrated-GPU participation, or mixing discrete + integrated in one pipeline.
 - Cross-device GPU fences (no such primitive exists; join is host-side).
@@ -378,7 +395,8 @@ the `OMEGASL_FEATURE_BIT_*` machinery therefore stay outside the macro.
 > the gaps — staying on the Vulkan/D3D12/Metal abstraction, no CUDA dependency,
 > works on every vendor. A native-CUDA *execution* backend (NVPTX), NCCL, and an
 > MLIR codegen re-architecture were considered and **deferred** (see A.7 — the
-> reasoning survives). Direct GPU↔GPU PCIe **P2P** is *not* deferred: it is
+> reasoning survives). Direct GPU↔GPU **P2P** — over each vendor's interconnect
+> (NVLink / xGMI / Xe Link) or PCIe P2P as the floor — is *not* deferred: it is
 > pursued as a Linux-only, feasibility-gated sub-track in its own repo
 > (`gpu-databridge`) — see A.6.
 
@@ -411,12 +429,21 @@ what exists.
 
 ## A.1 Scope of this track
 
-Three portable additions, each extending machinery that already exists and each
-staying true to OmegaGTE's cross-vendor charter — no new GPU dependency:
+Three portable additions — plus one capstone *workload* that composes them —
+each extending machinery that already exists and each staying true to OmegaGTE's
+cross-vendor charter — no new GPU dependency:
 
 - **A.2** subgroup / warp operations (OmegaSL surface only).
 - **A.3** cooperative-matrix / tensor-core intrinsics (new OmegaSL type + builtins).
 - **A.4** multi-GPU collectives on the base plan's lane model (backend-neutral).
+- **A.9** distributed **GEMM** — the capstone workload built on A.3 (the
+  tensor-core primitive) + A.4 (cross-lane data sharing). Not a new
+  language/runtime primitive; it is the headline application that proves the three
+  above pay off, and lands last (Phase A5). Its portable `coopmatrix` path keeps
+  the no-new-dependency charter; A.9 **also** adds *optional, build-gated* vendor
+  GEMM-library fast paths (cuBLASLt / hipBLASLt / oneMKL) — the one place this
+  track takes on vendor deps, and only opt-in, with the portable path always the
+  fallback.
 
 None should start before the base parallel pipeline (Phases 0–3) is landed and
 the lane model is real.
@@ -460,7 +487,10 @@ coop_store(outputC, acc, /*stride*/N);
 This is a real subsystem — a new resource/value category in the type system,
 like the matrix-type or mesh-shader additions were — with **three hand-written
 codegens** (Vulkan/D3D12/Metal), matching how every other OmegaSL type has been
-added. It is the largest item in this track.
+added. It is the largest item in this track. Its headline consumer — a tiled,
+optionally multi-GPU **GEMM** — is specified as the capstone workload in **A.9**;
+the `coop_load`/`coop_mma`/`coop_store` triple above is literally that GEMM's
+inner loop.
 
 ## A.4 Multi-GPU collectives
 
@@ -502,20 +532,39 @@ fallback.
   spike on real target hardware *first*; only on a "go" stand up the separate repo
   + the single OmegaGTE seam (exportable buffers) and wire it under the A.4
   collectives API as the fast transport. **NVIDIA CUDA backend first** (rides
-  NVLink/NVSwitch transparently), AMD/Intel Vulkan-dma-buf backends follow. Linux
+  NVLink/NVSwitch transparently); **AMD HIP backend (rides xGMI)** and **Intel
+  Level Zero backend (rides Xe Link)** follow, with Vulkan-dma-buf PCIe-P2P as
+  each vendor's neutral fallback. Linux
   + `OMEGA_BUILD_ML` only; host ring stays the fallback. Do not start before A2
   (it has nothing to accelerate until the collectives API exists).
+- **Phase A5 — Distributed GEMM (capstone, the later phase).** The portable GEMM
+  workload (A.9): a single-device tiled GEMM kernel on `coopmatrix`, then fanned
+  out across lanes (scatter `A` row-panels, broadcast `B`, gather `C`). Depends on
+  **A3** (the kernel's inner loop) and, for the distributed path, **A2**
+  (collectives for the `B` broadcast / panel exchange); the A4 `gpu-databridge`
+  transport, when present, accelerates that exchange. **Vendor GEMM-library fast
+  paths** (cuBLASLt / hipBLASLt / oneMKL) layer on as opt-in, build-gated per-lane
+  accelerators that reuse A4's exportable-buffer + external-semaphore seam, with
+  the portable kernel as the fallback. Lands **after** A3 — the latest phase in
+  this track. Mark D3D12/Metal **and the vendor fast paths**
+  **compile/run-unverified off-platform** (inherits A3's coopmatrix codegen status;
+  the vendor libraries need their toolkits + matching hardware).
 
 ## A.6 Cross-lane exchange via direct GPU↔GPU P2P — the `gpu-databridge` sub-track (Linux)
 
 **The idea (developer's).** Instead of routing cross-lane exchange (A.4) through
 host memory, move data **GPU→GPU directly** with a low-level, vendor-neutral
-transport in its own repo, `gpu-databridge`. It rides **NVLink / NVSwitch when
-present on NVIDIA hardware** (hundreds of GB/s — near the on-package interconnect
-ceiling) and falls back to **direct PCIe P2P** otherwise; either way it skips the
-host round-trip. Hard constraint the developer set: **data is shared only between
-GPUs of the same architecture** (two H100s, two MI300s) — never across vendors or
-arches.
+transport in its own repo, `gpu-databridge`. It rides **each vendor's
+high-bandwidth GPU interconnect when the topology has one** — **NVLink / NVSwitch**
+on NVIDIA, **xGMI (Infinity Fabric Link)** on AMD, **Xe Link** on Intel (each
+tens-to-hundreds of GB/s — near the on-package interconnect ceiling) — and falls
+back to **direct PCIe P2P** otherwise; either way it skips the host round-trip.
+The pattern is identical across vendors: each vendor's *native* runtime peer-copy
+(CUDA / HIP / Level Zero) transparently routes over that vendor's fabric when
+present, so the bridge gets the fast interconnect "for free" through the same call
+it would use for PCIe P2P. Hard constraint the developer set: **data is shared
+only between GPUs of the same architecture** (two H100s, two MI300s) — never
+across vendors or arches.
 
 **Platform & build scope (whole sub-track): Linux + `OMEGA_BUILD_ML`.** Per the
 scoping call, parallel-data-compute targets Unix/ML servers; this sub-track
@@ -538,7 +587,11 @@ VRAM aperture. Same vendor+arch guarantees identical BAR semantics, page sizes,
 and a validated vendor peer-mapping path. The fragile/unsupported part of P2P is
 precisely *cross-vendor* dma-buf import of one driver's VRAM into another
 (NVIDIA→AMD). The developer's restriction sidesteps exactly that — every transfer
-stays inside one vendor's well-trodden P2P path. Sound instinct.
+stays inside one vendor's well-trodden P2P path. Sound instinct. It is also the
+*precondition* for the fast path: NVLink, xGMI, and Xe Link are each intra-vendor
+fabrics that only link same-arch peers, so "same architecture only" is exactly the
+set on which a vendor interconnect can exist at all — the constraint and the fast
+path share a boundary.
 
 ### What makes it feasible — the Linux substrate already exists
 - **PCIe peer-to-peer DMA** is real hardware: two devices under a permitting
@@ -564,14 +617,26 @@ stays inside one vendor's well-trodden P2P path. Sound instinct.
 - **ReBAR required** for full-VRAM P2P.
 - **NVIDIA proprietary driver gates non-CUDA dma-buf import of VRAM** — NVIDIA
   pairs likely need the **CUDA P2P** path (`cuMemcpyPeerAsync` / IPC handles),
-  not the generic Vulkan dma-buf path. AMD (amdgpu/RADV) and Intel (ANV) are
-  friendly to the Vulkan path. So "vendor-neutral" = *one API surface with a
-  small per-vendor backend underneath*, not one identical codepath.
-- **Bandwidth tiers, not a single ceiling.** NVIDIA NVLink/NVSwitch pairs reach
-  hundreds of GB/s (the `gpu-databridge` NVIDIA backend rides them transparently
-  — see L1). The **PCIe** fallback (other vendors, or NVIDIA without an NVLink
-  bridge) is the floor: PCIe 4.0 x16 ≈ 32 GB/s, PCIe 5.0 ≈ 64 GB/s. Both beat the
-  host round-trip; the probe reports which tier a pair gets.
+  not the generic Vulkan dma-buf path. AMD and Intel each have *both* options:
+  their native runtime peer copy (HIP rides xGMI, Level Zero rides Xe Link — the
+  preferred fast path) *and* a friendly generic Vulkan-dma-buf path
+  (amdgpu/RADV, ANV) as a neutral fallback. So "vendor-neutral" = *one API
+  surface with a small per-vendor backend underneath*, not one identical codepath.
+- **Bandwidth tiers, not a single ceiling.** Each vendor's fabric is its own
+  tier above the PCIe floor, and the matching native runtime rides it
+  transparently (see L1):
+  - **NVIDIA NVLink / NVSwitch** — hundreds of GB/s aggregate per GPU.
+  - **AMD xGMI (Infinity Fabric Link)** — ~64 GB/s raw per link (~48 GB/s usable
+    after CRC/protocol overhead); an MI300X 8-GPU fully-connected mesh sustains
+    ~310–330 GB/s aggregate per GPU, MI250 up to ~100 GB/s per inter-GPU link
+    direction.
+  - **Intel Xe Link** — ~26.5 GB/s per port, all-to-all across 2/4/8-card Data
+    Center GPU Max configurations.
+  - **PCIe** is the floor (a pair on PCIe P2P, or any pair lacking a fabric):
+    PCIe 4.0 x16 ≈ 32 GB/s, PCIe 5.0 ≈ 64 GB/s.
+
+  All beat the host round-trip; the probe (L0) reports which tier a given pair
+  gets.
 
 ### Why it's still worth it (the "might not be so bad" instinct is right)
 A host-staged exchange costs **two** PCIe traversals (GPU→host, host→GPU) plus
@@ -579,23 +644,38 @@ host-RAM bandwidth and CPU sync. P2P costs **one** traversal, copy-engine-driven
 no host RAM, no CPU. So even at the same PCIe link speed P2P roughly *halves* data
 movement and removes host contention → a realistic **2×+** on bandwidth-bound
 collectives, more when host RAM is contended by other lanes. A solid win over
-host-staging even on the PCIe floor — and on NVIDIA NVLink pairs it *is*
-NVLink-class, because it **is** NVLink.
+host-staging even on the PCIe floor — and on a pair with a vendor fabric it *is*
+fabric-class, because it **is** that fabric: NVLink on NVIDIA, xGMI on AMD, Xe
+Link on Intel.
 
 ### Shape of `gpu-databridge` (separate repo, Linux, pulled via AUTOMDEPS)
 - **L0 — Probe.** Enumerate GPUs, read vendor/arch, PCIe gen/width, ReBAR size,
-  IOMMU group / ACS, `p2pdma` distance, **and NVLink/NVSwitch topology** (via NVML
-  `nvmlDeviceGetNvLink*` on NVIDIA) → a capability matrix per ordered pair:
-  `{link ok?, link type: nvlink | pcie-p2p | none, est. bandwidth, path: cuda | vulkan-dmabuf | hip}`.
-- **L1 — Export/import + transfer path (NVIDIA is the primary backend).**
+  IOMMU group / ACS, `p2pdma` distance, **and each vendor's fabric topology**:
+  NVLink/NVSwitch via NVML `nvmlDeviceGetNvLink*` on NVIDIA, **xGMI via ROCm/AMD
+  SMI `rsmi_topo_get_link_type` → `RSMI_IOLINK_TYPE_XGMI` vs `_PCIEXPRESS`
+  (`amd-smi topology --link-type`)** on AMD, **Xe Link via Level Zero Sysman
+  fabric ports `zesDeviceEnumFabricPorts` / `zesFabricPortGetProperties`** on
+  Intel → a capability matrix per ordered pair:
+  `{link ok?, link type: nvlink | xgmi | xelink | pcie-p2p | none, est. bandwidth, path: cuda | hip | level-zero | vulkan-dmabuf}`.
+- **L1 — Export/import + transfer path (NVIDIA is the primary backend).** The
+  same shape recurs per vendor: enable peer access, issue the native peer copy,
+  and the driver transparently routes over the vendor fabric when the topology
+  has it and over PCIe P2P when it doesn't — the bridge gets the fast
+  interconnect "for free" with no separate code path.
   - **NVIDIA (primary):** CUDA peer path — `cudaDeviceEnablePeerAccess` +
-    `cuMemcpyPeerAsync`. The key point: once peer access is enabled the CUDA
-    driver **transparently routes over NVLink/NVSwitch when the topology has it**,
-    and over PCIe P2P when it doesn't — the bridge gets NVLink "for free" on
-    NVLink-connected cards with no separate code path.
-  - **AMD / Intel (secondary, follow-on):** vendor-neutral Vulkan dma-buf path
-    (`VK_KHR_external_memory_fd`), or HIP / Level Zero peer copies, over PCIe P2P.
-  - Same-arch only, in every case.
+    `cuMemcpyPeerAsync`, riding **NVLink/NVSwitch** when present, else PCIe P2P.
+  - **AMD (secondary, follow-on):** HIP/ROCm peer path —
+    `hipDeviceEnablePeerAccess` + `hipMemcpyPeerAsync`, riding **xGMI (Infinity
+    Fabric Link)** when present, else PCIe P2P. (This is the same mechanism RCCL
+    uses to reach xGMI.) The vendor-neutral Vulkan dma-buf path
+    (`VK_KHR_external_memory_fd`) over PCIe P2P is the secondary fallback when the
+    ROCm runtime isn't the chosen lane backend.
+  - **Intel (secondary, follow-on):** Level Zero peer path — peer access via
+    `zeDeviceCanAccessPeer` + `zeCommandListAppendMemoryCopy`, riding **Xe Link**
+    when present, else PCIe P2P. (Same fabric oneCCL rides.) Vulkan dma-buf over
+    PCIe P2P is again the neutral fallback.
+  - Same-arch only, in every case — which is also the precondition for any of
+    these fabrics to exist (see "same architecture" above).
 - **L2 — Transfer.** Async peer copy on a transfer queue + a cross-device
   timeline semaphore signal so the consumer GPU waits without the CPU.
 - **L3 — Fallback.** No P2P for a pair ⇒ host-staged copy (base plan's
@@ -615,10 +695,13 @@ NVLink-class, because it **is** NVLink.
   *exportable* (`VkExportMemoryAllocateInfo` at alloc time — exportability cannot
   be retrofitted onto an existing allocation). Add a Linux/Vulkan-only
   `exportable` flag to `BufferDescriptor`; the A.4 orchestrator sets it on lane
-  buffers when the probe says the pair can P2P. The same exported FD feeds **both**
-  transports: imported into the peer `VkDevice` (AMD/Intel) or into CUDA via
-  `cudaImportExternalMemory` for the NVIDIA peer-copy path (the standard
-  Vulkan↔CUDA external-memory interop). Everything else lives in `gpu-databridge`.
+  buffers when the probe says the pair can P2P. The same exported FD feeds **every**
+  transport: imported into the peer runtime via that vendor's external-memory
+  interop — `cudaImportExternalMemory` (NVIDIA, rides NVLink), `hipImportExternalMemory`
+  (AMD, rides xGMI), or Level Zero's external-memory import (Intel, rides Xe Link)
+  for the native peer-copy fast paths, or directly into the peer `VkDevice`
+  (`VkImportMemoryFdInfoKHR`) for the vendor-neutral dma-buf fallback. Everything
+  else lives in `gpu-databridge`.
 - The **A.4 collectives API is unchanged** — the bridge is just the transport
   chosen at runtime; host-ring remains the fallback.
 
@@ -636,23 +719,27 @@ Recorded so a future reader knows these were weighed, not missed. A native
 fast-path could later slot a CUDA "lane" behind the *same*
 `GEParallelComputePipeline` API (the lane model was shaped to allow it), but
 none of the below is part of this track. (Direct PCIe P2P moved *out* of this
-list and into A.6 — it is in scope, gated on feasibility.)
+list and into A.6 — it is in scope, gated on feasibility. Likewise the **vendor
+GEMM libraries** moved *out* and into A.9 as the per-vendor fast paths; only the
+general native *execution* backend below stays deferred.)
 
 - **Native CUDA / NVPTX *execution* backend** (`TARGET_CUDA`, CUDA Driver API +
   NVRTC) — vendor-locked, subsystem-sized, duplicates the engine surface for one
-  vendor. (Note: A.6 may use CUDA's *peer-copy* API as one transport backend —
-  that is a memcpy path, not a kernel-execution backend; the two are unrelated.)
-- **NCCL** — NVIDIA's collective *library*. Stays out: `gpu-databridge` (A.6)
-  implements its own collectives over whatever transport it has, so it does not
-  need NCCL. NVLink itself is **not** out of scope — A.6's NVIDIA backend rides it
-  transparently when present; only the NCCL library is declined.
+  vendor. (Note: A.6 uses CUDA's *peer-copy* API as one transport backend, and
+  A.9 uses vendor GEMM *libraries* for one op — both are calls into prebuilt
+  vendor code against existing memory, not an OmegaSL→native kernel-codegen
+  backend. The two are unrelated to this deferred item.)
+- **NCCL / RCCL / oneCCL** — the vendors' collective *libraries* (NVIDIA / AMD /
+  Intel). Stay out: `gpu-databridge` (A.6) implements its own collectives over
+  whatever transport it has, so it does not need any of them. The *fabrics* they
+  ride are **not** out of scope — A.6's per-vendor backends ride NVLink / xGMI /
+  Xe Link transparently when present; only the collective libraries are declined.
 - **MLIR codegen** — a compiler-back-half re-architecture (large LLVM/MLIR build
   dep). Its real leverage is enabling a native NVPTX/ROCDL backend and
-  `linalg`→MMA GEMM lowering; not needed for any A.2–A.4 work, which all ship
-  with hand-written codegen. Revisit only if a native backend or first-class
-  GEMM throughput is greenlit.
-- **CUTLASS / cuBLAS** — peak tensor-core GEMM kernels; only if A.3's own
-  `coopmatrix` codegen ever underperforms a concrete workload.
+  `linalg`→MMA GEMM lowering; not needed for any A.2–A.4 or the A.9 GEMM work,
+  which all ship with hand-written codegen (A.9's GEMM is authored directly on the
+  A.3 `coopmatrix` primitive, not lowered through MLIR). Revisit only if a native
+  backend or first-class GEMM throughput is greenlit.
 
 ## A.8 Open Decisions (developer's call)
 
@@ -667,7 +754,177 @@ list and into A.6 — it is in scope, gated on feasibility.)
    feasibility is settled. **Vendor priority: NVIDIA primary, multi-vendor over
    time.** So `gpu-databridge` lands the **NVIDIA CUDA backend first** (CUDA peer
    copy, which transparently rides NVLink/NVSwitch when present — see A.6 L1),
-   then adds the AMD/Intel Vulkan-dma-buf / HIP / Level Zero backends as
-   follow-ons behind the same API. The A.6 spike now just confirms bandwidth and
-   the path on the real NVIDIA cards. The whole surface is compiled behind
-   `OMEGA_BUILD_ML` (see "Build scoping").
+   then adds the **AMD (HIP peer copy, rides xGMI)** and **Intel (Level Zero peer
+   copy, rides Xe Link)** backends as follow-ons behind the same API, with the
+   Vulkan-dma-buf PCIe-P2P path as each vendor's neutral fallback. The A.6 spike
+   now just confirms bandwidth and the path on the real NVIDIA cards. The whole
+   surface is compiled behind `OMEGA_BUILD_ML` (see "Build scoping").
+4. **GEMM scope (A.9), for the later phase.** Several sub-calls, recorded now so
+   Phase A5 starts with them settled:
+   - **Vendor-library fast paths — RESOLVED (in scope, all three vendors).**
+     cuBLASLt (NVIDIA), hipBLASLt / rocBLAS (AMD), oneMKL / oneDNN (Intel) ship as
+     per-vendor fast paths in A.9, each build-gated, with the portable `coopmatrix`
+     GEMM as the universal fallback. (Moved out of A.7 "deferred" per the
+     developer's call.)
+   - **Distributed strategy v1** — 1-D row-partition of `C` with a full **`B`
+     broadcast** (simple; requires `B` to fit in each lane's VRAM) vs. 2-D
+     **SUMMA/Cannon** (scales to `B` that doesn't fit, more complex). *Recommend*
+     1-D first, SUMMA as a follow-on.
+   - **Dtype coverage v1** — fp16/bf16 inputs with fp32 accumulate (the
+     tensor-core sweet spot) only, or also fp32 and int8? *Recommend* fp16/bf16→fp32
+     first; the rest follow `coopmatrix`'s supported types.
+   - **API shape** — a dedicated `GEDistributedGemm` orchestrator (descriptor:
+     `M`/`N`/`K`, dtype, layout, `α`/`β`) vs. a documented *recipe* composing the
+     public surface (base pipeline + `Broadcast` + the GEMM kernel + gather).
+     *Recommend* the thin orchestrator so callers don't re-derive the data movement.
+   - **Batched GEMM** — partition the batch (embarrassingly-parallel, base-plan
+     scatter/gather, no broadcast) — ship alongside, or defer? It is the *easy*
+     multi-GPU case and a common ML shape (attention); *recommend* shipping it with
+     the single-large-GEMM path.
+
+---
+
+## A.9 Capstone workload — distributed GEMM (later phase)
+
+> **Status — committed direction, lands as Phase A5 (the latest phase).** GEMM
+> (`C = α·(A·B) + β·C`) is the canonical massively-parallel workload and the
+> headline reason A.3 (tensor cores) and A.4 (collectives) exist. It is **not** a
+> new language or runtime primitive — it is a *kernel plus an orchestration*
+> assembled entirely from pieces this track already defines, which is why it lands
+> after the primitives it composes. Each lane's GEMM has **two implementations
+> chosen at runtime**: the portable `coopmatrix` kernel (always present, the
+> universal fallback) and a **vendor-library fast path** (cuBLASLt / hipBLASLt /
+> oneMKL) selected when that vendor's library is built in and the lane's device
+> matches — the same portable-baseline-plus-vendor-fast-path shape A.6 uses for
+> transport.
+
+### Two layers
+
+1. **Single-device GEMM, per lane — portable kernel *or* vendor library.** The
+   portable baseline is a tiled OmegaSL kernel on A.3 `coopmatrix`: each
+   threadgroup owns a tile of `C` and streams K-dimension tiles of `A` and `B`
+   through `coop_load` → `coop_mma` → `coop_store` (the A.3 sketch is literally
+   this inner loop), staging tiles in `groupshared` (already shipped — see the
+   A.0 table). Authored once in OmegaSL, it runs single-device through the ordinary
+   `makeComputePipelineState` + dispatch path — so it ships in **every** build,
+   exactly like any other `coopmatrix` kernel (see "Build scoping"). When a vendor
+   GEMM library is built in and the lane's device matches its vendor, that lane's
+   GEMM is instead offloaded to the **vendor fast path** below; the portable kernel
+   stays the universal fallback. Either way, this is the unit the multi-GPU layer
+   fans out.
+2. **Distributed multi-device GEMM (on the lane model + A.4 collectives).** The
+   part that belongs to *this* plan's multi-GPU mission — and the honest wrinkle:
+   GEMM is **not** embarrassingly-parallel the way the base scatter/gather assumes.
+   Every output block of `C` needs a full **row-panel of `A` and column-panel of
+   `B`**, so lanes must *share* input, not merely split it.
+
+### Partitioning — why GEMM needs more than scatter/gather
+- **1-D row-partition (recommended v1).** Split `C` into row-blocks across lanes.
+  Lane *i* computes `C_i = A_i · B`: its **row-panel `A_i` is scattered** (base-plan
+  `Upload` path), but **the whole of `B` is broadcast to every lane** (A.4
+  `Broadcast`). Each lane then runs the single-device tiled kernel on its panel;
+  `C` row-blocks are **gathered** (base-plan `Readback` path). Maps onto existing
+  machinery with one new ingredient — the `B` broadcast. Constraint: `B` must fit
+  in each lane's VRAM.
+- **2-D SUMMA / Cannon (scale-out follow-on).** When `B` (or `A`) is too large to
+  replicate, lay lanes out as a 2-D process grid and broadcast/ring `A` row-panels
+  and `B` col-panels stepwise, accumulating locally. Built on A.4 `AllGather` /
+  `Broadcast` along grid rows/cols, accelerated by the A.6 `gpu-databridge`
+  transport when present. Heavier; deferred to a follow-on.
+- **Batched GEMM (the *easy* multi-GPU case).** Many small independent GEMMs
+  (attention, grouped conv) → **partition the batch**: each lane gets a disjoint
+  set of whole GEMMs, no broadcast or exchange needed. This is pure base-plan
+  scatter/gather — the embarrassingly-parallel path — and the cheapest distributed
+  GEMM to ship.
+
+### Vendor-library fast paths (NVIDIA / AMD / Intel)
+Each lane's single-device GEMM can be offloaded to the vendor's tuned tensor-core
+GEMM library — the same portable-baseline-plus-vendor-fast-path pattern A.6 uses
+for transport, applied to *execution* of one op (GEMM only). This is **not** the
+general OmegaSL→native execution backend A.7 still defers: it is a single library
+call against the lane's existing memory, not a kernel-codegen backend.
+
+- **NVIDIA — cuBLASLt** (`cublasLtMatmul`): the modern tensor-core, mixed-precision
+  GEMM path (NVIDIA steers Ampere+ users off the older `cublasGemmEx` to it;
+  unlocks fused epilogues + split-K). **CUTLASS** is the optional open-template
+  alternative for shapes where its tunable tiling beats cuBLAS (large `N`).
+- **AMD — hipBLASLt** (`hipblasLtMatmul`): the direct cuBLASLt analog over CDNA
+  matrix cores, with epilogue fusion; plus **rocBLAS** (`rocblas_gemm_ex`) for the
+  broader BLAS surface. (ROCm's TunableOp already searches both.) Composable
+  Kernel is the CUTLASS-analog escape hatch.
+- **Intel — oneMKL** GPU GEMM (`oneapi::mkl::blas::gemm`, drives the Xe Matrix
+  Extensions / XMX by default under DPC++); plus **oneDNN** (`dnnl::matmul`) for
+  the DL-matmul shapes.
+
+**Memory seam — reuse A.6's exportable buffers.** A vendor library operates on its
+own runtime's device pointers, not on a `VkBuffer`. So a fast-path lane allocates
+its `inputBuf`/`outputBuf` **exportable** (the `OMEGA_BUILD_ML` `BufferDescriptor`
+flag added for A.6) and imports the FD into the vendor runtime —
+`cudaImportExternalMemory` + `cudaExternalMemoryGetMappedBuffer` (NVIDIA),
+`hipImportExternalMemory` + `hipExternalMemoryGetMappedBuffer` (AMD), or Level
+Zero's external-memory import (Intel). No new OmegaGTE seam is needed; the GEMM
+fast path rides the one A.6 already adds.
+
+**Selection + sync + fallback (mirrors A.6 L0/L2/L3).**
+- *Select:* per lane, pick the vendor path iff its library is built in (per-vendor
+  build flag — see "Build scoping") **and** the lane's device vendor matches; else
+  the portable `coopmatrix` kernel.
+- *Sync:* the library runs the GEMM on its own stream/queue against the imported
+  memory; a cross-API timeline semaphore (`VK_KHR_external_semaphore_fd` ↔ the
+  vendor runtime's external semaphore) joins it back to the lane's OmegaGTE
+  submission with no CPU round-trip — the same primitive A.6 L2 uses.
+- *Fallback:* no matching library ⇒ the portable kernel runs, so every build has a
+  working GEMM regardless of which (if any) vendor libraries are present.
+
+This composes with the distributed layer unchanged: partition / scatter `A` /
+broadcast `B` / gather `C` is identical whether a lane computed its block with the
+portable kernel or a vendor library.
+
+### Why GEMM is the capstone, not a side feature
+GEMM exercises all three additions at once: A.3 supplies the tensor-core inner
+loop, A.4 supplies the `B`-broadcast / panel exchange, and A.6 (when present)
+supplies the fast transport for that exchange. It is the concrete workload the
+A.8 decisions ("tensor cores near-term?", "collectives in v1?") are really asking
+about — landing GEMM is what makes those investments pay off.
+
+### API shape (open — see A.8)
+Leaning toward a thin `GEDistributedGemm` orchestrator (descriptor: `M`, `N`, `K`,
+element/accumulator dtype, row/col-major layout, `α`/`β`) that internally drives
+partition → scatter `A` → broadcast `B` → per-lane dispatch → gather `C`, so a
+caller never re-derives the data movement. The orchestrator also picks each lane's
+GEMM **implementation** (portable kernel vs. vendor library) internally, from the
+build config + the lane's device vendor; callers see one descriptor either way,
+with an optional flag to force the portable path (determinism / debugging /
+cross-checking the vendor result). The alternative — a documented *recipe*
+composing the public surface directly (the base pipeline + `Broadcast` + the GEMM
+kernel) — stays available, matching how the base plan composes existing APIs.
+Mixed precision follows `coopmatrix`: fp16/bf16 inputs with an fp32 accumulator
+(the tensor-core sweet spot) is the v1 target; fp32 / int8 are open.
+
+### Verification status (per repo convention)
+- **Single-device kernel:** compile/run-verifiable on the Linux **Vulkan** host
+  once A.3's Vulkan `coopmatrix` codegen lands. Correctness vs. a CPU reference
+  GEMM, with a numerical tolerance appropriate to fp16-input / fp32-accumulate.
+- **D3D12 / Metal:** **compile/run-unverified off-platform** — inherits A.3's
+  coopmatrix codegen status.
+- **Vendor-library fast paths:** **compile/run-unverified off-platform** — each
+  needs its vendor toolkit + matching hardware (CUDA/cuBLASLt, ROCm/hipBLASLt,
+  oneAPI/oneMKL), none present on the Vulkan CI host. When exercised, validate the
+  fast-path result against the portable kernel (the force-portable flag above) to
+  the same fp16/fp32 tolerance — the portable path is the oracle.
+- **Distributed path:** the 1-D split + gather is testable on **1 lane** (whole
+  problem in lane 0) and via the base plan's **partition-simulation** unit (forced
+  `laneCount` 2–4, asserting the `C` row-blocks tile `[0,M)` and reassemble
+  byte-exactly). True multi-GPU GEMM is **run-unverified** until ≥2 discrete GPUs
+  are available — the same caveat as the base plan's Phase 5.
+
+### Non-goals (this phase)
+- **Hand-writing peak GEMM kernels to rival the vendor libraries.** Peak
+  throughput on a given vendor is delivered by *calling that vendor's library*
+  (the fast paths above) — not by out-tuning cuBLAS/hipBLASLt/oneMKL in OmegaSL.
+  The portable `coopmatrix` kernel aims for *correct + tensor-core-accelerated*,
+  not peak; the vendor fast path provides peak where its library is present.
+- **Convolution / attention fusion, autotuning, epilogue fusion.** Out of scope;
+  the tiled GEMM is the foundation those would later build on.
+- Cross-shard dependencies beyond the GEMM panel exchange described above (the
+  base plan's halo/stencil non-goal still holds for everything else).

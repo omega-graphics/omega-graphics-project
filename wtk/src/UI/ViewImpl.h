@@ -140,6 +140,19 @@ struct View::Impl {
     /// runtime queries are "is name X present" — O(1) hash lookup
     /// without an order requirement.
     std::unordered_set<OmegaCommon::String> customStates_ {};
+    /// §2.3a F1: per-view focus state.
+    ///   policy_     — focusability declaration (default NoFocus: nothing
+    ///                 is focusable until a widget opts in, preserving
+    ///                 pre-F1 behavior). Written by `View::setFocusPolicy`.
+    ///   lastReason_ — why focus last changed; recorded by `View::focus`
+    ///                 (F1) and the FocusManager (F2+), read back via
+    ///                 `View::lastFocusReason()` to gate focus-ring render.
+    ///   focused_    — owned by the FocusManager (F2): set on `setFocus`,
+    ///                 cleared on `blur`/`clearFocus`. At F1 it stays
+    ///                 false because no manager exists to flip it.
+    View::FocusPolicy policy_ = View::FocusPolicy::NoFocus;
+    FocusReason lastReason_ = FocusReason::Other;
+    bool focused_ = false;
     /// Widget-View-Paint-Lifecycle-Plan Tier A: deferred-paint dirty mask.
     /// Per-node bits (Style / Layout / Content / Paint) set by
     /// `markDirty(bits)` on the node that actually changed.

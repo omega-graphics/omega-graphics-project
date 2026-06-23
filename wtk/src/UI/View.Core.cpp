@@ -352,6 +352,60 @@ bool View::hasState(const OmegaCommon::String & name) const {
     return impl_->customStates_.count(name) > 0;
 }
 
+// §2.3a F1: per-view focus declaration + state. The FocusManager (F2)
+// does not exist yet, so `focus()` / `blur()` are stubs that only
+// record intent on the View; F2 retrofits them to route through
+// `treeHost->focusManager()`. Default `FocusPolicy::NoFocus` keeps the
+// pre-F1 behavior — no view participates in focus until a widget opts
+// in via `setFocusPolicy`. None of these touch the dirty mask: focus
+// policy is not a painted property, and the focus-ring style that DOES
+// depend on focus state is driven (in F2+) through the pseudo-class
+// cascade, not from here.
+
+void View::setFocusPolicy(FocusPolicy policy){
+    impl_->policy_ = policy;
+}
+
+View::FocusPolicy View::focusPolicy() const{
+    return impl_->policy_;
+}
+
+bool View::isFocusable() const{
+    return impl_->policy_ != FocusPolicy::NoFocus;
+}
+
+bool View::isClickFocusable() const{
+    return (impl_->policy_ & FocusPolicy::ClickFocus) != FocusPolicy::NoFocus;
+}
+
+bool View::isTabFocusable() const{
+    return (impl_->policy_ & FocusPolicy::TabFocus) != FocusPolicy::NoFocus;
+}
+
+bool View::isFocused() const{
+    return impl_->focused_;
+}
+
+void View::focus(FocusReason reason){
+    // F1 stub: record why focus was requested so a later
+    // `lastFocusReason()` read is meaningful, but do NOT change
+    // `focused_` — that flag is owned by the FocusManager, which does
+    // not exist until F2. F2 retrofits this to call
+    // `treeHost->focusManager().setFocus(this, reason)` when the view is
+    // attached to a host (a detached view's `focus()` stays a no-op).
+    impl_->lastReason_ = reason;
+}
+
+void View::blur(){
+    // F1 stub: there is no FocusManager to clear yet. F2 retrofits this
+    // to `treeHost->focusManager().clearFocus()`. `focused_` is owned by
+    // the FocusManager, so there is nothing to flip here at F1.
+}
+
+FocusReason View::lastFocusReason() const{
+    return impl_->lastReason_;
+}
+
 void View::applyLayoutDelta(const LayoutDelta & delta,
                             const LayoutTransitionSpec & spec){
     // Phase 4.4 (Anim Tier B): the per-View layout tween. Pre-4.4 this

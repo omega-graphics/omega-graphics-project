@@ -99,6 +99,27 @@ namespace OmegaWTK {
 
 
 
+    /// §2.3a (Focus, F1): why focus last changed on a View. Recorded by
+    /// `View::focus(reason)` (and, from F2 on, the FocusManager) and read
+    /// back via `View::lastFocusReason()`. The reason gates focus-ring
+    /// rendering — keyboard-driven reasons (Tab / Backtab / Shortcut /
+    /// Popup / ActiveWindow) show the ring; Mouse / Other suppress it
+    /// (see §2.3a "Focus ring visibility"). Defined as a free enum (not
+    /// nested in `View`) so `View::focus`'s default argument and the
+    /// later `FocusManager` signatures can both name it without a
+    /// `View::` qualifier. Imported verbatim from Qt's `Qt::FocusReason`,
+    /// which is the conventional vocabulary for this gate.
+    enum class FocusReason : std::uint8_t {
+        Mouse,          // ClickFocus path; ring usually suppressed
+        Tab,            // FocusManager::focusNext
+        Backtab,        // FocusManager::focusPrevious
+        Shortcut,       // hotkey landed on this view
+        ActiveWindow,   // window became key; restored focus
+        Popup,          // owner of a popup got focus back when popup closed
+        Restore,        // explicit clearFocus() returned focus to prior holder
+        Other           // programmatic View::focus() with no reason
+    };
+
     /**
         @brief Controls all the basic functionality of a Widget!
         @relates Widget
@@ -372,6 +393,56 @@ namespace OmegaWTK {
         void setState(const OmegaCommon::String & name, bool on);
         bool hasState(const OmegaCommon::String & name) const;
 
+        /// §2.3a F1: per-view focusability declaration — a bitmask of
+        /// the ways this view may receive keyboard focus.
+        ///   NoFocus     — never focusable (default; shape primitives,
+        ///                  Label, and every view that does not opt in).
+        ///   ClickFocus  — focusable by direct mouse click + View::focus().
+        ///   TabFocus    — focusable by keyboard traversal (Tab / Shift-Tab).
+        ///   StrongFocus — ClickFocus | TabFocus. Default for interactive
+        ///                  widgets (Button, TextInput, Checkbox).
+        ///   WheelFocus  — StrongFocus plus focus-on-scroll-wheel. Default
+        ///                  for editable scrollable surfaces (TextArea).
+        /// A scoped enum with `|`/`&` operator overloads (defined below
+        /// the class) so `policy & FocusPolicy::TabFocus` reads cleanly.
+        /// Default `NoFocus` preserves pre-F1 behavior: nothing is
+        /// focusable until a widget opts in via `setFocusPolicy`.
+        enum class FocusPolicy : std::uint8_t {
+            NoFocus     = 0,
+            ClickFocus  = 1 << 0,
+            TabFocus    = 1 << 1,
+            StrongFocus = ClickFocus | TabFocus,
+            WheelFocus  = StrongFocus | (1 << 2)
+        };
+
+        void setFocusPolicy(FocusPolicy policy);
+        FocusPolicy focusPolicy() const;
+
+        /// Convenience predicates derived from `focusPolicy()`.
+        bool isFocusable() const;       // policy != NoFocus
+        bool isClickFocusable() const;  // policy carries the ClickFocus bit
+        bool isTabFocusable() const;    // policy carries the TabFocus bit
+
+        /// True iff the host's FocusManager has selected this view. The
+        /// flag is owned by the FocusManager (lands in F2); at F1 it is
+        /// always false because no manager exists to set it.
+        bool isFocused() const;
+
+        /// Request / drop keyboard focus. **F1 ships these as stubs:**
+        /// `focus(reason)` records `reason` (later readable via
+        /// `lastFocusReason()`) but cannot actually select the view
+        /// because the FocusManager does not exist yet; `blur()` is a
+        /// no-op. F2 retrofits both to route through the host's
+        /// FocusManager (`treeHost->focusManager()`), where a detached
+        /// view's `focus()` stays a no-op. The `reason` is what decides
+        /// whether a focus ring renders later (see `FocusReason`).
+        void focus(FocusReason reason = FocusReason::Other);
+        void blur();
+
+        /// Why focus last changed on this view. Read by a widget's
+        /// `rebuildStyle()` hook (F2+) to gate focus-ring rendering.
+        FocusReason lastFocusReason() const;
+
         /// Phase 4.7.0: the polymorphic Paint-pass hook. Per-node:
         /// emits THIS view's draw ops into `pc.displayList` and reads
         /// `pc.offset` for absolute window positioning. Does NOT recurse
@@ -428,6 +499,21 @@ namespace OmegaWTK {
 
         virtual ~View();
     };
+
+    /// §2.3a F1: bitmask operators for the scoped `View::FocusPolicy`
+    /// enum. `enum class` does not synthesize these, but the policy is a
+    /// bitmask (`StrongFocus == ClickFocus | TabFocus`), so combining and
+    /// testing bits — `policy & FocusPolicy::TabFocus` — must read
+    /// cleanly. Free `inline` functions in the `OmegaWTK` namespace,
+    /// reached via ADL on the enum's enclosing class/namespace.
+    inline View::FocusPolicy operator|(View::FocusPolicy a, View::FocusPolicy b){
+        return static_cast<View::FocusPolicy>(
+            static_cast<std::uint8_t>(a) | static_cast<std::uint8_t>(b));
+    }
+    inline View::FocusPolicy operator&(View::FocusPolicy a, View::FocusPolicy b){
+        return static_cast<View::FocusPolicy>(
+            static_cast<std::uint8_t>(a) & static_cast<std::uint8_t>(b));
+    }
 
     /**
         @brief The Root View delegate class!

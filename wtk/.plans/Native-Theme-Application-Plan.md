@@ -46,6 +46,28 @@ table. But the API is currently *informational* — nothing reads
 clear color. macOS works by accident-of-architecture (the native
 backing surface), not because anybody chose to apply the theme.
 
+### 1.1 A second asymmetry: the window chrome itself
+
+Everything above is about the *content* surface — the pixels the engine
+renders into. There is a parallel and equally visible asymmetry in the
+**non-client area** (the OS-drawn title bar and window frame), and here
+Windows is the lone holdout:
+
+| Platform | Does the window chrome follow OS light/dark automatically? |
+|----------|------------------------------------------------------------|
+| macOS | **Yes.** `NSWindow` redraws its title bar in the window's effective appearance with no app action. |
+| GTK | **Yes.** The client-side-decoration / header-bar theme (or the WM for server-side decorations) repaints when the desktop color-scheme flips — the app calls nothing. |
+| Windows | **No.** A bare `HWND`'s non-client area renders in **light mode regardless of the system setting** until the app explicitly opts in via `DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ...)`. |
+
+This compounds the content bug rather than sitting beside it. Once
+Tier 2 makes the *content* clear to a dark surface in dark mode, an
+un-opted-in Windows window is *worse* than before: a dark canvas under
+a stubbornly bright-white caption bar — a sharper seam than the old
+all-black content was. Real parity with GTK/macOS therefore means
+driving the **chrome appearance** from the same resolved
+`ThemeAppearance` bit, not only the content clear color. That is §5.2's
+job, and it is a required step — not optional polish.
+
 ---
 
 ## 2. Goal
@@ -69,6 +91,11 @@ This means:
 - GTK + Vulkan: same — the Vulkan clear is the native theme background.
 - Dark-mode OS systems get a dark cleared surface on all three
   platforms without app code.
+- Window **chrome** (title bar / frame) follows OS light/dark on every
+  platform too — macOS and GTK already do this automatically, but a
+  bare Windows `HWND` stays light-mode until explicitly opted in, so
+  parity requires driving the `HWND` appearance from the same bit
+  (§1.1, §5.2).
 - Apps with their own theme system get a single `Application::setTheme(theme)`
   call that overrides the native color but inherits the native
   appearance bit so the theme picks Light or Dark in step with the OS.
@@ -225,13 +252,33 @@ background overpaints transparent regions).
   `"ImmersiveColorSet"` (the dark-mode flip), and `WM_THEMECHANGED` for
   classic-theme changes. Each fires `Application`'s observer trampoline
   with a fresh `queryCurrentTheme()` result.
-- Optional polish: also call
-  `DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, …)` so
-  the title bar matches the resolved appearance (orthogonal to the
+- **Chrome parity — required, not optional.** A bare `HWND` does not
+  follow the OS light/dark setting; macOS and GTK windows do this for
+  free (§1.1), Windows does not. On window creation and on every
+  observer fire, call
+  `DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark))`
+  with `dark` derived from the resolved appearance
+  (`application().forcedAppearance().value_or(nativeTheme().appearance)`
+  — the same bit §3 feeds the content clear). This themes the
+  *non-client* area the engine never paints; it is orthogonal to the
   content clear color but part of the same "follow OS dark mode"
-  contract). Note this is independent of the chrome-customization in
-  [Panels-And-Window-Customization-Plan.md](Panels-And-Window-Customization-Plan.md);
-  it applies under `WindowChrome::Native`.
+  contract, and it is what actually brings Windows to visual parity with
+  the other two platforms. It is independent of the chrome-customization
+  in
+  [Panels-And-Window-Customization-Plan.md](Panels-And-Window-Customization-Plan.md):
+  it applies under `WindowChrome::Native`; under the Panels plan's
+  `Custom`/`CustomWithNativeControls` chrome the app draws its own
+  caption and drives the color directly, so the DWM call is skipped
+  there.
+  - **Version gotchas (off-platform-unverified from this Linux host):**
+    `DWMWA_USE_IMMERSIVE_DARK_MODE` requires Windows 10 build ≥ 17763,
+    and its attribute index is `20` on 2004+/Windows 11 but `19` on
+    1809–1903 — version-gate and no-op on older builds. For an
+    *arbitrary* caption color (to match a custom `Theme`'s `surface`
+    rather than a binary light/dark) Windows 11 build 22000+ adds
+    `DWMWA_CAPTION_COLOR` / `DWMWA_TEXT_COLOR`; treat that as the row-2
+    (custom-theme) extension of chrome theming, mirroring how the
+    content surface gets its row-2 override (Open Q7).
 
 ### 5.3 GTK + Vulkan — fill the query gap, then clear to that color
 
@@ -350,6 +397,10 @@ already specified in the Style plan.
 - On macOS, flip `CAMetalLayer.opaque` to `YES` and start clearing
   explicitly to the resolved color. Verify the visual outcome matches
   pre-change behavior in default usage.
+- On Windows, apply the resolved appearance bit to the `HWND` chrome via
+  `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` (§5.2) on window
+  creation and on every observer fire — the title-bar half of parity,
+  independent of and additional to the content `clearValue`.
 
 **Risk:** Low on Vulkan / D3D12 (one field change in the per-frame
 descriptor); Medium on macOS (the `opaque` flip changes layer
@@ -362,6 +413,8 @@ panel-using test once Panels Part A lands).
 `wtk/src/UI/AppWindow.cpp`, `wtk/src/UI/FrameBuilder.cpp`,
 `wtk/src/Composition/backend/RenderTarget.h`,
 `wtk/src/Native/macos/CocoaAppWindow.mm` (the `.opaque = YES` flip),
+`wtk/src/Native/win/WinAppWindow.cpp` (the `DwmSetWindowAttribute`
+chrome-appearance call),
 the per-backend visual-tree builders.
 
 ### Tier 3 — custom theme override + appearance forcing
@@ -446,6 +499,18 @@ This is more of a consequence than a step — it's the Style plan's Tier
    (Light appearance, white background) and `nativeTheme()` returns
    that. Style resolver falls through to row 4 (hardcoded) on the
    same data, so behavior is consistent.
+7. **Chrome appearance: binary bit vs. arbitrary caption color.** The
+   content surface runs the full §3 priority chain (a custom `Theme` can
+   override the color outright). The Windows chrome, via
+   `DWMWA_USE_IMMERSIVE_DARK_MODE`, is only a binary light/dark toggle —
+   it consumes the *appearance bit*, not a color. Win11 22000+'s
+   `DWMWA_CAPTION_COLOR` would let a custom `Theme` paint the caption to
+   match its `surface`, giving chrome its own row-2 override; macOS/GTK
+   expose no equivalent arbitrary-caption knob under native chrome.
+   Recommendation: Tier 1–2 drive chrome from the appearance bit only
+   (parity with mac/GTK), and defer arbitrary caption color to the
+   custom-theme work (Tier 3), Win11-only, falling back to the binary
+   toggle elsewhere. Confirm before building.
 
 ---
 
