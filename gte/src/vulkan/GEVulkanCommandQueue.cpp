@@ -1810,14 +1810,24 @@ _NAMESPACE_BEGIN_
         auto *vkPipelineState = (GEVulkanComputePipelineState *)pipelineState.get();
         vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_COMPUTE,vkPipelineState->pipeline);
 
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_COMPUTE,
-                                vkPipelineState->layout,
-                                0,
-                                1,
-                                &vkPipelineState->descSet,
-                                0,
-                                nullptr);
+        // Only bind a seed descriptor set in fallback (non-push) mode. In
+        // push-descriptor mode set 0 is a push set: bindResourceAtComputeShader
+        // records its resources inline via vkCmdPushDescriptorSetKhr, and the
+        // pipeline allocates no VkDescriptorSet, so descSet == VK_NULL_HANDLE.
+        // Binding a null set here trips VUID-vkCmdBindDescriptorSets-pDescriptorSets-06563
+        // (harmless in practice — the push writes supply the real descriptors —
+        // but a spec violation). The null guard also covers a shader with no
+        // bound resources. Mirrors the push-aware setRenderPipelineState path.
+        if(vkPipelineState->descSet != VK_NULL_HANDLE){
+            vkCmdBindDescriptorSets(commandBuffer,
+                                    VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    vkPipelineState->layout,
+                                    0,
+                                    1,
+                                    &vkPipelineState->descSet,
+                                    0,
+                                    nullptr);
+        }
         computePipelineState = vkPipelineState;
     }
 

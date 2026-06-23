@@ -4762,6 +4762,14 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                     }
                 }
             }
+            // Allocator-Lifetime-Hardening Phase 2 ordering contract. By here
+            // every VMA allocation is already freed: releaseAllTrackedResources()
+            // above freed the still-live caller-held resources inline, and
+            // retentionQueue.drainAll() ran the deferred destroys of resources
+            // dropped before Close(). So the allocator is torn down with no live
+            // allocations (no VMA "allocations not freed" assert). This MUST run
+            // before vkDestroyDevice below — vmaDestroyAllocator operates on the
+            // device, and (unlike D3D12MA) VMA does not hold the device alive.
             if(memAllocator != nullptr){
                 vmaDestroyAllocator(memAllocator);
                 memAllocator = nullptr;

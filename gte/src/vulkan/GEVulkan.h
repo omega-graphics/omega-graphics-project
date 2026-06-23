@@ -93,6 +93,22 @@ _NAMESPACE_BEGIN_
         /// this through `parentQueue->engine->vkCmdDrawMeshTasksExt`.
         PFN_vkCmdDrawMeshTasksEXT vkCmdDrawMeshTasksExt = nullptr;
 
+        // Allocator-Lifetime-Hardening Phase 2 — VMA allocator. Unlike the
+        // D3D12 backend (which gives the allocator shared ownership so it can
+        // outlive the engine, see GED3D12AllocatorOwner), this stays a plain
+        // engine-owned handle destroyed in ~GEVulkanEngine. The "Close() is
+        // safe with outstanding resource handles" guarantee is met here by a
+        // different mechanism: every VMA-allocated resource is trackResource()'d
+        // (a weak_ptr), and ~GEVulkanEngine calls releaseAllTrackedResources()
+        // — which frees each still-live resource's VMA allocation *inline*
+        // while this allocator is still alive — BEFORE vmaDestroyAllocator. The
+        // resource's own destructor then early-returns on nativeReleased_, so a
+        // caller-held handle dropped after teardown never touches the dead
+        // engine. A shared-ownership mirror of the D3D12 design would be unsafe
+        // here: vmaDestroyAllocator needs a live VkDevice (VMA, unlike D3D12MA,
+        // does not keep the device alive), and the engine destroys the device
+        // immediately after the allocator — so deferring the allocator's
+        // destruction past the engine would run it on a destroyed device.
         VmaAllocator memAllocator;
         unsigned resource_count;
 

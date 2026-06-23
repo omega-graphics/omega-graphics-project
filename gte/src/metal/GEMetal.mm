@@ -1075,6 +1075,14 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
         };
 
+        // Allocator-Lifetime-Hardening Phase 3 — n/a on Metal. There is no
+        // manually-released memory allocator to outlive (cf. D3D12's
+        // GED3D12AllocatorOwner and Vulkan's tracked-resource teardown): MTLBuffer
+        // / MTLTexture are ARC-managed via NSSmartPtr, and each retains its
+        // MTLDevice, so a caller-held GEBuffer / GETexture keeps the device alive
+        // until it is dropped. Close() (→ this destructor) therefore can't free
+        // memory out from under a live resource, and there is no leak validator
+        // to trip. This destructor only stops an optional GPU-capture session.
         ~GEMetalEngine() override {
             if(gpuCaptureActive){
                 if(@available(macOS 10.15, iOS 13.0, *)){

@@ -436,20 +436,18 @@ GTE_TEST_ENTRY_POINT {
         failFlag() = true;
     }
 
-    // Release every engine-allocated resource before tearing the engine down.
-    // OmegaGTE::Close destroys the D3D12 backend's D3D12MA allocator, which
-    // asserts ("Unfreed committed allocations found!") if any allocation it
-    // made is still alive — and these Upload buffers are D3D12MA committed
-    // allocations held in this outer scope. (SamplerBindTest avoids the same
-    // assert by scoping its resources inside helper functions that return
-    // before Close.) A follow-up hardens the engine so Close() is safe with
-    // outstanding handles regardless; see
+    // Tear the engine down with inBuf / outBuf / mixIn / mixOut still alive in
+    // this outer scope — i.e. WITHOUT releasing them first. This is the
+    // Allocator-Lifetime-Hardening regression check: Close() must be safe with
+    // outstanding resource handles. It is, on every backend, but for different
+    // reasons — D3D12 keeps the D3D12MA allocator alive via shared ownership so
+    // its leak validator never sees a live allocation (Phase 1), and Vulkan's
+    // engine teardown proactively frees every still-tracked resource's VMA
+    // allocation before vmaDestroyAllocator, guarding the late destructor with
+    // nativeReleased_ (Phase 2). An earlier version reset the four handles here
+    // to dodge the D3D12 "Unfreed committed allocations found!" assert; that
+    // band-aid is gone now that the engine owns the ordering. See
     // gte/.plans/Allocator-Lifetime-Hardening-Plan.md.
-    inBuf.reset();
-    outBuf.reset();
-    mixIn.reset();
-    mixOut.reset();
-
     OmegaGTE::Close(gte);
 
     const bool ok = !failFlag();
