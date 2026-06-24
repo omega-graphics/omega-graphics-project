@@ -5,6 +5,11 @@
 > this plan has been written. Phases are sequenced so each lands as a
 > reviewable increment.
 
+## User IDeas:
+
+We may have to add FP4 and FP8 operations to make this usable as a ML suitable language.
+(Lower to NVPTX, ROCm, Intel, Metal)
+
 ## Goal
 
 Run **one** OmegaSL compute kernel across **multiple discrete GPUs** at once.
@@ -343,6 +348,7 @@ the `OMEGASL_FEATURE_BIT_*` machinery therefore stay outside the macro.
     kernel over the A.3 `coopmatrix` primitive, dispatched through the ordinary
     single-device compute path. Like any ML kernel it ships in every build; only
     its multi-GPU fan-out (gated, above) needs `OMEGA_BUILD_ML`.
+
 - **Public-header discipline.** Types that only exist under `OMEGA_BUILD_ML`
   (e.g. `GEParallelComputePipeline`, the `exportable` flag) must be `#ifdef`-guarded
   in the public headers so a consumer built without the macro sees a coherent,

@@ -79,6 +79,14 @@ public:
     virtual bool removeChild(const WidgetPtr & child);
     OmegaCommon::ArrayRef<WidgetPtr> childWidgets() override;
 
+    /// Layout containers are the one widget family the layout may resize:
+    /// a Stack (and future Grid / Table / Tree) must grow and shrink with
+    /// its parent to redistribute space to its children. Leaves stay
+    /// frozen (see Widget::isLayoutResizable). Input widgets that are not
+    /// layout containers (TextInput, Slider) inherit Widget directly, so
+    /// they stay frozen without overriding this back.
+    bool isLayoutResizable() const override { return true; }
+
     void relayout();
 
     ~Container() override;

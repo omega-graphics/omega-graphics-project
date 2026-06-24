@@ -153,6 +153,13 @@ struct View::Impl {
     View::FocusPolicy policy_ = View::FocusPolicy::NoFocus;
     FocusReason lastReason_ = FocusReason::Other;
     bool focused_ = false;
+    /// §2.3a F2: the `WidgetTreeHost` this View is attached to, or null
+    /// when detached. Propagated down the subtree by
+    /// `View::setTreeHostRecurse` (from `Widget::setTreeHostRecurse` and
+    /// `View::addSubView`), mirroring how `syncLaneId` flows. Read by
+    /// `View::focus`/`blur` to reach `host->focusManager()`; a null host
+    /// makes those calls no-ops (a detached view cannot take focus).
+    WidgetTreeHost * treeHost_ = nullptr;
     /// Widget-View-Paint-Lifecycle-Plan Tier A: deferred-paint dirty mask.
     /// Per-node bits (Style / Layout / Content / Paint) set by
     /// `markDirty(bits)` on the node that actually changed.

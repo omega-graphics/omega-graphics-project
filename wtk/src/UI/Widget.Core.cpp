@@ -42,6 +42,11 @@ void Widget::addObserver(WidgetObserverPtr observer){
 
 void Widget::setTreeHostRecurse(WidgetTreeHost *host){
     treeHost = host;
+    // §2.3a F2: thread the host pointer down this widget's View subtree
+    // so `View::focus`/`blur` can reach `host->focusManager()`. `host`
+    // may be null (detach), which clears the pointer and makes those
+    // calls no-ops — matching the setFrontend/syncLane null handling.
+    view->setTreeHostRecurse(host);
     if(host != nullptr){
         // View::setFrontendRecurse handles per-view LayerTree observation.
         view->setFrontendRecurse(host->compPtr());

@@ -3,6 +3,8 @@
 #include "omegaWTK/UI/Layout.h"
 #include "omegaWTK/UI/LayoutManager.h"
 #include "omegaWTK/UI/AppWindow.h"
+#include "omegaWTK/UI/FocusManager.h"             // §2.3a F2: focus()/blur() routing
+#include "WidgetTreeHost.h"                        // §2.3a F2: host->focusManager()
 #include "omegaWTK/Composition/DisplayList.h"   // Phase 4.7.0: PaintContext
 
 #include <iostream>
@@ -208,6 +210,11 @@ void View::addSubView(View * view){
     // Newly created subviews must inherit compositor wiring immediately.
     view->setFrontendRecurse(compositorProxy().getFrontendPtr());
     view->setSyncLaneRecurse(compositorProxy().getSyncLaneId());
+    // §2.3a F2: a subview added after the parent attached to a host must
+    // inherit that host so its `focus()`/`blur()` resolve. If the parent
+    // is still detached (`treeHost_ == nullptr`) this is a no-op, and the
+    // later `Widget::setTreeHostRecurse` walk fills it in on attach.
+    view->setTreeHostRecurse(impl_->treeHost_);
     // Widget-View-Paint-Lifecycle-Plan Tier D / D8 (2026-06-04):
     // inherit the parent's current dirty bits onto the new child.
     // Without this, a sub-UIView created via `Widget::makeSubView`
@@ -387,19 +394,31 @@ bool View::isFocused() const{
 }
 
 void View::focus(FocusReason reason){
-    // F1 stub: record why focus was requested so a later
-    // `lastFocusReason()` read is meaningful, but do NOT change
-    // `focused_` — that flag is owned by the FocusManager, which does
-    // not exist until F2. F2 retrofits this to call
-    // `treeHost->focusManager().setFocus(this, reason)` when the view is
-    // attached to a host (a detached view's `focus()` stays a no-op).
+    // §2.3a F2: route through the owning host's FocusManager, which owns
+    // `focused_` and emits FocusGained/FocusLost. Always record the
+    // reason locally first so a detached view's `lastFocusReason()` is
+    // still meaningful; when the view is attached to a host, setFocus
+    // overwrites it with the same value and flips the focus flag. A
+    // detached view (`treeHost_ == nullptr`) cannot take focus — there
+    // is no manager to select it — so `focus()` is a no-op beyond the
+    // recorded reason, matching the F2 spec.
     impl_->lastReason_ = reason;
+    if(impl_->treeHost_ != nullptr){
+        impl_->treeHost_->focusManager().setFocus(this,reason);
+    }
 }
 
 void View::blur(){
-    // F1 stub: there is no FocusManager to clear yet. F2 retrofits this
-    // to `treeHost->focusManager().clearFocus()`. `focused_` is owned by
-    // the FocusManager, so there is nothing to flip here at F1.
+    // §2.3a F2: drop focus via the host's FocusManager, but only if THIS
+    // view currently holds it — `FocusManager::clearFocus()` clears
+    // whatever is focused, so an unguarded call from a non-focused view
+    // would steal focus from the actual holder. Guarding on `focused_`
+    // gives the intuitive "blur() only affects me" semantic (Qt's
+    // `clearFocus()` is likewise a no-op on a non-focused widget). A
+    // detached view has nothing to clear.
+    if(impl_->treeHost_ != nullptr && impl_->focused_){
+        impl_->treeHost_->focusManager().clearFocus();
+    }
 }
 
 FocusReason View::lastFocusReason() const{
@@ -602,6 +621,20 @@ void View::setSyncLaneRecurse(uint64_t syncLaneId){
     for(auto *subView : impl_->subviews){
         if(subView != nullptr){
             subView->setSyncLaneRecurse(syncLaneId);
+        }
+    }
+}
+
+void View::setTreeHostRecurse(WidgetTreeHost *host){
+    // §2.3a F2: every View in a window shares one `WidgetTreeHost` (it
+    // owns the FocusManager). Propagate the pointer down the subtree the
+    // same way the sync lane flows, so `View::focus`/`blur` on any node
+    // can reach `host->focusManager()`. `host` may be null on detach,
+    // which clears the pointer and reverts those calls to no-ops.
+    impl_->treeHost_ = host;
+    for(auto *subView : impl_->subviews){
+        if(subView != nullptr){
+            subView->setTreeHostRecurse(host);
         }
     }
 }

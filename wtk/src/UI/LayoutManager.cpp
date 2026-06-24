@@ -93,14 +93,19 @@ Composition::Rect LayoutManager::clampRectToParent(const Composition::Rect & req
     if(spec.resizable){
         output.w = ViewInternal::clampAxis(output.w, minWidth,  std::max(minWidth,  maxWidth));
         output.h = ViewInternal::clampAxis(output.h, minHeight, std::max(minHeight, maxHeight));
+        // A resizable child is clamped to fit the parent's content box.
+        output.w = std::min(output.w, std::max(1.f, parent.w));
+        output.h = std::min(output.h, std::max(1.f, parent.h));
     }
     else {
+        // A frozen (non-resizable) child keeps its intrinsic size even when
+        // it overflows the parent box: "the size of the Widget does not
+        // change on layout resize." Only floor it to a sane minimum — never
+        // shrink it to the parent. Overflow is absorbed at the window level
+        // (Phase 2 min-size) or shown honestly, not by squashing the widget.
         output.w = std::max(1.f, output.w);
         output.h = std::max(1.f, output.h);
     }
-
-    output.w = std::min(output.w, std::max(1.f, parent.w));
-    output.h = std::min(output.h, std::max(1.f, parent.h));
 
     const float minX = parent.pos.x;
     const float minY = parent.pos.y;
@@ -713,8 +718,18 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
     float totalShrinkWeight = 0.f;
     for(const auto & item : items){
         usedMain += item.marginMainBefore + item.resolvedMain + item.marginMainAfter;
+        // Main-axis flex distributes the SLOT (the allocation), not the
+        // widget (developer's model, 2026-06-24): a window resize moves the
+        // spacing/padding, never an intrinsic widget's size. flexGrow > 0 is
+        // an explicit "this slot absorbs the slack" opt-in, honored even on
+        // a frozen leaf (e.g. a spacer Label that pushes its siblings to the
+        // far edge). flexShrink stays gated on `resizable`: a frozen leaf's
+        // slot never shrinks below the widget, so the widget never overflows
+        // its own slot and its cached intrinsic size never drifts.
+        if(item.spec.flexGrow > 0.f){
+            totalGrow += item.spec.flexGrow;
+        }
         if(item.spec.resizable){
-            totalGrow         += std::max(item.spec.flexGrow,   0.f);
             totalShrinkWeight += std::max(item.spec.flexShrink, 0.f) *
                                  std::max(item.resolvedMain,     0.f);
         }
@@ -723,7 +738,10 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
     float freeMain = contentMain - usedMain;
     if(freeMain > 0.f && totalGrow > 0.f){
         for(auto & item : items){
-            if(!item.spec.resizable || item.spec.flexGrow <= 0.f){
+            // flexGrow > 0 is an explicit grow opt-in, honored even for a
+            // frozen leaf (flexGrow > 0 implies main-axis flexible — see
+            // the totalGrow accumulation above).
+            if(item.spec.flexGrow <= 0.f){
                 continue;
             }
             const float delta = freeMain * (item.spec.flexGrow / totalGrow);
@@ -736,6 +754,9 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
     else if(freeMain < 0.f && totalShrinkWeight > 0.f){
         const float overflow = -freeMain;
         for(auto & item : items){
+            // Only resizable children shrink their slot. A frozen leaf's
+            // slot is never shrunk — its widget keeps its intrinsic size
+            // (no §1.5 squash, and the widget never overflows its own slot).
             if(!item.spec.resizable || item.spec.flexShrink <= 0.f){
                 continue;
             }
@@ -797,7 +818,17 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
     float cursor = mainStart + startOffset;
     for(auto & item : items){
         auto childRect = item.view->getRect();
-        const float mainSize = item.spec.resizable ? item.resolvedMain : item.currentMain;
+        // SLOT vs WIDGET. The slot is this child's allocation along the main
+        // axis (grown by flexGrow); the widget is what actually gets sized.
+        // A resizable child fills its slot; a frozen leaf keeps its intrinsic
+        // main size and sits at the slot's start, so the leftover slot
+        // becomes trailing spacing — "the widget size doesn't change on
+        // resize, the spacing does." The cursor advances by the SLOT; the
+        // widget is sized to widgetMain.
+        const bool  mainFlex   = item.spec.resizable || item.spec.flexGrow > 0.f;
+        const float slotMain   = mainFlex ? item.resolvedMain : item.currentMain;
+        const float widgetMain = item.spec.resizable ? item.resolvedMain
+                                                     : item.currentMain;
 
         cursor += item.marginMainBefore;
 
@@ -822,24 +853,34 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
                 crossPos += std::max(0.f, crossAvailable - crossSize);
                 break;
             case FlexCrossAlign::Stretch:
-                if(item.spec.resizable){
-                    crossSize = crossAvailable;
-                }
+                // Stretch is an explicit fill directive chosen by the
+                // container author, so it applies to frozen leaves too — a
+                // frozen Separator still spans the cross axis. This is the
+                // deliberate opposite of the implicit shrink-to-fit the
+                // freeze guards against: the min-clamp above stays gated on
+                // `resizable`, so a non-stretched frozen leaf keeps its
+                // intrinsic cross size and never squashes.
+                crossSize = crossAvailable;
                 break;
         }
 
+        // A frozen leaf keeps its intrinsic cross size UNLESS an explicit
+        // Stretch alignment widened it to crossAvailable above — then it
+        // fills like a resizable child (option (c), Resize-Clamping plan).
+        const bool useCross = item.spec.resizable ||
+                              (align == FlexCrossAlign::Stretch);
         Composition::Rect targetRect = childRect;
         if(horizontal){
             targetRect.pos.x = cursor;
             targetRect.pos.y = crossPos;
-            targetRect.w     = mainSize;
-            targetRect.h     = item.spec.resizable ? crossSize : childRect.h;
+            targetRect.w     = widgetMain;
+            targetRect.h     = useCross ? crossSize : childRect.h;
         }
         else {
             targetRect.pos.x = crossPos;
             targetRect.pos.y = cursor;
-            targetRect.w     = item.spec.resizable ? crossSize : childRect.w;
-            targetRect.h     = mainSize;
+            targetRect.w     = useCross ? crossSize : childRect.w;
+            targetRect.h     = widgetMain;
         }
 
         ChildResizeSpec resizeSpec {};
@@ -871,7 +912,7 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
             item.view->resize(targetRect);
         }
 
-        cursor += mainSize + item.marginMainAfter + layoutSpacing;
+        cursor += slotMain + item.marginMainAfter + layoutSpacing;
     }
 }
 

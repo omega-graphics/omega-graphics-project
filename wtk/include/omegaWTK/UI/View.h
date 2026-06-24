@@ -44,6 +44,11 @@ namespace OmegaWTK {
     class Widget;
     class ViewDelegate;
     class ScrollView;
+    // §2.3a F2: `View::focus`/`blur` route through the owning host's
+    // FocusManager; the host pointer propagates down the View tree via
+    // `View::setTreeHostRecurse`. Both are used only by pointer here.
+    class WidgetTreeHost;
+    class FocusManager;
     class View;
     OMEGACOMMON_SHARED_CLASS(View);
 
@@ -136,6 +141,14 @@ namespace OmegaWTK {
         const SharedHandle<Composition::ViewRenderTarget> & renderTargetHandle() const;
         void setFrontendRecurse(Composition::Compositor *frontend);
         void setSyncLaneRecurse(uint64_t syncLaneId);
+        /// §2.3a F2: propagate the owning `WidgetTreeHost` down this
+        /// View subtree (mirrors `setSyncLaneRecurse`). Called by
+        /// `Widget::setTreeHostRecurse` on attach/detach and by
+        /// `addSubView` so a late-added subview inherits its window's
+        /// host. The stored pointer is what `View::focus`/`blur` consult
+        /// to reach `host->focusManager()`; a detached view (null host)
+        /// makes those calls no-ops.
+        void setTreeHostRecurse(WidgetTreeHost *host);
         virtual bool hasDelegate();
         void addSubView(View *view);
         void removeSubView(View * view);
@@ -146,6 +159,10 @@ namespace OmegaWTK {
         friend class Widget;
         friend class WidgetTreeHost;
         friend class Container;
+        /// §2.3a F2: the FocusManager owns the per-View `focused_` flag
+        /// and writes it (plus `lastReason_`) directly through `impl_`
+        /// in `setFocus`/`clearFocus`.
+        friend class FocusManager;
     protected:
         /**
             Constructs a View. Creates its own LayerTree with a root Layer.

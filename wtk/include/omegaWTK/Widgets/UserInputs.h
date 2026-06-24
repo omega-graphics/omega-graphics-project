@@ -15,12 +15,12 @@ namespace OmegaWTK {
     // TextInput, Dropdown, Slider remain stubs (their base implementations
     // are gated on FocusManager — see Widget-Stub-Implementation-Plan §4B
     // / Native-API-Completion-Proposal §2.3a).
-    class OMEGAWTK_EXPORT TextInput : public Container {
+    class OMEGAWTK_EXPORT TextInput : public Widget {
     public:
         WIDGET_CONSTRUCTOR()
     };
 
-    class OMEGAWTK_EXPORT Slider : public Container {
+    class OMEGAWTK_EXPORT Slider : public Widget {
     public:
         WIDGET_CONSTRUCTOR()
     };

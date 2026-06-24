@@ -201,8 +201,16 @@ public:
     bool hasExplicitLayoutStyle() const;
     View & viewRef();
     virtual OmegaCommon::ArrayRef<WidgetPtr> childWidgets();
+    /// Whether the layout may rewrite this widget's geometry when its
+    /// parent resizes. Intrinsic-sized leaves (shape primitives, text,
+    /// Button, the input widgets) return false: a window resize
+    /// repositions them but never deforms them. Only a scaleFactor / DPI
+    /// change rescales them, and that rides AppWindow's onRealize ->
+    /// setRenderScale path, which is decoupled from layout resize. Layout
+    /// containers override this to true (see Container). Consumed by
+    /// FlexLayout through the per-child FlexChildSpec.resizable flag.
     virtual bool isLayoutResizable() const {
-        return true;
+        return false;
     }
     /**
      Add a WidgetObserver to be notified.

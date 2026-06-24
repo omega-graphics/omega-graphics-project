@@ -31,6 +31,7 @@ namespace OmegaWTK {
     class NativeViewHost;
     class FrameBuilder;
     class OverlayHost;
+    class FocusManager;
     enum class PaintReason : std::uint8_t;
 
     struct OMEGAWTK_EXPORT ResizeDynamicsSample {
@@ -141,6 +142,14 @@ namespace OmegaWTK {
         /// before the host's own members so dismissAll's WidgetPtr
         /// releases run before the host tears down.
         Core::UniquePtr<OverlayHost> overlayHost_;
+
+        /// §2.3a F2 — the per-window keyboard-focus authority. One per
+        /// host, constructed in the host ctor so `focusManager()` is
+        /// always live (same lifetime pattern as `overlayHost_`). The
+        /// View tree reaches it via the host pointer threaded by
+        /// `View::setTreeHostRecurse`; the input dispatcher (F3/M1) and
+        /// `View::focus`/`blur` are its writers.
+        Core::UniquePtr<FocusManager> focusManager_;
 
         WidgetTreeHost();
 
@@ -276,6 +285,14 @@ namespace OmegaWTK {
         /// `treeHost->overlayHost().present(...)`.
         OverlayHost & overlayHost();
         const OverlayHost & overlayHost() const;
+
+        /// §2.3a F2 — the per-window keyboard-focus authority. Returns a
+        /// reference because the host always owns exactly one
+        /// `FocusManager` (constructed in this host's ctor, destroyed in
+        /// its dtor), matching `overlayHost()`. `View::focus`/`blur` and
+        /// the input dispatcher reach the manager through this accessor.
+        FocusManager & focusManager();
+        const FocusManager & focusManager() const;
 
         ~WidgetTreeHost();
     };

@@ -7,6 +7,7 @@
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/View.h"
 #include "omegaWTK/UI/OverlayHost.h"
+#include "omegaWTK/UI/FocusManager.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
 #include "omegaWTK/Composition/CompositorClient.h"
@@ -229,7 +230,10 @@ namespace OmegaWTK {
     compositor(globalCompositor()),
     syncLaneId(g_widgetTreeSyncLaneSeed.fetch_add(1)),
     attachedToWindow(false),
-    overlayHost_(Core::UniquePtr<OverlayHost>(new OverlayHost(*this)))
+    overlayHost_(Core::UniquePtr<OverlayHost>(new OverlayHost(*this))),
+    // §2.3a F2: one FocusManager per host, live for the host's lifetime
+    // (same construction pattern as overlayHost_ above).
+    focusManager_(Core::UniquePtr<FocusManager>(new FocusManager()))
     {
 
     };
@@ -256,6 +260,14 @@ namespace OmegaWTK {
 
     const OverlayHost & WidgetTreeHost::overlayHost() const {
         return *overlayHost_;
+    }
+
+    FocusManager & WidgetTreeHost::focusManager(){
+        return *focusManager_;
+    }
+
+    const FocusManager & WidgetTreeHost::focusManager() const {
+        return *focusManager_;
     }
 
     SharedHandle<WidgetTreeHost> WidgetTreeHost::Create(){
