@@ -3,6 +3,7 @@
 
 #include "AppWindowImpl.h"
 #include "FrameBuilder.h"
+#include "ViewImpl.h"   // §2.3a Focus M1: friend access to View::Impl::parent_ptr for the click-focus parent walk
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/View.h"
@@ -736,10 +737,17 @@ namespace OmegaWTK {
             }
             case NativeEvent::KeyDown:
             case NativeEvent::KeyUp: {
-                // Keyboard events go to root widget for now.
-                // TODO: route to focused widget once focus tracking exists.
-                if(root->view != nullptr){
-                    root->view->emit(event);
+                // Native-API-Completion-Proposal §2.3a Focus F3
+                // (2026-06-25): route keyboard events to the View the
+                // FocusManager has selected, replacing the pre-F2
+                // root-broadcast. When nothing holds focus the event is
+                // dropped — a no-focus state means no consumer, which is
+                // the real condition the broadcast was masking (the root
+                // widget is not itself a keyboard target). F4 layers
+                // Tab / Shift-Tab interception on top of this routing;
+                // F3 ships pure routing only.
+                if(View * focused = focusManager_->focusedView()){
+                    focused->emit(event);
                 }
                 return;
             }
@@ -785,6 +793,28 @@ namespace OmegaWTK {
         }
         else if(event->type == NativeEvent::LMouseUp && target != nullptr){
             target->setPseudoClassBits(0x02U, false);
+        }
+
+        // Native-API-Completion-Proposal §2.3a Focus M1 (2026-06-25):
+        // mouse-click focus. On a left mouse-down, walk up from the hit
+        // view to the nearest click-focusable ancestor and make it the
+        // focused view *before* the mouseDown reaches the delegate — the
+        // AppKit / Qt order, and the reason a non-focusable Label clicked
+        // inside a Button focuses the Button rather than nothing.
+        // FocusReason::Mouse is deliberate: it suppresses the focus ring
+        // (only keyboard traversal raises it — see the F-table's
+        // isKeyboardReason gate). When no ancestor is click-focusable the
+        // current focus is left untouched; clicking inert chrome does not
+        // blur the prior holder, matching native toolkits. (The walk uses
+        // friend access to View::Impl::parent_ptr — there is no public
+        // parent accessor on View.)
+        if(event->type == NativeEvent::LMouseDown && target != nullptr){
+            for(View * v = target; v != nullptr; v = v->impl_->parent_ptr){
+                if(v->isClickFocusable()){
+                    focusManager_->setFocus(v, FocusReason::Mouse);
+                    break;
+                }
+            }
         }
 
         if(target != nullptr){
