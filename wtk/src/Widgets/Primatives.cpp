@@ -252,6 +252,14 @@ Label::Label(Composition::Rect rect, const LabelProps & props)
 
 void Label::onMount() {
     rebuildContent();
+    // NOTE (Resize-Clamping §1.7): a wrapping Label's height is content-
+    // driven (a function of its width). The View `ContentMeasure` hook +
+    // FlexLayout measure path exist to publish that to the layout, but the
+    // hook is intentionally NOT installed yet: the only height source today
+    // is a char-count/point-size heuristic, and the description renders with
+    // the GTK system theme font (`gtk-font-name`) whose size this widget
+    // cannot read synchronously — so the estimate clips or overflows. Wiring
+    // this up is gated on real text metrics (`Font::measureText`, Phase 2A).
 }
 
 void Label::rebuildContent() {

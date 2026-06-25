@@ -201,6 +201,10 @@ struct View::Impl {
     /// `Container`'s `ContainerLayout` field).
     LayoutManager * layoutManager_ = nullptr;
 
+    /// Resize-Clamping §1.7: optional content-driven measure hook (a
+    /// wrapping Label's height-from-width). Unset = fixed-size widget.
+    View::ContentMeasureFn contentMeasure_ {};
+
     /// Construct a purely virtual View (Phase 3). No NativeItem, no
     /// per-View render target. The render target is propagated from the
     /// window via setWindowRenderTarget().

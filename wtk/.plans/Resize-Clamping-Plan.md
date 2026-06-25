@@ -255,6 +255,23 @@ Consequences, and where each lands in `FlexLayout`:
   for; not built yet. Flagged so the "unless it's absolute-padded"
   clause is not mistaken for existing behavior.
 
+### 1.7 Content-driven sizing — the freeze's sanctioned exception (open)
+
+The §1.5 freeze says a widget's geometry does not change on resize. One
+class of widget is a principled exception: a **wrapping `Label`'s height
+is a function of its width** — it must change when the width changes, not
+because the layout deforms it but because its own content (reflowed text)
+requires it. The consumer plumbing for this landed inert (a
+`View::ContentMeasure` hook + a `FlexLayout::measure` override that lets a
+widget publish its intrinsic main-extent for the available cross extent),
+but it is **not wired**: the only height source today is a font/glyph
+heuristic, and the description renders with the GTK system theme font
+whose size the widget cannot read — so guessed heights clip or overflow.
+The real fix needs a synchronous text-measurement API on the text layout
+engine; spun out to **`Text-Measurement-API-Plan.md`**. Until then the
+description stays frozen at its construction height (full text, with the
+bottom-overlap-when-short caveat the slot model otherwise resolves).
+
 ## 2 Goals
 
 - **G1 (correctness).** On any window size, an intrinsic-sized leaf
@@ -503,49 +520,70 @@ content-dropping. Phase 1 is a "correctness floor" change only.
 
 ### Phase 2 — Window-level aggregate min: OS-enforced resize range
 
-**Scope.** Roll up the widget tree's per-widget `LayoutStyle.clamp.min*`
-into a single aggregate `{minW, minH}` for the current root, and push
-that to `NativeWindow::setMinSize` on (a) `AppWindow::setRootWidget`,
-(b) any tree mutation that could change the aggregate (add/remove
-child, `setLayoutStyle`), and (c) on each `onRealize` re-fire (DPI
-changes can scale the minimum). The aggregate walk runs at the
-WidgetTreeHost layer so AppWindow stays thin.
+**Status: implemented 2026-06-24 (core); GTK-verified by computed value,
+visual drag-stop pending.**
 
-**Aggregate semantics.**
-- For a `LayoutDisplay::Stack` parent, the aggregate is the sum along
-  the main axis and the max along the cross axis (with padding /
-  margins added on).
-- For a `LayoutDisplay::Flex` parent (Row / Column), the same — sum on
-  main, max on cross.
-- Absolute-positioned children do not contribute to the aggregate
-  (their layout is decoupled from the parent's flow).
-- DPI conversion happens at the AppWindow → NativeWindow boundary,
-  using the current screen's scale factor. Re-runs on `onRealize`
-  because the same logical min becomes a different pixel min on a
-  different-density display.
+**Scope.** Roll up the widget tree's content minimum into a single
+aggregate `{minW, minH}` (logical dp) for the current root and push it
+to `NativeWindow::setMinSize` on (a) `AppWindow::setRootWidget` and
+(b) each `onRealize` re-fire. The aggregate reuses the Phase 1
+`LayoutManager::minSize` walk, run at the `WidgetTreeHost` layer so
+AppWindow stays thin.
 
-**What ships:** the user cannot drag the window narrower or shorter
-than what its current widget tree needs. The OS title bar resists the
-drag at the right point; the Phase 1 overflow case becomes
-unreachable in practice.
+**Aggregate semantics.** A Stack / Flex parent sums its children's
+minima along the main axis (+ spacing) and takes the max along the
+cross axis (+ padding / margins), recursing into nested containers
+(`FlexLayout::minSize`). Absolute children contribute their own extent
+only. One refinement landed here that §1.5's caveat predicted: a
+**stretch-aligned leaf imposes no cross minimum** (it flexes — text
+wraps, a separator is any width), so only its intrinsic *main* extent
+constrains the parent. Without it a full-width separator would report
+its stretched width as a minimum and pin the window.
 
-**Code surface (estimate: ~200 LOC across 4 files).**
-- `wtk/src/UI/WidgetTreeHost.{h,cpp}` — new
-  `WidgetTreeHost::aggregateMinSize() const -> {float, float}` walking
-  the root widget's view tree (size class returned in dp).
-- `wtk/src/UI/AppWindow.cpp` — call `aggregateMinSize`, multiply by
-  `currentScreen().scaleFactor`, call `nativeWindow->setMinSize(...)`.
-  Wired into `setRootWidget` (already there, just append) and into
-  the existing `onRealize` lambda (Phase F) for DPI re-runs.
-- A mutation-side hook: `Widget::setLayoutStyle` (and the
-  add/removeChild surface) calls
-  `treeHost->refreshAggregateMinSize()`. The refresh is a debounced
-  request that flushes at the end of the current frame so a burst of
-  mutations does not re-walk on each call.
+**Units — corrected from the original plan.** The original plan said
+"multiply by `currentScreen().scaleFactor`." That is **wrong**: the
+backends already convert internally. GTK's `setMinSize` runs the input
+through `toGtkLogical(dip) = dip * dpiScale_` — the *same* function used
+for the window rect — so it expects **logical dp**; Cocoa's
+`setContentMinSize:` is points (logical) too. Multiplying by the scale
+factor would double-scale on HiDPI. So AppWindow passes **dp unscaled**;
+each backend does its own conversion.
 
-**Validator.** BasicAppTest no longer permits the user to drag the
-window into the Phase 1 overflow state. macOS / Windows / GTK each
-honor the min-size at the title bar.
+**What ships:** the user cannot drag the window below what its current
+widget tree needs. For `BasicAppTest` the aggregate is **508 × 282 dp**
+(width = button row's 476 + 32 padding, confirming the stretch-leaf fix;
+height = title 30 + sep 4 + shapeRow 80 + sep 4 + desc 60 + buttonRow 32
++ spacing 40 + padding 32). Verified by capturing the computed value;
+the OS-level drag-stop still wants a visual confirmation.
+
+**Code surface (implemented).**
+- `wtk/src/UI/WidgetTreeHost.{h,cpp}` —
+  `aggregateMinSize(float& wDp, float& hDp) const`, delegating to the
+  root View's `layoutManager()->minSize(rootView)`.
+- `wtk/src/UI/LayoutManager.cpp` — the stretch-aligned-leaf cross-min
+  exclusion in `FlexLayout::minSize`.
+- `wtk/src/UI/AppWindow.cpp` — `aggregateMinSize` → `setMinSize` (dp,
+  unscaled) in `setRootWidget` and the `onRealize` lambda.
+
+**Deferred / flagged.**
+- *Mutation-side refresh.* The debounced `setLayoutStyle` /
+  add-removeChild hook is **not** wired yet — the test tree is static, a
+  synchronous per-mutation re-walk would be wasteful, and a frame-end
+  debounce needs a hook that does not exist. Tracked for when a dynamic
+  tree needs it.
+- *Stretch-leaf intrinsic on the MAIN axis.* `minSize` still reads a
+  leaf's main extent from `getRect`; that is intrinsic today (main is
+  never stretched), but a future `measureSelf`-sourced minimum would be
+  exact for wrapped text whose height depends on width.
+- *Backend coverage.* GTK is the verified path (units confirmed). Cocoa
+  `setContentMinSize` takes points so the dp value is correct there too,
+  but is screenshot-unverified off-platform. **Win** stores the value
+  raw and feeds `WM_GETMINMAXINFO` (device pixels) — it likely needs an
+  internal dp→px conversion to match GTK/Cocoa; unverified, flagged.
+
+**Validator.** `BasicAppTest` should no longer permit dragging below
+~508 × 282 dp; the GTK title bar resists the drag at that point.
+macOS / Windows pending off-platform check (see backend coverage).
 
 ### Phase 3 — Drop priority: content-adaptive widget hiding
 

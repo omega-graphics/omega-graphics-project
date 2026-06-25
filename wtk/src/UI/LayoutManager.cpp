@@ -516,6 +516,30 @@ LayoutSize FlexLayout::measure(View & node, const Composition::Rect & avail){
         float curMain  = horizontal ? childRect.w : childRect.h;
         float curCross = horizontal ? childRect.h : childRect.w;
 
+        // Content-driven sizing (Resize-Clamping §1.7): a child whose
+        // intrinsic main extent depends on its cross extent — a wrapping
+        // Label's height-from-width — reports it here. The available cross
+        // extent is the content cross of `avail` (the child stretches to it);
+        // the main axis is left for this measure to fill. Only the main axis
+        // is overridden — the cross is owned by stretch/alignment.
+        if(child->hasContentMeasure()){
+            const float padCross = horizontal
+                ? (options_.padding.top  + options_.padding.bottom)
+                : (options_.padding.left + options_.padding.right);
+            const float availCross = std::max(
+                0.f, (horizontal ? avail.h : avail.w) - padCross);
+            float outW = curCross;
+            float outH = curMain;
+            if(horizontal){
+                child->measureContent(kMaxFlexDimension, availCross, outW, outH);
+                curMain = outW;
+            }
+            else {
+                child->measureContent(availCross, kMaxFlexDimension, outW, outH);
+                curMain = outH;
+            }
+        }
+
         const bool curSuspicious  = suspiciousFlexSize(curMain, curCross);
         const bool curPlaceholder = tinyFlexPlaceholder(curMain, curCross);
         const bool cacheUsable    = entry.hasPreferredSize &&
@@ -990,7 +1014,17 @@ LayoutSize FlexLayout::minSize(View & node){
         const FlexChildSpec spec = childSpec(child);
         float cMain  = horizontal ? cm.w : cm.h;
         float cCross = horizontal ? cm.h : cm.w;
-        if(spec.minMain){  cMain  = std::max(cMain,  *spec.minMain);  }
+        if(spec.minMain){ cMain = std::max(cMain, *spec.minMain); }
+        // A stretch-aligned LEAF flexes on the cross axis (text wraps, a
+        // separator is any width), so it imposes NO cross minimum — only its
+        // intrinsic main extent constrains the parent. A container keeps its
+        // recursive content min even when stretched (its children still need
+        // their space). Without this a full-width separator would report its
+        // stretched width as a minimum and pin the window's width.
+        const auto childAlign = spec.alignSelf.value_or(options_.crossAlign);
+        if(child->subviews().size() == 0 && childAlign == FlexCrossAlign::Stretch){
+            cCross = 0.f;
+        }
         if(spec.minCross){ cCross = std::max(cCross, *spec.minCross); }
         const float marginMain  = horizontal ? spec.margin.left + spec.margin.right
                                              : spec.margin.top  + spec.margin.bottom;

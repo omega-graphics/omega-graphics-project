@@ -204,6 +204,15 @@ namespace OmegaWTK {
         */
         void setRoot(WidgetPtr widget);
 
+        /// Resize-Clamping Plan Phase 2: the aggregate minimum size (in
+        /// logical dp) of the current root widget's view tree — the
+        /// smallest the window's content can be without overflowing.
+        /// Delegates to the root View's `LayoutManager::minSize` (sum on
+        /// the main axis, max on the cross axis, recursing into nested
+        /// containers). Writes {1,1} when there is no root. `AppWindow`
+        /// forwards the result to `NativeWindow::setMinSize`.
+        void aggregateMinSize(float & outWidthDp, float & outHeightDp) const;
+
         /**
          @brief Attach this host to an AppWindow
          @param[in] window The AppWindow to attach to.

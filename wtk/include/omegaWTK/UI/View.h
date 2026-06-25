@@ -264,6 +264,27 @@ namespace OmegaWTK {
         LayoutManager * layoutManager() const;
         void            setLayoutManager(LayoutManager * manager);
 
+        /// Resize-Clamping Plan §1.7: content-driven sizing. A widget whose
+        /// intrinsic size depends on the space it is given — a wrapping
+        /// `Label` whose height is a function of its width — installs this.
+        /// Given an available size (dp) it writes the widget's intrinsic dp
+        /// size. The parent's `FlexLayout::measure` consults it so such a
+        /// widget is sized to its content instead of a frozen constant; left
+        /// unset, a widget is treated as fixed-size (the parent uses its
+        /// rect). This is the layout's sanctioned exception to the §1.5
+        /// freeze: a widget's geometry may change on resize when its own
+        /// content requires it (text reflow), never because the layout
+        /// arbitrarily squashes it.
+        using ContentMeasureFn =
+            std::function<void(float availWidthDp, float availHeightDp,
+                               float & outWidthDp, float & outHeightDp)>;
+        void setContentMeasure(ContentMeasureFn fn);
+        bool hasContentMeasure() const;
+        /// Run the content-measure hook. Falls back to the current rect (dp)
+        /// when no hook is installed, so callers need not branch.
+        void measureContent(float availWidthDp, float availHeightDp,
+                            float & outWidthDp, float & outHeightDp) const;
+
         /// Phase 4.5: const view of this View's children. Used by
         /// `LayoutManager::arrange` to iterate. Order is insertion order.
         OmegaCommon::ArrayRef<View *> subviews() const;

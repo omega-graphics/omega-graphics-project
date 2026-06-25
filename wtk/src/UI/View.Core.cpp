@@ -157,6 +157,24 @@ void View::setLayoutManager(LayoutManager * manager){
     markDirty(View::Layout);
 }
 
+void View::setContentMeasure(ContentMeasureFn fn){
+    impl_->contentMeasure_ = std::move(fn);
+}
+
+bool View::hasContentMeasure() const{
+    return static_cast<bool>(impl_->contentMeasure_);
+}
+
+void View::measureContent(float availWidthDp, float availHeightDp,
+                          float & outWidthDp, float & outHeightDp) const{
+    if(impl_->contentMeasure_){
+        impl_->contentMeasure_(availWidthDp, availHeightDp, outWidthDp, outHeightDp);
+        return;
+    }
+    outWidthDp  = impl_->rect.w;
+    outHeightDp = impl_->rect.h;
+}
+
 OmegaCommon::ArrayRef<View *> View::subviews() const{
     return OmegaCommon::ArrayRef<View *>(impl_->subviews);
 }

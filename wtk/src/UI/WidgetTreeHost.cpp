@@ -6,6 +6,7 @@
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/UI/LayoutManager.h"   // Phase 2: LayoutManager::minSize for aggregateMinSize
 #include "omegaWTK/UI/OverlayHost.h"
 #include "omegaWTK/UI/FocusManager.h"
 #include "omegaWTK/Composition/CompositeFrame.h"
@@ -811,4 +812,20 @@ namespace OmegaWTK {
         }
         root = widget;
     };
+
+    void WidgetTreeHost::aggregateMinSize(float & outWidthDp, float & outHeightDp) const {
+        outWidthDp  = 1.f;
+        outHeightDp = 1.f;
+        if(root == nullptr){
+            return;
+        }
+        View & rootView = root->viewRef();
+        LayoutManager * mgr = rootView.layoutManager();
+        if(mgr == nullptr){
+            return;
+        }
+        const LayoutSize ms = mgr->minSize(rootView);
+        outWidthDp  = std::max(1.f, ms.w);
+        outHeightDp = std::max(1.f, ms.h);
+    }
 };

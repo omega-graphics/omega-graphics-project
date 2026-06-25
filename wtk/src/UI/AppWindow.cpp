@@ -452,7 +452,27 @@ void AppWindow::setRootWidget(WidgetPtr widget){
             impl_->framePacer_->bindTo(Native::displayLinkForScreen(screen));
         }
         impl_->delegate->dispatchResizeToHosts(impl_->nativeWindow->getRect());
+
+        // Resize-Clamping Plan Phase 2: re-apply the content minimum after a
+        // (re-)realize. The aggregate is in logical dp and density-
+        // independent, but the geometry hint must be re-pushed so the backend
+        // re-derives the pixel minimum at the (possibly new) DPI.
+        {
+            float minWdp = 1.f, minHdp = 1.f;
+            impl_->widgetTreeHost->aggregateMinSize(minWdp, minHdp);
+            impl_->nativeWindow->setMinSize(minWdp, minHdp);
+        }
     });
+
+    // Resize-Clamping Plan Phase 2: seed the native window's minimum drag
+    // size from the widget tree's aggregate content minimum (logical dp; the
+    // backend converts to its native units — GTK toGtkLogical, Cocoa points).
+    // Re-applied on each onRealize above when the tree or DPI changes.
+    {
+        float minWdp = 1.f, minHdp = 1.f;
+        impl_->widgetTreeHost->aggregateMinSize(minWdp, minHdp);
+        impl_->nativeWindow->setMinSize(minWdp, minHdp);
+    }
     impl_->widgetTreeHost->attachedToWindow = true;
 };
 
