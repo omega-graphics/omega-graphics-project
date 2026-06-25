@@ -116,6 +116,15 @@ Composition::Rect LayoutManager::clampRectToParent(const Composition::Rect & req
     return output;
 }
 
+// Default content-minimum: a node's own (intrinsic) rect. For a frozen
+// leaf this is its fixed size; for an absolute-positioned parent the
+// children are decoupled, so the node's own extent is its minimum.
+// FlexLayout overrides this to aggregate its children.
+LayoutSize LayoutManager::minSize(View & node){
+    const auto r = node.getRect();
+    return { std::max(1.f, r.w), std::max(1.f, r.h) };
+}
+
 // ---------------------------------------------------------------------------
 // AbsoluteLayout — process-wide singleton; default if no manager set.
 // ---------------------------------------------------------------------------
@@ -433,6 +442,7 @@ struct FlexItem {
     float                resolvedMain      = 0.f;
     float                resolvedCross     = 0.f;
     float                minMain           = 0.f;
+    float                minCross          = 0.f;
     float                marginMainBefore  = 0.f;
     float                marginMainAfter   = 0.f;
     float                marginCrossBefore = 0.f;
@@ -700,7 +710,20 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
             item.resolvedCross = clampSize(item.resolvedCross, spec.minCross, spec.maxCross);
         }
 
-        item.minMain = spec.minMain.value_or(0.f);
+        // Secondary min-clamp: a resizable child (a nested container) must
+        // not collapse below the intrinsic size of its own content. Query
+        // its recursive content-minimum and fold it into the main-axis
+        // shrink floor and the cross-axis floor. Frozen leaves are excluded
+        // — they never shrink, and their slot already equals their size.
+        float floorMain  = spec.minMain.value_or(0.f);
+        float floorCross = spec.minCross.value_or(0.f);
+        if(item.spec.resizable && child->layoutManager() != nullptr){
+            const LayoutSize cm = child->layoutManager()->minSize(*child);
+            floorMain  = std::max(floorMain,  horizontal ? cm.w : cm.h);
+            floorCross = std::max(floorCross, horizontal ? cm.h : cm.w);
+        }
+        item.minMain  = floorMain;
+        item.minCross = floorCross;
         items.push_back(item);
     }
 
@@ -770,6 +793,17 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
             item.resolvedMain = clampSize(item.resolvedMain,
                                           item.spec.minMain,
                                           item.spec.maxMain);
+        }
+    }
+
+    // Secondary min-clamp (main axis): never resolve a resizable child below
+    // its content minimum — even when free space was positive but its
+    // preferred size was too small, or when shrink tried to push past the
+    // floor. (Frozen flexGrow spacers are excluded: their slot must stay free
+    // to grow/shrink.)
+    for(auto & item : items){
+        if(item.spec.resizable){
+            item.resolvedMain = std::max(item.resolvedMain, item.minMain);
         }
     }
 
@@ -864,6 +898,14 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
                 break;
         }
 
+        // Secondary min-clamp (cross axis): a resizable child never sizes
+        // below its content's cross minimum, even when the available cross
+        // extent (or an explicit Stretch) would make it smaller — it then
+        // overflows the parent honestly rather than crushing its content.
+        if(item.spec.resizable){
+            crossSize = std::max(crossSize, item.minCross);
+        }
+
         // A frozen leaf keeps its intrinsic cross size UNLESS an explicit
         // Stretch alignment widened it to crossAvailable above — then it
         // fills like a resizable child (option (c), Resize-Clamping plan).
@@ -914,6 +956,67 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
 
         cursor += slotMain + item.marginMainAfter + layoutSpacing;
     }
+}
+
+LayoutSize FlexLayout::minSize(View & node){
+    // Aggregate the content-minimum: sum of children's minima along the
+    // main axis (+ spacing), max along the cross axis, plus padding and
+    // per-child margins. Each child contributes its OWN recursive minimum
+    // (a nested container aggregates its content; a frozen leaf returns its
+    // intrinsic rect), so a resizable container can never be asked to hold
+    // less than the space its content genuinely needs. Matches the Phase 2
+    // aggregate semantics (sum-main / max-cross / + insets).
+    //
+    // Caveat for Phase 2 (window setMinSize): a leaf's minimum is read from
+    // its current rect, which for a *stretch-aligned* leaf is the stretched
+    // extent, not the intrinsic one. That over-reports a stack's cross
+    // minimum when it holds stretched text/separators. The per-container
+    // clamp in arrange is unaffected (the test's resizable rows hold
+    // center-aligned children whose rect == intrinsic); Phase 2 must source
+    // leaf intrinsics from measureSelf rather than getRect to be exact.
+    const bool horizontal = (options_.axis == LayoutAxis::Horizontal);
+    float mainSum  = 0.f;
+    float crossMax = 0.f;
+    std::size_t count = 0;
+    for(auto * child : node.subviews()){
+        if(child == nullptr){
+            continue;
+        }
+        LayoutSize cm { std::max(1.f, child->getRect().w),
+                        std::max(1.f, child->getRect().h) };
+        if(child->layoutManager() != nullptr){
+            cm = child->layoutManager()->minSize(*child);
+        }
+        const FlexChildSpec spec = childSpec(child);
+        float cMain  = horizontal ? cm.w : cm.h;
+        float cCross = horizontal ? cm.h : cm.w;
+        if(spec.minMain){  cMain  = std::max(cMain,  *spec.minMain);  }
+        if(spec.minCross){ cCross = std::max(cCross, *spec.minCross); }
+        const float marginMain  = horizontal ? spec.margin.left + spec.margin.right
+                                             : spec.margin.top  + spec.margin.bottom;
+        const float marginCross = horizontal ? spec.margin.top  + spec.margin.bottom
+                                             : spec.margin.left + spec.margin.right;
+        mainSum += marginMain + cMain;
+        crossMax = std::max(crossMax, marginCross + cCross);
+        ++count;
+    }
+    if(count > 1){
+        mainSum += options_.spacing * static_cast<float>(count - 1);
+    }
+    const float padMain  = horizontal ? options_.padding.left + options_.padding.right
+                                      : options_.padding.top  + options_.padding.bottom;
+    const float padCross = horizontal ? options_.padding.top  + options_.padding.bottom
+                                      : options_.padding.left + options_.padding.right;
+    LayoutSize out {};
+    if(horizontal){
+        out.w = mainSum  + padMain;
+        out.h = crossMax + padCross;
+    }
+    else {
+        out.w = crossMax + padCross;
+        out.h = mainSum  + padMain;
+    }
+    return out;
 }
 
 } // namespace OmegaWTK

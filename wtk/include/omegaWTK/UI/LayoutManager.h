@@ -110,6 +110,15 @@ public:
     /// codepaths.
     virtual void       arrange(View & node, const Composition::Rect & finalRectLocal) = 0;
 
+    /// Recursive content-minimum: the smallest size this node can take
+    /// without shrinking its own content below intrinsic. The default
+    /// (leaves and absolute parents) returns the node's current rect — a
+    /// frozen leaf's intrinsic size. FlexLayout overrides it to aggregate
+    /// children (sum on the main axis, max on the cross axis, plus spacing
+    /// / padding / margins). Feeds the per-container min-clamp in arrange
+    /// and the window-level setMinSize (Resize-Clamping plan Phase 2).
+    virtual LayoutSize minSize(View & node);
+
     // Phase 4.5: the static clamp helper, lifted from the deleted
     // `ViewResizeCoordinator::clampRectToParent`. Three live callers
     // outside the manager hierarchy: `StackWidget::layoutChildren`
@@ -316,6 +325,7 @@ public:
 
     LayoutSize measure(View & node, const Composition::Rect & avail) override;
     void       arrange(View & node, const Composition::Rect & finalRectLocal) override;
+    LayoutSize minSize(View & node) override;
 };
 
 } // namespace OmegaWTK

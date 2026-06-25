@@ -309,6 +309,12 @@ and observably fixes one of the §1 problems.
 
 ### Phase 1 — Intrinsic widgets stop resizing: shape primitives hold their shape [smallest, ships first]
 
+**Status: implemented + visually verified (2026-06-24).** Shapes/buttons
+hold their dp size on both axes; separators span full width; the button
+row stays bottom-pinned via the description's grown slot; no overlap when
+stretched wide/tall. Primary fix + §1.6 slot-vs-widget model + the
+`sanitizeRect` aspect-ratio fix all confirmed against `BasicAppTest`.
+
 **Scope (primary — the §1.5 directive).** Implemented (2026-06-24):
 **layout containers are the only layout-resizable widgets.** The
 hierarchy partitions cleanly along the `Container` base — every shape /
@@ -341,13 +347,38 @@ rather than growing the frame with the window. That is coherent with
 the rule but worth confirming against any caller that expected an Image
 to stretch — out of scope for this test scene, noted for Phase 4.
 
-**Scope (secondary — survives from the old framing).** Populate
-`LayoutStyle.clamp.minWidth` / `minHeight` / `aspectRatio` and have
-`StackLayout::arrange` / `FlexLayout::arrange` consult the clamp on the
-cross axis for the children that *are* still resizable (containers).
-This no longer stops the shapes from deforming (the non-resizable flag
-does that); it is the floor that keeps a genuinely-flexible child from
-collapsing, and it feeds Phase 2's aggregate-min walk.
+**Scope (secondary — implemented 2026-06-24).** A resizable container
+must not collapse below the intrinsic size of its own content. Shipped
+as a recursive content-minimum on the layout managers plus a per-child
+clamp in `FlexLayout::arrange`:
+
+- `LayoutManager::minSize(View&)` — new virtual. Default (leaves,
+  absolute parents) returns the node's own rect; `FlexLayout::minSize`
+  aggregates children (sum on main + spacing, max on cross, + padding /
+  margins), recursing through each child's own manager. So a nested
+  container reports the true space its content needs.
+- `FlexLayout::arrange` queries `child->layoutManager()->minSize(child)`
+  for each **resizable** child and folds it into `item.minMain`
+  (main-axis shrink floor) and `item.minCross` (cross-axis floor);
+  frozen leaves are excluded (they never shrink, and a frozen `flexGrow`
+  spacer must keep its slot free). A resizable child then never resolves
+  below its content min on either axis — it overflows the parent
+  honestly instead of crushing its content.
+
+Verified against `BasicAppTest` (trace): shapeRow `minMain=80,
+minCross=356`; buttonRow `minMain=32, minCross=476` — exactly the
+content sums; frozen children report 0 (excluded); the clamp is a no-op
+at normal sizes (slots exceed mins) so the confirmed layout is
+unchanged. This is the foundation Phase 2's window `setMinSize` reuses.
+
+**Known caveat for Phase 2.** `minSize` reads a leaf's minimum from its
+current rect, which for a *stretch-aligned* leaf (title / separators /
+description in the root VStack) is the stretched extent, not the
+intrinsic one — so `minSize(root)` over-reports the cross minimum. The
+arrange-time clamp is unaffected (the test's resizable rows hold
+center-aligned children whose rect equals their intrinsic size); Phase 2
+must source leaf intrinsics from `Widget::measureSelf` rather than
+`getRect` to compute an exact window minimum.
 
 **Note on the §1.4 coupling.** Making the shapes non-resizable renders
 the §1.4 width→height *coupling* moot for the test scene — a
@@ -414,6 +445,26 @@ the aggregate; it is no longer on the critical path for the visible bug.
      overflows its own slot and its cached size never drifts. Result: the
      description's *slot* grows to push the buttons down while the
      description *widget* stays its intrinsic text height. No test change.
+
+- *Root-cause finding — `sanitizeRect` rejected thin separators
+  (fixed 2026-06-24).* On a wide window the whole layout scrambled
+  (separators ballooned to full height, shape/button rows collapsed to
+  0, everything overlapped). A `WTK_LAYOUT_DEBUG`-gated trace through
+  `FlexLayout::arrange` showed the size was computed correctly
+  (`widgetMain=4`) but `clampRectToParent` returned `h=668` (the full
+  content height). Cause: `suspiciousDimensionPair`
+  (`wtk/src/UI/ViewImpl.h`) had a pure aspect-ratio test
+  (`maxDim >= 1024 && maxDim/minDim > 256 -> suspicious`). A full-width
+  separator (`1468 × 4`, aspect 367) tripped it, so `sanitizeRect`
+  substituted the *parent* rect — inflating the separator to the content
+  height, which `measure` then cached, poisoning `currentMain` and
+  starving the resizable siblings to zero. Fix: drop the aspect-ratio
+  rule; a high aspect ratio alone is a legitimate widget shape (separator
+  / divider / rule), not corruption. Genuine garbage (non-finite, ≤0, or
+  a near-max dimension paired with a ≤2px other axis) is still rejected.
+  This is what made cross-axis `Stretch` *look* broken for frozen leaves
+  in §1.4's wide-drag case — `arrange` was right; the sanitizer was
+  overwriting it.
 
 **What "ships":** the §1.1 distortion in BasicAppTest visibly goes
 away. The shapes refuse to shrink below 80 × 80, and the layout

@@ -34,12 +34,16 @@ inline bool suspiciousDimensionPair(float w,float h){
     if(maxDim >= (kMaxViewDimension * 0.5f) && minDim <= 2.f){
         return true;
     }
-    if(maxDim >= 1024.f && minDim > 0.f){
-        const float aspect = maxDim / minDim;
-        if(aspect > 256.f){
-            return true;
-        }
-    }
+    // NOTE: a pure aspect-ratio test used to live here (maxDim >= 1024 &&
+    // maxDim/minDim > 256 -> suspicious). It produced false positives on
+    // legitimately thin widgets — a full-width Separator / divider / rule
+    // is exactly a high-aspect rect (e.g. 1468 x 4, aspect 367). When
+    // `sanitizeRect` flagged it, it substituted the parent's rect, which
+    // ballooned the separator to the full content height, poisoned the
+    // FlexLayout preferred-size cache, and collapsed sibling containers to
+    // zero. Real corruption (non-finite / <=0 / a near-max dimension paired
+    // with a sub-2px other axis) is still caught above; a high aspect ratio
+    // alone is a valid widget shape, not garbage.
     return false;
 }
 
