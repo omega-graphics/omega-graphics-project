@@ -2732,7 +2732,8 @@ _NAMESPACE_BEGIN_
        //   4. At the ceiling, return nullptr — the caller has 256
        //      simultaneously in-flight buffers, which is almost certainly
        //      a leak somewhere in the user's submit/commit pairing.
-       constexpr std::uint32_t kPoolCeiling = 256;
+       // `kPoolCeiling` is the queue-wide member the timestamp query pool is also
+       // sized against, so both stay in lockstep at 256.
 
        // G.5.1 Vulkan follow-up — fire any frame-completion handlers the GPU
        // has already retired before this frame acquires a buffer, so the
@@ -2809,6 +2810,11 @@ _NAMESPACE_BEGIN_
        }
        auto res = std::make_shared<GEVulkanCommandBuffer>(commandBuffer, this);
        res->poolSlot = chosenSlot;
+       // GPU Commit-Timing P1 — the ctor above already ran vkBeginCommandBuffer,
+       // so the buffer is recording and the slot is known: arm its start
+       // timestamp as the first command (resets + writes this slot's start
+       // query). No-op when timing is disabled.
+       writeStartTimestamp(commandBuffer, chosenSlot);
        currentBufferIndex = (chosenSlot + 1) % static_cast<std::uint32_t>(commandBuffers.size());
        return res;
    };
@@ -2826,13 +2832,81 @@ _NAMESPACE_BEGIN_
        pendingSlots.clear();
    }
 
+   void GEVulkanCommandQueue::writeStartTimestamp(VkCommandBuffer cmd, std::uint32_t slot){
+       // GPU Commit-Timing P1 — start of the buffer's GPU span. Recorded as the
+       // first command on a freshly-begun command buffer (outside any render
+       // pass), so it brackets the whole execution. The pair must be reset before
+       // reuse; vkCmdResetQueryPool here is legal because nothing has been
+       // recorded yet.
+       if (!timestampsEnabled || cmd == VK_NULL_HANDLE
+           || slot == UINT32_MAX || slot >= kPoolCeiling) {
+           return;
+       }
+       vkCmdResetQueryPool(cmd, timestampPool, slot * 2, 2);
+       vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampPool, slot * 2);
+   }
+
+   void GEVulkanCommandQueue::writeEndTimestampAndResolve(VkCommandBuffer cmd, std::uint32_t slot){
+       // GPU Commit-Timing P1 — end of the buffer's GPU span. Recorded just
+       // before vkEndCommandBuffer (after every user pass has finished, so we are
+       // outside any render-pass instance). BOTTOM_OF_PIPE so the timestamp lands
+       // once all prior work in this buffer has completed. Unlike D3D12 there is
+       // no resolve command — pollCompletions reads the result host-side after
+       // the buffer's retentionTimeline value retires.
+       if (!timestampsEnabled || cmd == VK_NULL_HANDLE
+           || slot == UINT32_MAX || slot >= kPoolCeiling) {
+           return;
+       }
+       vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampPool, slot * 2 + 1);
+   }
+
+   bool GEVulkanCommandQueue::resolveSlotTiming(std::uint32_t slot,
+                                                double &startSec, double &endSec) const {
+       if (!timestampsEnabled || timestampPool == VK_NULL_HANDLE || timestampPeriodNs <= 0.0
+           || engine == nullptr || engine->device == VK_NULL_HANDLE
+           || slot == UINT32_MAX || slot >= kPoolCeiling) {
+           return false;
+       }
+       std::uint64_t ticks[2] = {0, 0};
+       // No WAIT bit: the caller only reads a slot whose submission has already
+       // retired on the GPU, so the results are available; treat any non-success
+       // (incl. VK_NOT_READY) as "no usable timing" and leave the fields at 0.0.
+       const VkResult r = vkGetQueryPoolResults(engine->device, timestampPool, slot * 2, 2,
+                                                sizeof(ticks), ticks, sizeof(std::uint64_t),
+                                                VK_QUERY_RESULT_64_BIT);
+       if (r != VK_SUCCESS) {
+           return false;
+       }
+       const std::uint64_t startTicks = ticks[0] & timestampMask;
+       const std::uint64_t endTicks   = ticks[1] & timestampMask;
+       // A slot whose buffer recorded no timestamps, or a pair not written this
+       // cycle, leaves stale / zero ticks. Reject any non-increasing pair so it
+       // can't poison the aggregator's min/max fold.
+       if (endTicks <= startTicks) {
+           return false;
+       }
+       const double secPerTick = timestampPeriodNs * 1e-9;
+       startSec = static_cast<double>(startTicks) * secPerTick;
+       endSec   = static_cast<double>(endTicks) * secPerTick;
+       return true;
+   }
+
    void GEVulkanCommandQueue::stageCompletionHandlerFrom(GEVulkanCommandBuffer *cb){
        // G.5.1 Vulkan follow-up. Move the handler out of the command buffer so
        // the wrapper can be recycled/destroyed without taking the callback with
        // it; the queue now owns firing it. No-op for the common (non-frame) CB
        // that never had a handler registered.
        if (cb != nullptr && cb->completionHandler) {
-           stagedCompletionHandlers_.push_back(std::move(cb->completionHandler));
+           // GPU Commit-Timing P1 — carry the buffer's pool slot so
+           // pollCompletions can read its resolved timestamps when this handler
+           // fires.
+           PendingCompletion pending;
+           pending.handler  = std::move(cb->completionHandler);
+           pending.poolSlot = cb->poolSlot;
+           {
+               std::lock_guard<std::mutex> lock(completionMutex_);
+               stagedCompletionHandlers_.push_back(std::move(pending));
+           }
            cb->completionHandler = nullptr;
        }
    }
@@ -2842,56 +2916,64 @@ _NAMESPACE_BEGIN_
        // for the vkQueueSubmit that ran its command buffer. Once
        // vkGetSemaphoreCounterValue reaches `signalValue` the GPU is done with
        // that submission and pollCompletions can fire the handler.
-       for (auto & handler : stagedCompletionHandlers_) {
-           gatedCompletionHandlers_.emplace_back(signalValue, std::move(handler));
+       std::lock_guard<std::mutex> lock(completionMutex_);
+       for (auto & pending : stagedCompletionHandlers_) {
+           gatedCompletionHandlers_.emplace_back(signalValue, std::move(pending));
        }
        stagedCompletionHandlers_.clear();
    }
 
    void GEVulkanCommandQueue::pollCompletions(){
-       if (gatedCompletionHandlers_.empty()) {
-           return;
-       }
-       std::uint64_t completed = 0;
-       if (engine != nullptr && engine->device != VK_NULL_HANDLE &&
-           retentionTimeline != VK_NULL_HANDLE) {
-           // Failure leaves completed = 0 — no handler fires this pass, the same
-           // defensive read getAvailableBuffer's recycler already relies on.
-           vkGetSemaphoreCounterValue(engine->device, retentionTimeline, &completed);
-       }
-       // Collect the ready handlers and compact the survivors in one stable
-       // pass, then fire outside the loop so a handler can't observe a
-       // half-mutated container (the WTK handler only flips an atomic, but this
-       // keeps the mechanism re-entrancy-safe regardless of what a future
-       // handler does).
-       std::vector<GECommandBufferCompletionHandler> ready;
-       std::size_t writeIdx = 0;
-       for (std::size_t readIdx = 0; readIdx < gatedCompletionHandlers_.size(); ++readIdx) {
-           auto & entry = gatedCompletionHandlers_[readIdx];
-           if (entry.first <= completed) {
-               if (entry.second) {
-                   ready.push_back(std::move(entry.second));
-               }
-           } else {
-               if (writeIdx != readIdx) {
-                   gatedCompletionHandlers_[writeIdx] = std::move(gatedCompletionHandlers_[readIdx]);
-               }
-               ++writeIdx;
+       // Collect the ready handlers and compact the survivors in one stable pass
+       // *under the lock*, then fire outside it. Holding the lock only for the
+       // container mutation keeps the frame path cheap and lets a fired handler
+       // call back into the queue without self-deadlocking on the non-recursive
+       // mutex (the waiter thread and the frame thread can both reach here once an
+       // async commit has armed the waiter).
+       std::vector<PendingCompletion> ready;
+       {
+           std::lock_guard<std::mutex> lock(completionMutex_);
+           if (gatedCompletionHandlers_.empty()) {
+               return;
            }
-       }
-       gatedCompletionHandlers_.resize(writeIdx);
-       if (ready.empty()) {
-           return;
+           std::uint64_t completed = 0;
+           if (engine != nullptr && engine->device != VK_NULL_HANDLE &&
+               retentionTimeline != VK_NULL_HANDLE) {
+               // Failure leaves completed = 0 — no handler fires this pass, the
+               // same defensive read getAvailableBuffer's recycler already
+               // relies on.
+               vkGetSemaphoreCounterValue(engine->device, retentionTimeline, &completed);
+           }
+           std::size_t writeIdx = 0;
+           for (std::size_t readIdx = 0; readIdx < gatedCompletionHandlers_.size(); ++readIdx) {
+               auto & entry = gatedCompletionHandlers_[readIdx];
+               if (entry.first <= completed) {
+                   if (entry.second.handler) {
+                       ready.push_back(std::move(entry.second));
+                   }
+               } else {
+                   if (writeIdx != readIdx) {
+                       gatedCompletionHandlers_[writeIdx] = std::move(gatedCompletionHandlers_[readIdx]);
+                   }
+                   ++writeIdx;
+               }
+           }
+           gatedCompletionHandlers_.resize(writeIdx);
+           if (ready.empty()) {
+               return;
+           }
        }
        // Vulkan has no per-command-buffer success/fail status on this path; a
        // failed GPU execution surfaces as device loss on a later call. Report
-       // Completed and leave the GPU timestamps at their defaults (0.0) — not
-       // wired ("if available" in the plan); the WTK recycler ignores both
-       // fields. Matches the Metal / D3D12 fire-once + clear-after-fire contract.
-       GECommandBufferCompletionInfo info {};
-       info.status = GECommandBufferCompletionInfo::CompletionStatus::Completed;
-       for (auto & handler : ready) {
-           handler(info);
+       // Completed and fold in each buffer's own resolved GPU span.
+       // resolveSlotTiming leaves the fields at 0.0 (the degraded contract) when
+       // timing is disabled, the slot was untracked, or the buffer recorded no
+       // usable timestamp pair. Matches the Metal / D3D12 fire-once contract.
+       for (auto & entry : ready) {
+           GECommandBufferCompletionInfo info {};
+           info.status = GECommandBufferCompletionInfo::CompletionStatus::Completed;
+           resolveSlotTiming(entry.poolSlot, info.gpuStartTimeSec, info.gpuEndTimeSec);
+           entry.handler(info);
        }
    }
 
@@ -2981,7 +3063,12 @@ _NAMESPACE_BEGIN_
             submittedTraceCommandBufferIds.clear();
             return;
         }
-        for(auto cb : commandQueue){
+        for(std::size_t i = 0; i < commandQueue.size(); ++i){
+            auto cb = commandQueue[i];
+            // GPU Commit-Timing P1 — end timestamp before Close; `pendingSlots`
+            // is parallel to `commandQueue`.
+            const std::uint32_t slot = i < pendingSlots.size() ? pendingSlots[i] : UINT32_MAX;
+            writeEndTimestampAndResolve(cb, slot);
             auto endRes = vkEndCommandBuffer(cb);
             if(endRes != VK_SUCCESS){
                 std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
@@ -3030,7 +3117,10 @@ _NAMESPACE_BEGIN_
            // alongside its retained buffers (the GPU never ran the work, so
            // WTK's pooled buffers stay in pendingReleaseBatches_ and return to
            // the pool at context teardown — the no-recycling fallback, no leak).
-           stagedCompletionHandlers_.clear();
+           {
+               std::lock_guard<std::mutex> lock(completionMutex_);
+               stagedCompletionHandlers_.clear();
+           }
            pendingSlots.clear();
            submittedTraceCommandBufferIds.clear();
            return;
@@ -3086,7 +3176,12 @@ _NAMESPACE_BEGIN_
         //       is empty — just sync the present queue so prior submissions
         //       are drained, then present.
         if(!commandQueue.empty()){
-            for(auto cb : commandQueue){
+            for(std::size_t i = 0; i < commandQueue.size(); ++i){
+                auto cb = commandQueue[i];
+                // GPU Commit-Timing P1 — end timestamp before Close;
+                // `pendingSlots` is parallel to `commandQueue`.
+                const std::uint32_t slot = i < pendingSlots.size() ? pendingSlots[i] : UINT32_MAX;
+                writeEndTimestampAndResolve(cb, slot);
                 auto endRes = vkEndCommandBuffer(cb);
                 if(endRes != VK_SUCCESS){
                     std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
@@ -3117,7 +3212,10 @@ _NAMESPACE_BEGIN_
                 pendingRetainedBuffers.clear();
                 // G.5.1 Vulkan follow-up — abandon staged handlers with the
                 // retained buffers (see commitToGPU for the rationale).
-                stagedCompletionHandlers_.clear();
+                {
+                    std::lock_guard<std::mutex> lock(completionMutex_);
+                    stagedCompletionHandlers_.clear();
+                }
                 pendingSlots.clear();
                 submittedTraceCommandBufferIds.clear();
                 return;
@@ -3191,7 +3289,12 @@ _NAMESPACE_BEGIN_
             submittedTraceCommandBufferIds.clear();
             return;
         }
-        for(auto cb : commandQueue){
+        for(std::size_t i = 0; i < commandQueue.size(); ++i){
+            auto cb = commandQueue[i];
+            // GPU Commit-Timing P1 — end timestamp before Close; `pendingSlots`
+            // is parallel to `commandQueue`.
+            const std::uint32_t slot = i < pendingSlots.size() ? pendingSlots[i] : UINT32_MAX;
+            writeEndTimestampAndResolve(cb, slot);
             auto endRes = vkEndCommandBuffer(cb);
             if(endRes != VK_SUCCESS){
                 std::cerr << "Vulkan end command buffer failed (" << endRes << ")" << std::endl;
@@ -3240,7 +3343,10 @@ _NAMESPACE_BEGIN_
            pendingRetainedBuffers.clear();
            // G.5.1 Vulkan follow-up — abandon staged handlers with the
            // retained buffers (see commitToGPU for the rationale).
-           stagedCompletionHandlers_.clear();
+           {
+               std::lock_guard<std::mutex> lock(completionMutex_);
+               stagedCompletionHandlers_.clear();
+           }
            pendingSlots.clear();
            submittedTraceCommandBufferIds.clear();
            return;
@@ -3284,6 +3390,141 @@ _NAMESPACE_BEGIN_
        pollCompletions();
 
 
+   }
+
+   void GEVulkanCommandQueue::stageCommitAggregator(const GECommitCompletionHandler & onComplete){
+       // GPU Commit-Timing P1 — the P2 aggregator (installCommitAggregator) sets
+       // a fold handler on each buffer in the pending batch; we then stage those
+       // buffers so each freshly-set handler is staged with the buffer's pool
+       // slot and gated to the following commit's submit. pollCompletions later
+       // fires each with its resolved per-buffer GPU span, and the aggregator
+       // fires `onComplete` once with the whole-batch span.
+       //
+       // The handlers are staged here, at *commit* time, deliberately separate
+       // from the WTK recycler handler that submitCommandBuffer already staged at
+       // submit time — both gate to the same submit and fire independently, so
+       // this composes with the recycler rather than clobbering it.
+       if(!onComplete){
+           return;
+       }
+       installCommitAggregator(pendingRetainedBuffers, onComplete);
+       for(auto & handle : pendingRetainedBuffers){
+           stageCompletionHandlerFrom(static_cast<GEVulkanCommandBuffer *>(handle.get()));
+       }
+   }
+
+   void GEVulkanCommandQueue::commitToGPU(const GECommitCompletionHandler & onComplete){
+       // GPU Commit-Timing P1 — async commit timing. Install + stage the
+       // aggregator onto the pending batch, commit it, then (structural fix #3)
+       // arm the waiter thread so the gated handler fires once the GPU retires
+       // this commit — there is no frame loop to re-pump the poller for a
+       // standalone async commit. installCommitAggregator handles the empty-batch
+       // case by firing `onComplete` synchronously; armCompletionWaiter then
+       // no-ops because nothing is gated.
+       stageCommitAggregator(onComplete);
+       commitToGPU();
+       if(onComplete){
+           armCompletionWaiter();
+       }
+   }
+
+   GECommitCompletionInfo GEVulkanCommandQueue::commitToGPUAndWaitTimed(){
+       // GPU Commit-Timing P1 — sync counterpart. Unlike D3D12 this does NOT
+       // route through commitToGPU(): Vulkan's commitToGPUAndWait early-returns
+       // on an empty commandQueue, so committing first would leave it a no-op
+       // that never drains or polls. Instead install + stage the aggregator and
+       // drive commitToGPUAndWait directly — it submits the batch, blocks on
+       // submitFence (GPU idle), gates the staged handlers, and its terminal
+       // pollCompletions fires the aggregator on this thread before returning.
+       // No waiter thread for the synchronous one-shot path.
+       GECommitCompletionInfo result {};
+       stageCommitAggregator([&result](const GECommitCompletionInfo & info) { result = info; });
+       commitToGPUAndWait();
+       return result;
+   }
+
+   void GEVulkanCommandQueue::ensureCompletionWaiter(){
+       std::lock_guard<std::mutex> lock(completionMutex_);
+       if(waiterStarted_){
+           return;
+       }
+       waiterStarted_ = true;
+       completionWaiter_ = std::thread(&GEVulkanCommandQueue::completionWaiterLoop, this);
+   }
+
+   void GEVulkanCommandQueue::armCompletionWaiter(){
+       {
+           // Nothing gated means the handler already fired synchronously — an
+           // empty batch (installCommitAggregator's count==0 fast path) or a GPU
+           // that finished before commitToGPU()'s own pollCompletions ran. Don't
+           // start a thread we'd never need.
+           std::lock_guard<std::mutex> lock(completionMutex_);
+           if(gatedCompletionHandlers_.empty()){
+               return;
+           }
+       }
+       ensureCompletionWaiter();
+       {
+           std::lock_guard<std::mutex> lock(completionMutex_);
+           if(nextSubmitValue > waiterTargetValue_){
+               waiterTargetValue_ = nextSubmitValue;
+           }
+           waiterArmed_ = true;
+       }
+       waiterCv_.notify_one();
+   }
+
+   void GEVulkanCommandQueue::completionWaiterLoop(){
+       for(;;){
+           std::uint64_t target;
+           {
+               std::unique_lock<std::mutex> lock(completionMutex_);
+               waiterCv_.wait(lock, [this]{ return waiterStop_ || waiterArmed_; });
+               if(waiterStop_){
+                   break;
+               }
+               waiterArmed_ = false;
+               target = waiterTargetValue_;
+           }
+           // Host-wait (lock released) for the GPU to retire `target`. The
+           // timeline counter is monotonic and can't be signalled backward, so we
+           // can't unblock an infinite wait on teardown — instead wait on a
+           // bounded (50 ms) timeout and re-check the stop flag between waits.
+           // vkWaitSemaphores / vkGetSemaphoreCounterValue are free-threaded
+           // w.r.t. the frame thread's vkQueueSubmit signaling.
+           if(engine != nullptr && engine->device != VK_NULL_HANDLE
+              && retentionTimeline != VK_NULL_HANDLE){
+               for(;;){
+                   std::uint64_t cur = 0;
+                   vkGetSemaphoreCounterValue(engine->device, retentionTimeline, &cur);
+                   if(cur >= target){
+                       break;
+                   }
+                   {
+                       std::lock_guard<std::mutex> lock(completionMutex_);
+                       if(waiterStop_){
+                           break;
+                       }
+                   }
+                   VkSemaphoreWaitInfo waitInfo {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+                   waitInfo.pNext = nullptr;
+                   waitInfo.flags = 0;
+                   waitInfo.semaphoreCount = 1;
+                   waitInfo.pSemaphores = &retentionTimeline;
+                   waitInfo.pValues = &target;
+                   vkWaitSemaphores(engine->device, &waitInfo, 50ull * 1000ull * 1000ull);
+               }
+           }
+           {
+               std::lock_guard<std::mutex> lock(completionMutex_);
+               if(waiterStop_){
+                   break;
+               }
+           }
+           // pollCompletions takes completionMutex_ itself, so it must be called
+           // without holding it here.
+           pollCompletions();
+       }
    }
 
    GEVulkanCommandQueue::GEVulkanCommandQueue(GEVulkanEngine *engine, const GECommandQueueDesc & desc):
@@ -3399,6 +3640,39 @@ _NAMESPACE_BEGIN_
        commandBufferSubmissionIndex.resize(desc.maxBufferCount, 0);
        initialBufferHint = desc.maxBufferCount;
 
+       // GPU Commit-Timing P1 — per-buffer GPU timestamp infrastructure. Timing
+       // is available iff the bound queue family reports a non-zero
+       // `timestampValidBits` and the device a positive period; on Vulkan that
+       // covers graphics / compute / transfer families alike (no COPY carve-out
+       // like D3D12). Sized to `kPoolCeiling` (2 queries per slot) once so the
+       // pool never needs recreating as the command-buffer pool grows. Disable
+       // silently — keeping the documented zero-timing fallback — on any failure.
+       {
+           VkPhysicalDeviceProperties props {};
+           vkGetPhysicalDeviceProperties(engine->physicalDevice, &props);
+           const std::uint32_t validBits =
+               boundFamilyIndex < engine->queueFamilyProps.size()
+                   ? engine->queueFamilyProps[boundFamilyIndex].timestampValidBits
+                   : 0u;
+           if(validBits > 0 && props.limits.timestampPeriod > 0.0f){
+               VkQueryPoolCreateInfo qpInfo {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+               qpInfo.pNext = nullptr;
+               qpInfo.flags = 0;
+               qpInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+               qpInfo.queryCount = kPoolCeiling * 2;
+               qpInfo.pipelineStatistics = 0;
+               VkQueryPool pool = VK_NULL_HANDLE;
+               if(vkCreateQueryPool(engine->device, &qpInfo, nullptr, &pool) == VK_SUCCESS){
+                   timestampPool     = pool;
+                   timestampPeriodNs = static_cast<double>(props.limits.timestampPeriod);
+                   timestampMask     = (validBits >= 64)
+                                           ? ~std::uint64_t(0)
+                                           : ((std::uint64_t(1) << validBits) - 1);
+                   timestampsEnabled = true;
+               }
+           }
+       }
+
        // Apply desc.label via VK_EXT_debug_utils when supplied. The
        // setName() override below uses the same call shape for user-driven
        // post-construction renames — kept in lockstep so the debug-name
@@ -3426,13 +3700,38 @@ _NAMESPACE_BEGIN_
    void GEVulkanCommandQueue::releaseNative(){
        if(nativeReleased_) return;
        nativeReleased_ = true;
+       // GPU Commit-Timing P1 structural fix #3 — stop the async-completion
+       // waiter before tearing down the timeline / query pool / containers it
+       // reads. The CV wake + stop flag unblock a waiter idling between arms; the
+       // bounded vkWaitSemaphores timeout bounds an in-flight wait; join
+       // guarantees no pollCompletions runs after this.
+       if(waiterStarted_){
+           {
+               std::lock_guard<std::mutex> lock(completionMutex_);
+               waiterStop_ = true;
+           }
+           waiterCv_.notify_all();
+           if(completionWaiter_.joinable()){
+               completionWaiter_.join();
+           }
+       }
        // G.5.1 Vulkan follow-up — drop any staged / gated completion handlers
        // without firing them: firing pre-GPU-completion would race, and WTK
        // doesn't depend on teardown firing (its BackendRenderTargetContext
        // destructor returns every pending PendingReleaseBatch straight to the
        // longer-lived BufferPool). Matches the D3D12 queue's teardown contract.
-       stagedCompletionHandlers_.clear();
-       gatedCompletionHandlers_.clear();
+       {
+           std::lock_guard<std::mutex> lock(completionMutex_);
+           stagedCompletionHandlers_.clear();
+           gatedCompletionHandlers_.clear();
+       }
+       // GPU Commit-Timing P1 — the waiter is joined and no frame work remains,
+       // so nothing references the timestamp query pool any more.
+       if(timestampPool != VK_NULL_HANDLE && engine != nullptr){
+           vkDestroyQueryPool(engine->device, timestampPool, nullptr);
+           timestampPool = VK_NULL_HANDLE;
+           timestampsEnabled = false;
+       }
        // Pending retention entries are owned by engine->retentionQueue; the
        // engine's drainAll() at shutdown is responsible for releasing them.
        // Don't destroy retentionTimeline until those entries (which capture

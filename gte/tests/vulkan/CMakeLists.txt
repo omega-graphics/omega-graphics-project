@@ -104,6 +104,20 @@ add_vulkan_test(
     "../command_queue_desc_test.cpp")
 add_test(NAME omegagte_command_queue_desc COMMAND CommandQueueDescTest)
 
+# GPU-Commit-Timing plan (P1 — Vulkan) — whole-commit GPU-timing integration
+# test (shared, backend-independent source under gte/tests/). Exercises the
+# commitToGPUAndWaitTimed() (sync) and commitToGPU(handler) (async) API against a
+# compute commit and checks the reported GECommitCompletionInfo (status, buffer
+# count, GPU duration) on real hardware. With the Vulkan per-buffer timestamp
+# writes in place it reports real GPU times on a device that advertises
+# GTEDEVICE_FEATURE_TIMESTAMP_QUERIES.
+add_vulkan_test(
+    NAME
+    "CommitTimingTest"
+    SOURCES
+    "../commit_timing_test.cpp")
+add_test(NAME omegagte_commit_timing COMMAND CommitTimingTest)
+
 # OmegaSL linker Phase 0 — `.omegasllib` on-disk container prefix round-trip.
 # omegaslc compiles a fixture shader into a real `.omegasllib` (with the
 # magic / version / backend-id prefix) at build time; the test loads it back

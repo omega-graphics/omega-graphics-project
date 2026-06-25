@@ -101,6 +101,12 @@ bool checkOutputDoubled(SharedHandle<GEBuffer> & outputBuffer) {
             ok = false;
         }
     }
+    // End-of-read teardown: release the reader's buffer mapping (matches the
+    // ComputeTest convention). Required on Vulkan, where the reader holds a VMA
+    // mapping that would otherwise still be live when the engine destroys the
+    // buffer at Close() — vmaDestroyBuffer asserts on a mapped allocation.
+    // No-op-safe on Metal / D3D12.
+    reader->reset();
     return ok;
 }
 

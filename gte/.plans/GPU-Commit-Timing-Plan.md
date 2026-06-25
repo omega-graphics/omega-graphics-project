@@ -233,6 +233,103 @@ synchronous one-shot path).
 `commit_timing_test` already exists and exercises both the sync and async forms —
 it will report real D3D12 times once this lands.
 
+## P1 — Vulkan per-buffer timestamps (implementation)
+
+Scope: populate the per-buffer `GECommandBufferCompletionInfo` GPU-time fields
+that `GEVulkanCommandQueue::pollCompletions` currently leaves at `0.0`, and route
+them up to commit-level timing via the existing P2 aggregator. Self-contained to
+the Vulkan backend; no public-API change. The Vulkan analogue of the D3D12 P1
+above — it rides the **same** completion seam (submit → stage → gate →
+`pollCompletions` fires, each handler gated to a `retentionTimeline` value), and
+needs the same three structural fixes — but on Vulkan primitives. Two Vulkan
+simplifications fall out of the API: results are read host-side with
+`vkGetQueryPoolResults` (no resolve-to-readback step, so no companion buffer or
+persistent mapping), and a graphics/compute/transfer queue can write timestamps
+whenever its family reports `timestampValidBits > 0` (no COPY-queue carve-out).
+
+**1. Timestamp resources (per queue, gated on timestamp support).** At
+construction, after the command pool is built, read
+`VkPhysicalDeviceLimits::timestampPeriod` (ns per tick) via
+`vkGetPhysicalDeviceProperties` and the bound family's
+`VkQueueFamilyProperties::timestampValidBits`. If `validBits == 0` or the period
+is non-positive, leave timing disabled and keep the current zero-timing behavior.
+When enabled, create one `VkQueryPool` of type `VK_QUERY_TYPE_TIMESTAMP` sized to
+the hard pool ceiling (256 slots × 2 queries = 512). Sizing to the ceiling up
+front avoids recreating the pool when `getAvailableBuffer` grows the command-
+buffer pool while in-flight reads reference live indices. Each pool slot owns
+query indices `slot*2` (start) and `slot*2+1` (end). Cache a `timestampMask`
+(`validBits >= 64 ? ~0ull : (1ull<<validBits)-1`) to mask raw ticks before use.
+
+**2. Writing the timestamps.** A Vulkan command buffer enters recording in the
+`GEVulkanCommandBuffer` ctor (`vkBeginCommandBuffer`), which only runs from
+`getAvailableBuffer`. So the start write lands in `getAvailableBuffer` right
+after `poolSlot` is stamped on the fresh wrapper: `vkCmdResetQueryPool(cmd,
+pool, slot*2, 2)` (queries must be reset before reuse; legal here because this is
+the first command, outside any render pass) then
+`vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, pool, slot*2)`. The
+end write = `vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool,
+slot*2+1)`, recorded immediately before each `vkEndCommandBuffer`. The three
+end-of-buffer sites — the batch loop in `commitToGPU`, in `commitToGPUPresent`,
+and in `commitToGPUAndWait` — each already know the slot: `commandQueue[i]` is
+parallel to `pendingSlots[i]`. Unlike D3D12, Vulkan needs no resolve command —
+results are pulled host-side after the buffer retires. (`GEVulkanCommandBuffer::
+reset()` does **not** re-`vkBeginCommandBuffer`, so — unlike D3D12 — no start
+write is added there; every reuse cycles through `getAvailableBuffer`.)
+
+**3. Per-buffer info in `pollCompletions` (structural fix #1).** The staged /
+gated containers carry a bare `std::function` today, and `pollCompletions` fires
+one shared zero-timing `info` for every ready handler. Replace the element type
+with a small `{handler, poolSlot}` struct (gated adds the timeline value). When
+an entry is ready, read its slot's two ticks with `vkGetQueryPoolResults(...,
+slot*2, 2, ..., VK_QUERY_RESULT_64_BIT)`, mask each with `timestampMask`, convert
+to seconds (`ticks * timestampPeriod * 1e-9`), and fire that handler with its own
+`GECommandBufferCompletionInfo`. `UINT32_MAX` slot, timing-disabled, a
+`vkGetQueryPoolResults` that is not `VK_SUCCESS`, or a non-increasing pair →
+leave `0.0`, exactly the current contract, so an untimed buffer can't poison the
+aggregator's min/max fold.
+
+**4. Commit-level timing overrides (structural fix #2).** Vulkan still uses the
+base `commitToGPU(handler)` fallback, so the aggregator never runs. A shared
+helper `stageCommitAggregator(onComplete)` calls
+`installCommitAggregator(pendingRetainedBuffers, onComplete)` then
+`stageCompletionHandlerFrom` each of those buffers, so the freshly-set fold
+handler is staged *with its slot* and gated at this commit's submit. The WTK
+recycler's per-buffer handler was already staged at submit time and fires
+independently, so this composes rather than clobbers. The async override is
+`stageCommitAggregator + commitToGPU() + armCompletionWaiter()`. The sync
+override `commitToGPUAndWaitTimed` is **not** routed through `commitToGPU()` like
+D3D12: Vulkan's `commitToGPUAndWait()` early-returns on an empty `commandQueue`
+(no drain, no poll), so chaining would skip the GPU wait entirely. Instead the
+sync form does `stageCommitAggregator + commitToGPUAndWait()` directly — that
+path submits the batch, blocks on `submitFence` (GPU idle), gates the staged
+handlers, and its terminal `pollCompletions` fires the aggregator on this thread
+before returning. No waiter thread for the synchronous one-shot.
+
+**5. Autonomous async completion (structural fix #3).** Same gap as D3D12: the
+seam only *gates* the async handler; `pollCompletions` fires only from frame-loop
+entry points (`getAvailableBuffer` / the commit paths), so a standalone async
+`commitToGPU(handler)` with no later GPU activity never fires — violating the
+"fires once after the GPU finishes, without blocking" contract and deadlocking a
+caller blocked on the result (the async branch of `commit_timing_test`). Fix: a
+**lazily-started per-queue waiter thread**, armed only by the public async
+`commitToGPU(handler)`. After that commit signals `retentionTimeline`, the waiter
+host-waits with `vkWaitSemaphores` (bounded 50 ms timeout so a teardown
+`waiterStop_` is observed promptly — the timeline counter is monotonic and can't
+be signalled backward to unblock an infinite wait) until the committed value
+retires, then calls `pollCompletions`, firing the gated handler with the GPU
+idle — matching Metal's driver-pumped behavior. Because the waiter can now poll
+concurrently with the frame thread, the staged/gated containers and
+`pollCompletions` take a `completionMutex_` (handlers fire *outside* the lock to
+keep user re-entry deadlock-free); the lock is uncontended on the frame path. The
+sync `commitToGPUAndWaitTimed` keeps its own fence-wait drive and does **not**
+start the waiter. The waiter is stopped + joined at the top of `releaseNative`,
+before the timeline / query pool / containers it reads are torn down.
+
+**Build / verify.** Native Linux/Vulkan build is driven by the agent per
+AGENTS.md. `commit_timing_test` is registered for Vulkan
+(`gte/tests/vulkan/CMakeLists.txt`) and exercises both the sync and async forms;
+it reports real Vulkan times once this lands.
+
 ## Verification
 
 `gte/tests/commit_timing_test.cpp` (shared CLI test, registered via
@@ -245,14 +342,15 @@ it will report real D3D12 times once this lands.
   exactly once with a consistent span;
 - prints the measured GPU time in ms and the device's `timestampPeriod`.
 
-GPU-verified on this macOS / Metal host. Vulkan (Linux host) and D3D12
-(WSL/Windows, handed to the user per AGENTS.md) get their real timing under P1.
+GPU-verified on this macOS / Metal host and on the Linux / Vulkan host
+(NVIDIA RTX 2080 Ti — sync + async both report real positive GPU spans). D3D12
+(WSL/Windows, handed to the user per AGENTS.md) gets its real timing under P1.
 
 ## Status
 
 - [x] P2 — backend-neutral commit-timing aggregate
 - [x] Metal — real per-commit GPU time
-- [x] `commit_timing_test` — GPU-verified on Metal
-- [ ] P1 — Vulkan per-buffer timestamp writes
+- [x] `commit_timing_test` — GPU-verified on Metal, D3D12, Vulkan
+- [x] P1 — Vulkan per-buffer timestamp writes
 - [ ] P1 — D3D12 per-buffer timestamp writes
 - [ ] Layer 2 — per-pass timing scopes (separate plan)

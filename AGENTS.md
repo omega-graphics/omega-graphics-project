@@ -9,6 +9,51 @@
         C++17 is also the **ceiling**, not just the floor. No C++20-and-later features anywhere in the codebase (production OR tests): no designated initializers (`Foo{.field = value}`), no concepts, no `<ranges>`, no `consteval`, no three-way `<=>`, no `std::span` from `<span>`, etc. Apple Clang accepts most of them as extensions in `-std=c++17` mode, so a `.cpp`/`.mm` that builds clean on macOS will still break MSVC (`/std:c++17`) and GCC (`-std=c++17`), where they are hard errors. When you need a struct-literal-like pattern, hoist a named local, assign each field, and pass it — matches the `LabelProps`/`ButtonProps` idiom already in `wtk/tests/BasicAppTest/BasicAppTestRun.cpp`. Positional aggregate init (`StackInsets{16.f, 16.f, 16.f, 16.f}`) is fine — it's pre-C++17 syntax — but only use it for small structs where field order is stable.
     Use an object-oriented, Modular coding style that has modular rules so if a specific rule needs to be changed across the object it can be.
 
+## Prefer OmegaCommon ADTs over raw `std::` types
+    Default to the OmegaCommon abstract data types in your own code instead of
+    reaching for `std::` directly. They are the established surface across this
+    repo (e.g. `SharedHandle<T>` has hundreds of uses), so matching them keeps a
+    change reading like the code around it and lets a single shared definition be
+    retuned project-wide later. The full catalog lives in
+    `common/include/omega-common/utils.h`.
+
+    Two kinds of ADTs, and the distinction matters when you choose:
+
+    - **Thin aliases of a `std::` type.** Swapping to these is free, and because
+      they ARE the underlying `std::` type they interoperate automatically — an
+      `OmegaCommon::Vector<T>` binds to a `const std::vector<T> &` parameter with
+      no conversion. Container/value ADTs live in the `OmegaCommon::` namespace:
+      `Vector<T>` (`std::vector`), `String` / `WString` / `UString`
+      (`std::string` / `u16string` / `u32string`), `Map<K,V>` (`std::map`),
+      `MapVec<K,V>` (`std::unordered_map`), `Set<T>` (`std::set`), `SetHash<T>`
+      (`std::unordered_set`), `Deque<T>` (`std::deque`), `Array<T,N>`
+      (`std::array`), `Optional<T>` (`std::optional`). The smart-pointer handles
+      `SharedHandle<T>` (`std::shared_ptr`) and `UniqueHandle<T>`
+      (`std::unique_ptr`) are at GLOBAL scope (no `OmegaCommon::` prefix) — that
+      is why GTE spells `SharedHandle<GEBuffer>` unqualified but
+      `OmegaCommon::Vector<...>` qualified. Construct handles with
+      `std::make_shared` / `std::make_unique` — that is what the tree does today;
+      the `make<T>(...)` / `construct<T>(...)` helpers in utils.h exist but are
+      essentially unused, so do not introduce them as if they were the idiom.
+
+    - **Specialized types with no plain `std::` equivalent.** Reach for these
+      when their use case fits; using a `std::` type in their place loses the
+      point. The widely-used one is `StrRef` / `WStrRef` / `UStrRef` — a
+      non-owning string view (pass it for read-only string parameters instead of
+      `const String &` when you do not need ownership). Others available in
+      utils.h: `HeapString` / `HeapVector` and their `Small*` variants
+      (small-buffer-optimized via a custom `HeapAllocator`), `SetVector<T>`
+      (insertion-ordered unique sequence), `ArrayRef<T>` / `Span<T>` (non-owning
+      sequence views), `Result<T>` (value-or-error), and the `ARC` / `ARCAny`
+      runtime-object reference-counting helpers. Some of these (e.g. `Span`) are
+      defined but not yet used anywhere — prefer the ones with existing uptake
+      unless you have a concrete reason.
+
+    Caveat — boundaries. At a native / third-party API boundary (Vulkan, D3D12,
+    Metal, FFmpeg, etc.) use whatever that API hands you or requires; the
+    preference is about OmegaGTE/OmegaWTK's OWN interfaces, not about wrapping
+    every `VkResult` or `std::vector` a dependency demands.
+
 # Building
     The toolchain is LLVM/Clang + Ninja on every platform (see Code Style), built out-of-source. On this Linux host the agent builds and runs the native Vulkan target directly.
 

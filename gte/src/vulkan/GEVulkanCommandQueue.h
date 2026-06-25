@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
 
 #ifndef OMEGAGTE_VULKAN_GEVULKANCOMMANDQUEUE_H
 #define OMEGAGTE_VULKAN_GEVULKANCOMMANDQUEUE_H
@@ -355,15 +358,28 @@ _NAMESPACE_BEGIN_
         // `commandQueue` but not yet flushed to vkQueueSubmit) and *gated* to a
         // concrete `retentionTimeline` value once the vkQueueSubmit that runs
         // it is issued. `pollCompletions` fires + drops every gated handler
-        // whose value the GPU has reached. All three containers are touched
-        // only on the queue's owning (compositor) thread — the same thread
-        // that submits, commits, and calls getAvailableBuffer — so no locking
-        // is needed; this is the per-frame poll variant, not the dedicated
-        // wait-thread alternative the plan also sketched. The staged list
-        // shares its lifetime with `pendingRetainedBuffers`: both are populated
-        // by submitCommandBuffer and consumed (gated/flushed) by a commit.
-        std::vector<GECommandBufferCompletionHandler>                            stagedCompletionHandlers_;
-        std::vector<std::pair<std::uint64_t, GECommandBufferCompletionHandler>>  gatedCompletionHandlers_;
+        // whose value the GPU has reached. These are normally touched only on
+        // the queue's owning (compositor) thread — the one that submits,
+        // commits, and calls getAvailableBuffer. GPU Commit-Timing P1 structural
+        // fix #3 added the waiter-thread path (armed only by the standalone
+        // async commitToGPU(handler)), so once a waiter exists it can call
+        // pollCompletions concurrently with the frame thread. `completionMutex_`
+        // therefore guards every access to the staged / gated containers; it is
+        // uncontended on the frame path. Handlers fire *outside* the lock so a
+        // re-entrant handler can't self-deadlock. The staged list shares its
+        // lifetime with `pendingRetainedBuffers`: both are populated by
+        // submitCommandBuffer and consumed (gated/flushed) by a commit.
+        // GPU Commit-Timing P1 — each staged / gated completion carries the
+        // pool slot whose GPU timestamps belong to it, so `pollCompletions` can
+        // report this buffer's real start/end span instead of a shared zero.
+        // UINT32_MAX slot = untimed (defensive ad-hoc buffer, or the
+        // device/queue can't write timestamps).
+        struct PendingCompletion {
+            GECommandBufferCompletionHandler handler;
+            std::uint32_t                    poolSlot = UINT32_MAX;
+        };
+        std::vector<PendingCompletion>                            stagedCompletionHandlers_;
+        std::vector<std::pair<std::uint64_t, PendingCompletion>>  gatedCompletionHandlers_;
         // Move `cb`'s registered completion handler (if any) into the staged
         // list and clear it off the buffer. No-op when `cb` has no handler.
         void stageCompletionHandlerFrom(GEVulkanCommandBuffer *cb);
@@ -373,8 +389,74 @@ _NAMESPACE_BEGIN_
         void gateStagedCompletions(std::uint64_t signalValue);
         // Fire + drop every gated handler whose retentionTimeline value the GPU
         // has reached. Cheap (one vkGetSemaphoreCounterValue); safe to call at
-        // any drain point.
+        // any drain point. Takes `completionMutex_` for the container mutation,
+        // then fires the ready handlers after releasing it.
         void pollCompletions();
+
+        // GPU Commit-Timing P1 — hard ceiling on the growable command-buffer
+        // pool (`getAvailableBuffer`). The timestamp query pool below is sized
+        // to it once (2 queries per slot) so it never needs recreating while
+        // in-flight reads reference live slot indices.
+        static constexpr std::uint32_t kPoolCeiling = 256;
+
+        // GPU Commit-Timing P1 — per-buffer GPU timestamps. One TIMESTAMP query
+        // pool sized to `kPoolCeiling` (2 queries per slot: slot*2 = start,
+        // slot*2+1 = end). `timestampsEnabled` is false when the bound queue
+        // family can't write timestamps (`timestampValidBits == 0`) or the
+        // device reports a non-positive period — every per-buffer time then
+        // stays 0.0, the documented degraded contract. `timestampPeriodNs` is
+        // GPU ns/tick; `timestampMask` masks raw ticks to the family's valid bit
+        // count (Vulkan reads results host-side, so there is no readback buffer).
+        VkQueryPool   timestampPool      = VK_NULL_HANDLE;
+        double        timestampPeriodNs  = 0.0;
+        std::uint64_t timestampMask      = 0;
+        bool          timestampsEnabled  = false;
+
+        // Reset this slot's two queries and write its start timestamp as the
+        // first command on a freshly-begun command buffer. No-op when timing is
+        // disabled / slot untracked.
+        void writeStartTimestamp(VkCommandBuffer cmd, std::uint32_t slot);
+        // Write this slot's end timestamp. Call immediately before the matching
+        // vkEndCommandBuffer. No-op when timing is disabled / slot untracked.
+        // (Named *AndResolve for symmetry with the D3D12 sibling; Vulkan needs
+        // no resolve command — results are pulled host-side after retirement.)
+        void writeEndTimestampAndResolve(VkCommandBuffer cmd, std::uint32_t slot);
+        // Read a retired slot's [start,end] ticks and convert to GPU seconds.
+        // Returns false (outputs untouched) when timing is disabled, the slot is
+        // untracked, vkGetQueryPoolResults is not VK_SUCCESS, or the pair is
+        // stale / non-increasing — so a buffer that recorded no usable timestamp
+        // pair can't poison the aggregator's min/max fold.
+        bool resolveSlotTiming(std::uint32_t slot, double &startSec, double &endSec) const;
+
+        // GPU Commit-Timing P1 structural fix #3 — autonomous async completion.
+        // The poll seam only fires from frame-loop entry points, so a standalone
+        // async commitToGPU(handler) (no later GPU activity to re-pump the
+        // poller) would never fire its handler — violating the "fires after the
+        // GPU finishes, without blocking" contract and deadlocking a caller
+        // waiting on the result. A lazily-started waiter thread host-waits on
+        // `retentionTimeline` and drives pollCompletions when the GPU retires a
+        // gated submission. Started only on the first standalone async commit;
+        // the WTK frame loop and the synchronous commitToGPUAndWaitTimed never
+        // spin it up.
+        std::mutex              completionMutex_;
+        std::thread             completionWaiter_;
+        std::condition_variable waiterCv_;
+        std::uint64_t           waiterTargetValue_ = 0;     // highest gated timeline value to wait for
+        bool                    waiterArmed_       = false; // a new target awaits the waiter
+        bool                    waiterStop_        = false; // teardown requested
+        bool                    waiterStarted_     = false; // thread created
+        // Start the waiter thread once (idempotent). Takes `completionMutex_`.
+        void ensureCompletionWaiter();
+        // Wake the waiter to watch this commit's `retentionTimeline` value.
+        // No-op when nothing is gated. Called only by the public async
+        // commitToGPU(handler).
+        void armCompletionWaiter();
+        // Waiter thread body: wait for the armed timeline value (or stop), poll.
+        void completionWaiterLoop();
+        // Install the P2 aggregator onto the pending batch and stage each
+        // buffer's fold handler (with its slot) so a following commit gates them.
+        // Shared by both timed-commit overrides.
+        void stageCommitAggregator(const GECommitCompletionHandler & onComplete);
 
         Retention::FenceGate gateForNextSubmit();
         // Build a VkTimelineSemaphoreSubmitInfo signaling ++nextSubmitValue,
@@ -398,6 +480,15 @@ _NAMESPACE_BEGIN_
         void commitToGPU() override;
         void commitToGPUPresent(VkPresentInfoKHR * info);
         void commitToGPUAndWait() override;
+        /// GPU Commit-Timing P1 — async commit timing. Installs the P2 commit
+        /// aggregator onto the pending batch's now-timed per-buffer seam, then
+        /// commits; `onComplete` fires once from `pollCompletions` (driven by the
+        /// lazily-armed waiter thread) with the batch's real GPU span.
+        void commitToGPU(const GECommitCompletionHandler & onComplete) override;
+        /// GPU Commit-Timing P1 — sync counterpart. Drives commitToGPUAndWait
+        /// directly (NOT through commitToGPU, which would leave Vulkan's
+        /// commitToGPUAndWait an empty-batch no-op that never drains/polls).
+        GECommitCompletionInfo commitToGPUAndWaitTimed() override;
         VkCommandBuffer &getLastCommandBufferInQueue();
         SharedHandle<GECommandBuffer> getAvailableBuffer() override;
 
