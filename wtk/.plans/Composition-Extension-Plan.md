@@ -1,6 +1,6 @@
 # Composition Extension Plan
 
-Consolidated plan for extending the Canvas, Brush, Color, and Gradient APIs in `omegaWTK/Composition`. Supersedes the separate Brush and Canvas extension proposals.
+Consolidated plan for extending the Brush, Color, and Gradient APIs in `omegaWTK/Composition`, plus the brush/pipeline and text-layout work that rides the FrameBuilder / `DrawOp` compositor model. Supersedes the earlier separate extension proposals.
 
 **Compositor backend assumed by this plan:** the
 Direct-To-Drawable / SDF backend
@@ -28,63 +28,33 @@ analytically. Both routes are noted where relevant.
 
 ---
 
-## Compositor op model: the `Canvas` → `DrawOp` / `DisplayList` shift
+## Compositor op model: FrameBuilder + `DisplayList<DrawOp>`
 
-This plan was written against the **`Canvas` / `VisualCommand` /
-`CanvasFrame`** recording model. That model is being retired by
-[UIView-Render-Redesign-Plan.md](UIView-Render-Redesign-Plan.md):
+The compositor records one `DisplayList<DrawOp>` per window per frame:
+every view appends to it via the `FrameBuilder` (there is no per-view
+paint device). `DrawOp` is the single compositor op type — one record
+per primitive, fill + border consolidated, soft shadow as its own SDF
+op — and the backend `BackendRenderTargetContext::renderToTarget`
+switch dispatches on `DrawOp`. Draw state (transform / opacity / clip)
+rides the `DisplayList` itself via `SetTransform` / `SetOpacity` and
+`PushClip` / `PopClip` / `PushTransform` / `PopTransform` ops, so
+imperative line / polyline / arc / path draws are just `DrawOp::VectorPath`
+payload shapes and per-draw opacity / blend is a field on the relevant
+op or a `PushOpacity` / `PushEffect` scope.
 
-- Tier 3 (Phases 3.8 / 3.9, both **DONE** as of 2026-05-21) collapsed
-  the *N* per-view `Canvas` instances into a single window-scoped one
-  and deleted `CanvasView`. There is no longer a per-view paint
-  device; every view appends to one per-window `DisplayList<DrawOp>`
-  via the `FrameBuilder`.
-- Tier 4 deletes `Canvas`, `VisualCommand`, `CanvasFrame`, and
-  `CanvasEffect` outright. `DrawOp` *is* the new compositor op type
-  (one record per primitive, fill + border consolidated, soft shadow
-  as its own SDF op), and `DisplayList` (one per window per frame)
-  replaces `CanvasFrame`. The backend `BackendRenderTargetContext::renderToTarget`
-  switch is rewritten to dispatch on `DrawOp` instead of
-  `VisualCommand`.
+**Why the brush / pipeline work below is op-type-agnostic.** Backend
+rasterization reads *payload structs* (brush, rect, border, gradient
+params, texture handle), not the op wrapper. The SDF pipeline, the
+tessellation + texture pipeline, the gradient compute pass, the bitmap
+blit, and the MSDF text path all consume those payloads — so the
+gradient, bitmap-brush, glass, and text work in this plan lives in the
+brush model, the shader source, and `RenderTarget.cpp`'s rasterization,
+independent of the op type. Author against the payload.
 
-**What this means for the work below.** The two are decoupled along a
-clean seam:
-
-- **Backend rasterization is op-type-agnostic.** The SDF pipeline, the
-  tessellation + texture pipeline, the gradient compute pass, the
-  bitmap blit, and the MSDF text path all read *payload structs*
-  (brush, rect, border, gradient params, texture handle). `DrawOp`
-  mirrors `VisualCommand` field-for-field (Render-Redesign §2 Tier 2
-  cross-cutting decision), so the gradient and bitmap-brush work in
-  this plan — which lives in the brush model, the shader source, and
-  `RenderTarget.cpp`'s rasterization — is **unchanged** by the op-type
-  swap. Author it against the payload, not against `Canvas`.
-- **Imperative `Canvas` method phases are superseded.** Phase 3
-  (`drawLine` / `drawPolyline` / `drawArc` / unified `drawPath` /
-  `DrawOptions`) and Phase 5 (Canvas save/restore/transform/clip
-  state stack) added *imperative methods to the `Canvas` class*. With
-  `Canvas` deleted, those capabilities are expressed as **`DrawOp`
-  variants and `PaintContext` state** instead:
-    - The state stack already exists at the type level —
-      `DisplayList` carries `PushClip` / `PopClip` / `PushTransform` /
-      `PopTransform` (Render-Redesign Phase 2.4) and `SetTransform` /
-      `SetOpacity` ops. Phase 5's "reuse the per-element transform /
-      opacity machinery" guidance lands here directly.
-    - `drawLine` / `drawPolyline` collapse into `DrawOp::VectorPath`
-      (they already did at the SVGView level); `drawArc` and unified
-      fill+stroke `drawPath` are `DrawOp::VectorPath` payload shapes.
-    - `DrawOptions` (per-draw opacity / blend mode) becomes fields on
-      the relevant `DrawOp` variants or a `PushOpacity` / `PushEffect`
-      scope, not a `Canvas`-level argument.
-  Treat Phases 3 and 5 as **design notes for the capabilities**, not
-  as a `Canvas`-API surface to build. Where they are already marked
-  DONE (border consolidation, `drawLine` / `drawPolyline`), that work
-  shipped through the SDF spine and survives the op swap untouched.
-
-The phases that matter going forward and are genuinely independent of
-the op-type change are the **brush / pipeline** ones: gradients
-(Phase 1 / 2, consolidated by Phase 9 below) and the new **bitmap
-brushes** (Phase 8 below).
+The phases that matter going forward are the **brush / pipeline** ones:
+gradients (Phase 1 / 2, consolidated by Phase 9), the new **bitmap
+brushes** (Phase 8), **glass brushes** (Phase 11), MSDF scalable
+bitmaps (Phase 10), and the **text-layout reuse** work (Phase 6).
 
 ---
 
@@ -95,12 +65,12 @@ brushes** (Phase 8 below).
 - `Brush::Type` enum (`Color`, `Gradient`, `None`) is the single dispatch source. Legacy `isColor`/`isGradient` booleans are gone (Phase 0 done).
 - `GradientBrush()` header/source signature mismatch is fixed.
 - `create32Bit` typo is fixed.
-- Canvas exposes border overloads on `drawRect`, `drawRoundedRect`, `drawEllipse`.
-- `setBackground()` and `clear()` exist on Canvas.
+- Shape `DrawOp`s (Rect / RoundedRect / Ellipse) carry an optional color `Border`.
 - Color solid-fill rendering works for all shape primitives and paths.
 - `Path` supports `addArc`, `addLine`, `goTo`, `close`, stroke width, and a per-path brush.
 - **`Composition/Geometry.h`** owns the public 2D geometry vocabulary; `Core/Core.h` no longer includes `<OmegaGTE.h>`; `Core/GTEHandle.h` is the backend-only handle (Phase 0A done).
-- **Border consolidation:** Rect / RoundedRect / Ellipse with a color border emit one `VisualCommand` and render via one SDF draw — the prior `RectFrame` / `RoundedRectFrame` / `EllipseFrame` side-emission from `drawRect` / `drawRoundedRect` / `drawEllipse` is gone (Direct-To-Drawable-And-SDF-Plan §6.5). The frame helpers remain in `Path.h` for clients that explicitly want a stand-alone outline path.
+- **Border consolidation:** Rect / RoundedRect / Ellipse with a color border emit one `DrawOp` and render via one SDF draw — the prior `RectFrame` / `RoundedRectFrame` / `EllipseFrame` side-emission is gone (Direct-To-Drawable-And-SDF-Plan §6.5). The frame helpers remain in `Path.h` for clients that explicitly want a stand-alone outline path.
+- Per-element transform / opacity and clip ride the `DisplayList` as `SetTransform` / `SetOpacity` and `PushClip` / `PushTransform` ops.
 
 ### What doesn't work or is incomplete
 
@@ -109,12 +79,7 @@ brushes** (Phase 8 below).
 | Gradient compute shader is commented out | `compositor.omegasl` (`linearGradient`), `RenderTarget.cpp` const buffer write | Gradient brushes enter the texture pipeline but produce no texture — effectively broken. SDF fragment shader does not yet sample gradient textures either |
 | Gradient has only `float arg` (angle or radius) | `Brush.h:62` | No start/end points for linear, no center/focus for radial, no elliptical radii |
 | No spread mode on gradients | — | Out-of-range stops clamp implicitly |
-| No per-draw opacity on Canvas (top-level) | — | `setElementOpacity` exists per-VisualCommand but there is no Canvas-level `DrawOptions`. SVGView hacks opacity into `Color.a` |
-| No `drawLine` / `drawPolyline` on Canvas | — | SVGView builds `Path` objects for `<line>` and `<polyline>` as a workaround |
-| No canvas transform stack | — | `setElementTransform` exists per-element but no save/restore stack for nested zoom / pan / rotation |
-| `SharedPtr<Brush>&` parameter style | All Canvas draw methods | Can't pass temporaries; forces callers to name every brush variable |
-| Path-level fill+stroke unification at the Canvas API | `Canvas::drawPath` | Backend already supports both via `VisualCommand::Data::pathParams` (`brush` + `fillBrush`); Canvas-side overload still uses single-brush convention. Phase 3.0 below |
-| Raw `OmegaGTE::` types still appear in `Path.h` / `Canvas.h` internal fields | `Path.h` `Segment::path` (`GVectorPath2D`), `Canvas.h` `pathParams.path`, `Canvas.h` `setElementTransform(Matrix4x4)` | Public signatures partially migrated; some internal fields still expose the GTE types via forward decls |
+| Raw `OmegaGTE::` types still appear in `Path.h` internal fields | `Path.h` `Segment::path` (`GVectorPath2D`) | Public signatures partially migrated; some internal fields still expose the GTE types via forward decls |
 
 ---
 
@@ -164,10 +129,9 @@ owns the standalone PODs; `wtk/include/omegaWTK/Core/GTEHandle.h`
 holds the backend-only `extern OmegaGTE::GTE gte`; `Core/Core.h` no
 longer pulls in `<OmegaGTE.h>`; the ~130-file mechanical rename to
 `Composition::Rect` / `Composition::Point2D` etc. landed under 0A.3a.
-A few internal struct fields (`Path::Segment::path`,
-`VisualCommand::Data::pathParams.path`,
-`VisualCommand::Data::transformMatrix`) still hold raw GTE types
-behind forward declarations — that's working as intended for the
+A few internal struct fields (`Path::Segment::path`, and the `DrawOp`
+path / transform payload fields) still hold raw GTE types behind
+forward declarations — that's working as intended for the
 implementation-detail boundary. See "What doesn't work" in the
 snapshot for the residue.
 
@@ -180,9 +144,9 @@ Additionally, several Composition headers expose raw `OmegaGTE::` types in publi
 | Type | Where exposed |
 |------|---------------|
 | `OmegaGTE::GPoint2D` | `Path.h` — `goTo()`, `addLine()`, constructor |
-| `OmegaGTE::GVectorPath2D` | `Path.h` — `Segment` fields, constructor; `Canvas.h` — `VisualCommand::Data::pathParams` |
-| `OmegaGTE::GETexture` / `OmegaGTE::GEFence` | `Canvas.h` — `drawGETexture()`, `VisualCommand::Data::bitmapParams`; `FontEngine.h` — `TextRect::BitmapRes` |
-| `OmegaGTE::FMatrix<4,4>` | `Canvas.h` — `VisualCommand::Data::transformMatrix`, `setElementTransform()` |
+| `OmegaGTE::GVectorPath2D` | `Path.h` — `Segment` fields, constructor; the path-op payload |
+| `OmegaGTE::GETexture` / `OmegaGTE::GEFence` | the bitmap-op payload; `FontEngine.h` — `TextRect::BitmapRes` |
+| `OmegaGTE::FMatrix<4,4>` | the transform-op payload |
 
 ### CMake context
 
@@ -278,12 +242,10 @@ Headers that currently include `Core/Core.h` for geometry types should include `
 **Path.h:**
 - Public methods (`goTo`, `addLine`, constructor) change from `OmegaGTE::GPoint2D` to `Composition::Point2D`.
 - `addArc` changes from `OmegaGTE::GRect` to `Composition::Rect`.
-- The internal `Segment` struct keeps `OmegaGTE::GVectorPath2D` — it's `friend class Canvas` / private, not public API. But the `Path(GVectorPath2D &)` constructor should either become private/friend-only or take a WTK-level wrapper. For now, make it `private` with `friend class Canvas` since it's only used internally.
+- The internal `Segment` struct keeps `OmegaGTE::GVectorPath2D` — it's `friend class FrameBuilder` / private, not public API. But the `Path(GVectorPath2D &)` constructor should either become private/friend-only or take a WTK-level wrapper. For now, make it `private` with `friend class FrameBuilder` since it's only used internally.
 
-**Canvas.h:**
-- `drawGETexture` stays — it's the explicit "talk to GTE" escape hatch, analogous to `OmegaGTEView`. Forward-declare `OmegaGTE::GETexture` and `OmegaGTE::GEFence` so the header compiles without the full GTE include.
-- `setElementTransform(const OmegaGTE::FMatrix<4,4> &)` — replace with a WTK-level `Transform2D` or accept `float[16]` / a simple 3x2 matrix struct appropriate for 2D. This ties into Phase 5's transform stack; for now, a forward-declared opaque type or `float[16]` wrapper keeps GTE out of the header.
-- `VisualCommand::Data` — internal fields like `transformMatrix` and `pathParams.path` can forward-declare GTE types rather than include them, or use `void*` + typed accessors in the backend. Prefer forward declarations.
+**`DrawOp` payloads (`DisplayList.h`):**
+- The path / bitmap / transform op payloads keep raw GTE types (`GVectorPath2D`, `GETexture` / `GEFence`, `FMatrix<4,4>`) behind forward declarations — they are backend implementation detail, not public API, so this is working as intended.
 
 ### 0A.5 CMake: link OmegaGTE to `OmegaWTK_Composition` only
 
@@ -316,7 +278,7 @@ target_include_directories(OmegaWTK_Composition
 
 ### 0A.6 Update Composition `.cpp` files
 
-Every `.cpp` file in the Composition submodule that actually constructs GTE objects (the backend, `Canvas.cpp`, `Path.cpp`, `RenderTarget.cpp`) adds `#include "GeometryConvert.h"` and converts at the WTK↔GTE boundary.
+Every `.cpp` file in the Composition submodule that actually constructs GTE objects (the backend, `Path.cpp`, `RenderTarget.cpp`) adds `#include "GeometryConvert.h"` and converts at the WTK↔GTE boundary.
 
 ### 0A.7 Verify isolation
 
@@ -331,10 +293,8 @@ Every `.cpp` file in the Composition submodule that actually constructs GTE obje
 - `wtk/include/omegaWTK/Core/Core.h` — remove `#include <OmegaGTE.h>`, delete geometry typedefs and `Ellipse` struct, move `extern GTE gte` to `GTEHandle.h`
 - `wtk/include/omegaWTK/Core/GTEHandle.h` — **new** backend-only header for the GTE engine handle
 - `wtk/include/omegaWTK/Composition/Path.h` — `GPoint2D` → `Composition::Point2D`, `GRect` → `Composition::Rect` in public API
-- `wtk/include/omegaWTK/Composition/Canvas.h` — forward-declare GTE types for `drawGETexture`/`VisualCommand` internals; `Composition::Rect` → `Composition::Rect` etc.
 - `wtk/include/omegaWTK/Composition/Animation.h` — `GPoint2D` → `Composition::Point2D` in public signatures
 - ~130 files across all submodules — mechanical `Composition::Rect` → `Composition::Rect` (and Position/RoundedRect/Ellipse) rename
-- `wtk/src/Composition/Canvas.cpp` — add `GeometryConvert.h`, convert at boundary
 - `wtk/src/Composition/Path.cpp` — add `GeometryConvert.h`, convert at boundary
 - `wtk/src/Composition/backend/RenderTarget.cpp` — add `GeometryConvert.h` (already includes GTE)
 - `wtk/CMakeLists.txt` — link OmegaGTE `PRIVATE` to `OmegaWTK_Composition`; remove `PUBLIC` GTE from `OmegaWTK` framework target
@@ -412,7 +372,7 @@ producer is missing.
 
 ### 1.4 Test
 
-Verify gradient brushes render visibly on `drawRect`, `drawRoundedRect`, `drawEllipse`, and `drawPath` (fill).
+Verify gradient brushes render visibly on Rect / RoundedRect / Ellipse / vector-path fills.
 
 ### Files touched
 
@@ -501,174 +461,6 @@ Extend `GradientTextureConstParams` to carry `startX, startY, endX, endY` (linea
 
 ---
 
-## Phase 3 — Canvas drawing extensions
-
-**Goal:** Fill the gaps in the Canvas drawing surface for general UI work.
-
-### 3.0 Unified `drawPath` with explicit fill + stroke brushes
-
-**Goal:** Collapse the current split between "stroked path" and "filled path" into a single `drawPath` call that takes both a fill brush and a stroke brush as separate parameters. Either brush may be null to skip that component.
-
-#### Current state
-
-`Canvas::drawPath(Path &)` reads brush + stroke width from the `Path` itself (`path.impl_->pathBrush`, `path.impl_->currentStroke`). It then branches on `strokeWidth == 0.f`:
-
-- `strokeWidth == 0` → treat the single brush as a fill, emit one `VectorPath` command with `fillBrush = brush`, `strokeBrush = nullptr`.
-- `strokeWidth > 0` → treat the single brush as a stroke, emit one command with `strokeBrush = brush`, `fillBrush = nullptr`.
-
-A path can never be stroked *and* filled in one call. Callers that want both (the common SVG case) have to build two `Path` objects or call `drawPath` twice with different brushes — neither is clean, and SVGView currently works around this by duplicating geometry. The stroke-vs-fill toggle is also implicit (zero stroke width == fill), which is a footgun.
-
-The backend (`RenderTarget.cpp` VectorPath dispatch) already accepts separate `brush` + `fillBrush` fields on `VisualCommand::Data::pathParams`, so the underlying command model already supports fill+stroke in one command. Only the Canvas-facing API forces the either/or.
-
-#### 3.0.1 New signature
-
-```cpp
-void drawPath(Path & path,
-              const Core::SharedPtr<Brush> & fillBrush,
-              const Core::SharedPtr<Brush> & strokeBrush = nullptr,
-              float strokeWidth = 0.f);
-```
-
-Semantics:
-
-- `fillBrush != nullptr` → fill the path's interior with that brush.
-- `strokeBrush != nullptr && strokeWidth > 0` → stroke the path outline with that brush at the given width.
-- Both set → one draw that fills and strokes (single `VectorPath` command per segment, fill rendered before stroke).
-- Both null or stroke width 0 with null fill → no-op.
-
-The `Path`'s own `pathBrush` and `currentStroke` fields become fallbacks for callers that don't pass explicit arguments (see 3.0.3), not the primary API.
-
-#### 3.0.2 Backend dispatch
-
-`VisualCommand` VectorPath already carries `brush` (stroke), `fillBrush`, `strokeWidth`, `contour`, `fill`. The Canvas implementation constructs one command per path segment with:
-
-- `fill = (fillBrush != nullptr)`
-- `contour = (strokeBrush != nullptr && strokeWidth > 0)`
-- `brush = strokeBrush`
-- `fillBrush = fillBrush`
-
-`RenderTarget.cpp` VectorPath handling (lines ~919 stroke, ~928 fill) must be audited to ensure a single command with both `fill` and `contour` true renders fill first, then stroke on top. If the current code assumes mutual exclusion, split it into sequential fill-then-stroke passes within one command.
-
-#### 3.0.3 Migration of existing `drawPath(Path &)` callers
-
-The zero-arg overload stays as a thin shim for backwards compatibility:
-
-```cpp
-void drawPath(Path & path); // reads path.pathBrush + path.currentStroke, delegates to new overload
-```
-
-Internally it resolves:
-
-- `strokeWidth = path.impl_->currentStroke`
-- If `strokeWidth == 0` → `fillBrush = path.pathBrush`, `strokeBrush = nullptr`
-- If `strokeWidth > 0` → `strokeBrush = path.pathBrush`, `fillBrush = nullptr`, pass strokeWidth through
-
-This preserves the current `RectFrame` / `RoundedRectFrame` / `EllipseFrame` border path used by `drawRect`/`drawRoundedRect`/`drawEllipse` without touching them.
-
-#### 3.0.4 Simplify shape draw methods [DONE for simple primitives, via SDF spine]
-
-The original framing — "border handling in `drawRect` /
-`drawRoundedRect` / `drawEllipse` builds a frame `Path` and delegates
-to `drawPath`" — was retired by Direct-To-Drawable-And-SDF-Plan §6.5.
-`drawRect` / `drawRoundedRect` / `drawEllipse` now forward the optional
-`Border` directly into the `VisualCommand`; the SDF fragment shader
-emits fill + stroke coverage from one distance evaluation in a single
-draw call. There is no longer a frame-`Path` step for these primitives.
-
-The `RectFrame` / `RoundedRectFrame` / `EllipseFrame` helpers stay in
-`Path.h` for clients that genuinely want a stand-alone outline path
-(unrelated to a shape's border). Those helpers still go through the
-unified `drawPath` flow as in 3.0.1–3.0.3.
-
-#### Files touched
-
-- `wtk/include/omegaWTK/Composition/Canvas.h` — new `drawPath` overload with fill+stroke brushes
-- `wtk/src/Composition/Canvas.cpp` — implement new overload, keep legacy single-arg as shim
-- `wtk/src/Composition/backend/RenderTarget.cpp` — ensure VectorPath dispatch handles `fill && contour` together (fill then stroke)
-
-### 3.1 `drawLine` [DONE]
-
-```cpp
-void drawLine(OmegaGTE::GPoint2D from,
-              OmegaGTE::GPoint2D to,
-              Core::SharedPtr<Brush> & brush,
-              float strokeWidth = 1.f);
-```
-
-Implementation: construct a temporary `Path` from `from` to `to`, set brush and stroke, delegate to `drawPath`.
-
-### 3.2 `drawPolyline` [DONE]
-
-```cpp
-void drawPolyline(const OmegaCommon::Vector<OmegaGTE::GPoint2D> & points,
-                  Core::SharedPtr<Brush> & strokeBrush,
-                  float strokeWidth,
-                  bool closed = false,
-                  Core::Optional<Core::SharedPtr<Brush>> fillBrush = std::nullopt);
-```
-
-Implementation: build a `Path` from the point list, optionally `close()`, set brushes, delegate to `drawPath`.
-
-### 3.3 Per-draw opacity
-
-Add opacity to individual draw commands instead of requiring layer effects or baking it into the color.
-
-```cpp
-struct DrawOptions {
-    float opacity = 1.f;
-};
-
-void setDrawOptions(const DrawOptions & options);
-void resetDrawOptions();
-```
-
-When `opacity < 1.0`, multiply it into the alpha channel during vertex color write (solid fills) or into the fragment output (textured/gradient fills). `VisualCommand` gains an `opacity` field.
-
-**Not** on `Brush` — brushes are shared objects and per-draw opacity on a shared brush is confusing. Canvas owns the draw state.
-
-**Existing primitives:** `Canvas::setElementOpacity(float)` already
-emits a `VisualCommand::SetOpacity` that propagates through subsequent
-draws (color, texture, and SDF paths all multiply it into the output
-alpha — see Direct-To-Drawable-And-SDF-Plan §3.1). The Phase 3.3 work
-is to wrap that in a stack-friendly `DrawOptions` API and to ensure
-gradient brushes (Phase 1) honor the same opacity multiplier.
-Implementation should reuse the existing per-element machinery rather
-than introducing a parallel one.
-
-### 3.4 `drawArc` (convenience)
-
-```cpp
-void drawArc(OmegaGTE::GRect bounds,
-             float startAngle, float endAngle,
-             Core::SharedPtr<Brush> & brush,
-             bool pie = false,
-             Core::Optional<Border> border = std::nullopt);
-```
-
-Implementation: `Path` already has `addArc(bounds, startAngle, endAngle)`. Build a Path, optionally add center-to-endpoint lines for pie, delegate to `drawPath`.
-
-### 3.5 Brush parameter ergonomics
-
-Change Canvas draw methods to accept `const Core::SharedPtr<Brush> &` instead of `Core::SharedPtr<Brush> &` so that temporaries and rvalues work:
-
-```cpp
-// Before:
-void drawRect(Rect & rect, SharedPtr<Brush> & brush, ...);
-
-// After:
-void drawRect(Rect & rect, const SharedPtr<Brush> & brush, ...);
-```
-
-This lets callers write `canvas->drawRect(r, ColorBrush(Color::create8Bit(0xFF0000)))` without naming the brush.
-
-### Files touched
-
-- `wtk/include/omegaWTK/Composition/Canvas.h` — new methods, `DrawOptions`, const-ref brush params
-- `wtk/src/Composition/Canvas.cpp` — implement new methods
-- `wtk/src/Composition/backend/RenderTarget.cpp` — apply opacity multiplier in vertex/fragment output
-
----
-
 ## Phase 4 — Color improvements [DONE]
 
 **Goal:** Ergonomic color construction and manipulation for UI code.
@@ -718,62 +510,6 @@ Color darker(float amount = 0.2f) const;
 
 ---
 
-## Phase 5 — Canvas state stack
-
-**Goal:** Support transforms and clipping for zoomed, panned, or clipped content.
-
-**Existing primitives that this builds on:**
-
-  - `Canvas::setElementTransform(const Matrix4x4 &)` already emits a
-    `VisualCommand::SetTransform` that the backend consumes per-vertex
-    on subsequent color / texture / SDF draws (see
-    Direct-To-Drawable-And-SDF-Plan §3.1).
-  - `Canvas::setElementOpacity(float)` already emits
-    `VisualCommand::SetOpacity` with the same propagation contract.
-
-What's missing is the *stack discipline*: `save` / `restore`,
-matrix concatenation (translate / scale / rotate compose with the
-current transform), and clip rects. The state-stack work below should
-push / pop into / out of the existing `currentTransform` /
-`currentOpacity` slots on `BackendRenderTargetContext`; no new GPU
-state needs to be added.
-
-### 5.1 Save/restore
-
-```cpp
-void save();     // push transform + clip + draw options
-void restore();  // pop and restore
-```
-
-Internal stack of `{transform matrix, clip region, DrawOptions}`.
-
-### 5.2 Transforms
-
-```cpp
-void translate(float dx, float dy);
-void scale(float sx, float sy);
-void rotate(float radians);
-```
-
-Each modifies the current 2D affine matrix. All subsequent `VisualCommand` coordinates are interpreted through the current transform.
-
-### 5.3 Clipping
-
-```cpp
-void clipRect(const Rect & rect);
-void clipRoundedRect(const RoundedRect & rect);
-```
-
-Intersect the current clip region. Applied at submit time or during compositing.
-
-### Files touched
-
-- `wtk/include/omegaWTK/Composition/Canvas.h` — save/restore, transform, clip methods
-- `wtk/src/Composition/Canvas.cpp` — state stack implementation
-- `wtk/src/Composition/backend/RenderTarget.cpp` — apply transform to vertex positions, apply clip
-
----
-
 ## Phase 6 — Text layout reuse
 
 **Goal:** Stop allocating a fresh `TextRect`, glyph layout, and GPU
@@ -797,8 +533,8 @@ becomes a one-shot convenience that wraps an ephemeral handle.
 
 ### Current state
 
-`Canvas::drawText` (`wtk/src/Composition/Canvas.cpp`) does the full
-pipeline inline on every call:
+The text-draw path (the `FrameBuilder` one-shot `drawText`) does the
+full pipeline inline on every call:
 
 1. `TextRect::Create(rect, layoutDesc, renderScale)` — allocates a
    platform-specific offscreen surface (DWrite IDWriteTextLayout +
@@ -810,7 +546,7 @@ pipeline inline on every call:
    offscreen surface.
 4. `textRect->toBitmap()` — uploads the surface to a `GETexture` (with
    a fence).
-5. `drawGETexture(...)` — emits the `Bitmap` `VisualCommand`.
+5. emits a `DrawOp::Bitmap` from the uploaded `GETexture`.
 
 For static UI text repainted every frame, steps 1–4 repeat with the
 same inputs and the same outputs. On a 60Hz redraw, that's 60
@@ -831,7 +567,7 @@ platform subclasses); wrapping keeps the platform abstraction private.
 
 ```cpp
 class OMEGAWTK_EXPORT TextLayout {
-    friend class Canvas;
+    friend class FrameBuilder;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
@@ -860,20 +596,21 @@ public:
 ```
 
 Note: `Create` does **not** take `renderScale`. The handle is render-
-scale-agnostic at construction; Canvas supplies the current scale on
-every `drawTextLayout` and the handle rebuilds on mismatch. See §6.3.
+scale-agnostic at construction; the `FrameBuilder` supplies the current
+scale on every `drawTextLayout` and the handle rebuilds on mismatch.
+See §6.3.
 
 Internally `Impl` owns:
 
 - A lazily-created `TextRect` (via `TextRect::Create(..., renderScale)`,
-  built on first resolve with the scale Canvas passes in).
+  built on first resolve with the scale the `FrameBuilder` passes in).
 - A lazily-uploaded `TextRect::BitmapRes` (texture + fence).
 - The cached `renderScale` the `TextRect` was built against.
 - Dirty flags: `layoutDirty_` (text/font/rect/layoutDesc/renderScale
   changed) and `bitmapDirty_` (color changed).
 
-**Resolve:** the first `Canvas::drawTextLayout` call after a mutator
-hits the dirty path:
+**Resolve:** the first `drawTextLayout` call after a mutator hits the
+dirty path:
 
 - `layoutDirty_` → tear down the `TextRect`, build a new one,
   re-rasterize (`drawRun`), re-upload (`toBitmap`).
@@ -881,22 +618,22 @@ hits the dirty path:
   with the new color, re-upload.
 - Neither → emit the cached `Bitmap` command directly.
 
-### 6.2 New Canvas API
+### 6.2 New draw API (`FrameBuilder`)
 
 ```cpp
 void drawTextLayout(const Core::SharedPtr<TextLayout> & layout);
 ```
 
-Implementation: resolve the layout (lazy build), then emit a `Bitmap`
-`VisualCommand` from the cached `GETexture` + the layout's rect. No
+Implementation: resolve the layout (lazy build), then emit a
+`DrawOp::Bitmap` from the cached `GETexture` + the layout's rect. No
 allocation, no upload, no DWrite/CoreText round-trip on the steady
 path.
 
-The existing `Canvas::drawText(text, font, rect, color, layoutDesc)`
-overload becomes a one-shot convenience:
+The existing `drawText(text, font, rect, color, layoutDesc)` overload
+becomes a one-shot convenience:
 
 ```cpp
-void Canvas::drawText(const UniString & text, ...) {
+void FrameBuilder::drawText(const UniString & text, ...) {
     auto layout = TextLayout::Create(text, font, rect, color, layoutDesc);
     drawTextLayout(layout);
     // layout falls out of scope after the frame is sent — no caching
@@ -915,29 +652,28 @@ property. It originates at `NativeWindow::scaleFactor()`
 (`Native-API-Completion-Proposal.md` §2.2 — backed by
 `GetDpiForWindow` / `NSWindow.backingScaleFactor` / `wl_output`
 scale per platform), flows through the visual tree into
-`Composition::ViewRenderTarget::renderScale_`, and is read by Canvas
+`Composition::ViewRenderTarget::renderScale_`, and is read
 via `View::getRenderScale()` (`DPI-Aware-Text-Plan.md` §Plumbing).
-This is the same plumbing `Canvas::drawText` already uses today
-([Canvas.cpp:125](wtk/src/Composition/Canvas.cpp:125)).
+This is the same plumbing the text-draw path already uses today.
 
 `TextLayout` does **not** read `NativeWindow::scaleFactor()` itself
-and does **not** hold a back-pointer to View. The Canvas owns the
-freshness contract: on every `drawTextLayout`, Canvas reads its owner
+and does **not** hold a back-pointer to View. The `FrameBuilder` owns
+the freshness contract: on every `drawTextLayout`, it reads its owner
 View's current `renderScale` and passes it through to the handle's
 resolve. The handle compares against the cached scale and treats a
 mismatch as a layout-dirty rebuild — same code path as a `setRect` /
 `setFont` change. This keeps the handle ignorant of View and lets a
-single layout migrate between Canvases / Views with different scales
-(rare in practice but free correctness).
+single layout migrate between Views with different scales (rare in
+practice but free correctness).
 
 ```cpp
-// Sketch — Canvas-side:
-void Canvas::drawTextLayout(const Core::SharedPtr<TextLayout> & layout) {
+// Sketch — FrameBuilder-side:
+void FrameBuilder::drawTextLayout(const Core::SharedPtr<TextLayout> & layout) {
     const float scale = (ownerView_ != nullptr)
         ? ownerView_->getRenderScale() : 1.f;
     auto bitmap = layout->resolve(scale); // rebuilds if scale differs
-    current->currentVisuals.emplace_back(bitmap.s, bitmap.textureFence,
-                                         layout->getRect());
+    displayList_.append(DrawOp::Bitmap(bitmap.s, bitmap.textureFence,
+                                       layout->getRect()));
 }
 ```
 
@@ -968,16 +704,16 @@ View on every draw, and the cache invalidates itself.
     element on its `UIElementSpec`, lazily creates it on first paint,
     invalidates on text/font/style/rect change. New API surface, but
     the steady-state win is significant.
-  - **Implicit cache in Canvas:** Canvas keeps a per-Canvas LRU keyed
-    on (text, font, rect, color, layoutDesc) and reuses behind the
-    scenes. Smaller blast radius, but cache invalidation becomes
-    Canvas's problem and key construction is non-trivial (UniString
-    hash, Color tolerance, Rect equality across float jitter).
+  - **Implicit cache in the FrameBuilder:** the `FrameBuilder` keeps an
+    LRU keyed on (text, font, rect, color, layoutDesc) and reuses behind
+    the scenes. Smaller blast radius, but cache invalidation becomes the
+    `FrameBuilder`'s problem and key construction is non-trivial
+    (UniString hash, Color tolerance, Rect equality across float jitter).
 
 Opt-in is cleaner — invalidation becomes the caller's explicit
 responsibility, which matches how UIView already tracks dirty state
 on its specs. The implicit cache is a Phase 7 follow-up if profiling
-later shows third-party Canvas users would benefit.
+later shows third-party draw callers would benefit.
 
 UIView's `pendingTextHandles_` (or similar field) lives on
 `UIView::Impl`. The text-style invalidator already runs on
@@ -989,7 +725,7 @@ tag.
 
 `TextLayout::Impl` owns the `TextRect` and the `GETexture`. As long
 as one `SharedPtr<TextLayout>` exists, the GPU texture stays
-resident. Frames hold the texture via the `Bitmap` `VisualCommand`'s
+resident. Frames hold the texture via the `DrawOp::Bitmap`'s
 `SharedPtr<GETexture>`, so frame-in-flight safety is already handled
 by the existing fence on `BitmapRes::textureFence`.
 
@@ -1018,10 +754,8 @@ no stale glyphs persist across rebuilds.
 - `wtk/include/omegaWTK/Composition/FontEngine.h` — public
   `TextLayout` declaration (or `TextRect` lifted to public, depending
   on the choice in 6.1).
-- `wtk/include/omegaWTK/Composition/Canvas.h` — `drawTextLayout`
-  declaration.
-- `wtk/src/Composition/Canvas.cpp` — `drawText` becomes a thin shim;
-  new `drawTextLayout` emits the cached `Bitmap` command.
+- `wtk/src/UI/FrameBuilder.{h,cpp}` — `drawText` becomes a thin shim;
+  new `drawTextLayout` emits a cached `DrawOp::Bitmap`.
 - `wtk/src/Composition/TextLayout.cpp` — new file holding the
   cache/dirty-flag logic.
 - `wtk/src/Composition/backend/{mtl,d2d,cairo}/TextRect*.{cpp,mm}` —
@@ -1056,8 +790,8 @@ The shape ops (`Rect` / `RoundedRect` / `Ellipse` / `VectorPath`)
 already carry a `Core::SharedPtr<Brush>`; a bitmap brush rides that
 existing slot and the backend dispatches on `brush->type`. This phase
 is therefore entirely in the brush model + backend rasterization +
-shader source — squarely on the op-type-agnostic side of the
-[Canvas → DrawOp shift](#compositor-op-model-the-canvas--drawop--displaylist-shift).
+shader source — squarely on the op-type-agnostic side of the compositor
+op model (see *Compositor op model* above).
 
 ### 8.1 Brush model
 
@@ -1130,11 +864,11 @@ renders correctly on every primitive. This is the consolidated
 "definition of done" for gradients — it sequences the remaining
 Phase 1 (texture path) and Phase 2 (geometry) work plus the
 SDF-native sampler (was a Phase 7 Future item) into one shippable
-closeout, framed for the post-`Canvas` `DrawOp` / SDF reality.
+closeout, framed for the `DrawOp` / SDF model.
 
 Like Phase 8, this is **op-type-agnostic** — it lives in the brush
 model, `RenderTarget.cpp`, and the shader source, all of which read
-brush payloads, not `Canvas`.
+brush payloads, not the op wrapper.
 
 ### 9.1 Land the texture path (closes Phase 1)
 
@@ -1203,8 +937,7 @@ content that isn't a distance-field-expressible shape.
 
 Like Phases 8 and 9 this is **op-type-agnostic** — it lives in the
 asset / brush model, `RenderTarget.cpp`, and the shader source, all
-reading payloads, so it is unaffected by the `VisualCommand` → `DrawOp`
-swap.
+reading payloads, so it is independent of the compositor op type.
 
 **Scope boundary (deliberate).** MSDF encodes distance to a shape edge
 and reconstructs as a resolution-independent *coverage mask* that you
@@ -1270,10 +1003,10 @@ nine-slice lives today, so it is the direct supersession:
 - **Standalone image op (direct nine-slice replacement).** Add an MSDF
   flavor to the standalone bitmap path that `NineSliceInsets` rides
   today (`BitmapParams` / `DrawOp::Bitmap`). A `ScalableImage` source
-  carries an `MSDFAtlas` tile handle + a base tint; `drawImage` of a
+  carries an `MSDFAtlas` tile handle + a base tint; drawing a
   `ScalableImage` into any dest rect samples the tile — no insets, no
-  slice math. The existing `drawImage(..., NineSliceInsets, ...)`
-  overload stays for raster assets.
+  slice math. The existing nine-slice image path stays for raster
+  assets.
 - **Bitmap brush (Phase 8 extension).** A `Brush::Type::Bitmap` whose
   source is a `ScalableImage` dispatches to the MSDF arm instead of the
   texture-sample arm, so a rounded-rect / ellipse / path **fill** gets a
@@ -1309,7 +1042,7 @@ itself.
 3. Convert the engine's own shape-class chrome assets (and SVG-sourced
    icons, which are *already vector* — they skip raster entirely) from
    nine-slice to `ScalableImage`.
-4. Mark `NineSliceInsets` / the nine-slice `drawImage` overload
+4. Mark `NineSliceInsets` / the nine-slice image path
    **legacy / fallback** in the API docs: "for raster chrome that can't
    be expressed as a distance field; prefer `ScalableImage` for shape
    assets." Do not delete it — it's the honest fallback for raster
@@ -1334,8 +1067,8 @@ draw. Validated through the window-scoped `DisplayList` path.
 - `wtk/include/omegaWTK/Composition/Brush.h` / `wtk/src/Composition/Brush.cpp`
   — `ScalableImage` source; `Brush::Type::Bitmap` MSDF dispatch (Phase 8
   extension).
-- `wtk/include/omegaWTK/Composition/Canvas.h` — `ScalableImage`
-  standalone-image entry; `NineSliceInsets` docs marked legacy / fallback.
+- `wtk/src/UI/FrameBuilder.{h,cpp}` — `ScalableImage` standalone-image
+  entry; `NineSliceInsets` docs marked legacy / fallback.
 - `wtk/src/Composition/backend/RenderTarget.cpp` — MSDF-image dispatch arm
   (tile bind + payload).
 - `wtk/src/Composition/backend/shaders/compositor.omegasl` — MSDF arm in
@@ -1400,7 +1133,7 @@ share the scratch + compute-blur machinery (§11.4).
 
 **Op-type-agnostic.** Like Phases 8–10, glass lives in the brush model,
 `RenderTarget.cpp`, and the shader source — all reading payloads — so it
-is unaffected by the `VisualCommand` → `DrawOp` swap. **No new `DrawOp`
+is independent of the compositor op type. **No new `DrawOp`
 variant**: a glass brush rides the existing `Core::SharedPtr<Brush>`
 slot on the shape ops.
 
@@ -1685,7 +1418,7 @@ macOS host.
   - `Quality::Auto` defaults to `Full`; the `Cheap` safety drop is an
     explicit setting or an optional frame-budget watchdog — it does
     **not** key off `GTEDevice::type` (integrated ≠ low-power).
-  - Independent of the `Canvas` → `DrawOp` swap (op-type-agnostic).
+  - Op-type-agnostic — independent of the compositor op wrapper.
 
 ---
 
@@ -1696,13 +1429,13 @@ These items are deferred. They are listed to confirm the Phase 0–6 designs are
 | Item | Depends on | Notes |
 |------|------------|-------|
 | SDF-native gradient sampling on simple primitives | — | **Promoted to Phase 9.3.** |
-| `GradientSpace::Canvas` (gradient coords in canvas space, not shape-local) | Phase 5 transform stack | Without transforms, "canvas space" is just "shape space + offset" |
+| `GradientSpace::Window` (gradient coords in window space, not shape-local) | `DisplayList` transform ops | Without transforms, "window space" is just "shape space + offset" |
 | Pattern brush (image/texture tiling) | — | **Promoted to Phase 8 (bitmap brushes).** |
-| `BlendMode` enum on `DrawOptions` | Phase 3 DrawOptions | Extend fragment shader with blend equations. Note: SDF pipeline already has alpha-over blending enabled; color / texture pipelines stay opaque-write |
+| `BlendMode` on the relevant `DrawOp` / `PushEffect` scope | `DrawOp` blend fields | Extend fragment shader with blend equations. Note: SDF pipeline already has alpha-over blending enabled; color / texture pipelines stay opaque-write |
 | Gradient text | Phase 1 gradient pipeline + MSDF text | After Direct-To-Drawable-And-SDF-Plan §6.7 lands MSDF text, gradient fill on glyphs becomes a uniform-evaluation problem (same as SDF-native gradients above) |
 | Image scale modes (aspect-fit/fill, tiling, source rect) | — | Direct-To-Drawable-And-SDF-Plan §6.6 owns this — moves bitmap to a hardcoded quad with sampler / mipmap upgrade and adds tint / source rect / nine-slice |
 | Text draw options (maxLines, truncation, underline) | — | Text layout engine changes |
-| Implicit per-Canvas `TextLayout` cache (LRU keyed on text+font+rect+color+layoutDesc) | Phase 6 | Lets third-party Canvas users (no UIView spec wiring) get caching without holding handles. Skipped in Phase 6 because key construction is fiddly (UniString hash, Color tolerance, Rect equality) |
+| Implicit `FrameBuilder` `TextLayout` cache (LRU keyed on text+font+rect+color+layoutDesc) | Phase 6 | Lets third-party draw callers (no UIView spec wiring) get caching without holding handles. Skipped in Phase 6 because key construction is fiddly (UniString hash, Color tolerance, Rect equality) |
 | `TextLayout` VRAM cap with LRU eviction | Phase 6 | Bounds resident GPU texture memory if a UIView retains many transient layouts |
 | Effect bounds (subregion blur) | — | Compositor change |
 
@@ -1734,34 +1467,26 @@ Phase 11: Glass brushes (Brush::Type::Glass; closed, refraction-first; no new Dr
         or frame-budget watchdog — NOT the integrated/discrete bit);
         soft dep on Phase 9.3 (SDF-native gradient eval) for GradientGlass
 
-Phase 3: Canvas drawing extensions — SUPERSEDED by the Canvas → DrawOp shift
-    ├─→ border consolidation + drawLine/drawPolyline: DONE via SDF spine §6.5
-    └─→ remaining capabilities expressed as DrawOp::VectorPath payloads / DrawOptions fields
-
-Phase 5: Canvas state stack — SUPERSEDED by the Canvas → DrawOp shift
-    └─→ realized as DisplayList PushClip/PushTransform/PushOpacity + SetTransform/SetOpacity ops
-
 Phase 4: Color improvements (independent — can run in parallel with any phase) [DONE]
 
 Phase 6: Text layout reuse (independent — can run in parallel with any phase)
-    └─→ Phase 7 future: implicit per-Canvas text cache, VRAM-cap LRU eviction
+    └─→ Phase 7 future: implicit FrameBuilder text cache, VRAM-cap LRU eviction
 ```
 
-Phases 0, 0A, and 4 are done. With `Canvas` being retired (see the
-[Canvas → DrawOp shift](#compositor-op-model-the-canvas--drawop--displaylist-shift)),
-the remaining high-leverage work is the brush / pipeline pair:
-**Phase 9 (finish gradients)** — the largest unblocker, completing the
-old Phase 1 + 2 and adding the SDF-native sampler — and **Phase 8
-(bitmap brushes)**, which shares the SDF-native texture-sampling shape
-with Phase 9.3 and reuses the §6.6 bitmap sampling code. Both are
-op-type-agnostic: they live in the brush model, `RenderTarget.cpp`, and
-the shader source, so they are unaffected by the `VisualCommand` →
-`DrawOp` swap. Phases 3 and 5 are superseded — their capabilities now
-ride `DrawOp` variants and the `DisplayList` state stack rather than a
-`Canvas` API. Phase 6 (text layout reuse) is independent and is the
-highest-leverage CPU/GPU win for steady-state UI repaints — every
-cached `TextLayout` removes a DWrite/CoreText layout call and a GPU
-upload from each frame.
+Phases 0, 0A, and 4 are done. The remaining high-leverage work is the
+brush / pipeline pair: **Phase 9 (finish gradients)** — the largest
+unblocker, completing the old Phase 1 + 2 and adding the SDF-native
+sampler — and **Phase 8 (bitmap brushes)**, which shares the SDF-native
+texture-sampling shape with Phase 9.3 and reuses the §6.6 bitmap
+sampling code. Both are op-type-agnostic: they live in the brush model,
+`RenderTarget.cpp`, and the shader source, independent of the compositor
+op type. Imperative line / polyline / arc / path draws and per-draw
+opacity / transform / clip already ride `DrawOp::VectorPath` payloads
+and the `DisplayList` state ops (`SetTransform` / `SetOpacity` /
+`PushClip` / `PushTransform`). Phase 6 (text layout reuse) is
+independent and is the highest-leverage CPU/GPU win for steady-state UI
+repaints — every cached `TextLayout` removes a DWrite/CoreText layout
+call and a GPU upload from each frame.
 
 ---
 
@@ -1777,21 +1502,20 @@ upload from each frame.
 | `wtk/CMakeLists.txt` | 0A | **DONE** — OmegaGTE link scoped appropriately |
 | `wtk/include/omegaWTK/Composition/Brush.h` | 0, 2, 4 | **0 DONE:** `isColor` / `isGradient` removed. **Phase 4 DONE:** named color constants (`Black`/`White`/`Red`/`Green`/`Blue`/`Yellow`/`Orange`/`Purple`), `fromHSL` / `fromHSV`, `lerp` / `withAlpha` / `lighter` / `darker`. Remaining: `LinearDef`, `RadialDef`, `GradientSpread`, new gradient factories |
 | `wtk/src/Composition/Brush.cpp` | 0, 2, 4 | **0 DONE:** boolean init removed. **Phase 4 DONE:** color constants + HSL/HSV factories + arithmetic helpers. Remaining: new gradient factories |
-| `wtk/include/omegaWTK/Composition/Canvas.h` | 0A, 3, 5 | **0A DONE.** **Class scheduled for deletion** (Render-Redesign Tier 4). Phase 3 / 5 remaining items (`drawArc`, unified `drawPath`, `DrawOptions`, save/restore/transform/clip) are **superseded** — realized as `DrawOp` variants / `DisplayList` state ops, not new `Canvas` methods. See the Canvas → DrawOp shift section. |
-| `wtk/src/Composition/Canvas.cpp` | 0A, 3, 5, 6 | **0A DONE.** **Border consolidation DONE** (via `Direct-To-Drawable-And-SDF-Plan` §6.5). **Phase 3.1 / 3.2 DONE:** `drawLine`, `drawPolyline` added. **Class scheduled for deletion** (Render-Redesign Tier 4); remaining Phase 3 / 5 capabilities move to `DrawOp` / `DisplayList`, not this file. |
+| `wtk/src/UI/FrameBuilder.{h,cpp}` | 6 | `drawText` shim + new `drawTextLayout` emitting a cached `DrawOp::Bitmap` (Phase 6) |
 | `wtk/include/omegaWTK/Composition/Path.h` | 0A | **0A DONE** for public signatures. Frame helpers (`RectFrame` / `RoundedRectFrame` / `EllipseFrame`) retained for stand-alone outline use |
 | `wtk/src/Composition/Path.cpp` | 0A | **0A DONE** |
 | `wtk/include/omegaWTK/Composition/Animation.h` | 0A | **0A DONE** |
-| `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 0A, 1, 2, 3, 5 | **0 + 0A DONE.** **SDF spine integration (border, transform, opacity propagation) DONE** via `Direct-To-Drawable-And-SDF-Plan` §6.3 / §6.5 / §3.1. Remaining: gradient compute pass wiring, extended gradient params, top-level `DrawOptions` plumbing, save/restore stack consumption |
+| `wtk/src/Composition/backend/RenderTarget.cpp` | 0, 0A, 1, 2, 8, 9, 11 | **0 + 0A DONE.** **SDF spine integration (border, transform, opacity propagation) DONE** via `Direct-To-Drawable-And-SDF-Plan` §6.3 / §6.5 / §3.1. Remaining: gradient compute pass wiring, extended gradient params, bitmap + glass brush dispatch |
 | `wtk/src/Composition/backend/RenderTarget.h` | 2 | Update `createGradientTexture` signature |
 | `wtk/src/Composition/backend/shaders/compositor.omegasl` | 1, 2 | Implement `linearGradient` / `radialGradient` compute shaders; extend `GradientTextureConstParams` with start/end / center/radii / spread mode. **SDF fragment functions already in** for color fills (`Direct-To-Drawable-And-SDF-Plan` §6.3) |
-| `wtk/src/UI/SVGView.cpp` | (SDF §6.5) | **DONE (alongside SDF spine):** SVG `<rect>` / `<rect rx>` / `<circle>` / `<ellipse>` strokes route through `Border` instead of building separate stroked-path frames. **`<line>` / `<polyline>` / `<polygon>` route through `drawLine` / `drawPolyline` (Phase 3.1 / 3.2 follow-up).** |
+| `wtk/src/UI/SVGView.cpp` | (SDF §6.5) | **DONE (alongside SDF spine):** SVG `<rect>` / `<rect rx>` / `<circle>` / `<ellipse>` strokes route through `Border` instead of building separate stroked-path frames. **`<line>` / `<polyline>` / `<polygon>` route through the vector-path ops.** |
 | `wtk/include/omegaWTK/Composition/FontEngine.h` | 6 | New `TextLayout` handle (text + font + rect + color + layoutDesc → cached glyph layout + `GETexture`) |
 | `wtk/src/Composition/TextLayout.cpp` | 6 | **New file** — handle implementation, dirty-flag resolve, lazy `TextRect` build / texture upload |
 | `wtk/include/omegaWTK/UI/UIView.h` / `wtk/src/UI/UIView.*.cpp` | 6 | Cache `Core::SharedPtr<TextLayout>` per text-emitting element spec; invalidate on spec change |
 | `wtk/src/Composition/backend/GlyphAtlas.{h,cpp}` | 10 | Generalize the §6.7 per-font MSDF cache to a reusable `MSDFAtlas` / `AtlasTile`; glyph atlas becomes a typed instantiation (no text behavior change). Backs MSDF scalable-bitmap tiles |
 | `wtk/include/omegaWTK/Composition/Brush.h` / `Brush.cpp` | 8, 10 | **Phase 10:** `ScalableImage` source; `Brush::Type::Bitmap` MSDF dispatch arm (shape assets only) |
-| `wtk/include/omegaWTK/Composition/Canvas.h` (Phase 10) | 10 | `ScalableImage` standalone-image entry (direct nine-slice replacement); `NineSliceInsets` / nine-slice `drawImage` overload marked legacy / raster fallback |
+| `wtk/src/UI/FrameBuilder.{h,cpp}` (Phase 10) | 10 | `ScalableImage` standalone-image entry (direct nine-slice replacement); `NineSliceInsets` / nine-slice image path marked legacy / raster fallback |
 | `wtk/src/Composition/backend/shaders/compositor.omegasl` (Phase 10) | 10 | MSDF arm in `sdfFragment` (compose-with-shape: intersect MSDF coverage with corner radius / border) and `bitmapFragment` (standalone), reusing the `msdfTextFragment` median → `smoothstep` reconstruction |
 
 ---
@@ -1801,7 +1525,7 @@ upload from each frame.
 - Core type definitions: `wtk/include/omegaWTK/Core/Core.h` (typedefs at lines 101–122)
 - GTE geometry originals: `gte/include/omegaGTE/GTEBase.h` (lines 319–363)
 - Current Brush/Color/Gradient: `wtk/include/omegaWTK/Composition/Brush.h`, `wtk/src/Composition/Brush.cpp`
-- Current Canvas API: `wtk/include/omegaWTK/Composition/Canvas.h`
+- Compositor op model: `wtk/include/omegaWTK/Composition/DisplayList.h` (`DrawOp` / `DisplayList`); `wtk/src/UI/FrameBuilder.h`
 - Path API: `wtk/include/omegaWTK/Composition/Path.h`
 - Animation API: `wtk/include/omegaWTK/Composition/Animation.h`
 - Backend rendering: `wtk/src/Composition/backend/RenderTarget.cpp`, `RenderTarget.h`
