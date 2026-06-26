@@ -94,11 +94,84 @@ public:
 };
 
 /**
+ * @brief Construction options for `ScrollableContainer`.
+ *
+ * `verticalScroll` / `horizontalScroll` select which axes accept
+ * scroll-wheel input and draw a scroll bar. `autoSizeContent` is the
+ * S2 auto-extent toggle: when `true` the content host grows to the
+ * bounding box of its children; when `false` the caller owns the
+ * extent via `setContentSize`. S1 only honors the explicit-size path
+ * (the host never auto-grows yet), so the flag is stored but the
+ * union-of-rects logic lands in S2.
+ */
+struct OMEGAWTK_EXPORT ScrollableContainerOptions {
+    bool verticalScroll = true;
+    bool horizontalScroll = false;
+    bool autoSizeContent = true;
+};
+
+/**
  * @brief A container that allows its content to overflow, and can be scrolled.
- * 
- */ 
+ *
+ * Two-view composite (ScrollableContainer-Implementation-Plan §3 Option
+ * A): the widget's root view is a `ScrollView` (offset + clip +
+ * scroll-wheel routing) whose single child is a content `View`. A
+ * private inner `Container` wraps that same content view and owns the
+ * child widgets, so `addChild` / `removeChild` / `childWidgets` forward
+ * to it and the rest of the framework (theme, layout, host walks) sees
+ * the children at the right level of nesting through `childWidgets()`.
+ * The content view's rect is the scroll extent and may exceed the
+ * viewport; the `ScrollView` clips to the viewport and shifts
+ * descendants by its scroll offset.
+ */
 class OMEGAWTK_EXPORT ScrollableContainer : public Widget {
-    WIDGET_CONSTRUCTOR()
+    ScrollableContainerOptions options_;
+    // The content host view — shared with both the root `ScrollView`
+    // (as its scrolled child) and `contentWidget_` (as its backing
+    // view). Its rect is the content extent.
+    ViewPtr contentView_;
+    // Implementation-private inner Container — not exposed because
+    // callers should not stack multiple containers inside the same
+    // scroll viewport. addChild / removeChild / childWidgets forward
+    // to it.
+    SharedHandle<Container> contentWidget_;
+
+    // The `ScrollView` + content `View` must exist before the base
+    // `Widget(ViewPtr)` constructor runs, so they are built by this
+    // static helper and threaded in through a delegating constructor.
+    // Both are typed as `ViewPtr` to keep `ScrollView` out of this
+    // header; `scrollView` is really a `ScrollView` (upcast).
+    struct Composite {
+        ViewPtr scrollView;
+        ViewPtr contentView;
+    };
+    static Composite BuildComposite(const Composition::Rect & rect,
+                                    const ScrollableContainerOptions & options);
+    ScrollableContainer(Composite composite,
+                        const ScrollableContainerOptions & options);
+protected:
+    // No-op like Container's: the framework's onThemeSetRecurse walk
+    // applies the theme to the scrolled children through childWidgets().
+    void onThemeSet(Native::ThemeDesc & desc) override;
+public:
+    explicit ScrollableContainer(Composition::Rect rect,
+                                 const ScrollableContainerOptions & options = {});
+
+    // Forwarded to contentWidget_. Signatures match Container's so a
+    // caller can swap a Container for a ScrollableContainer with no
+    // code changes.
+    WidgetPtr addChild(const WidgetPtr & child);
+    bool removeChild(const WidgetPtr & child);
+    OmegaCommon::ArrayRef<WidgetPtr> childWidgets() override;
+
+    // Explicit content sizing. S1 ships this directly; S2 adds the
+    // auto-sizing path gated on `options_.autoSizeContent`.
+    void setContentSize(float w, float h);
+    Composition::Point2D contentSize() const;
+
+    const ScrollableContainerOptions & options() const { return options_; }
+
+    ~ScrollableContainer() override;
 };
 
 

@@ -270,6 +270,12 @@ protected:
     }
 
     friend class Container;
+    // ScrollableContainer wraps a private inner Container whose
+    // `treeHost` the framework walk never sets (it is reached only
+    // through `childWidgets()`). The friendship lets
+    // `ScrollableContainer::addChild` re-thread the real host into a
+    // child added after attach — same access Container already has.
+    friend class ScrollableContainer;
 public:
     ~Widget() override;
 };

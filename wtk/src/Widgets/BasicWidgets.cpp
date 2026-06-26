@@ -1,5 +1,6 @@
 #include "omegaWTK/Widgets/BasicWidgets.h"
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/UI/ScrollView.h"
 
 #include <algorithm>
 #include <cmath>
@@ -288,5 +289,107 @@ Container::~Container(){
     }
     children.clear();
 }
+
+// --- ScrollableContainer (ScrollableContainer-Implementation-Plan S1) ---
+
+ScrollableContainer::Composite
+ScrollableContainer::BuildComposite(const Composition::Rect & rect,
+                                    const ScrollableContainerOptions & options){
+    Composite composite;
+    // The content view lives inside the ScrollView's local coordinate
+    // space, so its origin is {0,0}; the ScrollView itself carries the
+    // parent-relative position. S1 starts the content extent equal to
+    // the viewport (no overflow until the caller sets a larger extent
+    // via `setContentSize`).
+    Composition::Rect contentRect;
+    contentRect.pos = {0.f, 0.f};
+    contentRect.w = rect.w;
+    contentRect.h = rect.h;
+    composite.contentView = View::Create(contentRect);
+
+    composite.scrollView = std::make_shared<ScrollView>(
+        rect, composite.contentView,
+        options.verticalScroll, options.horizontalScroll);
+    return composite;
+}
+
+ScrollableContainer::ScrollableContainer(Composition::Rect rect,
+                                         const ScrollableContainerOptions & options):
+    ScrollableContainer(BuildComposite(rect, options), options){
+}
+
+ScrollableContainer::ScrollableContainer(Composite composite,
+                                         const ScrollableContainerOptions & options):
+    Widget(composite.scrollView),
+    options_(options),
+    contentView_(composite.contentView),
+    contentWidget_(std::make_shared<Container>(composite.contentView)){
+    // `contentWidget_` reuses `contentView_` rather than introducing a
+    // third View, so its child-clamp bounds are the content extent and
+    // its child views nest directly under the ScrollView's scrolled
+    // subtree. No relayout needed yet — there are no children.
+}
+
+void ScrollableContainer::onThemeSet(Native::ThemeDesc & desc){
+    (void)desc;
+}
+
+WidgetPtr ScrollableContainer::addChild(const WidgetPtr & child){
+    auto added = contentWidget_->addChild(child);
+    // `contentWidget_` is a detached helper the framework's host walk
+    // never reaches (it is not in `childWidgets()`), so `wireChild`
+    // threaded a null `treeHost` into a child added after this widget
+    // attached. Re-thread the real host now. (View-level wiring —
+    // frontend / sync lane / focus host — is already correct via
+    // `View::addSubView`; this fixes only the child Widget's pointer.)
+    if(added != nullptr && treeHost != nullptr){
+        added->setTreeHostRecurse(treeHost);
+    }
+    return added;
+}
+
+bool ScrollableContainer::removeChild(const WidgetPtr & child){
+    return contentWidget_->removeChild(child);
+}
+
+OmegaCommon::ArrayRef<WidgetPtr> ScrollableContainer::childWidgets(){
+    return contentWidget_->childWidgets();
+}
+
+void ScrollableContainer::setContentSize(float w, float h){
+    if(contentView_ == nullptr){
+        return;
+    }
+    auto & contentRect = contentView_->getRect();
+    contentRect.w = w;
+    contentRect.h = h;
+    // Re-clamp existing children against the new extent so a content
+    // size set after children were added still sees the right bounds.
+    if(contentWidget_ != nullptr){
+        contentWidget_->relayout();
+    }
+    // Clamp the current scroll offset to the new maximum — shrinking the
+    // extent below the current offset would otherwise leave the viewport
+    // scrolled past the end.
+    auto & scrollView = viewAs<ScrollView>();
+    const Composition::Rect & viewport = scrollView.getRect();
+    Composition::Point2D offset = scrollView.getScrollOffset();
+    const float maxX = std::max(0.f, w - viewport.w);
+    const float maxY = std::max(0.f, h - viewport.h);
+    offset.x = std::clamp(offset.x, 0.f, maxX);
+    offset.y = std::clamp(offset.y, 0.f, maxY);
+    scrollView.setScrollOffset(offset);
+    invalidate();
+}
+
+Composition::Point2D ScrollableContainer::contentSize() const{
+    if(contentView_ == nullptr){
+        return {0.f, 0.f};
+    }
+    const Composition::Rect & contentRect = contentView_->getRect();
+    return {contentRect.w, contentRect.h};
+}
+
+ScrollableContainer::~ScrollableContainer() = default;
 
 }

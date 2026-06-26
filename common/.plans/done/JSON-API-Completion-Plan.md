@@ -1,6 +1,11 @@
 # JSON API Completion Plan
 
-> **Status: Phases 1–3 landed + verified (2026-06-20). Phases 4–5 not started.**
+> **Status: COMPLETE — all 5 phases landed + verified (2026-06-20).**
+> The `OmegaCommon::JSON` value type is finished: correct ownership, lossless
+> numbers, null/bool, const-correct + non-mutating reads, error-returning parse,
+> serialize options, and a live JSONConvertible bridge. The downstream LSP
+> migration (replace `gte/omegasl/lsp/Json.cpp` with this API) is now unblocked
+> but tracked separately.
 > This plan completes the `OmegaCommon::JSON` value type. Three design forks were
 > resolved with the developer up front: numbers become a **tagged int-or-double**,
 > parse failures are reported through a new **`TryParse` → `Result<JSON, String>`**
@@ -307,15 +312,76 @@ Note: the const accessors return the existing view types (`StrRef`/`ArrayRef`/
 `MapRef`); those are read-only interfaces, so handing one out from a const node
 is fine even though `MapRef`/`ArrayRef` wrap a non-const ref internally.
 
-### Phase 4 — Error-returning parse
+### Phase 4 — Error-returning parse — **Complete (2026-06-20)**
 
-Introduce `TryParse → Result<JSON,String>`; remove `std::exit`; repoint `parse`
-as a wrapper. Fixes #3. **Verification:** malformed input yields `isErr()` with a
-RapidJSON message + offset and the process stays alive.
+Added `static Result<JSON,String> TryParse(StrRef)` / `TryParse(std::istream&)`.
+The `RapidJSONBridge` parse overloads now return `Result<JSON,String>` (the
+`std::exit(1)`-calling `fail()` helper is deleted; a shared `errorMessage()`
+builds the RapidJSON description + byte offset). `JSON::parse` is now a thin
+wrapper over `TryParse` that asserts on error in debug and returns an empty node
+in release — its public signature is unchanged, so existing call sites (assetc,
+`operator>>`, the LSP) compile untouched. `fromRapid`'s unreachable
+"unsupported value type" path (parse errors are caught before it runs) became an
+`assert(false)` + `return JSON(nullptr)` instead of an exit. Fixes #3.
 
-### Phase 5 — Serialize options + convertible bridge
+**Verification (all passing):**
+- `common/tests/JSONParseResultTest.cpp` (target `json-parse-result-test`, wired
+  in CMake + `AUTOM.build`): ok path (String + istream) returns the parsed value;
+  error path yields `isErr()` with a non-empty message containing the byte offset
+  (observed e.g. `Missing a name for object member. at offset 2`); multiple
+  malformed inputs in sequence prove the process no longer exits; `Result::valueOr`
+  fallback; legacy `parse()` still parses valid input.
+- AddressSanitizer: clean. macOS `leaks`: `0 leaks` — including the error paths,
+  where the RapidJSON `Document` and the error `String` are both freed.
+- Regression: `omega-assetc` rebuilt + 7 `assetc` integration tests pass;
+  `std::exit` is gone from `common/src/json.cpp` entirely.
 
-Add the `pretty` flag and the `From`/`into` templates. Fixes #9, #10.
+### Phase 5 — Serialize options + convertible bridge — **Complete (2026-06-20)**
+
+Added the `pretty` flag to both `serialize` overloads (default `true`, preserving
+current pretty output byte-for-byte; `false` swaps `PrettyWriter` for RapidJSON's
+compact `Writer` — `writeNode` is already a template over the writer type). Wired
+the dangling `JSONConvertible` via the templates `static JSON From(T&)`
+(calls `v.toJSON`) and `void into(T&)` (calls `v.fromJSON`) — duck-typed on T, so
+any type with the two methods works, not only `JSONConvertible` subclasses. Fixes
+#9, #10.
+
+**Addition (surfaced by the LSP-migration analysis):** added empty-container
+factories `static JSON Object()` / `static JSON Array()`. Without them, a
+`toJSON` implementation had no clean way to start building a container (the only
+paths were `JSON(std::map{})` / `JSON(std::initializer_list{})`). They make the
+convertible/builder story usable and cover the LSP's `Json::object()`/`array()`
+shape. Not in the original Proposed Public API; folded into this phase.
+
+**Verification (all passing):**
+- `common/tests/JSONConvertTest.cpp` (target `json-convert-test`, wired in CMake +
+  `AUTOM.build`): compact (`{"a":"b"}`, no whitespace) vs pretty (has newlines)
+  and `serialize(json) == serialize(json, true)` backward compat; `Object()`/
+  `Array()` empty + buildable + compact-serialized; a real `IJSONConvertible`
+  `Point` round-tripping through `From`/`into` and through a serialize→parse→into
+  cycle.
+- AddressSanitizer: clean. macOS `leaks`: `0 leaks` (the new factories + `From`
+  allocate containers that are freed).
+- Regression: 7 `assetc` integration tests pass — default-pretty serialize output
+  is unchanged.
+
+---
+
+## Outcome
+
+All five phases complete. `OmegaCommon::JSON` went from a leaking, shallow-copying,
+int-only, process-exiting value type to a correct one: deep-copy/move ownership
+(no leaks, no aliasing), lossless tagged int-or-double numbers, explicit null +
+`isBool`, const-correct and non-mutating reads (`contains`/`find`/`at`/`size`/
+`empty`), `TryParse → Result<JSON,String>` (no more `std::exit`), compact-or-pretty
+serialization, empty-container factories, and a working `JSONConvertible` bridge.
+Five focused test binaries (`json-{lifecycle,number,lookup,parse-result,convert}-test`,
+grouped under the `common-core-tests` target) cover it, each verified under ASan
+and the macOS `leaks` tool, with the `assetc` integration suite green throughout.
+
+**Open follow-up (separate effort):** migrate `gte/omegasl/lsp/` off its bespoke
+`Json` (`Json.cpp`/`Json.h`) onto this API now that parity is reached — including
+the spawned `asInt()` request-id precision fix, which that migration subsumes.
 
 ## Testing Plan
 

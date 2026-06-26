@@ -67,3 +67,11 @@ json_number_test.output_dir = "tests"
 var json_lookup_test = Executable(name:"json-lookup-test",sources:["./tests/JSONLookupTest.cpp"])
 json_lookup_test.deps = ["omega-common"]
 json_lookup_test.output_dir = "tests"
+
+var json_parse_result_test = Executable(name:"json-parse-result-test",sources:["./tests/JSONParseResultTest.cpp"])
+json_parse_result_test.deps = ["omega-common"]
+json_parse_result_test.output_dir = "tests"
+
+var json_convert_test = Executable(name:"json-convert-test",sources:["./tests/JSONConvertTest.cpp"])
+json_convert_test.deps = ["omega-common"]
+json_convert_test.output_dir = "tests"

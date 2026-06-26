@@ -11,7 +11,7 @@ option(OMEGAWTK_SKIP_THIRD_PARTY_BUILD "Use prebuilt third-party artifacts and s
 # G.1+ wire the caches into the render hot path, those code paths are guarded
 # by `#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED` so the feature stays opt-in until
 # the cache validators in the plan are met. Default OFF.
-option(OMEGAWTK_ENABLE_CONTENT_CACHE "Enable the WTK content-cache subsystem (Phase G of UIView-Render-Redesign-Plan)." OFF)
+option(OMEGAWTK_ENABLE_CONTENT_CACHE "Enable the WTK content-cache subsystem (Phase G of UIView-Render-Redesign-Plan)." ON)
 
 set(OMEGAWTK_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 

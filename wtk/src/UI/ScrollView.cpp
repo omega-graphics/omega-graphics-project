@@ -33,8 +33,23 @@ namespace OmegaWTK {
                 if(owner->hasVerticalScrollBar){
                     newOffset.y -= p->deltaY;
                 }
-                newOffset.x = std::max(0.f, newOffset.x);
-                newOffset.y = std::max(0.f, newOffset.y);
+                // Clamp the offset to [0, contentExtent - viewport] on
+                // each axis so the user cannot scroll past either end.
+                // Without the upper bound the bars draw outside their
+                // tracks and the content scrolls off into empty space
+                // (ScrollableContainer-Implementation-Plan §6.1). When
+                // content is smaller than the viewport the max is 0, so
+                // the offset pins to the origin.
+                float maxX = 0.f;
+                float maxY = 0.f;
+                if(owner->child != nullptr){
+                    const auto & content = owner->child->getRect();
+                    const auto & viewport = owner->getRect();
+                    maxX = std::max(0.f, content.w - viewport.w);
+                    maxY = std::max(0.f, content.h - viewport.h);
+                }
+                newOffset.x = std::clamp(newOffset.x, 0.f, maxX);
+                newOffset.y = std::clamp(newOffset.y, 0.f, maxY);
                 owner->setScrollOffset(newOffset);
             }
         }

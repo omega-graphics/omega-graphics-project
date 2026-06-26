@@ -109,6 +109,12 @@ namespace OmegaCommon {
         /// Construct JSON as Map
         JSON(std::map<String,JSON> map);
 
+        /// Make an empty Map node, ready to be filled via operator[]/insert.
+        static JSON Object();
+
+        /// Make an empty Array node, ready to be filled via push_back.
+        static JSON Array();
+
         OMEGACOMMON_NODISCARD bool isString() const;
 
         OMEGACOMMON_NODISCARD bool isArray() const;
@@ -196,13 +202,46 @@ namespace OmegaCommon {
 
         
 
+        /// Parse JSON text, returning the parsed value or an error message
+        /// (RapidJSON description + byte offset). Never aborts the process —
+        /// prefer this anywhere the input may be malformed.
+        static Result<JSON,String> TryParse(OmegaCommon::StrRef source);
+
+        static Result<JSON,String> TryParse(std::istream & in);
+
+        /// Parse JSON text. Asserts on malformed input (and yields an empty node
+        /// in release builds); use TryParse to handle parse errors gracefully.
         static JSON parse(String str);
 
         static JSON parse(std::istream & in);
 
-        static String serialize(JSON & json);
+        /// Serialize to a String. `pretty` (default) indents and adds newlines;
+        /// pass false for compact, whitespace-free output (e.g. wire payloads).
+        static String serialize(JSON & json, bool pretty = true);
 
-        static void serialize(JSON & json,std::ostream & out);
+        static void serialize(JSON & json,std::ostream & out, bool pretty = true);
+
+        /// @name JSONConvertible bridge
+        /// Connect the JSONConvertible interface (see the IJSONConvertible macro):
+        /// build a JSON tree from any value with a `toJSON(JSON&)` method, or
+        /// populate any value with a `fromJSON(JSON&)` method from this node.
+        /// @{
+
+        /// Build a JSON tree from `v` by calling `v.toJSON(...)`.
+        template<class T>
+        static JSON From(T & v) {
+            JSON j;
+            v.toJSON(j);
+            return j;
+        }
+
+        /// Populate `v` from this node by calling `v.fromJSON(*this)`.
+        template<class T>
+        void into(T & v) {
+            v.fromJSON(*this);
+        }
+
+        /// @}
 
         /// Releases this node's owned String/Array/Map storage (recursively, via
         /// the owned containers' own destructors). A no-op for Number, Boolean,

@@ -5,6 +5,7 @@
 #include <rapidjson/istreamwrapper.h>
 #include <rapidjson/ostreamwrapper.h>
 #include <rapidjson/prettywriter.h>
+#include <rapidjson/writer.h>
 
 #include <cassert>
 #include <cstdint>
@@ -19,9 +20,9 @@ class RapidJSONBridge {
   using Document = rapidjson::Document;
   using Value = rapidjson::Value;
 
-  [[noreturn]] static void fail(const String &message) {
-    std::cerr << "JSON Parse Error:" << message << std::endl;
-    std::exit(1);
+  static String errorMessage(const Document &document) {
+    return String(rapidjson::GetParseError_En(document.GetParseError())) +
+           " at offset " + std::to_string(document.GetErrorOffset());
   }
 
   template <typename Writer>
@@ -131,38 +132,41 @@ public:
       return JSON(nullptr);
     }
 
-    fail("Unsupported RapidJSON value type");
+    // Unreachable: a successfully-parsed RapidJSON value is always one of the
+    // types handled above (malformed input is rejected before fromRapid runs).
+    // Guard loudly in debug; fall back to an explicit null in release.
+    assert(false && "Unsupported RapidJSON value type");
+    return JSON(nullptr);
   }
 
-  static JSON parse(const String &source) {
+  static Result<JSON, String> parse(const String &source) {
     Document document;
     document.Parse(source.c_str(), source.size());
     if (document.HasParseError()) {
-      String message =
-          String(rapidjson::GetParseError_En(document.GetParseError())) + " at offset " +
-          std::to_string(document.GetErrorOffset());
-      fail(message);
+      return Result<JSON, String>::err(errorMessage(document));
     }
-    return fromRapid(document);
+    return Result<JSON, String>::ok(fromRapid(document));
   }
 
-  static JSON parse(std::istream &in) {
+  static Result<JSON, String> parse(std::istream &in) {
     rapidjson::IStreamWrapper wrapper(in);
     Document document;
     document.ParseStream(wrapper);
     if (document.HasParseError()) {
-      String message =
-          String(rapidjson::GetParseError_En(document.GetParseError())) + " at offset " +
-          std::to_string(document.GetErrorOffset());
-      fail(message);
+      return Result<JSON, String>::err(errorMessage(document));
     }
-    return fromRapid(document);
+    return Result<JSON, String>::ok(fromRapid(document));
   }
 
-  static void serialize(JSON &json, std::ostream &out) {
+  static void serialize(JSON &json, std::ostream &out, bool pretty) {
     rapidjson::OStreamWrapper wrapper(out);
-    rapidjson::PrettyWriter<rapidjson::OStreamWrapper> writer(wrapper);
-    writeNode(json, writer);
+    if (pretty) {
+      rapidjson::PrettyWriter<rapidjson::OStreamWrapper> writer(wrapper);
+      writeNode(json, writer);
+    } else {
+      rapidjson::Writer<rapidjson::OStreamWrapper> writer(wrapper);
+      writeNode(json, writer);
+    }
   }
 };
 
@@ -239,22 +243,36 @@ bool JSON::asBool() const {
   return data.b;
 }
 
-JSON JSON::parse(String str) {
-  return RapidJSONBridge::parse(str);
+Result<JSON, String> JSON::TryParse(StrRef source) {
+  return RapidJSONBridge::parse(String(source.begin(), source.end()));
 }
 
-JSON JSON::parse(std::istream &in) {
+Result<JSON, String> JSON::TryParse(std::istream &in) {
   return RapidJSONBridge::parse(in);
 }
 
-String JSON::serialize(JSON &json) {
+JSON JSON::parse(String str) {
+  auto result = TryParse(str);
+  assert(result.isOk() &&
+         "JSON::parse on malformed input; use TryParse to handle parse errors");
+  return result.isOk() ? std::move(result.value()) : JSON();
+}
+
+JSON JSON::parse(std::istream &in) {
+  auto result = TryParse(in);
+  assert(result.isOk() &&
+         "JSON::parse on malformed input; use TryParse to handle parse errors");
+  return result.isOk() ? std::move(result.value()) : JSON();
+}
+
+String JSON::serialize(JSON &json, bool pretty) {
   std::ostringstream out;
-  serialize(json, out);
+  serialize(json, out, pretty);
   return out.str();
 }
 
-void JSON::serialize(JSON &json, std::ostream &out) {
-  RapidJSONBridge::serialize(json, out);
+void JSON::serialize(JSON &json, std::ostream &out, bool pretty) {
+  RapidJSONBridge::serialize(json, out, pretty);
 }
 
 JSON::Data::Data(decltype(JSON::type) t) : Data() {
@@ -443,6 +461,20 @@ bool JSON::empty() const {
 }
 
 JSON::JSON(std::map<String, JSON> map) : type(MAP), data(map) {}
+
+JSON JSON::Object() {
+  JSON j;
+  j.type = MAP;
+  j.data.map = new Map<String, JSON>();
+  return j;
+}
+
+JSON JSON::Array() {
+  JSON j;
+  j.type = ARRAY;
+  j.data.array = new Vector<JSON>();
+  return j;
+}
 
 std::istream &operator>>(std::istream &in, JSON &json) {
   json = JSON::parse(in);

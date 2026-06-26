@@ -28,9 +28,27 @@ target_link_libraries(json-lookup-test PRIVATE OmegaCommonCore)
 
 add_test(NAME json_lookup COMMAND json-lookup-test)
 
+add_executable(json-parse-result-test JSONParseResultTest.cpp)
+set_target_properties(json-parse-result-test PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_dependencies(json-parse-result-test OmegaCommonCore)
+target_link_libraries(json-parse-result-test PRIVATE OmegaCommonCore)
+
+add_test(NAME json_parse_result COMMAND json-parse-result-test)
+
+add_executable(json-convert-test JSONConvertTest.cpp)
+set_target_properties(json-convert-test PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_dependencies(json-convert-test OmegaCommonCore)
+target_link_libraries(json-convert-test PRIVATE OmegaCommonCore)
+
+add_test(NAME json_convert COMMAND json-convert-test)
+
 add_custom_target(common-core-tests
 	COMMAND json-lifecycle-test
 	COMMAND json-number-test
 	COMMAND json-lookup-test
-	DEPENDS json-lifecycle-test json-number-test json-lookup-test
+	COMMAND json-parse-result-test
+	COMMAND json-convert-test
+	DEPENDS json-lifecycle-test json-number-test json-lookup-test json-parse-result-test json-convert-test
 	COMMENT "Running OmegaCommon core-runtime unit tests")

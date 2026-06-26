@@ -4,8 +4,18 @@ This document elaborates [Widget-Stub-Implementation-Plan §5A](Widget-Stub-Impl
 
 The reason it warrants its own plan rather than inline expansion: the work touches three layers — the new widget itself, the existing `ScrollView` (offset-clamping bug, content-rect ownership), and `WidgetTreeHost::hitTestWidget` (must fold `contentOffset()` to dispatch clicks correctly into scrolled subtrees). Each layer needs its own phase boundary.
 
+> **Prerequisite discovered during S1 (2026-06-25).** This plan's §2 assumes
+> `ScrollView` is wired into the rendering/layout/event pipelines. It is not —
+> Phase 4.7's paint rewrite and the §2.3a focus/event changes orphaned its
+> layout, paint, and wheel-input integration after this plan was written. The
+> S1 widget code (below) is correct and builds, but does not scroll/clip/draw
+> bars/receive input until that is repaired. See
+> [ScrollView-4.7-Integration-Plan](ScrollView-4.7-Integration-Plan.md) (phases
+> V1–V5), which must land before S1 can be verified at runtime.
+
 Related documents:
 
+- [ScrollView-4.7-Integration-Plan](ScrollView-4.7-Integration-Plan.md) — **prerequisite**; re-integrates `ScrollView` into the 4.7 pipeline (layout passthrough, event bubbling, clip + bars, FocusManager).
 - [Widget-Stub-Implementation-Plan §5A](Widget-Stub-Implementation-Plan.md#5a-scrollablecontainer) — parent catalog entry.
 - [Widget-Type-Catalog-Proposal §3](Widget-Type-Catalog-Proposal.md) — `ScrollableContainer` is "Container with scroll viewport and content host; existing placeholder; integrate with `ScrollView` behavior."
 - [Widget-Stub-Implementation-Plan Phase 5B–5F](Widget-Stub-Implementation-Plan.md#phase-5-scrollablecontainer-and-collection-widgets) — `ListView`, `TreeView`, `TableView`, `CollectionView`, `PropertyGrid` are downstream consumers of this work; their virtualization layers attach to whatever this plan ships.

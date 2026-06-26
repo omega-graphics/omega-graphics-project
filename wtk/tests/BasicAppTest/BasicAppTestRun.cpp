@@ -74,7 +74,7 @@ public:
 // ---------------------------------------------------------------------------
 
 int RunBasicAppTest(AppInst *app) {
-    Composition::Rect windowRect{{0, 0}, 600, 500};
+    Composition::Rect windowRect{{0, 0}, 600, 640};
 
     auto window = make<AppWindow>(windowRect, new TestWindowDelegate());
     g_mainWindow = window.get();
@@ -271,6 +271,59 @@ int RunBasicAppTest(AppInst *app) {
     StackSlot buttonRowSlot;
     buttonRowSlot.flexGrow = 0.f;
     root->addChild(buttonRow, buttonRowSlot);
+
+    // Separator
+    SeparatorProps sep3Props;
+    sep3Props.orientation = Orientation::Horizontal;
+    sep3Props.thickness = 1.f;
+    sep3Props.brush = Composition::ColorBrush(
+        Composition::Color::create8Bit(0x555555));
+    auto sep3 = make<Separator>(
+        Composition::Rect{{0, 0}, contentW, 4.f}, sep3Props);
+    StackSlot sep3Slot;
+    sep3Slot.flexGrow = 0.f;
+    root->addChild(sep3, sep3Slot);
+
+    // ScrollableContainer (ScrollableContainer-Implementation-Plan S1)
+    // ---------------------------------------------------------------
+    // A 200x200 scroll viewport whose content extent is 200x600. Three
+    // contiguous 200x200 colored bands are placed in content space at
+    // y = 0 / 200 / 400, so only the first band fits the viewport and
+    // the lower two are reachable only by scrolling. §6.1's upper-bound
+    // clamp keeps the wheel from scrolling past the bottom band
+    // (content.h - viewport.h = 400) or above the top (0).
+    ScrollableContainerOptions scrollOpts;
+    scrollOpts.verticalScroll = true;
+    scrollOpts.horizontalScroll = false;
+    auto scrollBox = make<ScrollableContainer>(
+        Composition::Rect{{0, 0}, 200.f, 200.f}, scrollOpts);
+    // Set the extent BEFORE adding children so the inner content host
+    // clamps them against 200x600, not the initial viewport-sized rect
+    // (plan §5.3).
+    scrollBox->setContentSize(200.f, 600.f);
+
+    struct ScrollBand { float y; uint32_t color; };
+    const ScrollBand bands[] = {
+        {0.f,   Composition::Color::Red8},
+        {200.f, Composition::Color::Green8},
+        {400.f, Composition::Color::Blue8},
+    };
+    // Keep the band widgets alive past this loop — addChild stores them
+    // in the inner Container, but holding our own handles documents the
+    // ownership and matches the rest of this function's scope rules.
+    SharedHandle<Widget> scrollBands[3];
+    for (int i = 0; i < 3; ++i) {
+        RectangleProps bandProps;
+        bandProps.fill = Composition::ColorBrush(
+            Composition::Color::create8Bit(bands[i].color));
+        scrollBands[i] = make<Rectangle>(
+            Composition::Rect{{0.f, bands[i].y}, 200.f, 200.f}, bandProps);
+        scrollBox->addChild(scrollBands[i]);
+    }
+
+    StackSlot scrollSlot;
+    scrollSlot.flexGrow = 0.f;
+    root->addChild(scrollBox, scrollSlot);
 
     window->setRootWidget(root);
 
