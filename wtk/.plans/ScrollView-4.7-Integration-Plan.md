@@ -169,11 +169,30 @@ the migration can be paused without losing scroll.
 - This restores the balanced `PushClip`…children…`PopClip` bracket the
   Tier-3 design intended. Verify: content past the viewport is scissored.
 
-Note: the cache walker (`paintSubtreeWithCache`) brackets each node's *own*
-paint in capture markers; confirm the new after-children hook lands outside
-that node's `EndCacheCapture` and that a `ScrollView` (which `wantsLayer()`)
-interacts correctly with caching — likely make ScrollView cache-ineligible
-while scrolling, mirroring the §G.5.4 drag-stretch precedent.
+Cache interaction — DECIDED (V3 first cut). The content cache
+(`OMEGAWTK_ENABLE_CONTENT_CACHE`, ON in this build) wraps each view's own
+paint in `BeginCacheCapture`/`EndCacheCapture`. If `ScrollView::paint`
+emitted `PushClip` *inside* its own capture, a later cache HIT would skip the
+wrapped ops — the `PushClip` never runs, but the `PopClip` (after children)
+still does → scissor-stack imbalance. Worse, a child MISS switches to an
+offscreen capture target, and whether the ScrollView's window scissor
+survives that switch for the composite blit is not safely knowable by
+reading the backend.
+
+So V3 takes the unambiguously-correct route: a clip-producing view
+(`View::clipsContentSubtree() == true`, ScrollView overrides) paints its
+**entire subtree live** — the cache walker recurses its children through the
+non-cache `paintSubtree`, so no capture markers appear inside the
+`PushClip`…`PopClip` bracket. `paintAfterChildren` is called by BOTH walkers
+(after the child loop, with `pc.offset` restored to the node's own offset).
+
+Trade-off: scrolled content is not per-view cached, so it re-rasterizes on
+each dirty frame. For the common case (a moved-but-unchanged child that would
+otherwise cache-HIT and blit while scrolling) this is a real perf cost.
+Re-enabling the cache under a clip — by emitting the clip bracket in the
+*walker* outside each child's capture markers and confirming the backend
+restores the window scissor across capture-target switches — is a tracked
+follow-up (V3.1), deferred until the clip itself is proven correct.
 
 ### V4 — Scroll bars
 

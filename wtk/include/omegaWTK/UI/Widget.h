@@ -212,6 +212,16 @@ public:
     virtual bool isLayoutResizable() const {
         return false;
     }
+    /// Whether the parent layout's explicit cross-axis `Stretch` directive
+    /// may widen this widget to the cross extent. Default true: a stretch
+    /// is an author directive that applies even to frozen leaves (a
+    /// Separator spans the cross axis). A widget that owns its own size and
+    /// must not be stretched by the page — a nested scroll viewport, a
+    /// fixed-size container — overrides this to false. Consumed by
+    /// `FlexLayout` through the per-child `FlexChildSpec.honorCrossStretch`.
+    virtual bool layoutCrossStretchAllowed() const {
+        return true;
+    }
     /**
      Add a WidgetObserver to be notified.
     */

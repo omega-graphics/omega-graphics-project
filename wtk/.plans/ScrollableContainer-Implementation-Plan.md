@@ -287,6 +287,8 @@ The verification surface is small because the widget composes existing primitive
 
 6. **`StackWidget` as content.** A common pattern is `ScrollableContainer` → `VStack` → many children. Confirmed to work as long as the `VStack`'s rect is set to the content extent (i.e. its `flexLayout_` arranges children inside that rect). This is callsite responsibility — the `ScrollableContainer` cannot detect "the single child is a StackWidget, defer extent to it." If callers find this verbose, a follow-up convenience constructor (`ScrollableContainer::WithVStack(rect, opts)`) can land in S5 or later — not a v0 requirement.
 
+7. **Viewport resize control (RESOLVED 2026-06-26).** A `ScrollableContainer` placed in a `crossAlign=Stretch` stack was widened to the full cross extent because `FlexLayout`'s explicit `Stretch` deliberately applies even to frozen leaves (so a `Separator` spans the axis). That is wrong for a viewport that owns its own width — e.g. a nested scroll container inside a scrollable page. Fix (a general Container capability, not ScrollableContainer-only, per developer direction): a child may now opt out of the cross-`Stretch` override via a new `Widget::layoutCrossStretchAllowed()` virtual (default `true`, so Separators keep stretching), plumbed through `FlexChildSpec.honorCrossStretch`. `Container::setResizeWithParent(bool)` (default `true`, preserves behavior) drives BOTH `isLayoutResizable()` (main-axis flex) and `layoutCrossStretchAllowed()` (cross stretch). `ScrollableContainerOptions::resizeWithParent` exposes the same on the viewport. ~70 LoC across `Widget`/`Container`/`FlexLayout`/`FlexChildSpec`/`StackWidget`/`ScrollableContainer`.
+
 ---
 
 ## 10. Cross-plan dependencies

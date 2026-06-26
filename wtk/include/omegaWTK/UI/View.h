@@ -179,6 +179,17 @@ namespace OmegaWTK {
             return ViewPtr(new View(rect,parent));
         }
 
+        /// ScrollView-4.7-Integration-Plan V2: deliver a native event to
+        /// this view, then bubble it up the parent chain until a handler
+        /// consumes it (sets `event->handled`). `emit` (inherited) hits
+        /// only this view's own receivers; `dispatchEvent` is the
+        /// bubbling wrapper the WidgetTreeHost uses so an event that lands
+        /// on a deep child (e.g. the wheel over a leaf inside a
+        /// ScrollView) reaches an ancestor handler. Dispatch starts here
+        /// (the deepest hit) and walks toward the root, so the innermost
+        /// capable handler consumes first.
+        void dispatchEvent(Native::NativeEventPtr event);
+
         /// @brief Retrieves the Rect that defines the position and bounds of the View.
         Composition::Rect & getRect();
         // Phase 4.8: `getLayerTree()` and the per-view
@@ -210,6 +221,18 @@ namespace OmegaWTK {
         /// is distinct from each node's own `dirtyBits()` — gating
         /// uses the union of the two.
         void markDirty(uint8_t bits);
+        /// ScrollView-4.7-Integration-Plan V2.1: mark this view dirty for
+        /// Paint and ask the owning host to schedule a frame. Unlike the
+        /// idle-context callers that batch and call `AppWindow::refresh()`
+        /// once, this is for a view-internal change driven *inside* a
+        /// native-event handler (e.g. a ScrollView updating its offset on
+        /// a wheel event) where no surrounding code will request the
+        /// frame. `requestFrame` coalesces, so a burst of these collapses
+        /// to one paint. A no-op (markDirty only) when the view is not yet
+        /// attached to a host. The whole-tree Paint walk
+        /// (FrameBuilder.cpp — "no subtree pruning at the node level")
+        /// then re-folds the new `contentOffset()` into every descendant.
+        void scheduleRepaint();
         /// UIView-Render-Redesign Phase G.3.3: same dirty-bit marking
         /// and ancestor `descendantDirty` propagation as `markDirty`,
         /// but DOES NOT bump `contentVersion()`. Used by the window
@@ -489,6 +512,25 @@ namespace OmegaWTK {
         /// (base `View`) is a pass-through no-op; `UIView`, `SVGView`,
         /// `ScrollView` override to emit their ops.
         virtual void paint(Composition::PaintContext & pc);
+
+        /// ScrollView-4.7-Integration-Plan V3: the post-order companion to
+        /// `paint`. The FrameBuilder paint walker calls this AFTER all of
+        /// this node's subviews have painted, with `pc.offset` restored to
+        /// this node's own absolute offset. It is the place to emit ops
+        /// that must bracket the children — `ScrollView` emits its
+        /// `PopClip` here to close the `PushClip` its `paint` opened.
+        /// Default is a no-op.
+        virtual void paintAfterChildren(Composition::PaintContext & pc);
+
+        /// ScrollView-4.7-Integration-Plan V3: when true, this view clips
+        /// its descendants (emits a `PushClip` in `paint` + `PopClip` in
+        /// `paintAfterChildren`), and its whole subtree must paint live so
+        /// the clip bracket is never split across content-cache capture
+        /// markers (a cache hit would skip the wrapped `PushClip` while the
+        /// `PopClip` still ran → scissor-stack imbalance). The cache walker
+        /// recurses such a subtree through the non-cache path. Default
+        /// false; `ScrollView` overrides to true.
+        virtual bool clipsContentSubtree() const;
 
         /// The margin (logical px, per side) by which this view's paint
         /// extends *beyond* its layout rect. Driven today by a resolved

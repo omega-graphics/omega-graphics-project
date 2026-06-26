@@ -378,6 +378,10 @@ void paintSubtree(View & node, Composition::PaintContext & pc){
         paintSubtree(*child, pc);
     }
     pc.offset = parentOffset;
+    // ScrollView-4.7-Integration-Plan V3: post-order hook, with pc.offset
+    // restored to this node's own absolute offset. ScrollView emits its
+    // PopClip here to close the PushClip its paint() opened.
+    node.paintAfterChildren(pc);
 }
 
 #ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
@@ -403,6 +407,33 @@ void paintSubtreeWithCache(View & node,
                            AnimationScheduler * animScheduler,
                            std::uint32_t minSizePx,
                            bool dragActive){
+    // ScrollView-4.7-Integration-Plan V3: a clip-producing view (ScrollView)
+    // paints its WHOLE subtree live. Its paint() opens a PushClip and
+    // paintAfterChildren() closes it; if any node inside that bracket went
+    // through the per-View cache, a cache HIT would skip the wrapped ops —
+    // dropping the PushClip while the PopClip still ran (scissor imbalance),
+    // and a MISS would switch render targets mid-bracket. Recursing the
+    // subtree through the non-cache `paintSubtree` keeps the clip bracket
+    // free of capture markers. (Re-enabling the cache under a clip is the
+    // tracked V3.1 follow-up.)
+    if(node.clipsContentSubtree()){
+        node.paint(pc);
+        const auto parentOffset = pc.offset;
+        const auto contentOff   = node.contentOffset();
+        for(auto * child : node.subviews()){
+            if(child == nullptr){
+                continue;
+            }
+            const auto & cr = child->getRect();
+            pc.offset.x = parentOffset.x + contentOff.x + cr.pos.x;
+            pc.offset.y = parentOffset.y + contentOff.y + cr.pos.y;
+            paintSubtree(*child, pc);
+        }
+        pc.offset = parentOffset;
+        node.paintAfterChildren(pc);
+        return;
+    }
+
     const auto nodeRect = node.getRect();
     bool eligible = nodeRect.w >= static_cast<float>(minSizePx)
                  && nodeRect.h >= static_cast<float>(minSizePx);
@@ -460,6 +491,10 @@ void paintSubtreeWithCache(View & node,
         paintSubtreeWithCache(*child, pc, animScheduler, minSizePx, dragActive);
     }
     pc.offset = parentOffset;
+    // V3 post-order hook (no-op for every node except a clip producer,
+    // which is handled by the bypass branch above — kept here for parity
+    // with the non-cache walker and any future after-children emitter).
+    node.paintAfterChildren(pc);
 }
 #endif
 

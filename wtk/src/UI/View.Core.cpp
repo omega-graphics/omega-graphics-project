@@ -559,7 +559,44 @@ Composition::Point2D View::contentOffset() const{
     return {0.f, 0.f};
 }
 
+void View::scheduleRepaint(){
+    markDirty(View::Paint);
+    if(impl_->treeHost_ != nullptr){
+        impl_->treeHost_->requestFrame();
+    }
+}
+
+void View::dispatchEvent(Native::NativeEventPtr event){
+    if(event == nullptr){
+        return;
+    }
+    // ScrollView-4.7-Integration-Plan V2: deliver to this view (the
+    // deepest hit), then bubble toward the root until a handler marks
+    // the event consumed. A view with no receiver is a transparent
+    // pass-through — its `emit` loops over an empty receiver list — so
+    // non-handling ancestors (bands, plain containers) are skipped and
+    // the innermost capable handler consumes first.
+    View * v = this;
+    while(v != nullptr){
+        v->emit(event);
+        if(event->handled){
+            break;
+        }
+        v = v->impl_->parent_ptr;
+    }
+}
+
 bool View::wantsLayer() const{
+    return false;
+}
+
+void View::paintAfterChildren(Composition::PaintContext & pc){
+    // Base View has nothing to emit after its children — default no-op.
+    // ScrollView overrides to close its content clip (V3).
+    (void)pc;
+}
+
+bool View::clipsContentSubtree() const{
     return false;
 }
 

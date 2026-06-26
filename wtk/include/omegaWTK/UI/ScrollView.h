@@ -71,28 +71,25 @@ public:
     /// a future compositor-thread scrolling pass reads it.
     bool wantsLayer() const override;
 
-    /// Tier 3 Phase 3.6: emit the *pre-children* draw ops for this
-    /// ScrollView's paint into `list`. Appends a single
-    /// `DrawOp::PushClip(getRect())` so descendant draws ending up in
-    /// later submissions land inside the scissor on the shared window
-    /// canvas. The matching `PopClip` is emitted by `paintOverlay()`
-    /// after children finish; the caller is responsible for ordering
-    /// the two so the per-frame `PushClip` / `PopClip` count balances
-    /// (FrameBuilder enforces per-submission balance, so paint() and
-    /// paintOverlay() are intended to be emitted into the SAME
-    /// `DisplayList` with the content ops appended between them, or
-    /// emitted into two separate submissions whose pair-balance the
-    /// caller verifies).
-    void paint(Composition::DisplayList & list) const;
+    /// V3 (ScrollView-4.7-Integration-Plan): the pre-children paint hook.
+    /// Emits a single `DrawOp::PushClip` at this view's absolute window
+    /// rect so descendant draws are scissored to the viewport. The
+    /// matching `PopClip` is emitted by `paintAfterChildren` once all
+    /// subviews have painted. (Replaces the orphaned Tier-3
+    /// `paint(DisplayList&)` / `paintOverlay(DisplayList&)` pair, which
+    /// the Phase 4.7 walker never called — it dispatches the virtual
+    /// `View::paint(PaintContext&)`.)
+    void paint(Composition::PaintContext & pc) override;
 
-    /// Tier 3 Phase 3.6: emit the *post-children* draw ops for this
-    /// ScrollView's paint into `list`. Appends `DrawOp::PopClip()`
-    /// first, then up to two `DrawOp::RoundedRect`s for the visible
-    /// scroll bars (computed from the current scroll offset, the
-    /// view's bounds, and the content child's bounds). The bars
-    /// emit *outside* the clip, so they always render even when the
-    /// content extends beyond the viewport.
-    void paintOverlay(Composition::DisplayList & list) const;
+    /// V3: the post-children paint hook. Emits the `DrawOp::PopClip` that
+    /// closes the clip opened in `paint`. (V4 will also emit the scroll
+    /// bars here, outside the clip.)
+    void paintAfterChildren(Composition::PaintContext & pc) override;
+
+    /// V3: a ScrollView clips its descendants, so its subtree paints live
+    /// (the cache walker must not split the clip bracket across capture
+    /// markers). See `View::clipsContentSubtree`.
+    bool clipsContentSubtree() const override;
 };
 
 class OMEGAWTK_EXPORT ScrollViewDelegate : public Native::NativeEventProcessor {

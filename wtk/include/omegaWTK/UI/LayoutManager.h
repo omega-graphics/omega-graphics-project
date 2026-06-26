@@ -148,6 +148,27 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// Built-in: PassthroughLayout — leaves every child's rect exactly as set;
+// `arrange` is a no-op. Unlike `AbsoluteLayout` (which FitContent-clamps an
+// oversized child down to the parent box), this manager never resizes or
+// repositions a child, so a child may exceed the parent's bounds freely.
+// This is what a scroll viewport needs: `ScrollView`'s content child owns an
+// extent that is deliberately larger than the viewport, and the host (not
+// the viewport) decides that extent and the content's origin. See
+// ScrollView-4.7-Integration-Plan §3 V1. Stateless process-wide singleton.
+// ---------------------------------------------------------------------------
+
+class OMEGAWTK_EXPORT PassthroughLayout : public LayoutManager {
+public:
+    /// Process-wide singleton — stateless, safe to share, costs no
+    /// allocation (mirrors `AbsoluteLayout::instance()`).
+    static PassthroughLayout & instance();
+
+    LayoutSize measure(View & node, const Composition::Rect & avail) override;
+    void       arrange(View & node, const Composition::Rect & finalRectLocal) override;
+};
+
+// ---------------------------------------------------------------------------
 // Built-in: FillLayout — every child stretched to the parent's full
 // content rect. Useful for "single-child wrapper" parents (one child
 // fills, multi-child = all children overlap at parent extent).
@@ -282,6 +303,14 @@ struct OMEGAWTK_EXPORT FlexChildSpec {
     /// Owner-side resizable flag (e.g. `Widget::isLayoutResizable()`).
     /// Non-resizable children skip flexGrow / flexShrink / cross-stretch.
     bool                          resizable  = true;
+    /// Whether an explicit `FlexCrossAlign::Stretch` from the container is
+    /// allowed to widen this child to the cross extent. Default true so a
+    /// frozen leaf (e.g. a Separator) still spans the cross axis under a
+    /// Stretch directive. A child that owns its own size — a nested
+    /// scroll viewport, a fixed-size container — sets this false (via
+    /// `Widget::layoutCrossStretchAllowed()`) to keep its intrinsic cross
+    /// size even when the parent's crossAlign is Stretch.
+    bool                          honorCrossStretch = true;
     float                         flexGrow   = 0.f;
     float                         flexShrink = 1.f;
     Core::Optional<float>         basis      {};

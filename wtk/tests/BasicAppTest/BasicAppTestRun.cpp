@@ -295,6 +295,10 @@ int RunBasicAppTest(AppInst *app) {
     ScrollableContainerOptions scrollOpts;
     scrollOpts.verticalScroll = true;
     scrollOpts.horizontalScroll = false;
+    // Pin the viewport to its own 200px width even though the root VStack
+    // uses crossAlign=Stretch — otherwise the parent would widen the
+    // viewport to the full window (the nested-scroll-on-a-page case).
+    scrollOpts.resizeWithParent = false;
     auto scrollBox = make<ScrollableContainer>(
         Composition::Rect{{0, 0}, 200.f, 200.f}, scrollOpts);
     // Set the extent BEFORE adding children so the inner content host
@@ -320,6 +324,21 @@ int RunBasicAppTest(AppInst *app) {
             Composition::Rect{{0.f, bands[i].y}, 200.f, 200.f}, bandProps);
         scrollBox->addChild(scrollBands[i]);
     }
+
+    // V2.1 Invariant-A probe: a Button near the top of the scroll content
+    // (content y=20, inside the viewport unscrolled). Wheeling *over* this
+    // button must still scroll the list (the button ignores ScrollWheel,
+    // so it bubbles to the ScrollView); clicking it must fire its onPress.
+    ButtonProps scrollBtnProps;
+    scrollBtnProps.text = U"In-scroll";
+    auto scrollBtn = make<Button>(
+        Composition::Rect{{20.f, 20.f}, 120.f, 32.f}, scrollBtnProps);
+    scrollBtn->setOnPress([](){
+        if(nc){
+            nc->send({"BasicAppTest", "In-scroll button clicked."});
+        }
+    });
+    scrollBox->addChild(scrollBtn);
 
     StackSlot scrollSlot;
     scrollSlot.flexGrow = 0.f;

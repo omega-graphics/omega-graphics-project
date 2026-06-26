@@ -50,9 +50,11 @@ inline FlexOptions toFlexOptions(StackAxis axis, const StackOptions & opts){
     return out;
 }
 
-inline FlexChildSpec toFlexChildSpec(const StackSlot & slot, bool resizable){
+inline FlexChildSpec toFlexChildSpec(const StackSlot & slot, bool resizable,
+                                    bool honorCrossStretch){
     FlexChildSpec out {};
     out.resizable  = resizable;
+    out.honorCrossStretch = honorCrossStretch;
     out.flexGrow   = slot.flexGrow;
     out.flexShrink = slot.flexShrink;
     out.basis      = slot.basis;
@@ -127,7 +129,8 @@ WidgetPtr StackWidget::addChild(const WidgetPtr & child,const StackSlot & slot){
                 childSlots[i] = slot;
             }
             flexLayout_.setChildSpec(&child->viewRef(),
-                                     toFlexChildSpec(slot, child->isLayoutResizable()));
+                                     toFlexChildSpec(slot, child->isLayoutResizable(),
+                                                         child->layoutCrossStretchAllowed()));
             relayout();
             return child;
         }
@@ -136,7 +139,8 @@ WidgetPtr StackWidget::addChild(const WidgetPtr & child,const StackSlot & slot){
     wireChild(child);
     childSlots.push_back(slot);
     flexLayout_.setChildSpec(&child->viewRef(),
-                             toFlexChildSpec(slot, child->isLayoutResizable()));
+                             toFlexChildSpec(slot, child->isLayoutResizable(),
+                                                         child->layoutCrossStretchAllowed()));
     relayout();
     return child;
 }
@@ -169,7 +173,8 @@ bool StackWidget::setSlot(const WidgetPtr & child,const StackSlot & slot){
                 childSlots[i] = slot;
             }
             flexLayout_.setChildSpec(&child->viewRef(),
-                                     toFlexChildSpec(slot, child->isLayoutResizable()));
+                                     toFlexChildSpec(slot, child->isLayoutResizable(),
+                                                         child->layoutCrossStretchAllowed()));
             relayout();
             return true;
         }
@@ -185,7 +190,8 @@ bool StackWidget::setSlot(std::size_t idx,const StackSlot & slot){
     auto & child = children[idx];
     if(child != nullptr){
         flexLayout_.setChildSpec(&child->viewRef(),
-                                 toFlexChildSpec(slot, child->isLayoutResizable()));
+                                 toFlexChildSpec(slot, child->isLayoutResizable(),
+                                                         child->layoutCrossStretchAllowed()));
     }
     relayout();
     return true;

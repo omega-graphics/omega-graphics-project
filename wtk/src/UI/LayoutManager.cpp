@@ -165,6 +165,27 @@ void AbsoluteLayout::arrange(View & node, const Composition::Rect & nodeLocalRec
 }
 
 // ---------------------------------------------------------------------------
+// PassthroughLayout — leaves every child's rect untouched (no clamp).
+// ---------------------------------------------------------------------------
+
+PassthroughLayout & PassthroughLayout::instance(){
+    static PassthroughLayout sInstance;
+    return sInstance;
+}
+
+LayoutSize PassthroughLayout::measure(View & /*node*/, const Composition::Rect & avail){
+    return {avail.w, avail.h};
+}
+
+void PassthroughLayout::arrange(View & /*node*/, const Composition::Rect & /*finalRectLocal*/){
+    // Intentionally empty: children keep whatever rect their owner set.
+    // A scroll viewport's content child is deliberately larger than the
+    // viewport, so any clamp here would collapse the scroll extent (the
+    // exact bug AbsoluteLayout's FitContent clamp caused — see
+    // ScrollView-4.7-Integration-Plan §0 symptom #1).
+}
+
+// ---------------------------------------------------------------------------
 // FillLayout — every child stretched to the parent content rect.
 // ---------------------------------------------------------------------------
 
@@ -918,7 +939,15 @@ void FlexLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
                 // freeze guards against: the min-clamp above stays gated on
                 // `resizable`, so a non-stretched frozen leaf keeps its
                 // intrinsic cross size and never squashes.
-                crossSize = crossAvailable;
+                //
+                // A child can opt OUT (`honorCrossStretch == false`) when it
+                // owns its own size — a nested scroll viewport or a
+                // fixed-size container that must not be widened to the page.
+                // It then keeps its intrinsic cross size and aligns at the
+                // cross start (same as Start), rather than filling.
+                if(item.spec.honorCrossStretch){
+                    crossSize = crossAvailable;
+                }
                 break;
         }
 

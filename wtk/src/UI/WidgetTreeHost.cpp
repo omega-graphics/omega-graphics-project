@@ -818,7 +818,19 @@ namespace OmegaWTK {
         }
 
         if(target != nullptr){
-            target->emit(event);
+            // ScrollView-4.7-Integration-Plan V2.1: route ScrollWheel
+            // through the bubbling dispatch so a wheel that lands on a
+            // deep leaf inside a ScrollView reaches the ScrollView's
+            // handler (the deepest hit is rarely the scroll consumer).
+            // Other event types keep the deepest-hit `emit` until V2.2
+            // generalizes bubbling (which needs the click-consumer audit
+            // for Invariant A).
+            if(event->type == NativeEvent::ScrollWheel){
+                target->dispatchEvent(event);
+            }
+            else {
+                target->emit(event);
+            }
         }
     }
 

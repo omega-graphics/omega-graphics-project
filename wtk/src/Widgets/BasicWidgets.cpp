@@ -120,6 +120,21 @@ const ContainerClampPolicy & Container::getClampPolicy() const{
     return containerLayout_.policy();
 }
 
+void Container::setResizeWithParent(bool resizeWithParent){
+    if(resizeWithParent_ == resizeWithParent){
+        return;
+    }
+    resizeWithParent_ = resizeWithParent;
+    // The flag feeds the parent's FlexLayout via the per-child spec, which
+    // is read when the parent next arranges. Re-run this container's own
+    // layout and ask the parent to re-arrange so the change takes effect
+    // without waiting for an unrelated relayout trigger.
+    relayout();
+    if(parent != nullptr){
+        parent->requestLayout();
+    }
+}
+
 void Container::onThemeSet(Native::ThemeDesc & desc){
     (void)desc;
 }

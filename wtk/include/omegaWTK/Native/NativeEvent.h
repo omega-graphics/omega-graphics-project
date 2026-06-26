@@ -143,6 +143,13 @@ public:
     } EventType;
     EventType type;
     NativeEventParams params;
+    /// Event-bubbling consumption flag (ScrollView-4.7-Integration-Plan
+    /// V2). A handler that consumes this event sets `handled = true` to
+    /// stop it propagating to ancestor views in `View::dispatchEvent`.
+    /// A handler sets it ONLY for event types it actually consumes
+    /// (Invariant A): e.g. a Button sets it for clicks but leaves it
+    /// false for ScrollWheel so the wheel bubbles past to a ScrollView.
+    bool handled = false;
 public:
     NativeEvent(EventType _type, NativeEventParams params);
     ~NativeEvent();

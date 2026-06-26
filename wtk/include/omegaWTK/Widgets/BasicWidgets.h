@@ -29,6 +29,10 @@ class OMEGAWTK_EXPORT Container: public Widget {
     // keeps only a forwarder for backward compatibility on
     // `setClampPolicy` / `getClampPolicy`.
     ContainerLayout containerLayout_ {};
+    // Whether the parent layout may resize / cross-stretch this container
+    // (see `setResizeWithParent`). Default true preserves the historical
+    // "containers grow with their parent" behavior.
+    bool resizeWithParent_ = true;
 protected:
     OmegaCommon::Vector<WidgetPtr> children;
     bool layoutPending = true;
@@ -85,7 +89,18 @@ public:
     /// frozen (see Widget::isLayoutResizable). Input widgets that are not
     /// layout containers (TextInput, Slider) inherit Widget directly, so
     /// they stay frozen without overriding this back.
-    bool isLayoutResizable() const override { return true; }
+    ///
+    /// Default `true` preserves that behavior. `setResizeWithParent(false)`
+    /// pins the container to its own size: the parent layout neither
+    /// flex-resizes it nor stretches it across the cross axis (the case for
+    /// a fixed-size panel, or a nested scroll container that must not be
+    /// widened to a scrollable page). Both the main-axis resize
+    /// (`isLayoutResizable`) and the cross-axis Stretch override
+    /// (`layoutCrossStretchAllowed`) honor the flag.
+    bool isLayoutResizable() const override { return resizeWithParent_; }
+    bool layoutCrossStretchAllowed() const override { return resizeWithParent_; }
+    void setResizeWithParent(bool resizeWithParent);
+    bool resizeWithParent() const { return resizeWithParent_; }
 
     void relayout();
 
@@ -108,6 +123,14 @@ struct OMEGAWTK_EXPORT ScrollableContainerOptions {
     bool verticalScroll = true;
     bool horizontalScroll = false;
     bool autoSizeContent = true;
+
+    /// Whether the parent layout may resize / cross-stretch the scroll
+    /// viewport (mirrors `Container::setResizeWithParent`). Default true
+    /// keeps the historical behavior — a ScrollableContainer in a
+    /// Stretch-aligned stack fills the cross axis. Set false for a fixed
+    /// viewport, e.g. a nested scroll container inside a scrollable page
+    /// that must keep its own width rather than be stretched to the page.
+    bool resizeWithParent = true;
 };
 
 /**
@@ -170,6 +193,12 @@ public:
     Composition::Point2D contentSize() const;
 
     const ScrollableContainerOptions & options() const { return options_; }
+
+    // Honor `options_.resizeWithParent` so a scroll viewport can be pinned
+    // to its own size (not flex-resized, not cross-stretched) by the parent
+    // layout — the nested-scroll-on-a-scrollable-page case.
+    bool isLayoutResizable() const override { return options_.resizeWithParent; }
+    bool layoutCrossStretchAllowed() const override { return options_.resizeWithParent; }
 
     ~ScrollableContainer() override;
 };
