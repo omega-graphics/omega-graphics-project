@@ -45,7 +45,7 @@ int main() {
 
     // AQContext holds an OmegaGTE command queue but never touches it during CPU
     // stepping, so a null handle is sufficient for this headless dynamics test.
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 2000.f);
 
     auto space = ctx->createSpace();

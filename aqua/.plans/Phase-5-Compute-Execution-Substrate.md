@@ -99,7 +99,7 @@ phases deferred to here, closed before any kernel runs:
   ([AQIntegrator.h:29-57](aqua/include/aqua/AQIntegrator.h:29)) explicitly
   marked "SoA-friendly at the buffer level later; AoS here for the CPU
   reference path" ([AQIntegrator.h:26-28](aqua/include/aqua/AQIntegrator.h:26)),
-  and bodies live in a pointer-chased `std::vector<std::shared_ptr<AQRigidBody>>`
+  and bodies live in a pointer-chased `OmegaCommon::Vector<SharedHandle<AQRigidBody>>`
   ([AQSpace.cpp:296](aqua/src/AQSpace.cpp:296)). Phase 5 builds the parallel
   SoA arrays + their pooled GTE buffers (`x[]`, `v[]`, `q[]`, `ω_b[]`,
   `m⁻¹[]`, `Ib⁻¹[]`, plus the Phase 2/3/4 side-arrays) and keeps them in sync.
@@ -155,7 +155,7 @@ same buffer-pool + command-encode machinery without a rewrite.
 
 ## 2. Why "move the step to the GPU" is several problems, not one
 
-The CPU step is a single function that runs stages back-to-back over `std::vector`s
+The CPU step is a single function that runs stages back-to-back over `OmegaCommon::Vector`s
 ([`stepInternal`, AQSpace.cpp:599](aqua/src/AQSpace.cpp:599) →
 [`runNarrowphaseAndSolve(dt)`, AQSpace.cpp:670](aqua/src/AQSpace.cpp:670)).
 Re-expressing it as GPU kernels is four distinct problems with four different
@@ -551,23 +551,23 @@ AQExecPath  executionPath() const;               // the *resolved* path (never A
 **7.2 SoA body store — `src/AQBodySoA.h` (internal).** The parallel arrays the
 kernels read, mirroring `AQBodyState` field-for-field but flattened to scalar
 arrays so each uploads as one coalesced GTE buffer. Kept in sync with the
-authoritative `std::vector<std::shared_ptr<AQRigidBody>>`; the AoS `AQBodyState`
+authoritative `OmegaCommon::Vector<SharedHandle<AQRigidBody>>`; the AoS `AQBodyState`
 remains the `double` oracle's home.
 ```cpp
 struct AQBodySoA {                         // host-side staging; mirrors into GEBuffers
-    std::vector<float>    posX, posY, posZ;            // x[]
-    std::vector<float>    velX, velY, velZ;            // v[]
-    std::vector<float>    quatX, quatY, quatZ, quatW;  // q[]
-    std::vector<float>    wbX, wbY, wbZ;               // ω_body[]
-    std::vector<float>    invMass;                     // m⁻¹[]  (0 ⇒ static/kinematic)
-    std::vector<float>    invInertiaX, invInertiaY, invInertiaZ;  // Ib⁻¹ principal
-    std::vector<float>    forceX, forceY, forceZ, torqueX, torqueY, torqueZ;
-    std::vector<float>    linDamp, angDamp, gravScale, maxAngSpeed;
-    std::vector<float>    pseudoLinX, pseudoLinY, pseudoLinZ;     // split-impulse accum
-    std::vector<std::uint8_t> activation;              // Active/Sleeping/Kinematic
+    OmegaCommon::Vector<float>    posX, posY, posZ;            // x[]
+    OmegaCommon::Vector<float>    velX, velY, velZ;            // v[]
+    OmegaCommon::Vector<float>    quatX, quatY, quatZ, quatW;  // q[]
+    OmegaCommon::Vector<float>    wbX, wbY, wbZ;               // ω_body[]
+    OmegaCommon::Vector<float>    invMass;                     // m⁻¹[]  (0 ⇒ static/kinematic)
+    OmegaCommon::Vector<float>    invInertiaX, invInertiaY, invInertiaZ;  // Ib⁻¹ principal
+    OmegaCommon::Vector<float>    forceX, forceY, forceZ, torqueX, torqueY, torqueZ;
+    OmegaCommon::Vector<float>    linDamp, angDamp, gravScale, maxAngSpeed;
+    OmegaCommon::Vector<float>    pseudoLinX, pseudoLinY, pseudoLinZ;     // split-impulse accum
+    OmegaCommon::Vector<std::uint8_t> activation;              // Active/Sleeping/Kinematic
     void resize(std::size_t n);
-    void gatherFrom(const std::vector<std::shared_ptr<AQRigidBody>>& bodies);  // AoS→SoA
-    void scatterTo  (std::vector<std::shared_ptr<AQRigidBody>>& bodies) const; // SoA→AoS (readback)
+    void gatherFrom(const OmegaCommon::Vector<SharedHandle<AQRigidBody>>& bodies);  // AoS→SoA
+    void scatterTo  (OmegaCommon::Vector<SharedHandle<AQRigidBody>>& bodies) const; // SoA→AoS (readback)
 };
 ```
 The matching OmegaSL `struct` for each buffer is one component group; the
@@ -580,7 +580,7 @@ the per-sub-step encode. This is the *only* file that includes OmegaGTE pipeline
 headers; everything public stays clean.
 ```cpp
 struct AQComputeBackend {
-    static std::unique_ptr<AQComputeBackend> TryCreate(
+    static UniqueHandle<AQComputeBackend> TryCreate(
         SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine,
         SharedHandle<OmegaGTE::GECommandQueue> queue);   // nullptr ⇒ no usable compute
 
@@ -887,16 +887,60 @@ within-path #2, CPU-coloring-first #3, runtime-compile-first #4, per-sub-step-
 readback-first #5, `float` #6, atomic-append-with-scatter-fallback #7).
 
 - **5a — Engine/device plumbing + path selection (groundwork, lands first).**
-  Make `OmegaGraphicsEngine` a **required** argument on `AQContext::Create`,
-  threaded down to `AQSpace::Impl` behind the pimpl; **remove** the queue-only
-  factory and migrate its one call site ([AQContext.cpp](aqua/src/AQContext.cpp));
-  add `AQExecPath` + `setExecutionPath` / `executionPath`;
-  `AQComputeBackend::TryCreate` queries `GTEDevice::features` and returns null
-  on no-usable-compute. **No kernels yet** — every device resolves to
-  `AQExecPath::CPU` and behavior is byte-for-byte Phase 4. Proves the plumbing
-  and the fallback resolution in isolation. (This is the phase's one breaking
-  API change; landing it first means the rest of Phase 5 builds on the final
-  constructor shape.)
+  Make `OmegaGraphicsEngine` a **required** argument on the production
+  `AQContext::Create`; add the engine-less `AQContext::CreateCPUOnly()` factory;
+  add `AQExecPath` + `setExecutionPath` / `executionPath`; introduce the internal
+  pimpl-only `AQComputeBackend` (the single owner of the engine + queue);
+  migrate the pure-CPU tests to `CreateCPUOnly`. **No kernels yet** — every
+  device resolves to `AQExecPath::CPU` and behavior is byte-for-byte Phase 4.
+  Proves the plumbing and the fallback resolution in isolation. (This is the
+  phase's one breaking API change; landing it first means the rest of Phase 5
+  builds on the final constructor shape.)
+
+  **Status (2026-06-26): COMPLETE.** `aqua_exec_path_test` passes (incl. the
+  guarded GPU-construction section, which inits a real Metal engine on this host
+  and confirms `Create(engine, queue)` resolves to CPU while no kernels exist);
+  the Phase 1/2/4 battery stays green. (`aqua_contact_test` shows 3 failures —
+  verified **pre-existing**, identical on the stashed pre-5a tree; a Phase 3
+  tolerance issue on this host, unrelated to 5a.) Notable decisions that diverged
+  from the brief's lead, recorded:
+  - **The engine-less escape hatch is a named factory, not a degenerate
+    context.** The brief said "removed rather than deprecated… not through a
+    degenerate engine-less context." Reality: the queue-only `Create` had **21
+    call sites across 5 pure-CPU unit-test files**, not "one call site in
+    AQContext.cpp." Forcing a real engine into every CPU unit test would couple
+    them to GTE device init (fragile on headless CI), breaking the Phase 1
+    "pure-CPU unit test without building any GPU backend" discipline. The
+    developer's call: a named `CreateCPUOnly()` headless factory. Production
+    `Create(engine, queue)` is mandatory-non-null (a null engine is a loud
+    contract violation that degrades to CPU); tests use `CreateCPUOnly`.
+  - **The feature gate is deferred to 5c, because the engine doesn't expose the
+    device.** The brief said `AQComputeBackend::TryCreate` "queries
+    `GTEDevice::features`." It can't: `OmegaGraphicsEngine` exposes neither its
+    `GTEDevice` nor `GTEDeviceFeatures` (only `underlyingNativeDevice()` → void*
+    and a protected bitmask). So 5a's `TryCreate` returns null for a null engine
+    and otherwise holds the handles with `usable() == false`; the **functional**
+    capability gate (a compute-pipeline build probe — the honest "can this engine
+    run a kernel" question) lands in 5c when there's a kernel to probe with. Path
+    resolves to CPU everywhere in 5a regardless, as the brief intends.
+  - **`AQSpace::Impl` was NOT threaded the engine in 5a.** The brief said to;
+    deferred to 5c. AQUA runs the CPU path until kernels exist, so AQSpace needs
+    the backend only when it dispatches — threading an unused handle now is dead
+    plumbing. The seam (passing the backend to spaces) is introduced where it
+    is first used.
+  - **Two build changes the brief didn't anticipate.** (1) AQUA's CMake now
+    defines the GTE target-platform macro (`TARGET_METAL`/`TARGET_DIRECTX`/
+    `TARGET_VULKAN`, PUBLIC, per-platform), because the suite helper wires
+    OmegaGTE as a build-order `DEPENDS` (`add_dependencies`) that does **not**
+    propagate OmegaGTE's PUBLIC `TARGET_*`, so AQUA TUs that include
+    `<omegaGTE/GE.h>` (5c) would `#error` without it. (2) `aqua_exec_path_test`
+    needed a `${CMAKE_BINARY_DIR}/Frameworks` rpath — it is the first AQUA test
+    to link OmegaGTE, which on macOS is a *framework* staged outside `build/lib`
+    (a gap the GTE suite's own framework-linking tests also have).
+  - **`AQComputeBackend` is the single owner of the engine + queue.** Rather than
+    AQContext holding the engine/queue *and* a backend, only the backend holds
+    them (AQContext drops its `commandQueue` member). Cleaner ownership; for a
+    CPU-only context there are simply no GPU handles to hold.
 - **5b — SoA store + buffer pool + kernel build wiring.** `AQBodySoA`
   (§7.2) with `gatherFrom`/`scatterTo`; migrate the CPU production step to read
   the SoA store (the AoS `double` instantiation stays the oracle); pooled GTE

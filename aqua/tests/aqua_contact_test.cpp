@@ -61,7 +61,7 @@ float vlen(const FVec<3> &v) { return std::sqrt(OmegaGTE::dot(v, v)); }
 void testSettlingStack() {
     std::printf("\n== settling stack (Phase-3 §1 headline) ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 240.f);
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, -9.81f, 0.f));
@@ -170,7 +170,7 @@ void testSettlingStack() {
 
 void runInclineCase(float angleDeg, float mu, const std::string &label,
                     bool expectAtRest) {
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 240.f);
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, -9.81f, 0.f));
@@ -238,7 +238,7 @@ void testInclineFriction() {
 void testSphereBounce() {
     std::printf("\n== sphere-on-plane bounce (restitution 0.5) ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 480.f);
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, -9.81f, 0.f));
@@ -295,7 +295,7 @@ void testSphereBounce() {
 void testGJKEPA() {
     std::printf("\n== GJK/EPA on convex-hull pair ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 240.f);
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, 0.f, 0.f));
@@ -359,7 +359,7 @@ void testDeterminism() {
     std::printf("\n== contact determinism (byte-identical manifolds) ==\n");
 
     auto build = []() {
-        auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+        auto ctx = AQContext::CreateCPUOnly();
         ctx->setFixedTimestep(1.f / 240.f);
         auto sp = ctx->createSpace();
         sp->setGravity(AQvec3(0.f, -9.81f, 0.f));
@@ -401,7 +401,7 @@ void testDeterminism() {
 void testEnergyNonGrowth() {
     std::printf("\n== energy non-growth on a settled stack ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 240.f);
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, -9.81f, 0.f));

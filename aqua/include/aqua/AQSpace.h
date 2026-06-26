@@ -38,10 +38,10 @@ public:
     AQUA_NODISCARD OmegaGTE::FVec<3> gravity() const;
 
     /// Adds a body and returns a handle owned by this space.
-    std::shared_ptr<AQRigidBody> addBody(const AQBodyDesc &desc);
+    SharedHandle<AQRigidBody> addBody(const AQBodyDesc &desc);
 
     /// Removes a body. Returns false if it was not in this space.
-    bool removeBody(const std::shared_ptr<AQRigidBody> &body);
+    bool removeBody(const SharedHandle<AQRigidBody> &body);
 
     /// Number of bodies currently in the space.
     AQUA_NODISCARD std::size_t bodyCount() const;
@@ -56,7 +56,7 @@ public:
     void setDebugFlags(std::uint32_t flags);
     AQUA_NODISCARD std::uint32_t debugFlags() const;
     /// Moves the accumulated debug lines out of the space and clears its buffer.
-    AQUA_NODISCARD std::vector<AQDebugLine> drainDebugLines();
+    AQUA_NODISCARD OmegaCommon::Vector<AQDebugLine> drainDebugLines();
 
     // --- shape factories (Phase 2) ---
     // Shapes are owned and instanced by the space (§11.3) and referenced by
@@ -72,7 +72,7 @@ public:
     /// Current ordered, de-duplicated broadphase candidate pairs (Phase 2 §10).
     /// Indices are stable for the lifetime of the space (the body's slot in
     /// the space's body-SoA array). Updated once per `AQContext::advance`.
-    AQUA_NODISCARD std::vector<AQBroadphasePair> candidatePairs() const;
+    AQUA_NODISCARD OmegaCommon::Vector<AQBroadphasePair> candidatePairs() const;
 
     // --- material combine + solver (Phase 3) ---
     /// Per-space restitution and friction combine rules. Default is Average
@@ -96,7 +96,7 @@ public:
     /// sub-step and the next `advance`. Useful for the Phase 4 joint wiring
     /// and for debug overlays — the value-type copy carries body indices, not
     /// pointers, so it is safe to hold across `advance` boundaries.
-    AQUA_NODISCARD std::vector<AQContactManifold> contactManifolds() const;
+    AQUA_NODISCARD OmegaCommon::Vector<AQContactManifold> contactManifolds() const;
 
     // ========================================================================
     // Phase 4 — joints, queries, triggers, sleep tuning (§10 public API).
@@ -107,36 +107,36 @@ public:
     // into the space's joint table. A joint between two infinite-mass bodies
     // (static/static, static/kinematic, …) returns an invalid handle — it would
     // be a no-op. Anchors are in each body's LOCAL frame; axes are body-A local.
-    AQJointHandle createDistanceJoint(const std::shared_ptr<AQRigidBody> &a,
-                                      const std::shared_ptr<AQRigidBody> &b,
+    AQJointHandle createDistanceJoint(const SharedHandle<AQRigidBody> &a,
+                                      const SharedHandle<AQRigidBody> &b,
                                       const OmegaGTE::FVec<3> &anchorALocal,
                                       const OmegaGTE::FVec<3> &anchorBLocal,
                                       float length);
-    AQJointHandle createBallSocketJoint(const std::shared_ptr<AQRigidBody> &a,
-                                        const std::shared_ptr<AQRigidBody> &b,
+    AQJointHandle createBallSocketJoint(const SharedHandle<AQRigidBody> &a,
+                                        const SharedHandle<AQRigidBody> &b,
                                         const OmegaGTE::FVec<3> &anchorALocal,
                                         const OmegaGTE::FVec<3> &anchorBLocal);
-    AQJointHandle createHingeJoint(const std::shared_ptr<AQRigidBody> &a,
-                                   const std::shared_ptr<AQRigidBody> &b,
+    AQJointHandle createHingeJoint(const SharedHandle<AQRigidBody> &a,
+                                   const SharedHandle<AQRigidBody> &b,
                                    const OmegaGTE::FVec<3> &anchorALocal,
                                    const OmegaGTE::FVec<3> &anchorBLocal,
                                    const OmegaGTE::FVec<3> &axisALocal,
                                    const AQJointAxisLimit &limit = AQJointAxisLimit{});
-    AQJointHandle createSliderJoint(const std::shared_ptr<AQRigidBody> &a,
-                                    const std::shared_ptr<AQRigidBody> &b,
+    AQJointHandle createSliderJoint(const SharedHandle<AQRigidBody> &a,
+                                    const SharedHandle<AQRigidBody> &b,
                                     const OmegaGTE::FVec<3> &anchorALocal,
                                     const OmegaGTE::FVec<3> &anchorBLocal,
                                     const OmegaGTE::FVec<3> &axisALocal,
                                     const AQJointAxisLimit &limit = AQJointAxisLimit{});
-    AQJointHandle createFixedJoint(const std::shared_ptr<AQRigidBody> &a,
-                                   const std::shared_ptr<AQRigidBody> &b);
+    AQJointHandle createFixedJoint(const SharedHandle<AQRigidBody> &a,
+                                   const SharedHandle<AQRigidBody> &b);
 
     void setJointSoftness(AQJointHandle h, AQJointSoftness s);
     bool destroyJoint(AQJointHandle h);
 
     /// Read-only joint view, refreshed per `advance`. Value-type copies carry
     /// body indices, not pointers — safe to hold across `advance` boundaries.
-    AQUA_NODISCARD std::vector<AQJointDesc> joints() const;
+    AQUA_NODISCARD OmegaCommon::Vector<AQJointDesc> joints() const;
 
     /// World-frame linear impulse this joint applied during the most recent
     /// sub-step (zero vector for an invalid handle). Divide by the sub-step `dt`
@@ -151,25 +151,25 @@ public:
                  const OmegaGTE::FVec<3> &direction,
                  float maxT,
                  const AQQueryFilter &filter,
-                 std::vector<AQRaycastHit> &hits) const;
+                 OmegaCommon::Vector<AQRaycastHit> &hits) const;
     void shapecast(AQShapeHandle shape,
                    const OmegaGTE::FVec<3> &origin,
                    const OmegaGTE::FQuaternion &orientation,
                    const OmegaGTE::FVec<3> &direction,
                    float maxT,
                    const AQQueryFilter &filter,
-                   std::vector<AQRaycastHit> &hits) const;
+                   OmegaCommon::Vector<AQRaycastHit> &hits) const;
     void overlap(AQShapeHandle shape,
                  const OmegaGTE::FVec<3> &origin,
                  const OmegaGTE::FQuaternion &orientation,
                  const AQQueryFilter &filter,
                  bool exactShapes,
-                 std::vector<std::uint32_t> &bodies) const;
+                 OmegaCommon::Vector<std::uint32_t> &bodies) const;
 
     // --- triggers ---
     /// Drains the per-`advance` trigger-event queue; subsequent calls until the
     /// next advance return empty. Events are ordered by `(a, b)` ascending.
-    AQUA_NODISCARD std::vector<AQTriggerEvent> triggerEvents();
+    AQUA_NODISCARD OmegaCommon::Vector<AQTriggerEvent> triggerEvents();
 
     // --- sleep tuning ---
     /// Space-wide sleep thresholds. Defaults: 0.01 m/s linear, 0.01 rad/s

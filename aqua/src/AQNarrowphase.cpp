@@ -383,10 +383,10 @@ bool nphBoxBox(const AQShape &A, const AQShape &B,
     // Sutherland-Hodgman clip the incident face against the 4 side planes of
     // the reference face. Side plane (+U): outward normal +refUaxis, offset
     // d = dot(refUaxis, refCenter) + refUH. "Inside" means dot(p, +refUaxis) ≤ d.
-    // We hold the polygon in a `std::vector<FVec<3>>` because `FVec<3>` cannot
+    // We hold the polygon in a `OmegaCommon::Vector<FVec<3>>` because `FVec<3>` cannot
     // be default-constructed (factory-only via `Create()`), so a fixed
     // C-style array won't compile cleanly here.
-    std::vector<FVec<3>> poly;
+    OmegaCommon::Vector<FVec<3>> poly;
     poly.reserve(16);
     poly.push_back(incP0);
     poly.push_back(incP1);
@@ -394,7 +394,7 @@ bool nphBoxBox(const AQShape &A, const AQShape &B,
     poly.push_back(incP3);
 
     auto clipSide = [&poly](const FVec<3> &n, float d) {
-        std::vector<FVec<3>> next;
+        OmegaCommon::Vector<FVec<3>> next;
         next.reserve(poly.size() + 2);
         const std::size_t N = poly.size();
         for (std::size_t i = 0; i < N; ++i) {

@@ -105,3 +105,25 @@ add_aqua_test(
     NAME    aqua_phase4_test
     SOURCES aqua_phase4_test.cpp
     LIBS    AQUA OmegaCommonCore)
+
+# Phase 5a compute-substrate groundwork: execution-path selection + the
+# CreateCPUOnly / mandatory-engine Create(engine, queue) factory split. The
+# CPU-only assertions always run; the guarded mandatory-engine section inits a
+# real GTE device when one exists (skips on headless CI). Links OmegaGTE for the
+# Init / Close / enumerateDevices entry points and inherits the TARGET_* platform
+# macro from AQUA's PUBLIC compile definition (so <omegaGTE/GTEDevice.h> compiles).
+add_aqua_test(
+    NAME    aqua_exec_path_test
+    SOURCES aqua_exec_path_test.cpp
+    LIBS    AQUA OmegaGTE OmegaCommonCore)
+
+# aqua_exec_path_test is the first AQUA test to link OmegaGTE, which on macOS is a
+# framework staged in ${CMAKE_BINARY_DIR}/Frameworks — NOT build/lib, where the
+# other dylibs (libAQUA, libOmegaCommonCore) live and where add_aqua_test's rpath
+# points. Add the Frameworks dir to this test's runtime search path so it actually
+# loads at launch. No-op on Linux/Windows where OmegaGTE is a plain .so/.dll under
+# build/lib. (The GTE suite's own framework-linking tests have the same gap.)
+if(APPLE)
+    set_property(TARGET aqua_exec_path_test APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()

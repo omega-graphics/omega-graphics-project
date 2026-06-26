@@ -339,7 +339,7 @@ struct Face {
 // distance from origin = dot(normal, vertex)). Caller supplies a reference
 // "inside" point so we can orient the normal robustly even when the polytope
 // has not yet been centered on origin.
-void buildFace(Face &f, const std::vector<SupportPt> &verts, const FVec<3> &interior) {
+void buildFace(Face &f, const OmegaCommon::Vector<SupportPt> &verts, const FVec<3> &interior) {
     const FVec<3> &a = verts[f.v[0]].p;
     const FVec<3> &b = verts[f.v[1]].p;
     const FVec<3> &c = verts[f.v[2]].p;
@@ -378,14 +378,14 @@ bool AQgjkEpaContact(const AQShape &shapeA, const AQShape &shapeB,
     // construction (GJK produced an origin-enclosing tetrahedron).
     const FVec<3> interior = (simplex[0].p + simplex[1].p + simplex[2].p + simplex[3].p) * 0.25f;
 
-    std::vector<SupportPt> verts;
+    OmegaCommon::Vector<SupportPt> verts;
     verts.reserve(64);
     verts.push_back(simplex[0]);
     verts.push_back(simplex[1]);
     verts.push_back(simplex[2]);
     verts.push_back(simplex[3]);
 
-    std::vector<Face> faces;
+    OmegaCommon::Vector<Face> faces;
     faces.reserve(64);
     {
         Face f;
@@ -423,7 +423,7 @@ bool AQgjkEpaContact(const AQShape &shapeA, const AQShape &shapeB,
         verts.push_back(sp);
 
         struct Edge { int a, b; };
-        std::vector<Edge> silhouette;
+        OmegaCommon::Vector<Edge> silhouette;
         silhouette.reserve(16);
 
         auto addEdge = [&silhouette](int a, int b) {

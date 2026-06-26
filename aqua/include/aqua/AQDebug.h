@@ -15,7 +15,7 @@
 #include <cstdint>
 
 /// A single debug-draw line segment from world `a` to world `b`, RGBA in [0,1].
-/// Plain value type — drainable buffers are `std::vector<AQDebugLine>`. The FVec
+/// Plain value type — drainable buffers are `OmegaCommon::Vector<AQDebugLine>`. The FVec
 /// members are default-initialized to zero via GTE's `Create()` factory because
 /// `OmegaGTE::Matrix` keeps its default constructor private (the same Phase 1
 /// idiom AQBodyState uses).

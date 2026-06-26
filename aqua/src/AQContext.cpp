@@ -1,13 +1,58 @@
 #include <aqua/AQContext.h>
+#include "AQComputeBackend.h"
 
-AQContext::AQContext(SharedHandle<OmegaGTE::GECommandQueue> commandQueue)
-    : commandQueue(std::move(commandQueue)),
+#include <iostream>
+
+// The compute backend is the single owner of the engine + queue; it returns
+// null for a null engine (a CPU-only context), so `compute` is null exactly when
+// AQUA runs the CPU path.
+AQContext::AQContext(SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine,
+                     SharedHandle<OmegaGTE::GECommandQueue> commandQueue)
+    : compute(AQComputeBackend::TryCreate(std::move(engine), std::move(commandQueue))),
       fixedDt(1.f / 120.f),
       accumulator(0.f),
       elapsedTime(0.0) {}
 
-SharedHandle<AQContext> AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue> commandQueue) {
-    return SharedHandle<AQContext>(new AQContext(std::move(commandQueue)));
+AQContext::~AQContext() = default;  // defined here: AQComputeBackend is complete
+
+SharedHandle<AQContext> AQContext::Create(SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine,
+                                          SharedHandle<OmegaGTE::GECommandQueue> commandQueue) {
+    if (!engine) {
+        // Mandatory-engine contract violation — always loud (caller-contract
+        // tier). We still build a (CPU-only) context so a misuse degrades
+        // rather than crashes, but the caller should use CreateCPUOnly instead.
+        std::cerr << "AQUA::AQContext::Create: engine is required (kREATE is "
+                     "GPU-first). For an engine-less CPU-only context use "
+                     "AQContext::CreateCPUOnly(). Degrading to the CPU path.\n";
+    }
+    return SharedHandle<AQContext>(new AQContext(std::move(engine), std::move(commandQueue)));
+}
+
+SharedHandle<AQContext> AQContext::CreateCPUOnly() {
+    return SharedHandle<AQContext>(new AQContext(
+        SharedHandle<OmegaGTE::OmegaGraphicsEngine>(),
+        SharedHandle<OmegaGTE::GECommandQueue>()));
+}
+
+void AQContext::setExecutionPath(AQExecPath path) {
+    requestedPath = path;
+    if (path == AQExecPath::GPU && !(compute && compute->usable())) {
+        // Asked for GPU but no usable backend (no engine, or kernels not yet
+        // available in this build). Loud once-per-call so the fallback is never
+        // silent; the resolved path stays CPU.
+        std::cerr << "AQUA::AQContext: GPU execution requested but no usable "
+                     "compute backend — running the CPU path.\n";
+    }
+}
+
+AQExecPath AQContext::executionPath() const {
+    if (requestedPath == AQExecPath::CPU) {
+        return AQExecPath::CPU;
+    }
+    const bool gpuUsable = compute && compute->usable();
+    // Auto and GPU both resolve to GPU only when a usable backend exists; the
+    // GPU-request warning is emitted in setExecutionPath, so this stays const.
+    return gpuUsable ? AQExecPath::GPU : AQExecPath::CPU;
 }
 
 SharedHandle<AQSpace> AQContext::createSpace() {

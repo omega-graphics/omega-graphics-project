@@ -2,8 +2,11 @@ omega_graphics_project(AQUA VERSION 0.1 LANGUAGES CXX)
 
 # AQUA physics library — glob per src component so adding a new file inside
 # src/ doesn't require touching this file (matches the suite convention used
-# by kreate/ and va/). AQUA is currently standalone: it has no link-time
-# dependency on a graphics engine, so its public math types stay its own.
+# by kreate/ and va/). Through Phase 4 AQUA used only OmegaGTE's header-only
+# math; Phase 5 (compute substrate) adds the GPU path, so AQUA now compiles
+# against the GTE GPU headers (hence the target-platform macro below) and will
+# link OmegaGTE for the kernel dispatch in 5b/5c. The public math types stay
+# AQUA's own; no OmegaGTE backend type leaks into include/aqua/.
 file(GLOB AQUA_SRCS_TOPLEVEL CONFIGURE_DEPENDS src/*.cpp)
 
 add_omega_graphics_module(AQUA SHARED
@@ -17,6 +20,28 @@ target_include_directories("AQUA" PUBLIC
 	$<TARGET_PROPERTY:OmegaCommonCore,INCLUDE_DIRECTORIES>
     $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 target_compile_definitions(AQUA PRIVATE AQUA__BUILD__)
+
+# Phase 5 (compute substrate): AQUA dispatches OmegaSL compute kernels through
+# OmegaGTE, so its TUs now include <omegaGTE/GE.h>, which hard-#errors unless the
+# target-platform macro is defined (TARGET_METAL / TARGET_DIRECTX / TARGET_VULKAN —
+# see gte/include/omegaGTE/GE.h:7). The suite helper wires OmegaGTE as a build-order
+# DEPENDS (add_dependencies), which does NOT propagate OmegaGTE's PUBLIC TARGET_*
+# definition, so AQUA selects it itself, mirroring gte/CMakeLists.txt's per-platform
+# branch. PUBLIC so AQUA's own tests/consumers that include GTE GPU headers (e.g.
+# <omegaGTE/GTEDevice.h>) inherit it too.
+if(WIN32)
+    # NOMINMAX matches GTE: GE.h pulls in <windows.h> on D3D12, whose min/max
+    # macros would otherwise clobber std::min/std::max.
+    target_compile_definitions(AQUA PUBLIC TARGET_DIRECTX NOMINMAX)
+elseif(APPLE)
+    target_compile_definitions(AQUA PUBLIC TARGET_METAL)
+else()
+    # Linux/Android → Vulkan. AQUA uses compute only (no surfaces), so the GE.h
+    # VULKAN_TARGET_{WAYLAND,X11,ANDROID} window-system sub-macros are not needed
+    # to compile the compute path; add one here if a future AQUA TU includes the
+    # Vulkan surface headers.
+    target_compile_definitions(AQUA PUBLIC TARGET_VULKAN)
+endif()
 
 # AQUA-only optimization floor (Phase 3.x build-config fix). The project's
 # default `cmake -S . -B build` leaves `CMAKE_BUILD_TYPE` empty, which means

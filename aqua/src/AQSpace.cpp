@@ -273,7 +273,7 @@ struct AQManifoldCacheEntry {
 // destroyJoint without renumbering the table.
 struct AQJointRecord {
     AQJointType                  type = AQJointType::BallSocket;
-    std::shared_ptr<AQRigidBody> a, b;
+    SharedHandle<AQRigidBody> a, b;
     FVec<3>                      anchorA    = AQvec3(0.f, 0.f, 0.f);
     FVec<3>                      anchorB    = AQvec3(0.f, 0.f, 0.f);
     FVec<3>                      axisLocalA = AQvec3(0.f, 1.f, 0.f);
@@ -293,24 +293,24 @@ struct AQJointRecord {
 
 struct AQSpace::Impl {
     FVec<3> gravity = AQvec3(0.f, -9.81f, 0.f);
-    std::vector<std::shared_ptr<AQRigidBody>> bodies;
+    OmegaCommon::Vector<SharedHandle<AQRigidBody>> bodies;
 
     // Drainable debug surface (Phase-1.1 §6.5). `flags == AQDebugNone` keeps
     // the buffer empty — the per-step emission early-outs and there is nothing
     // to drain. Pull model, owned by the space.
     std::uint32_t                 debugFlags = AQDebugNone;
-    std::vector<AQDebugLine>      debugLines;
+    OmegaCommon::Vector<AQDebugLine>      debugLines;
 
     // --- Phase 2: shape table + vertex pool (§8 shapes pooled and shared) ---
     // Index 0 is a sentinel "invalid" slot — handles default to {0, 0} and
     // `valid()` returns false on generation 0. Generations start at 1 and tick
     // monotonically on remove; the simple pool never shrinks.
-    std::vector<AQShape>        shapes      = std::vector<AQShape>(1);
-    std::vector<std::uint32_t>  generations = std::vector<std::uint32_t>(1, 0);
-    std::vector<FVec<3>>        hullVerts;     ///< vertex pool referenced by shapes
+    OmegaCommon::Vector<AQShape>        shapes      = OmegaCommon::Vector<AQShape>(1);
+    OmegaCommon::Vector<std::uint32_t>  generations = OmegaCommon::Vector<std::uint32_t>(1, 0);
+    OmegaCommon::Vector<FVec<3>>        hullVerts;     ///< vertex pool referenced by shapes
 
     // --- Phase 2: broadphase output (§5/§8 ordered + de-duplicated) ---
-    std::vector<AQBroadphasePair> pairs;
+    OmegaCommon::Vector<AQBroadphasePair> pairs;
     float fattenMargin = 0.02f;                 ///< §11.4 fixed margin (≈2cm world units)
 
     // --- Phase 3: contact data + solver state (§7, §8) ---
@@ -325,9 +325,9 @@ struct AQSpace::Impl {
     // analytic resting force and keeps the stack at <5 cm/s indefinitely.
     int               velocityIters      = 48;
     int               positionIters      = 16;
-    std::vector<AQContactManifold> manifolds;   ///< current sub-step's manifolds (§10)
-    std::vector<AQConstraintRow>   rows;        ///< current sub-step's row buffer (§8)
-    std::vector<std::uint32_t>     manifoldRowOffset; ///< rows[manifoldRowOffset[m]] = first row of manifold m
+    OmegaCommon::Vector<AQContactManifold> manifolds;   ///< current sub-step's manifolds (§10)
+    OmegaCommon::Vector<AQConstraintRow>   rows;        ///< current sub-step's row buffer (§8)
+    OmegaCommon::Vector<std::uint32_t>     manifoldRowOffset; ///< rows[manifoldRowOffset[m]] = first row of manifold m
     std::unordered_map<std::uint64_t, AQManifoldCacheEntry> cache;
     ///< (pair key << 32 | featureKey)-indexed; aged out after one missed frame
 
@@ -336,9 +336,9 @@ struct AQSpace::Impl {
     // destroyJoint clears `alive` and bumps the generation. `jointRowSpans` maps
     // each joint that contributed rows this sub-step back to its (firstRow,count)
     // in `rows`, for the warm-start write-back.
-    std::vector<AQJointRecord> joints = std::vector<AQJointRecord>(1);
+    OmegaCommon::Vector<AQJointRecord> joints = OmegaCommon::Vector<AQJointRecord>(1);
     struct JointRowSpan { std::uint32_t jointIndex, firstRow, count; };
-    std::vector<JointRowSpan> jointRowSpans;
+    OmegaCommon::Vector<JointRowSpan> jointRowSpans;
 
     AQJointRecord *jointAt(const AQJointHandle &h) {
         if (!h.valid()) return nullptr;
@@ -352,15 +352,15 @@ struct AQSpace::Impl {
     // Pre-step positions of bodies, captured before the position half-step when
     // any body opts into CCD, so the swept-sphere TOI pass can cast from where
     // each body was to where it landed. Reused buffer (no per-sub-step alloc).
-    std::vector<FVec<3>> ccdPrevPos;
+    OmegaCommon::Vector<FVec<3>> ccdPrevPos;
 
     // --- Phase 4: trigger events (§6.M, §11.9) ---
     // Trigger overlaps are diffed once per advance (not per sub-step) against
     // last advance's set, producing Enter/Stay/Exit. `prevTriggerPairs` is the
     // previous advance's sorted overlap set; `triggerEvts` is the drainable
     // queue rebuilt each advance.
-    std::vector<std::pair<std::uint32_t, std::uint32_t>> prevTriggerPairs;
-    std::vector<AQTriggerEvent> triggerEvts;
+    OmegaCommon::Vector<std::pair<std::uint32_t, std::uint32_t>> prevTriggerPairs;
+    OmegaCommon::Vector<AQTriggerEvent> triggerEvts;
 
     // --- Phase 4: sleep tuning (space defaults; per-body overrides win) ---
     // Energy-flavored idle predicate (§6.G / §11.6): a body counts as idle when
@@ -405,9 +405,9 @@ bool anyNonZero(const AQMat3F &M) {
 }
 }
 
-std::shared_ptr<AQRigidBody> AQSpace::addBody(const AQBodyDesc &desc) {
+SharedHandle<AQRigidBody> AQSpace::addBody(const AQBodyDesc &desc) {
     struct Ctor : AQRigidBody { Ctor() : AQRigidBody() {} };
-    auto body = std::shared_ptr<AQRigidBody>(new Ctor());
+    auto body = SharedHandle<AQRigidBody>(new Ctor());
     auto &s = body->impl->s;
 
     body->impl->type = desc.type;
@@ -509,7 +509,7 @@ std::shared_ptr<AQRigidBody> AQSpace::addBody(const AQBodyDesc &desc) {
     return body;
 }
 
-bool AQSpace::removeBody(const std::shared_ptr<AQRigidBody> &body) {
+bool AQSpace::removeBody(const SharedHandle<AQRigidBody> &body) {
     auto &v = impl->bodies;
     auto it = std::find(v.begin(), v.end(), body);
     if (it == v.end()) return false;
@@ -522,8 +522,8 @@ std::size_t AQSpace::bodyCount() const { return impl->bodies.size(); }
 // --- debug surface (Phase-1.1 §6.5) ---
 void AQSpace::setDebugFlags(std::uint32_t flags) { impl->debugFlags = flags; }
 std::uint32_t AQSpace::debugFlags() const { return impl->debugFlags; }
-std::vector<AQDebugLine> AQSpace::drainDebugLines() {
-    std::vector<AQDebugLine> out;
+OmegaCommon::Vector<AQDebugLine> AQSpace::drainDebugLines() {
+    OmegaCommon::Vector<AQDebugLine> out;
     out.swap(impl->debugLines);
     return out;
 }
@@ -546,7 +546,7 @@ inline AQDebugLine makeLine(const FVec<3>& a, const FVec<3>& b,
 // at the pose origin. With a zero comOffset (the Phase 1 default — guarded
 // by the existing zero-COM tests) `anchor` collapses to `body.position()`.
 void emitBodyDebug(const AQRigidBody &body, const FVec<3>& anchor,
-                   std::uint32_t flags, std::vector<AQDebugLine> &out) {
+                   std::uint32_t flags, OmegaCommon::Vector<AQDebugLine> &out) {
     if (flags == AQDebugNone) return;
     const FQuaternion q = body.orientation();
 
@@ -574,7 +574,7 @@ void emitBodyDebug(const AQRigidBody &body, const FVec<3>& anchor,
 }
 
 // Emit the 12 line segments of an AABB outline (Phase 2 §9 AQDebugAABB).
-void emitAABBDebug(const FAABB& bb, std::vector<AQDebugLine>& out) {
+void emitAABBDebug(const FAABB& bb, OmegaCommon::Vector<AQDebugLine>& out) {
     const float xs[2] = {bb.min[0][0], bb.max[0][0]};
     const float ys[2] = {bb.min[1][0], bb.max[1][0]};
     const float zs[2] = {bb.min[2][0], bb.max[2][0]};
@@ -796,7 +796,7 @@ AQShapeHandle AQSpace::createConvexHullShape(const FVec<3> *pts, std::size_t n) 
     return impl->pushShape(s);
 }
 
-std::vector<AQBroadphasePair> AQSpace::candidatePairs() const {
+OmegaCommon::Vector<AQBroadphasePair> AQSpace::candidatePairs() const {
     return impl->pairs;
 }
 
@@ -824,7 +824,7 @@ void AQSpace::setSolverIterations(int velocityIters, int positionIters) {
 int AQSpace::velocityIterations() const { return impl->velocityIters; }
 int AQSpace::positionIterations() const { return impl->positionIters; }
 
-std::vector<AQContactManifold> AQSpace::contactManifolds() const {
+OmegaCommon::Vector<AQContactManifold> AQSpace::contactManifolds() const {
     return impl->manifolds;
 }
 
@@ -855,8 +855,8 @@ AQJointRest computeJointRest(const FQuaternion &qA0, const FQuaternion &qB0,
 }
 } // namespace
 
-AQJointHandle AQSpace::createDistanceJoint(const std::shared_ptr<AQRigidBody> &a,
-                                           const std::shared_ptr<AQRigidBody> &b,
+AQJointHandle AQSpace::createDistanceJoint(const SharedHandle<AQRigidBody> &a,
+                                           const SharedHandle<AQRigidBody> &b,
                                            const FVec<3> &anchorALocal,
                                            const FVec<3> &anchorBLocal,
                                            float length) {
@@ -874,8 +874,8 @@ AQJointHandle AQSpace::createDistanceJoint(const std::shared_ptr<AQRigidBody> &a
     return AQJointHandle{idx, 1};
 }
 
-AQJointHandle AQSpace::createBallSocketJoint(const std::shared_ptr<AQRigidBody> &a,
-                                             const std::shared_ptr<AQRigidBody> &b,
+AQJointHandle AQSpace::createBallSocketJoint(const SharedHandle<AQRigidBody> &a,
+                                             const SharedHandle<AQRigidBody> &b,
                                              const FVec<3> &anchorALocal,
                                              const FVec<3> &anchorBLocal) {
     if (!a || !b) return {};
@@ -891,8 +891,8 @@ AQJointHandle AQSpace::createBallSocketJoint(const std::shared_ptr<AQRigidBody> 
     return AQJointHandle{idx, 1};
 }
 
-AQJointHandle AQSpace::createHingeJoint(const std::shared_ptr<AQRigidBody> &a,
-                                        const std::shared_ptr<AQRigidBody> &b,
+AQJointHandle AQSpace::createHingeJoint(const SharedHandle<AQRigidBody> &a,
+                                        const SharedHandle<AQRigidBody> &b,
                                         const FVec<3> &anchorALocal,
                                         const FVec<3> &anchorBLocal,
                                         const FVec<3> &axisALocal,
@@ -911,8 +911,8 @@ AQJointHandle AQSpace::createHingeJoint(const std::shared_ptr<AQRigidBody> &a,
     return AQJointHandle{idx, 1};
 }
 
-AQJointHandle AQSpace::createSliderJoint(const std::shared_ptr<AQRigidBody> &a,
-                                         const std::shared_ptr<AQRigidBody> &b,
+AQJointHandle AQSpace::createSliderJoint(const SharedHandle<AQRigidBody> &a,
+                                         const SharedHandle<AQRigidBody> &b,
                                          const FVec<3> &anchorALocal,
                                          const FVec<3> &anchorBLocal,
                                          const FVec<3> &axisALocal,
@@ -931,8 +931,8 @@ AQJointHandle AQSpace::createSliderJoint(const std::shared_ptr<AQRigidBody> &a,
     return AQJointHandle{idx, 1};
 }
 
-AQJointHandle AQSpace::createFixedJoint(const std::shared_ptr<AQRigidBody> &a,
-                                        const std::shared_ptr<AQRigidBody> &b) {
+AQJointHandle AQSpace::createFixedJoint(const SharedHandle<AQRigidBody> &a,
+                                        const SharedHandle<AQRigidBody> &b) {
     if (!a || !b) return {};
     if (a->type() != AQBodyType::Dynamic && b->type() != AQBodyType::Dynamic) return {};
     AQJointRecord J;
@@ -964,8 +964,8 @@ bool AQSpace::destroyJoint(AQJointHandle h) {
     return true;
 }
 
-std::vector<AQJointDesc> AQSpace::joints() const {
-    std::vector<AQJointDesc> out;
+OmegaCommon::Vector<AQJointDesc> AQSpace::joints() const {
+    OmegaCommon::Vector<AQJointDesc> out;
     std::unordered_map<const AQRigidBody *, std::uint32_t> idx;
     idx.reserve(impl->bodies.size());
     for (std::uint32_t i = 0; i < impl->bodies.size(); ++i)
@@ -1060,7 +1060,7 @@ inline bool queryFilterAccepts(const AQQueryFilter &q, const AQCollisionFilter &
 } // namespace
 
 void AQSpace::raycast(const FVec<3> &origin, const FVec<3> &direction, float maxT,
-                      const AQQueryFilter &filter, std::vector<AQRaycastHit> &hits) const {
+                      const AQQueryFilter &filter, OmegaCommon::Vector<AQRaycastHit> &hits) const {
     hits.clear();
     for (std::uint32_t i = 0; i < impl->bodies.size(); ++i) {
         auto &bi = *impl->bodies[i]->impl;
@@ -1091,7 +1091,7 @@ void AQSpace::raycast(const FVec<3> &origin, const FVec<3> &direction, float max
 void AQSpace::shapecast(AQShapeHandle shape, const FVec<3> &origin,
                         const FQuaternion & /*orientation*/, const FVec<3> &direction,
                         float maxT, const AQQueryFilter &filter,
-                        std::vector<AQRaycastHit> &hits) const {
+                        OmegaCommon::Vector<AQRaycastHit> &hits) const {
     hits.clear();
     const AQShape *cast = impl->shapeAt(shape);
     if (cast == nullptr) return;
@@ -1124,7 +1124,7 @@ void AQSpace::shapecast(AQShapeHandle shape, const FVec<3> &origin,
 
 void AQSpace::overlap(AQShapeHandle shape, const FVec<3> &origin,
                       const FQuaternion &orientation, const AQQueryFilter &filter,
-                      bool exactShapes, std::vector<std::uint32_t> &bodies) const {
+                      bool exactShapes, OmegaCommon::Vector<std::uint32_t> &bodies) const {
     bodies.clear();
     const AQShape *q = impl->shapeAt(shape);
     if (q == nullptr) return;
@@ -1157,7 +1157,7 @@ void AQSpace::updateTriggers() {
     // This advance's overlapping trigger pairs (tight world-AABB test, per the
     // §6.M "short-circuit after the AABB test" rule). Candidate pairs are
     // already (a < b)-ordered, so `curr` stays sorted.
-    std::vector<std::pair<std::uint32_t, std::uint32_t>> curr;
+    OmegaCommon::Vector<std::pair<std::uint32_t, std::uint32_t>> curr;
     for (const auto &p : impl->pairs) {
         const auto &ba = *impl->bodies[p.a]->impl;
         const auto &bb = *impl->bodies[p.b]->impl;
@@ -1196,8 +1196,8 @@ void AQSpace::updateTriggers() {
               });
 }
 
-std::vector<AQTriggerEvent> AQSpace::triggerEvents() {
-    std::vector<AQTriggerEvent> out;
+OmegaCommon::Vector<AQTriggerEvent> AQSpace::triggerEvents() {
+    OmegaCommon::Vector<AQTriggerEvent> out;
     out.swap(impl->triggerEvts);     // drain: subsequent calls return empty until next advance
     return out;
 }
@@ -1335,9 +1335,9 @@ void AQSpace::runBroadphase(float frameDt) {
     // not yet valid get one here. The runBroadphase pass also re-fattens with
     // velocity·frameDt so dilations match the broadphase's once-per-frame
     // cadence (the sub-step uses dt, which is finer).
-    std::vector<FAABB> fat(N);
-    std::vector<bool>  hasShape(N, false);
-    std::vector<bool>  isPlane(N, false);
+    OmegaCommon::Vector<FAABB> fat(N);
+    OmegaCommon::Vector<bool>  hasShape(N, false);
+    OmegaCommon::Vector<bool>  isPlane(N, false);
     for (std::size_t i = 0; i < N; ++i) {
         auto &b = *bodies[i];
         const AQShape *sp = impl->shapeAt(b.impl->shape);
@@ -1362,7 +1362,7 @@ void AQSpace::runBroadphase(float frameDt) {
     // by zero, the result is just an empty pair list.
     float cellSize = 1.f;
     {
-        std::vector<float> extents;
+        OmegaCommon::Vector<float> extents;
         extents.reserve(N);
         for (std::size_t i = 0; i < N; ++i) {
             if (!hasShape[i] || isPlane[i]) continue;
@@ -1381,12 +1381,12 @@ void AQSpace::runBroadphase(float frameDt) {
 
     // Track plane bodies separately — they pair against every filter-accepting
     // non-plane body without entering the grid.
-    std::vector<std::uint32_t> planeBodies;
+    OmegaCommon::Vector<std::uint32_t> planeBodies;
 
     // (3) Build (cellHash, body) for every cell each fat AABB straddles.
     // Lower bound and upper bound on the integer grid are inclusive in each
     // axis; the resulting cell set covers the AABB exactly.
-    std::vector<CellEntry> entries;
+    OmegaCommon::Vector<CellEntry> entries;
     entries.reserve(N);
     for (std::size_t i = 0; i < N; ++i) {
         if (!hasShape[i]) continue;
@@ -1814,7 +1814,7 @@ void AQSpace::runNarrowphaseAndSolve(float dt) {
     if (impl->positionIters > 0 && dt > 0.f) {
         // Precompute world-frame inverse inertia per body once; reused for
         // every iteration's pseudo-impulse application.
-        std::vector<FMatrix<3,3>> invIWorld;
+        OmegaCommon::Vector<FMatrix<3,3>> invIWorld;
         invIWorld.reserve(impl->bodies.size());
         for (auto &body : impl->bodies) {
             invIWorld.push_back(AQworldInvInertia(body->impl->s.orientation,
@@ -1989,7 +1989,7 @@ void AQSpace::runIslandsAndSleep(float dt) {
     //     Static / kinematic bodies are never unioned — they would merge every
     //     island that touches them (the §6.F gotcha). The row order is
     //     deterministic, so the roots are stable across runs.
-    std::vector<std::uint32_t> parent(N), rnk(N, 0u);
+    OmegaCommon::Vector<std::uint32_t> parent(N), rnk(N, 0u);
     for (std::uint32_t i = 0; i < N; ++i) parent[i] = i;
     auto find = [&](std::uint32_t x) {
         while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }

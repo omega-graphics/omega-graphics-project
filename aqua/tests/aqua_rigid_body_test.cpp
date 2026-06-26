@@ -115,7 +115,7 @@ void testFullTensorParity() {
 
     // Diagonal reference: the Phase 1 fast path. Asymmetric moments so the
     // Dzhanibekov flip is observable.
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 4000.f);
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, 0.f, 0.f));
@@ -205,7 +205,7 @@ void testFullTensorParity() {
 void testAccessors() {
     std::printf("\n== accessors: L, KE, worldInverseInertia ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, 0.f, 0.f));
 
@@ -466,7 +466,7 @@ void testDampingAndClamp() {
     // run still flips and stays bounded with the upgraded integrator — we
     // exercise that here briefly to make the regression explicit.
     {
-        auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+        auto ctx = AQContext::CreateCPUOnly();
         ctx->setFixedTimestep(1.f / 2000.f);
         auto sp = ctx->createSpace();
         sp->setGravity(AQvec3(0.f, 0.f, 0.f));
@@ -505,7 +505,7 @@ void testDampingAndClamp() {
 void testDebugStream() {
     std::printf("\n== debug stream: flags -> drain count and content ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 1000.f);
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, 0.f, 0.f));

@@ -57,7 +57,7 @@ FVec<3> anchorWorld(const std::shared_ptr<AQRigidBody> &b, const FVec<3> &local)
 // ---------------------------------------------------------------------------
 void testBridge() {
     std::printf("\n== bridge: 12 boxes + 11 ball-socket joints, pinned ends ==\n");
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 240.f);
     auto sp = ctx->createSpace();
     sp->setSolverIterations(100, 0);             // long chain ⇒ many PGS iterations to propagate
@@ -147,7 +147,7 @@ void testHingeDoor() {
 
     // (a) Limit: door swings down under gravity, stopped at the −45° lower limit.
     {
-        auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+        auto ctx = AQContext::CreateCPUOnly();
         ctx->setFixedTimestep(dt);
         auto sp = ctx->createSpace();
         sp->setSleepThresholds(0.01f, 0.01f, 0u);
@@ -174,7 +174,7 @@ void testHingeDoor() {
     // (b) Motor: COM-hinged box, no gravity, constant motor torque vs angular
     // damping ⇒ steady state ω_ss = τ/(I·c). COM-hinged so it is pure rotation.
     {
-        auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+        auto ctx = AQContext::CreateCPUOnly();
         ctx->setFixedTimestep(dt);
         auto sp = ctx->createSpace();
         sp->setSleepThresholds(0.01f, 0.01f, 0u);
@@ -207,7 +207,7 @@ void testHingeDoor() {
 // ---------------------------------------------------------------------------
 void testRaycastAndSleep() {
     std::printf("\n== raycast & sleep: 10-box stack ==\n");
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 240.f);
     auto sp = ctx->createSpace();
     auto planeS = sp->createPlaneShape(AQvec3(0.f, 1.f, 0.f), 0.f);
@@ -288,7 +288,7 @@ void testRaycastAndSleep() {
 // 4. The bullet — CCD Off / Speculative / Continuous.
 // ---------------------------------------------------------------------------
 float bulletFinalY(AQCCDMode mode) {
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 120.f);
     auto sp = ctx->createSpace();
     auto planeS = sp->createPlaneShape(AQvec3(0.f, 1.f, 0.f), 0.f);

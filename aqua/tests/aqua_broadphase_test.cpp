@@ -98,7 +98,7 @@ struct Scene {
 
 Scene buildRandomScene(std::uint32_t seed, std::size_t n, float worldSide, float r) {
     Scene S;
-    S.ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    S.ctx = AQContext::CreateCPUOnly();
     S.ctx->setFixedTimestep(1.f / 240.f);
     S.sp = S.ctx->createSpace();
     S.sp->setGravity(AQvec3(0.f, 0.f, 0.f));   // detection only — keep bodies put
@@ -123,7 +123,7 @@ Scene buildRandomScene(std::uint32_t seed, std::size_t n, float worldSide, float
 void testShapeFactoryAndInertia() {
     std::printf("\n== shape factories + inertia-from-shape ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     auto sp  = ctx->createSpace();
 
     auto sphere = sp->createSphereShape(1.5f);
@@ -251,7 +251,7 @@ void testBroadphaseOracleMoving() {
 void testRotationCorrectAABB() {
     std::printf("\n== rotation-correct AABB for a spinning box ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     ctx->setFixedTimestep(1.f / 480.f);
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, 0.f, 0.f));
@@ -319,7 +319,7 @@ void testDeterminism() {
 void testFilter() {
     std::printf("\n== collision filter (layer/mask) ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, 0.f, 0.f));
     auto sphere = sp->createSphereShape(1.f);
@@ -355,7 +355,7 @@ void testFilter() {
 void testCOMOffsetTorqueArm() {
     std::printf("\n== COM-offset wiring in applyForceAtPoint ==\n");
 
-    auto ctx = AQContext::Create(SharedHandle<OmegaGTE::GECommandQueue>());
+    auto ctx = AQContext::CreateCPUOnly();
     auto sp = ctx->createSpace();
     sp->setGravity(AQvec3(0.f, 0.f, 0.f));
 
