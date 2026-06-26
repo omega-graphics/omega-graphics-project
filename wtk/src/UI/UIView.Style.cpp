@@ -332,6 +332,11 @@ void UIView::resolveStyles(){
     // backing the resolver / inline writers will populate.
     impl_->previousStyleTable_.clear();
     impl_->styleTable_.swap(impl_->previousStyleTable_);
+    // Text-Measurement-API-Plan §3/§5: a Style pass means a content/style
+    // edit (Label edits funnel through `setStyle`), so the cached text
+    // layouts may no longer hold — drop the cache and let `ensureTextLayout`
+    // recompute lazily on the next measure/paint pass.
+    impl_->textLayoutCache_.clear();
     // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
     // resolved-style writes now flow into the per-property
     // `styleTable_` keyed by `(NodeId, PropertyKey, subIndex)` —

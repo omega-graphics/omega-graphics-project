@@ -252,14 +252,29 @@ Label::Label(Composition::Rect rect, const LabelProps & props)
 
 void Label::onMount() {
     rebuildContent();
-    // NOTE (Resize-Clamping §1.7): a wrapping Label's height is content-
-    // driven (a function of its width). The View `ContentMeasure` hook +
-    // FlexLayout measure path exist to publish that to the layout, but the
-    // hook is intentionally NOT installed yet: the only height source today
-    // is a char-count/point-size heuristic, and the description renders with
-    // the GTK system theme font (`gtk-font-name`) whose size this widget
-    // cannot read synchronously — so the estimate clips or overflows. Wiring
-    // this up is gated on real text metrics (`Font::measureText`, Phase 2A).
+    // Resize-Clamping §1.7 / Text-Measurement-API-Plan: a wrapping Label's
+    // height is content-driven (a function of its width). Install the View
+    // `ContentMeasure` hook so the parent's `FlexLayout::measure` sizes this
+    // widget to its wrapped text instead of its frozen construction-time
+    // rect. The hook delegates to `UIView::measureText`, which runs the real
+    // text-layout engine — the same shaping/wrapping the renderer uses — so
+    // the reported height matches the glyphs that paint. Units are dp.
+    //
+    // Height-only: a vertical stack's content-driven dimension is height, so
+    // we publish `outHeightDp` and pass the available width straight through
+    // (the cross axis is owned by stretch). When `measureText` returns 0 (no
+    // text, or no font/shaper resolved), we leave `outHeightDp` at the
+    // caller-supplied fallback rather than collapsing the box to zero.
+    viewAs<UIView>().setContentMeasure(
+        [this](float availWidthDp, float /*availHeightDp*/,
+               float & outWidthDp, float & outHeightDp) {
+            const float measuredHeight =
+                viewAs<UIView>().measureText("label", availWidthDp);
+            if (measuredHeight > 0.f) {
+                outHeightDp = measuredHeight;
+            }
+            outWidthDp = availWidthDp;
+        });
 }
 
 void Label::rebuildContent() {
@@ -268,7 +283,12 @@ void Label::rebuildContent() {
     UIElementLayoutSpec spec;
     spec.tag = "label";
     spec.text = props_.text;
-    spec.textRect = rect();
+    // Text-Measurement-API-Plan §5: deliberately DO NOT pin `spec.textRect`.
+    // A Label's text fills its view, and the layout pass resizes the view (not
+    // the Widget), so a rect baked here would freeze at the construction-time
+    // size and clip wrapped text on resize. Leaving it unset makes paint lay
+    // the text out against the live view bounds, matching what `measureText`
+    // measured.
     lv2.element(spec);
 
     auto ss = Style::Create();
@@ -290,28 +310,14 @@ void Label::resize(Composition::Rect & newRect) {
     invalidate(PaintReason::Resize);
 }
 
-MeasureResult Label::measureSelf(const LayoutContext & ctx) {
-    // Heuristic estimate until Phase 2A adds Font::measureText.
-    if (!props_.font || props_.text.empty()) {
-        return {rect().w / ctx.dpiScale, rect().h / ctx.dpiScale};
-    }
-    float fontSize = static_cast<float>(props_.font->desc.size);
-    float charCount = static_cast<float>(props_.text.size());
-    float estWidth = charCount * fontSize * 0.6f;
-    float estHeight = fontSize * 1.2f;
-
-    float availWidth = ctx.availableRectPx.w;
-    if (props_.wrapping != Composition::TextLayoutDescriptor::None &&
-        availWidth > 0.f && estWidth > availWidth) {
-        float lines = std::ceil(estWidth / availWidth);
-        if (props_.lineLimit > 0) {
-            lines = std::min(lines, static_cast<float>(props_.lineLimit));
-        }
-        estWidth = availWidth;
-        estHeight = lines * fontSize * 1.2f;
-    }
-    return {estWidth / ctx.dpiScale, estHeight / ctx.dpiScale};
-}
+// Text-Measurement-API-Plan §3 task 3: the heuristic `Label::measureSelf`
+// (charCount × pointSize × 0.6 width, 1.2 line factor) was deleted. It had
+// no call site — nothing in the tree invoked `measureSelf` on a Label — and
+// its `props_.font`-gating bailed to a no-op for the exact font-less,
+// fallback-Arial Labels this path needs to size. Real wrapped height now
+// flows through the `ContentMeasure` hook installed in `onMount`, which
+// delegates to `UIView::measureText` (the real text-layout engine). The base
+// `Widget::measureSelf` remains for widgets that still want the default.
 
 void Label::setText(const OmegaCommon::UString & text) {
     props_.text = text;

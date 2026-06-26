@@ -92,7 +92,44 @@ ShapedTextRun shapeTextForDisplayList(
         return out;
     }
 
+    // Post-layout shaping (sub-run grouping + residency + raster) is shared
+    // with the precomputed-layout entry point below.
+    out = shapeTextFromLayout(layoutResult, rect, color, renderScale, 0.f);
+    if(out.msdfSubRuns.empty() && out.bitmapBlits.empty()){
+        return out;
+    }
+
+#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
+    // Cache the just-shaped run for the next frame. Copy in (not move)
+    // so the caller still gets the run it expects from the function
+    // return — the cache holds an independent copy.
+    if(!out.msdfSubRuns.empty() || !out.bitmapBlits.empty()){
+        TextShapingCache::inst().insert(std::move(cacheKey), out, estimateBytes(out));
+    }
+#endif
+
+    return out;
+}
+
+ShapedTextRun shapeTextFromLayout(
+    const LayoutResult & layoutResult,
+    const Composition::Rect & rect,
+    const Composition::Color & color,
+    float renderScale,
+    float yOffset){
+    ShapedTextRun out {};
+    if(layoutResult.glyphs.empty()){
+        return out;
+    }
+    auto * engine = FontEngine::inst();
+    if(engine == nullptr){
+        return out;
+    }
+
     // Group laid-out glyphs by resolved font into sub-runs (one per face).
+    // Positions stay rect-local (matching how the engine emits them — the
+    // absolute offset rides on the DrawOp rect); `yOffset` shifts the
+    // baseline for the box's vertical alignment.
     std::unordered_map<Font *, std::size_t> subRunIndex;
     OmegaCommon::Vector<TextSubRun> subRuns;
     for(const auto & g : layoutResult.glyphs){
@@ -107,7 +144,7 @@ ShapedTextRun shapeTextForDisplayList(
         }
         auto & sr = subRuns[it->second];
         sr.glyphIds.push_back(g.glyphId);
-        sr.positions.push_back(Composition::Point2D{g.canvasX, g.canvasY});
+        sr.positions.push_back(Composition::Point2D{g.canvasX, g.canvasY + yOffset});
     }
 
     // Partition by mode: MSDF sub-runs ride the atlas pipeline (residency
@@ -128,15 +165,6 @@ ShapedTextRun shapeTextForDisplayList(
             }
         }
     }
-
-#ifdef OMEGAWTK_CONTENT_CACHE_ENABLED
-    // Cache the just-shaped run for the next frame. Copy in (not move)
-    // so the caller still gets the run it expects from the function
-    // return — the cache holds an independent copy.
-    if(!out.msdfSubRuns.empty() || !out.bitmapBlits.empty()){
-        TextShapingCache::inst().insert(std::move(cacheKey), out, estimateBytes(out));
-    }
-#endif
 
     return out;
 }

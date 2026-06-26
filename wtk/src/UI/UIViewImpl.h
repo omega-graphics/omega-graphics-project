@@ -3,6 +3,7 @@
 
 #include "omegaWTK/UI/UIView.h"
 #include "omegaWTK/UI/StyleSheet.h"  // D6.1: TransitionSpec, KeyframeAnimation
+#include "omegaWTK/Composition/TextLayoutEngine.h"  // Text-Measurement-API-Plan: cached LayoutResult shared by measure + paint.
 #include "AnimationScheduler.h"   // Phase 4.4: NodeId, PropertyKey, scheduler API.
 
 #include <algorithm>
@@ -291,6 +292,35 @@ struct UIView::Impl {
     SharedHandle<Composition::Font> fallbackTextFont = nullptr;
     UIViewLayoutV2 currentLayoutV2_;
     OmegaCommon::Map<UIElementTag,Composition::Rect> lastResolvedV2Rects_;
+
+    // Text-Measurement-API-Plan §3 / §5 (measure+paint unification): per-
+    // element cache of the *full* laid-out text result, keyed by the
+    // available width it was laid out against. `ensureTextLayout()` runs
+    // `TextLayoutEngine::layout` only on a miss (new width, or a content /
+    // style edit cleared the cache); both the measure pass (reads
+    // `layoutHeight`) and the paint pass (consumes `glyphs`) share the one
+    // cached result, so the text is laid out once per actual change rather
+    // than once per frame AND measure can never disagree with paint about
+    // line count or wrapping. The cached layout is computed top-origin
+    // (vertical alignment neutralized to the Upper variant) so it is
+    // rect.h-independent; paint applies the box's vertical offset itself.
+    // Invalidation: `resolveStyles()` clears this whenever the Style phase
+    // runs (every Label edit funnels through `setStyle`, setting the Style
+    // dirty bit); a bare resize that does not dirty Style is caught by the
+    // per-entry width compare in `ensureTextLayout`.
+    struct TextLayoutCacheEntry {
+        float availWidthDp = -1.f;   // -1 == no cached layout yet
+        Composition::LayoutResult layout {};
+    };
+    OmegaCommon::Map<UIElementTag,TextLayoutCacheEntry> textLayoutCache_;
+
+    // Resolve the tagged text element's font / descriptor / line limit
+    // exactly as paint does, lay it out once at `availWidthDp` (top-origin),
+    // and cache the result keyed by width. Returns a pointer into the cache
+    // (stable until the cache is cleared/reassigned), or nullptr when the
+    // tag has no text element or no font / shaper is available.
+    const Composition::LayoutResult * ensureTextLayout(const UIElementTag & tag,
+                                                       float availWidthDp);
 
     // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
     // resolved-style cache, re-shaped from the pre-D5 aggregates

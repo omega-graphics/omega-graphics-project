@@ -405,6 +405,30 @@ public:
 
     void update();
 
+    /// Text-Measurement-API-Plan §3: measure the laid-out height (dp) of
+    /// the tagged text element when given `availWidthDp` of horizontal
+    /// space. Resolves the element's effective font + `TextLayoutDescriptor`
+    /// + line limit the *same* way `update()`'s paint pass does (resolved
+    /// `TextFont` cell, else the Arial-18 `resolveFallbackTextFont()`
+    /// default), then runs the CPU-only `TextLayoutEngine::layout` with a
+    /// rect of `{0,0, availWidthDp, large}` — only `rect.w` drives the wrap,
+    /// so the returned `layoutHeight` is the wrapped, line-limited height
+    /// the renderer would produce. Height-only by design: the layout engine
+    /// reports no laid-out width, and the content-driven dimension for a
+    /// vertical stack is height (the cross axis stays owned by stretch).
+    ///
+    /// Units are dp in and dp out, matching the `View::ContentMeasureFn`
+    /// contract the `Label` hook bridges to. Returns 0 when the tag has no
+    /// text element, the element has no text, or no font / shaper is
+    /// available — the caller (the hook) then degrades to its fallback size.
+    ///
+    /// Memoized per element tag: the result is cached against `availWidthDp`
+    /// and reused without re-running the layout engine until the width
+    /// changes or a content/style edit invalidates it (the memo is dropped
+    /// in `resolveStyles()`). Steady-state frames therefore cost no layout
+    /// work — `layout()` runs once per actual change, not once per frame.
+    float measureText(const UIElementTag & tag, float availWidthDp);
+
 private:
     // Tier B / B3: the per-phase methods that update() orchestrates in
     // order, flipping the window FrameBuilder's currentPhase_ around each.

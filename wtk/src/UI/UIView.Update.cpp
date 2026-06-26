@@ -1,5 +1,6 @@
 #include "UIViewImpl.h"
 #include "omegaWTK/Composition/DisplayList.h"
+#include "omegaWTK/Composition/TextLayoutEngine.h"   // Text-Measurement-API-Plan §3: measureText reuses the CPU-only layout core.
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/LayoutManager.h"   // Phase 4.5: clampRectToParent lifted onto LayoutManager.
 #include "FrameBuilder.h"
@@ -114,6 +115,41 @@ void UIView::tickAnimations(){
     // (2026-06-03) deleted the `Impl::advanceAnimations` no-op stub
     // this comment used to pair with.
 }
+
+namespace {
+
+// Text-Measurement-API-Plan §5: the `TextLayoutDescriptor::Alignment` enum
+// groups in threes — {Left, Middle, Right} × {Upper, Center, Lower} — so the
+// vertical band is `index % 3` (0 = Upper, 1 = Center, 2 = Lower) and the
+// Upper variant of any alignment is `(index / 3) * 3`.
+
+// Strip vertical alignment to the Upper variant (preserving horizontal) so a
+// cached layout is top-origin and rect.h-independent, hence shareable between
+// measure (any height) and paint (the real box height).
+Composition::TextLayoutDescriptor::Alignment
+upperVariant(Composition::TextLayoutDescriptor::Alignment a){
+    const int v = static_cast<int>(a);
+    return static_cast<Composition::TextLayoutDescriptor::Alignment>((v / 3) * 3);
+}
+
+// The vertical offset to add to a top-origin layout so it sits correctly in a
+// box of height `rectH` under the element's real alignment. Upper → 0,
+// Center → half the slack, Lower → all of it. Negative slack (text taller than
+// the box) collapses to top, matching `firstBaselineY`.
+float verticalAlignOffset(float rectH, float layoutHeight,
+                          Composition::TextLayoutDescriptor::Alignment a){
+    const float extra = rectH - layoutHeight;
+    if(extra <= 0.f){
+        return 0.f;
+    }
+    switch(static_cast<int>(a) % 3){
+        case 1:  return extra * 0.5f;  // Center
+        case 2:  return extra;         // Lower
+        default: return 0.f;           // Upper
+    }
+}
+
+} // namespace
 
 void UIView::arrangeContent(){
     assertActivePhase(FramePhase::Layout);
@@ -388,41 +424,38 @@ void UIView::paint(Composition::PaintContext & pc){
             }
         }
         else if(spec.text){
-            // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
-            // text style cells were written under the element's own
-            // NodeId in `resolveStyles()` (the text-style tag aliasing
-            // is resolved at write time, so Paint reads by element
-            // identity). One `resolved<T>` lookup per field.
-            auto fontHandle = impl_->resolved<SharedHandle<Composition::Font>>(
-                elementNodeId, PropertyKey::TextFont,
-                SharedHandle<Composition::Font>{nullptr});
-            auto font = fontHandle != nullptr ? fontHandle : impl_->resolveFallbackTextFont();
-            if(font != nullptr){
+            // Text-Measurement-API-Plan §5: paint consumes the SAME shared
+            // layout `measureText` produced, so the box reserved by layout and
+            // the glyphs drawn here can never disagree about wrapping. The text
+            // area is the element's LIVE rect — `spec.textRect` is honored only
+            // when explicitly set (a sub-region); the Label leaves it unset so
+            // its text fills the resized view (the prior stale-rect freeze was
+            // what clipped wrapped text to its construction-time 60dp box).
+            auto textRect = spec.textRect.value_or(localBounds);
+            textRect = LayoutManager::clampRectToParent(textRect,localBounds,layoutClamp);
+            textRect = withOffset(textRect);
+
+            const auto * layout = impl_->ensureTextLayout(entry.tag, textRect.w);
+            if(layout != nullptr && !layout->glyphs.empty()){
                 auto textColor = impl_->resolved<Composition::Color>(
                     elementNodeId, PropertyKey::TextColor,
                     Composition::Color::create8Bit(Composition::Color::Black8));
+                // The shared layout is top-origin; apply the box's vertical
+                // alignment (Upper → 0 for the description Label) here.
                 auto textLayout = impl_->resolved<Composition::TextLayoutDescriptor>(
                     elementNodeId, PropertyKey::TextLayout,
                     Composition::TextLayoutDescriptor{
                         Composition::TextLayoutDescriptor::LeftUpper,
                         Composition::TextLayoutDescriptor::None
                     });
-                auto lineLimit = impl_->resolved<std::uint32_t>(
-                    elementNodeId, PropertyKey::TextLineLimit, 0u);
+                const float yOffset = verticalAlignOffset(
+                    textRect.h, layout->layoutHeight, textLayout.alignment);
 
-                auto textRect = spec.textRect.value_or(localBounds);
-                textRect = LayoutManager::clampRectToParent(textRect,localBounds,layoutClamp);
-                textRect = withOffset(textRect);
-                auto unicodeText = OmegaCommon::UniString::fromUTF32(
-                    reinterpret_cast<const OmegaCommon::Unicode32Char *>(spec.text->data()),
-                    static_cast<int32_t>(spec.text->size()));
-                textLayout.lineLimit = lineLimit;
-                // Shape upstream of DrawOp emission so paint stays a
-                // pure function. Bitmap-fallback sub-runs ride
-                // `DrawOp::Bitmap`; MSDF sub-runs ride `DrawOp::TextRun`.
-                auto shaped = Composition::shapeTextForDisplayList(
-                    unicodeText, font, textRect, textColor,
-                    textLayout, getRenderScale());
+                // Shape upstream of DrawOp emission so paint stays a pure
+                // function. Bitmap-fallback sub-runs ride `DrawOp::Bitmap`;
+                // MSDF sub-runs ride `DrawOp::TextRun`.
+                auto shaped = Composition::shapeTextFromLayout(
+                    *layout, textRect, textColor, getRenderScale(), yOffset);
                 for(auto & blit : shaped.bitmapBlits){
                     displayList.append(Composition::DrawOp{
                         blit.texture, blit.fence, textRect});
@@ -484,6 +517,103 @@ View::PaintBleed UIView::paintBleed(){
         bleed.bottom = std::max(bleed.bottom, my);
     }
     return bleed;
+}
+
+const Composition::LayoutResult *
+UIView::Impl::ensureTextLayout(const UIElementTag & tag, float availWidthDp){
+    // Text-Measurement-API-Plan §3/§5: the single shared text layout. Both
+    // measure (reads `layoutHeight`) and paint (consumes `glyphs`) call this,
+    // so the text is laid out once per (content, width) and the two passes can
+    // never disagree about wrapping. The CPU-only `TextLayoutEngine::layout`
+    // does all the width-driven wrapping + line-limit truncation; no surface
+    // or GPU work happens here.
+    if(availWidthDp <= 0.f){
+        return nullptr;
+    }
+
+    // Cache hit: already laid out at exactly this width since the last
+    // content/style edit (which clears the cache in resolveStyles()). A width
+    // change falls through to recompute and re-cache.
+    if(auto it = textLayoutCache_.find(tag);
+       it != textLayoutCache_.end() &&
+       it->second.availWidthDp == availWidthDp){
+        return &it->second.layout;
+    }
+
+    // Locate the tagged text element. A Shape/Image element under the same tag,
+    // or empty text, has nothing to lay out.
+    const UIElementLayoutSpec * textSpec = nullptr;
+    for(const auto & spec : currentLayoutV2_.elements()){
+        if(spec.tag == tag && spec.text && !spec.text->empty()){
+            textSpec = &spec;
+            break;
+        }
+    }
+    if(textSpec == nullptr){
+        return nullptr;
+    }
+
+    // Effective font: resolved `TextFont` cell, else the Arial-18 fallback —
+    // byte-for-byte the resolution the paint branch uses. The fallback lives
+    // on `Impl`, which is why the public entry point belongs on UIView.
+    const auto elementNodeId = ensureElementNodeId(tag);
+    auto fontHandle = resolved<SharedHandle<Composition::Font>>(
+        elementNodeId, PropertyKey::TextFont,
+        SharedHandle<Composition::Font>{nullptr});
+    auto font = fontHandle != nullptr ? fontHandle : resolveFallbackTextFont();
+    if(font == nullptr){
+        return nullptr;
+    }
+
+    // Shaper + fallback driver off the process-wide FontEngine. Without a
+    // shaper there is no layout to run.
+    auto * engine = Composition::FontEngine::inst();
+    auto * shaper = (engine != nullptr) ? engine->shaper() : nullptr;
+    if(engine == nullptr || shaper == nullptr){
+        return nullptr;
+    }
+
+    // Descriptor (horizontal alignment / wrapping) + line limit, resolved as
+    // paint does. Vertical alignment is neutralized to Upper so the cached
+    // glyphs are top-origin (paint re-applies the real vertical offset).
+    auto textLayout = resolved<Composition::TextLayoutDescriptor>(
+        elementNodeId, PropertyKey::TextLayout,
+        Composition::TextLayoutDescriptor{
+            Composition::TextLayoutDescriptor::LeftUpper,
+            Composition::TextLayoutDescriptor::None
+        });
+    textLayout.lineLimit = resolved<std::uint32_t>(
+        elementNodeId, PropertyKey::TextLineLimit, 0u);
+    textLayout.alignment = upperVariant(textLayout.alignment);
+
+    auto unicodeText = OmegaCommon::UniString::fromUTF32(
+        reinterpret_cast<const OmegaCommon::Unicode32Char *>(textSpec->text->data()),
+        static_cast<int32_t>(textSpec->text->size()));
+
+    // Only `rect.w` drives wrapping; with Upper alignment `rect.h` no longer
+    // affects glyph positions, so a large height is a safe sentinel. Units are
+    // dp throughout (`getMetrics()` is nominal-point-size, no render scale),
+    // matching the dp-in/dp-out ContentMeasureFn contract.
+    const float kLayoutHeight = 1.0e6f;
+    const Composition::FontMetrics metrics = font->getMetrics();
+    const Composition::Rect layoutRect{
+        Composition::Point2D{0.f, 0.f}, availWidthDp, kLayoutHeight};
+
+    auto & slot = textLayoutCache_[tag];
+    slot.availWidthDp = availWidthDp;
+    slot.layout = Composition::TextLayoutEngine::layout(
+        unicodeText, font, metrics, layoutRect, textLayout, *shaper,
+        engine->fallback());
+    return &slot.layout;
+}
+
+float UIView::measureText(const UIElementTag & tag, float availWidthDp){
+    // Text-Measurement-API-Plan §3: report the wrapped height of the shared
+    // layout. The layout itself is cached and reused by paint, so this costs
+    // a `TextLayoutEngine::layout` only on the first measure per (content,
+    // width) — not once per frame, and never a second time in paint.
+    const auto * layout = impl_->ensureTextLayout(tag, availWidthDp);
+    return layout != nullptr ? layout->layoutHeight : 0.f;
 }
 
 void UIView::update(){

@@ -181,6 +181,47 @@ unverified).
    clip), the buttons stay below (no overlap), and the Phase 2 window
    min-height grows so the window cannot be dragged short enough to clip.
 
+## 5 Measure + paint unification (added 2026-06-26)
+
+Shipping §3 with a height-only memo exposed a second bug under window
+crush: the wrapping `Label` **truncated** (lines past ~60dp clipped) and
+the remaining text was **misplaced**. Root cause — measure and paint laid
+the text out from *different* inputs:
+
+- **Measure** used the live available width (the `FlexLayout` cross
+  extent).
+- **Paint** started from `spec.textRect`, which `Label::rebuildContent`
+  froze at construction (`= rect()` ≈ `{contentW, 60}`). The layout pass
+  resizes the *View*, never the *Widget*, so `rebuildContent` never re-ran
+  and the rect stayed stale. Paint therefore wrapped at a stale/clamped
+  width and clipped the run to a stale 60dp-tall box — hence the truncation
+  and the disagreement with the measured height.
+
+`TextLayoutEngine::layout` produces **rect-local** glyph positions
+(`horizontalStartX`/`firstBaselineY` read only `rect.w`/`rect.h`, never
+`rect.pos`), and only vertical alignment depends on `rect.h`. So one layout
+can serve both passes:
+
+- **`UIView::Impl::ensureTextLayout(tag, widthDp)`** lays the text out once
+  at `{0,0, widthDp, large}` with vertical alignment **neutralized to the
+  Upper variant** (top-origin, `rect.h`-independent) and caches the full
+  `LayoutResult` keyed by width (invalidated in `resolveStyles`, same as
+  §3's memo). `measureText` returns its `layoutHeight`; paint consumes its
+  `glyphs`. The text is laid out once per (content, width) — never twice,
+  never per-frame — and the two passes cannot disagree.
+- **`shapeTextFromLayout`** (split out of `shapeTextForDisplayList`) builds
+  the `ShapedTextRun` from a precomputed `LayoutResult`; paint calls it with
+  the shared layout plus a `yOffset` = `verticalAlignOffset(rectH,
+  layoutHeight, alignment)` so non-Upper boxes still align (no-op for the
+  Upper description `Label`).
+- **`Label::rebuildContent` no longer pins `spec.textRect`** — paint falls
+  back to the live view bounds, so the text fills the resized view. The
+  stale-rect freeze is gone.
+
+This also fully resolves the §3 follow-up concern (measure was re-running
+`layout()` every frame): the shared cache means one layout per change,
+reused by paint.
+
 ## 4 Cross-links
 
 - `Resize-Clamping-Plan.md` §1.6 (slot-vs-widget model — the spacer slot

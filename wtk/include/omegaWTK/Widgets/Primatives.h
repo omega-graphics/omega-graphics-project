@@ -147,7 +147,6 @@ protected:
     // paint. onPaint is read-only and only triggers update().
     void rebuildContent();
     void resize(Composition::Rect & newRect) override;
-    MeasureResult measureSelf(const LayoutContext & ctx) override;
 public:
     explicit Label(Composition::Rect rect, const LabelProps & props = {});
     void setText(const OmegaCommon::UString & text);

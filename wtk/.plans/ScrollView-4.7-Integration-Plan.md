@@ -98,21 +98,61 @@ The chosen model. Implementation shape:
 4. `WidgetTreeHost::dispatchInputEvent` calls `target->dispatchEvent(event)`
    instead of `target->emit(event)` for the positional path (line 821).
 
+#### Consumption semantics — the load-bearing invariants
+
+Bubbling is only correct if consumption stops it at the *innermost capable*
+handler. Two invariants make that hold (both surfaced by the developer's
+button-in-scroll-view and nested-scroll-view cases, 2026-06-25):
+
+- **Invariant A — type-scoped consumption.** A handler sets `handled` *only
+  for the event types it actually consumes*, never blanket. A `Button`
+  consumes the click types (`LMouseDown`/`LMouseUp`); it leaves `ScrollWheel`
+  untouched. `ScrollView` consumes `ScrollWheel`; it leaves clicks untouched.
+- **Invariant B — axis-aware scroll consumption.** `DefaultScrollHandler`
+  sets `handled` when the wheel's axis is scrollable *on this ScrollView*
+  (the axis is enabled and has range), even if the offset is already at the
+  end. It does **not** consume an axis this ScrollView doesn't scroll, so the
+  event bubbles to a parent that might. (v0 = no scroll-chaining at the
+  limit, matching `NSScrollView`; chaining-at-limit is a deferred UX knob —
+  it needs at-limit/rubber-band detection and a policy decision.)
+
+Because dispatch **starts at the deepest hit view and walks up**, these two
+invariants produce exactly the required behavior:
+
+| Scenario | Hit (deepest) | Bubble path → consumer | Result |
+|----------|---------------|------------------------|--------|
+| Click a Button inside a ScrollView | Button | Button consumes click → stop | Button fires; ScrollView ignores it |
+| Wheel while hovering that Button | Button | Button ignores wheel → bubbles → ScrollView consumes | List scrolls (hovering a button doesn't block the wheel) |
+| Wheel inside a nested child ScrollView | leaf in inner SV | inner ScrollView consumes → stop | Inner scrolls; **outer does not** |
+| Wheel over an inner SV that only scrolls X, with a Y-scrolling parent | leaf in inner SV | inner ignores Y (Invariant B) → bubbles → outer consumes Y | Inner handles X, outer handles Y |
+
+The invariant that makes "the child scrollView scrolls but not its parent"
+true is simply: the inner ScrollView is reached *first* on the way up and
+consumes, so the outer never sees the event.
+
 **Risk — this changes event semantics tree-wide.** Today a click/scroll fires
 only on the deepest hit view; after V2 an *unconsumed* event climbs to the
-root. Regression guard: audit every consuming handler and make it set
-`handled` so propagation stops at the right level. The consumer surface is
-small — only `AppWindow`, `ScrollView::DefaultScrollHandler`, and
-`ViewDelegate` subclasses implement `onRecieveEvent` today. Staging to keep
-risk contained:
+root. Regression guard: audit every consuming handler and make it obey
+Invariant A. The consumer surface is small — only `AppWindow`,
+`ScrollView::DefaultScrollHandler`, and `ViewDelegate` subclasses (e.g.
+`Button`'s) implement `onRecieveEvent` today. Staging to keep risk
+contained:
 - **V2.1**: add `handled` + `dispatchEvent`; route **only `ScrollWheel`**
-  through bubbling; `DefaultScrollHandler` sets `handled`. Everything else
-  keeps the current deepest-hit `emit`. This makes scrolling work with
-  near-zero blast radius.
+  through bubbling; `DefaultScrollHandler` sets `handled` per Invariant B.
+  Everything else keeps the current deepest-hit `emit`. This makes scrolling
+  work with near-zero blast radius — and because clicks are *not* yet
+  bubbled, the button cases already behave: a click on a button still fires
+  only on the button (old path), while a wheel over that button bubbles past
+  it (button ignores wheel) to the ScrollView. The nested-ScrollView case
+  also works at V2.1: wheel bubbles from the inner leaf to the inner
+  ScrollView, which consumes before the outer is reached.
 - **V2.2**: migrate the remaining positional events (mouse down/up, move) to
-  `dispatchEvent`, after confirming Button/click and hover consumers set
-  `handled`. Hover enter/exit is synthesized by `WidgetTreeHost` itself
-  (not via `emit` bubbling) — leave that path as-is or make it idempotent.
+  `dispatchEvent`. Gate this on auditing every click consumer to obey
+  Invariant A — chiefly `Button`'s `ViewDelegate`, which must set `handled`
+  on the click types so a click inside a ScrollView (or inside another
+  click-handling ancestor) does not double-react up the chain. Hover
+  enter/exit is synthesized by `WidgetTreeHost` itself (not via `emit`
+  bubbling) — leave that path as-is or make it idempotent.
 
 If V2.2 surfaces regressions, the generic mechanism still ships (V2.1) and
 the migration can be paused without losing scroll.
@@ -157,9 +197,14 @@ enabler the ScrollableContainer plan deferred as S6.
 - **V1**: S1 scene — bands paint at content y 0/200/400 (red/green/blue
   column), not a single blue square. Offset clamp `maxY == 400`.
 - **V2.1**: wheel over the box scrolls; add a trace in `DefaultScrollHandler`
-  to confirm delivery; over-scroll stops at both ends (§6.1 clamp).
-- **V2.2**: clicking a band still routes correctly; no double-fired
-  hover/click on ancestors.
+  to confirm delivery; over-scroll stops at both ends (§6.1 clamp). Place a
+  `Button` inside the scroll content: wheel **over the button** still scrolls
+  the list (button ignores wheel), and clicking the button fires its
+  `onPress` without scrolling. Nest a second `ScrollView` inside the content:
+  wheel over the inner box scrolls **only** the inner one.
+- **V2.2**: clicking a band still routes correctly; clicking the inner
+  button fires once and does not bubble to a click handler on an ancestor;
+  no double-fired hover/click on ancestors.
 - **V3**: content above/below the viewport is clipped at the viewport edges.
 - **V4**: a vertical scroll bar renders; thumb tracks the offset.
 - **V5**: focus the box, press PageDown/End — content scrolls; clamps hold.

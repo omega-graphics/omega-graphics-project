@@ -70,6 +70,30 @@ namespace OmegaWTK::Composition {
         const TextLayoutDescriptor & layoutDesc,
         float renderScale);
 
+    // `LayoutResult` is defined in TextLayoutEngine.h; forward-declared here
+    // so the post-layout shaping entry point can take one by reference
+    // without this header pulling in the layout engine.
+    struct LayoutResult;
+
+    /// Build a `ShapedTextRun` from an already-computed `LayoutResult` —
+    /// the post-layout half of `shapeTextForDisplayList` (sub-run grouping
+    /// by resolved face, MSDF residency, bitmap rasterization), with the
+    /// expensive `TextLayoutEngine::layout` step factored out so a caller
+    /// that has cached the layout (e.g. `UIView::measureText` sharing its
+    /// result with paint) does not lay the text out twice. Glyph positions
+    /// stay rect-local (the absolute offset rides on the emitted `DrawOp`'s
+    /// rect, exactly as the text path has always worked); `yOffset` is the
+    /// vertical-alignment shift to add to each glyph's baseline (the cached
+    /// layout is computed top-origin, so the caller applies the box's
+    /// vertical alignment here). `rect` is the absolute draw rect, passed
+    /// through to the bitmap rasterizer.
+    OMEGAWTK_EXPORT ShapedTextRun shapeTextFromLayout(
+        const LayoutResult & layoutResult,
+        const Composition::Rect & rect,
+        const Composition::Color & color,
+        float renderScale,
+        float yOffset = 0.f);
+
     /// UIView-Render-Redesign-Plan Phase 2.0: a frame-scoped, flat
     /// recording of paint intent emitted by a `SceneNode::paint` pass
     /// (today: by `UIView::update()`). Per Tier 2 §2.0 cross-cutting
