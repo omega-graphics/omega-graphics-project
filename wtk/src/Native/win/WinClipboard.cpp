@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <shlobj.h>   // DROPFILES, DragQueryFileW
+#include <shellapi.h> // CF_HDROP
 
 #include <cstring>
 #include <memory>
