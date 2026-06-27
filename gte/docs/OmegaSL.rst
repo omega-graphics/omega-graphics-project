@@ -137,16 +137,30 @@ macro name has been defined. Blocks are nestable.
         // lighting code always included here
     #endif
 
-File Inclusion
-~~~~~~~~~~~~~~
+Headers and File Inclusion
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``#include "path"`` inserts another ``.omegasl`` file at the include site. Paths are
-relative to the file that contains the directive. Inclusion is limited to a depth of
-10 to prevent circular includes.
+``#include "path"`` inserts another file at the include site. The path is resolved
+first against the directory of the file that contains the directive, then against
+any ``-I <dir>`` search directories. Only the quoted form is supported — the
+angle-bracket form ``#include <...>`` is not — and an include that resolves to no
+readable file is a hard error that names every directory searched. Inclusion is
+limited to a depth of 10 to prevent circular includes.
+
+Files included for their shared declarations are **headers** and should use the
+``.omegaslh`` extension. Including a path that does not end in ``.omegaslh`` is
+accepted but emits an advisory warning. A header may contain only shared
+declarations — structs, resource declarations, static samplers, helper functions,
+and ``#define`` macros. It **must not** declare a shader entry point: a header is
+textually inlined into every translation unit that includes it, so a ``vertex`` /
+``fragment`` / ``compute`` / ``hull`` / ``domain`` entry point inside one would be
+compiled into each unit and collide at link time. The compiler rejects this with an
+error naming the header and the offending stage. Shader entry points must live in a
+``.omegasl`` translation unit.
 
 .. code-block:: omegasl
 
-    // common.omegasl — shared utilities
+    // common.omegaslh — shared utilities (a header)
     #define GAMMA 2.2
 
     float linearToSRGB(float c){
@@ -155,8 +169,8 @@ relative to the file that contains the directive. Inclusion is limited to a dept
 
 .. code-block:: omegasl
 
-    // main.omegasl
-    #include "common.omegasl"
+    // main.omegasl — a translation unit that owns the shader
+    #include "common.omegaslh"
 
     fragment float4 myFrag(VertexRaster raster){
         float4 color = sample(linearSampler, diffuseMap, raster.uv);
@@ -165,6 +179,13 @@ relative to the file that contains the directive. Inclusion is limited to a dept
         color.b = linearToSRGB(color.b);
         return color;
     }
+
+.. note::
+
+   ``#include`` is a **compile-time-only** directive: it is not allowed in source
+   compiled at runtime through ``OmegaSLCompiler``. For runtime compilation,
+   concatenate the dependency into the source string you pass to ``compile``
+   instead.
 
 ----
 
@@ -578,9 +599,42 @@ User-Defined Functions
 ~~~~~~~~~~~~~~~~~~~~~~
 
 Helper functions are declared with a return type, a name, and a parameter list.
-They must be defined before the shader that calls them (no forward declarations).
-Any number of helper functions may be declared; they are emitted before shader
-entry points in the generated output.
+Any number may be declared; they are emitted before shader entry points in the
+generated output.
+
+A function may also be **forward-declared** with a prototype — its signature
+followed by a semicolon instead of a body — and defined later (a shader entry point
+cannot be forward-declared, only plain helper functions):
+
+.. code-block:: omegasl
+
+    #define PI 3.14159
+
+    float square(float x);          // forward declaration (prototype)
+
+    float area(float r){
+        return PI * square(r);      // usable once the prototype is in scope
+    }
+
+    float square(float x){          // definition
+        return x * x;
+    }
+
+.. note::
+
+   **OmegaSL inlines user functions — function bodies do not link across
+   translation units.** A function's *definition* is only available inside the
+   ``.omegasl`` translation unit (and the headers it includes) where the body
+   appears. If you forward-declare a function in a ``.omegaslh`` header but place
+   its **definition** in one ``.omegasl`` source, that definition is scoped to
+   *that* source's translation unit — another ``.omegasl`` that includes the same
+   header sees only the prototype and cannot use the function.
+
+   To share a function across multiple files, **define it in the header**, not just
+   declare it. Because a header is inlined into every translation unit that
+   includes it (see `Headers and File Inclusion`_), the full body travels to each
+   one. Reserve the prototype-in-header / body-in-source split for helpers you mean
+   to keep private to a single translation unit.
 
 .. code-block:: omegasl
 

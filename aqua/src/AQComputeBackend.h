@@ -27,6 +27,7 @@
 namespace OmegaGTE {
     class OmegaGraphicsEngine;
     class GECommandQueue;
+    struct GTEShaderLibrary;
 }
 
 /// Owns the OmegaGTE handles AQUA dispatches physics compute kernels through.
@@ -40,15 +41,29 @@ struct AQComputeBackend {
         SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine,
         SharedHandle<OmegaGTE::GECommandQueue> queue);
 
-    /// Whether the GPU path can run the step right now. Phase 5a: always false
-    /// (handles held, no kernels ported yet), so the resolved execution path is
-    /// CPU on every device. Phase 5c flips this true after a successful
-    /// compute-pipeline capability probe.
+    /// Whether the GPU path can run the *full step* right now. Still false in
+    /// 5b — the kernel library + buffer + dispatch toolchain is proven here
+    /// (`loadKernelLibrary` + `selfTest`), but the step kernels (integration,
+    /// broadphase, solver) are not ported until 5c+, so the resolved execution
+    /// path stays CPU. 5f/5g flips this true once the GPU step is end-to-end.
     AQUA_NODISCARD bool usable() const { return gpuUsable; }
 
     /// The held engine/queue, for the 5b buffer pools and 5c pipeline build.
     AQUA_NODISCARD SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine() const { return gpuEngine; }
     AQUA_NODISCARD SharedHandle<OmegaGTE::GECommandQueue> queue() const { return cmdQueue; }
+
+    /// Load AQUA's precompiled kernel library (`AQKernels.omegasllib`) from
+    /// @p path via `OmegaGraphicsEngine::loadShaderLibrary`. Returns false if the
+    /// engine is null or the load fails. (Phase 5b precompile path, plan §7.5.)
+    bool loadKernelLibrary(const OmegaCommon::String& path);
+
+    /// Capability probe: build a compute pipeline for the `AQProbeDouble` kernel,
+    /// dispatch it over a small buffer, and verify the GPU doubled the values.
+    /// Proves the precompile -> load -> pipeline -> buffer -> dispatch ->
+    /// readback toolchain end to end on the active device. Requires
+    /// `loadKernelLibrary` to have succeeded and a non-null command queue.
+    /// Returns true iff the GPU produced the expected results.
+    AQUA_NODISCARD bool selfTest();
 
 private:
     AQComputeBackend(SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine,
@@ -56,6 +71,7 @@ private:
 
     SharedHandle<OmegaGTE::OmegaGraphicsEngine> gpuEngine;
     SharedHandle<OmegaGTE::GECommandQueue>      cmdQueue;
+    SharedHandle<OmegaGTE::GTEShaderLibrary>    kernelLib;   ///< loaded AQKernels.omegasllib
     bool                                        gpuUsable = false;
 };
 

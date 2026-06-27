@@ -8,10 +8,14 @@ phase below is meant to land as a **runnable milestone**, not a big-bang rewrite
 We expect this to play out over many months, and the ordering here is a proposal,
 not a contract — phases can be resequenced as priorities and findings change.
 
-kREATE is a thin engine layer that sits on top of **OmegaGTE** (graphics/compute)
-and **OmegaSL** (shading language); the editor will be built on **OmegaWTK**.
-A guiding rule throughout: *if GTE already does it, kREATE wraps it — it does not
-reimplement it.*
+kREATE is a thin engine layer that sits on top of the Omega suite's dedicated
+engines: **OmegaGTE** (graphics/compute), **AQUA** (physics/simulation), and
+**OmegaSL** (shading language); the editor will be built on **OmegaWTK**. AQUA is
+to simulation what OmegaGTE is to graphics — an in-house engine with its backend
+hidden behind a pimpl public API — and kREATE consumes it for collision and
+dynamics rather than embedding a physics implementation of its own.
+A guiding rule throughout: *if GTE or AQUA already does it, kREATE wraps it — it
+does not reimplement it.*
 
 ---
 
@@ -77,7 +81,7 @@ two partially and the rest not at all.
 | Resource management | Raw `shared_ptr` | Typed handles, lifetime, GPU residency, streaming |
 | Input | None | Keyboard/mouse/gamepad/touch, action mapping |
 | Time & frame loop | Bare `while` loop | Fixed/variable timestep, frame pacing, pause/scale |
-| Physics | None | Collision, rigid bodies, character controller, raycast, triggers |
+| Physics | Engine exists (AQUA); not yet integrated | AQUA-backed collision, rigid bodies, character controller, raycast, triggers |
 | Animation | None | Skeletal animation, skinning, blend trees, morph targets, tweening |
 | Audio | None | 3D spatial audio, mixing, streaming, effects |
 | Gameplay / scripting | C++ subclass of `App` | Behavior/component scripting, event bus, messaging |
@@ -301,29 +305,34 @@ or bloom).
 **Deliverable:** A scene with rigid bodies falling onto static geometry, a
 character controller walking on it, and gameplay raycasts that hit.
 
+**Engine — AQUA.** Physics is **AQUA**, the suite's in-house simulation engine —
+to simulation what OmegaGTE is to graphics. kREATE does not implement collision or
+dynamics; it *wraps* AQUA, exactly as it wraps GTE for rendering. So the work in
+this phase is the **integration layer** that maps AQUA's surface
+(`AQSpace`, `AQRigidBody`, collision/contact/query types) onto kREATE's entity
+model — not a physics implementation. AQUA keeps its solver behind a pimpl public
+API, so none of its backend types reach `include/kreate/*`.
+
 **Work:**
-- Collision shapes (box/sphere/capsule/mesh), broadphase + narrowphase.
-- Rigid-body dynamics integrated against the fixed timestep from Phase 5.
-- A character controller and kinematic bodies.
-- Raycasts / shape-casts / overlap queries for gameplay.
-- Triggers and collision callbacks routed to the gameplay layer (Phase 11).
-- Components: Collider, RigidBody, CharacterController (Phase 6 model).
+- Map AQUA collision shapes (box/sphere/capsule/mesh) onto a `Collider` component.
+- Drive an `AQSpace` step from the Phase 5 fixed timestep; sync transforms between
+  AQUA rigid bodies and kREATE entities.
+- A character controller and kinematic bodies over AQUA's body types.
+- Raycasts / shape-casts / overlap queries for gameplay, forwarded to AQUA's query
+  API (`AQQuery`).
+- Triggers and collision callbacks surfaced from AQUA's contacts and routed to the
+  gameplay layer (Phase 11).
+- Components: Collider, RigidBody, CharacterController (Phase 6 model), each
+  backed by AQUA state but exposing no AQUA types.
 
-**Depends on:** Phases 5 (fixed timestep), 6 (components).
+**Depends on:** Phases 5 (fixed timestep), 6 (components), and AQUA exposing the
+needed collision/query surface (tracked in `aqua/.plans/`).
 
-**Sibling module — AQUA.** Physics lives in its own module, **AQUA**, which is to
-simulation what OmegaGTE is to graphics: a dedicated engine kREATE consumes rather
-than embeds. kREATE's job here is the *integration* layer — collider/rigid-body
-components, the fixed-timestep step, and routing collision/trigger callbacks into
-the gameplay layer — over whatever AQUA exposes. (A third-party physics SDK is
-currently vendored under `kreate/deps/`; whether AQUA wraps it or replaces it is
-AQUA's own roadmap decision, kept out of kREATE's public surface the same way GTE
-is.)
-
-**Key decision:** The build-vs-integrate question now lives mostly in **AQUA**.
-For kREATE, the decision is the **integration boundary**: what physics types cross
+**Key decision:** Not build-vs-integrate — that is settled: kREATE integrates
+AQUA. The open decision is the **integration boundary**: what physics types cross
 into kREATE's public API (none — keep them behind components, as with GTE) and how
-deterministic the step must be (see Determinism under cross-cutting concerns).
+deterministic the step must be (see Determinism under cross-cutting concerns),
+which feeds back into AQUA's own determinism requirements.
 
 ---
 
@@ -529,10 +538,12 @@ phases above so they can be decided deliberately:
    Sets the material and per-draw data shape.
 4. **Asset model — file-direct vs. cooked database with stable IDs.** (Phase 3)
    Cheaper to pick the ID scheme up front.
-5. **Physics & audio integration boundary.** (Phases 8, 10) Physics is the
-   **AQUA** sibling module (build-vs-integrate is AQUA's call); audio is likely a
-   sibling too. For kREATE, decide what — if anything — of their types crosses into
-   the public API (keep it behind components, as with GTE).
+5. **Physics & audio integration boundary.** (Phases 8, 10) Physics is **AQUA**,
+   the in-house simulation engine kREATE wraps the same way it wraps GTE — so the
+   physics build-vs-integrate question is already settled (integrate). Audio is
+   likely a sibling engine too, where build-vs-integrate is still open. For kREATE,
+   decide what — if anything — of either's types crosses into the public API (keep
+   it behind components, as with GTE).
 6. **Scripting — C++ behaviors / hot-reload native / embedded language.**
    (Phase 11) Drives iteration speed and editor complexity.
 7. **In-game UI — reuse OmegaWTK vs. dedicated game UI.** (Phase 12)

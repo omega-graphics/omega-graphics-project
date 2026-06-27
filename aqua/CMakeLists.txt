@@ -43,6 +43,36 @@ else()
     target_compile_definitions(AQUA PUBLIC TARGET_VULKAN)
 endif()
 
+# Phase 5b: AQUA now LINKS OmegaGTE (was build-order DEPENDS only — the suite
+# helper's add_dependencies links nothing). The compute backend calls real GTE
+# symbols (makeBuffer, makeComputePipelineState, loadShaderLibrary,
+# GEBufferWriter/Reader). PRIVATE: OmegaGTE is an implementation detail — no
+# OmegaGTE backend type appears in include/aqua/* (the pimpl discipline holds),
+# so consumers of AQUA do not need it on their link line.
+target_link_libraries(AQUA PRIVATE OmegaGTE)
+
+# On macOS OmegaGTE is a *framework* staged in ${CMAKE_BINARY_DIR}/Frameworks,
+# not build/lib. Give libAQUA an rpath there so its OmegaGTE.framework dependency
+# resolves wherever libAQUA is loaded from — covering every test/consumer that
+# loads libAQUA transitively (dyld resolves a dylib's @rpath deps using that
+# dylib's own LC_RPATHs). No-op where OmegaGTE is a plain .so/.dll under build/lib.
+if(APPLE)
+    set_property(TARGET AQUA APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()
+
+# Phase 5b: precompile AQUA's compute kernels into a single `.omegasllib` (the
+# decision in plan §7.5/§11.4), loaded at runtime via loadShaderLibrary. Uses the
+# `add_omegasl_lib` helper from gte/OmegaGTE.cmake (omegaslc --output <lib> <src>),
+# the same pattern WTK's compositor + kREATE's pipelines use. The build edge
+# AQUA -> AQUAKernelLib -> omegaslc keeps ordering correct on a clean configure.
+# AQUA_KERNELS_LIB is exported (CACHE INTERNAL) so the tests can load it by path.
+set(AQUA_KERNELS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/AQKernels.omegasl" CACHE INTERNAL "")
+set(AQUA_KERNELS_LIB "${CMAKE_CURRENT_BINARY_DIR}/AQKernels.omegasllib" CACHE INTERNAL "")
+add_omegasl_lib(AQUAKernelLib "${AQUA_KERNELS_SRC}" "${AQUA_KERNELS_LIB}")
+add_dependencies(AQUAKernelLib omegaslc)
+add_dependencies(AQUA AQUAKernelLib)
+
 # AQUA-only optimization floor (Phase 3.x build-config fix). The project's
 # default `cmake -S . -B build` leaves `CMAKE_BUILD_TYPE` empty, which means
 # every TU compiles -O0 with `assert()`s live. That is catastrophic for the

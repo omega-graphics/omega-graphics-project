@@ -605,12 +605,22 @@ memory), so the per-dispatch scalars cost no buffer.
 Each declares its buffers with explicit slots and `[in …, out …]` annotations
 matching the bind order in `encodeStep`.
 
-**7.5 Build wiring.** `aqua/CMakeLists.txt` gains the kernel sources; they are
-compiled with the same `OmegaSLCompiler` the runtime example uses — the first
-cut **embeds the `.omegasl` source and compiles at load** (`compile` →
-`loadShaderLibraryRuntime`, [main.mm:34-35](gte/tests/metal/ComputeTest/main.mm:34)),
-matching the worked example and avoiding a build-step dependency; a build-time
-precompile (omegaslc → serialized lib) is the §11.4 optimization.
+**7.5 Build wiring — precompile to a single `.omegasllib` (developer decision,
+2026-06-26).** AQUA's kernels are **precompiled at build time** by `omegaslc`
+into **one** `.omegasllib`, loaded once at runtime via
+`OmegaGraphicsEngine::loadShaderLibrary(FS::Path)` ([GE.h:426](gte/include/omegaGTE/GE.h:426))
+— *not* the runtime-compile path. This uses the established `add_omegasl_lib`
+helper (`gte/OmegaGTE.cmake`: `omegaslc --temp-dir … --output <lib> <src>`), the
+same pattern WTK's compositor and kREATE's pipelines already use. The kernels
+live in one source (`src/kernels/AQKernels.omegasl`) holding every compute entry
+point, so a single lib carries the whole pipeline. The build edge is
+`AQUA → AQUAKernelLib → omegaslc`. Shaders are reached by name from the loaded
+library (`lib->shaders["AQIntegrateVelocity"]` → `makeComputePipelineState`).
+This supersedes the §11.4 runtime-compile lean: precompile decouples runtime
+from the compiler, removes the per-launch compile cost, and matches how every
+other Omega module ships shaders. The runtime path resolution (where AQUA finds
+its deployed lib in production) is a kREATE-integration detail; the kernel tests
+take the build-tree lib path via a compile definition.
 
 ---
 
@@ -784,13 +794,15 @@ a path — the user-facing version of the §8 determinism contract.
    CPU coloring is correct and not the bottleneck. The §6.E fallback if coloring
    quality is poor is **Jacobi + mass-splitting** (Tonge 2012), kept as the
    §6 documented alternative.
-4. **Kernel compilation — runtime-compile vs. build-time precompile.** *Lean:
-   runtime-compile the embedded sources first* (matches the worked example,
-   [main.mm:34](gte/tests/metal/ComputeTest/main.mm:34); no build-step
-   dependency; one code path). Build-time precompile (omegaslc → serialized lib,
-   loaded once) cuts startup cost and is the obvious optimization, but it
-   couples AQUA's build to the omegaslc toolchain invocation; defer until
-   startup cost is shown to matter.
+4. **Kernel compilation — runtime-compile vs. build-time precompile.**
+   **DECIDED (2026-06-26): build-time precompile** into a single `.omegasllib`
+   via `add_omegasl_lib`, loaded by `loadShaderLibrary` (§7.5). The earlier lean
+   (runtime-compile first) is overruled by the developer: precompile decouples
+   runtime from the compiler, removes the per-launch compile cost, gives one lib
+   for the whole pipeline, and matches every other Omega module (WTK/kREATE). The
+   cost it was deferred for — coupling AQUA's build to the omegaslc invocation —
+   is accepted; the `add_omegasl_lib` helper makes it one line and the build edge
+   `AQUA → AQUAKernelLib → omegaslc` keeps ordering correct.
 5. **GPU residency — per-sub-step readback vs. once-per-`advance` resident
    loop.** *Lean: per-sub-step readback first, resident loop second.* The cold
    CPU stages (CCD, query refresh, debug emission) read body state; the simplest
@@ -942,12 +954,59 @@ readback-first #5, `float` #6, atomic-append-with-scatter-fallback #7).
     them (AQContext drops its `commandQueue` member). Cleaner ownership; for a
     CPU-only context there are simply no GPU handles to hold.
 - **5b — SoA store + buffer pool + kernel build wiring.** `AQBodySoA`
-  (§7.2) with `gatherFrom`/`scatterTo`; migrate the CPU production step to read
-  the SoA store (the AoS `double` instantiation stays the oracle); pooled GTE
-  buffers + `ensureCapacity`; the `src/kernels/` runtime-compile path
-  (`compile` → `loadShaderLibraryRuntime`) wired with a trivial no-op kernel to
-  prove the toolchain end-to-end. Regression: the full battery on the SoA-backed
-  CPU path is byte-identical to the AoS path.
+  (§7.2) with `gatherFrom`/`scatterTo`. **SoA is a GPU-side mirror; the AoS
+  `AQBodyState` stays authoritative and the CPU solver is untouched** (developer
+  decision, 2026-06-26 — *not* the §8 "migrate the CPU production step" reading;
+  that would be a high-risk rewrite of the most-tested hot path for no 5b
+  benefit). AQUA now **links OmegaGTE** (was header-only-math only); pooled GTE
+  buffers + `ensureCapacity` + upload/download on `AQComputeBackend`; and the
+  **precompiled kernel lib** (§7.5): `src/kernels/AQKernels.omegasl` (a trivial
+  proof kernel for now) → `add_omegasl_lib` → one `.omegasllib` →
+  `loadShaderLibrary` → `makeComputePipelineState`, proving the toolchain
+  end-to-end. Regression: the full Phase 1/2/4 battery still passes unchanged
+  (the CPU path is byte-for-byte untouched, so this is trivially satisfied);
+  new round-trip + toolchain tests are device-guarded.
+
+  **Status (2026-06-26): COMPLETE.** `aqua_compute_test` passes — CPU SoA
+  gather→scatter round-trips every field; and on this Metal host the precompiled
+  `AQKernels.omegasllib` loads and `AQProbeDouble` actually dispatches on the GPU
+  and doubles the buffer (`AQComputeBackend::selfTest`). The Phase 1/2/4 battery
+  is unchanged (contact-test's 3 failures remain pre-existing). Notable points:
+  - **SoA is a GPU mirror; CPU solver untouched** (the §13 fork, decided with the
+    developer). `AQBodySoA` (`src/AQBodySoA.{h,cpp}`) mirrors `AQBodyState<float>`
+    field-for-field as parallel `OmegaCommon::Vector<float>` arrays;
+    `gatherFrom`/`scatterTo` move AoS↔SoA. The authoritative AoS state and the
+    whole CPU step are byte-for-byte unchanged, so "regression: battery passes" is
+    trivially met.
+  - **Precompile, not runtime-compile** (developer decision, overruling §11.4's
+    old lean). `add_omegasl_lib` runs `omegaslc` at build into one
+    `AQKernels.omegasllib`; `AQComputeBackend::loadKernelLibrary` loads it by path
+    (`loadShaderLibrary`). **Build-time gotcha:** precompiling Metal kernels needs
+    Apple's **Metal Toolchain** (`metal`/`metallib`) installed — the build fails
+    with "missing Metal Toolchain; use: xcodebuild -downloadComponent
+    MetalToolchain" without it (the runtime compiler ComputeTest uses does NOT
+    need it; the precompiler does). It is present on this host. This is the
+    precompile tax the §11.4 decision accepted, surfaced concretely.
+  - **AQUA now links OmegaGTE** (`target_link_libraries(AQUA PRIVATE OmegaGTE)` —
+    was build-order `add_dependencies` only). PRIVATE keeps the pimpl boundary.
+    Consequence handled: libAQUA now has an `OmegaGTE.framework` dependency, so it
+    (and every test loading it) needs the `build/Frameworks` rpath — added to the
+    AQUA target itself (dyld resolves a dylib's @rpath deps via that dylib's own
+    LC_RPATHs), so the existing CPU tests kept passing with no per-test change.
+  - **The capability probe lives in `selfTest`, but `usable()` stays false.** The
+    5a divergence deferred the "can this engine run a kernel" gate to here;
+    `selfTest` *is* that probe. But `usable()` (which flips `executionPath()` to
+    GPU) stays false until the *full* GPU step is ported (5f/5g) — otherwise
+    `executionPath()` would claim GPU while `AQSpace` still steps on the CPU.
+  - **Buffer pool deferred to 5c.** `ensureCapacity`/`uploadBodies`/
+    `downloadBodies` (the SoA→buffer mapping) land in 5c where the integration
+    kernel first consumes body buffers; 5b's `selfTest` proves the buffer
+    primitive (makeBuffer + GEBufferWriter/Reader + dispatch + readback) without
+    pre-building body-buffer plumbing nothing yet consumes.
+  - **`aqua_compute_test` is an internal test** (includes `src/AQBodySoA.h` +
+    `src/AQComputeBackend.h`, adds `../src` to its include path, links AQUA which
+    exports the symbols at default visibility). The kernel-lib path is injected as
+    the `AQUA_KERNELS_LIB_PATH` compile definition.
 - **5c — Integration kernels.** `AQIntegrateVelocity` + `AQIntegratePosition`
   (§6.A, §6.H), line-by-line transliterations of the half-steps. Parity test:
   Phase 1 spinning-body + a free-fall scene, GPU vs CPU within tolerance;

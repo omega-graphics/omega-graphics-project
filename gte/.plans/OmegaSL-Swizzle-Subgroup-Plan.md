@@ -1,14 +1,16 @@
-# OmegaSL Extension Plan: Texture Swizzles & Subgroup/Wave Operations
+# OmegaSL Extension Plan: Texture Swizzles, Subgroup/Wave Operations & Cooperative Matrices/Vectors
 
 ## Motivation
 
-Two adjacent capability gaps in OmegaSL today:
+Three adjacent capability gaps in OmegaSL today:
 
 1. **Texture swizzles.** `texture-swizzle-proposal.md` adds a runtime `TextureSwizzle` and a layout-descriptor field (`omegasl_texture_swizzle_desc`) so the binary format is forward-compatible, but explicitly defers the OmegaSL language syntax (`texture2d myTex : 2 (swizzle=bgra)`) and the corresponding `AST.h` / codegen work. This plan lands that deferred language piece.
 
 2. **Subgroup / wave operations.** `GTEDeviceFeatures-Extension-Plan.md` calls these out under "What's NOT Included": *"OmegaSL doesn't expose subgroup ops yet; add when it does."* Wave intrinsics (ballot, broadcast, prefix sum, reductions) are first-class on every backend OmegaGTE targets — D3D12 SM6 wave ops, Metal `simdgroup_*` / `quad_*`, and GLSL `GL_KHR_shader_subgroup_*`. They're a strict prerequisite for any non-trivial compute pass (parallel reductions, occupancy queries, hierarchical culling) and the only thing currently blocking them is OmegaSL surface area.
 
-These two extensions are bundled because they share the same change surface (lexer keywords → parser → AST → Sema → three codegens → reference doc → layout descriptor → device feature bit) and would otherwise duplicate the same edit pass twice in a row.
+3. **Cooperative matrices and vectors.** The hardware matrix-core / tensor-core abstractions — both gated through the existing OmegaSL feature gate (Part F). A cooperative **matrix** (Part D) is a matrix fragment shared across one subgroup with a single `D = A·B + C` multiply-accumulate — the GEMM primitive. A cooperative **vector** (Part E) gives every thread its own vector against a shared weight matrix (`out = M·in + bias`) — the per-thread MLP primitive behind neural materials, neural texture compression, and neural upscaling (NVIDIA RTX Neural Shaders / DirectX Cooperative Vectors use it directly). Cooperative *matrix* is broadly supported (Vulkan `VK_KHR_cooperative_matrix`, Metal `simdgroup_matrix`, HLSL Wave Matrix SM 6.8); cooperative *vector* is newer and narrower (Vulkan `VK_NV_cooperative_vector`, HLSL `dx::linalg` SM 6.9, **no native Metal primitive — emulated there via `simdgroup_matrix`**, E.6.1) — which is exactly why both run through the feature gate, rejected gracefully only where neither a native nor an emulated path exists. Unlike Parts A/B these introduce **new opaque types**, not just builtins, so they are the deepest changes here and are sequenced last. (This is the "OmegaSL cooperative-vector support" gating dependency flagged in §7.4 of `Super-Resolution-And-Frame-Generation-Plan.md`.)
+
+These three extensions are bundled because they share the same change surface (lexer/type-system → parser → AST → Sema → three codegens → reference doc → layout descriptor → device feature bit) and would otherwise duplicate the same edit pass. The cooperative types (Parts D/E) build directly on the subgroup scope Part B introduces, so they belong in the same plan.
 
 ---
 
@@ -18,7 +20,10 @@ These two extensions are bundled because they share the same change surface (lex
 |---|---|
 | `swizzle=` argument on resource declarations | Per-call swizzle override inside shader source |
 | `omegasl_texture_swizzle_desc` field already in layout desc — wire into parser/codegen | A full `TextureView` type (subresource ranges, format reinterpret) |
-| Subgroup builtins covering ballot, broadcast, any/all, reductions, prefix scans, quad ops | Cooperative matrix / wave-matrix intrinsics (SM 6.8 / `VK_KHR_cooperative_matrix`) |
+| Subgroup builtins covering ballot, broadcast, any/all, reductions, prefix scans, quad ops | Training / backprop ops (outer-product & reduce-sum accumulate) for either cooperative type |
+| Cooperative matrix type `coopmat<T,Use,M,N>` + load / store / multiply-accumulate for in-shader MMA (compute) | Matrix/vector shapes & element types beyond device-reported support; scopes other than subgroup |
+| Cooperative vector type `coopvec<T,N>` + matmul/matmul-add (compute + fragment), incl. **Metal emulation via `simdgroup_matrix`** (E.6.1) | fp8 microscaling formats beyond device report; cooperative-vector *training* ops |
+| OmegaSL feature gating of both cooperative types via `#requires(coopmatrix/coopvector)` + `OMEGASL_FEATURE_BIT_*` (Part F) | A *new* gate mechanism — Part F reuses the existing mesh-shader/raytracing gate |
 | `GTEDeviceFeatures::subgroupOps` capability bit + tier | Variable subgroup size control (`VK_EXT_subgroup_size_control`) |
 | Sema diagnostics that reject subgroup ops outside compute/fragment, swizzle outside texture decls | Backwards-compat shims for older shader binaries lacking the swizzle field |
 
@@ -301,6 +306,268 @@ Offline compilation (`omegaslc` CLI) cannot query a device, so it accepts a `--t
 
 ---
 
+## Part D — Cooperative Matrices in OmegaSL
+
+### D.1 Concept
+
+A cooperative matrix is a matrix *fragment* whose storage and arithmetic are distributed across the lanes of a single **subgroup** (Part B). One `coopmat_mad` performs a full tile `D = A·B + C` on the hardware matrix core — an order of magnitude faster than an open-coded loop. The shape (`M×N×K`), element types, and scope are **compile-time constants**, and only the combinations the device reports as supported are legal (queried at runtime — D.7).
+
+The cross-platform vocabulary maps cleanly because all three backends model the same SPIR-V-derived concept:
+
+| OmegaSL term | Vulkan/GLSL | Metal | HLSL |
+|---|---|---|---|
+| cooperative matrix | `coopmat` (`GL_KHR_cooperative_matrix`) | `simdgroup_matrix` (`<metal_simdgroup_matrix>`) | Wave Matrix (`WaveMatrix*`, SM 6.8) |
+
+OmegaSL adopts **`coopmat`** as the type spelling — it matches the Vulkan/SPIR-V term that has the largest documentation surface, consistent with the `subgroup_` choice in Part B.
+
+### D.2 Surface syntax — a new opaque type
+
+Unlike Parts A/B, this introduces a **type**, parameterized by element type, *use*, and dimensions (all compile-time):
+
+```omegasl
+// coopmat<ElementType, Use, Rows, Cols>
+// Use ∈ { MatrixA, MatrixB, Accumulator }
+compute void gemm_tile(
+    buffer<half>  matA : 0,
+    buffer<half>  matB : 1,
+    buffer<float> matC : 2,
+    [[thread]] uint3 tid)
+{
+    coopmat<half,  MatrixA,     16, 16> a;
+    coopmat<half,  MatrixB,     16, 16> b;
+    coopmat<float, Accumulator, 16, 16> acc;
+
+    coopmat_fill(acc, 0.0);
+    coopmat_load(a, matA, /*offset*/ 0, /*stride*/ 16, row_major);
+    coopmat_load(b, matB, 0, 16, row_major);
+    acc = coopmat_mad(a, b, acc);          // acc = a·b + acc
+    coopmat_store(acc, matC, 0, 16, row_major);
+}
+```
+
+`MatrixA`, `MatrixB`, `Accumulator`, `row_major`, and `col_major` are new contextual keywords (lexer), valid only inside a `coopmat<...>` type or a load/store call.
+
+### D.3 Operations (builtins over the new type)
+
+| OmegaSL builtin | Meaning |
+|---|---|
+| `coopmat_fill(m, scalar)` | Broadcast-initialize every element. |
+| `coopmat_load(m, buf, offset, stride, layout)` | Load a tile from a `buffer<T>` (device) or `threadgroup` array. |
+| `coopmat_store(m, buf, offset, stride, layout)` | Store a tile. |
+| `coopmat_mad(a, b, c) → coopmat` | `a·b + c`. `a:MatrixA<M,K>`, `b:MatrixB<K,N>`, `c/result:Accumulator<M,N>`. |
+| `m + n`, `m * scalar` | Element-wise add / scalar multiply on same-shape/use matrices. |
+| `coopmat_convert(dst, src)` | Element-type conversion (e.g. `Accumulator<float>` → `MatrixA<half>` to chain layers). |
+
+### D.4 Type system / AST
+
+This is the part with no Part A/B analog:
+
+- **`AST.h`** — add a `CoopMatrixType` `TypeExpr` subclass carrying `{ TypeExpr *element; enum Use; unsigned rows, cols; }`. Cooperative matrices are first-class types: usable as local variable types and function parameter types (but **not** as resource/buffer element types — they have no memory layout outside the subgroup).
+- **`Parser.cpp`** — parse `coopmat < type , Use , int , int >` in the type-parsing path. The K dimension is implied by pairing A's `Cols` with B's `Rows` at the `coopmat_mad` call, matching the Vulkan model.
+
+### D.5 Constraints (Sema)
+
+1. **Stage** — compute only (initial scope). Vulkan `coopmat` is subgroup-scoped and practically compute-only; Metal/HLSL are more permissive but the portable subset is compute. Use in any other stage: `cooperative matrices are only valid in compute shaders`.
+2. **Shape/type legality** — the `{A-type, B-type, C-type, M, N, K}` tuple must be in the device-reported supported set (runtime compiler) or the `--target-coopmat-shapes` set (offline). Reject with a message naming the requested tuple and the nearest supported one.
+3. **Use agreement** — `coopmat_mad` requires `MatrixA × MatrixB → Accumulator` with matching inner K; `+`/`*` require identical `{type, use, M, N}`. Mismatches use the existing "no matching overload" diagnostic.
+4. **Load/store targets** — pointer must resolve to a `buffer<T>` or `threadgroup` array of the element type; `layout` is `row_major`/`col_major` only.
+
+### D.6 Backend codegen
+
+| OmegaSL | Vulkan/GLSL (`GL_KHR_cooperative_matrix`) | Metal (`<metal_simdgroup_matrix>`) | HLSL (Wave Matrix, SM 6.8) |
+|---|---|---|---|
+| `coopmat<T,MatrixA,M,N>` | `coopmat<T, gl_ScopeSubgroup, M, N, gl_MatrixUseA>` | `simdgroup_matrix<T, M, N>` | `WaveMatrixLeft<T, M, N>` |
+| `coopmat<T,MatrixB,M,N>` | `…, gl_MatrixUseB>` | `simdgroup_matrix<T, M, N>` | `WaveMatrixRight<T, M, N>` |
+| `coopmat<T,Accumulator,M,N>` | `…, gl_MatrixUseAccumulator>` | `simdgroup_matrix<T, M, N>` | `WaveMatrixAccumulator<T, M, N>` |
+| `coopmat_fill(m, s)` | `m = coopmat<…>(s)` | `m = make_filled_simdgroup_matrix<…>(s)` | `m.Fill(s)` |
+| `coopmat_load(m,b,o,st,lay)` | `coopMatLoad(m, b, o, st, layout)` | `simdgroup_load(m, b + o, st)` | `m.Load(b, o, st, lay)` |
+| `coopmat_store(m,b,o,st,lay)` | `coopMatStore(m, b, o, st, layout)` | `simdgroup_store(m, b + o, st)` | `m.Store(b, o, st, lay)` |
+| `coopmat_mad(a,b,c)` | `coopMatMulAdd(a, b, c)` | `simdgroup_multiply_accumulate(d, a, b, c)` | `WaveMatrixMultiplyAccumulate(c, a, b)` |
+
+Conditional emission (same `usedCategories` mechanism as B.4): GLSL emits `#extension GL_KHR_cooperative_matrix : require` only when a `coopmat` is used; HLSL bumps the target profile to `cs_6_8` and sets the experimental Wave-Matrix flag; MSL includes `<metal_simdgroup_matrix>`.
+
+> **HLSL is the in-flux backend — feasibility spike required first.** HLSL Wave Matrix shipped as an **SM 6.8 preview** and its exact type names/methods have changed across DXC revisions (and the newer SM 6.9 *Cooperative Vector* path is a separate, matrix×vector feature, out of scope here). The names in the table above are the SM 6.8 preview spelling and **must be verified against the DXC version this repo vendors** before Part D's HLSL arm is committed — per the backend-build-verification rule, compile the generated HLSL with the local `dxc`, do not trust `-S` text alone. If shipping DXC has dropped/renamed Wave Matrix, the HLSL arm degrades to "unsupported on this device" (D.7 tier `None`) rather than emitting code that won't compile.
+
+### D.7 Wiring to `GTEDeviceFeatures`
+
+Cooperative-matrix support is **shape-dependent**, so a single bit is insufficient — add a coarse capability plus a runtime-queried supported-shape list:
+
+```cpp
+struct GTEDeviceFeatures {
+    // ... existing fields, including the Part C subgroup additions ...
+
+    // ── Cooperative matrices ───────────────────────────────────
+    /// True if the device exposes any cooperative-matrix shape.
+    bool coopMatrix = false;
+
+    /// One device-supported {types, dims} combination. Element types
+    /// reuse the OmegaSL scalar enum (half/float/int8/int32). The
+    /// engine exposes the list so a caller (or the runtime compiler)
+    /// can pick a legal tile shape; empty when coopMatrix == false.
+    struct CoopMatrixShape {
+        uint8_t aType, bType, cType;   // element types of A, B, accumulator
+        uint8_t M, N, K;
+    };
+    OmegaCommon::Vector<CoopMatrixShape> coopMatrixShapes;
+};
+```
+
+| Backend | Query |
+|---|---|
+| Vulkan | `VkPhysicalDeviceCooperativeMatrixFeaturesKHR` → `coopMatrix`; enumerate `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR` → `coopMatrixShapes`. |
+| Metal | `supportsFamily(.apple7)` (M1/A14+) → `coopMatrix`; the supported set is the documented `simdgroup_matrix` shapes (8×8 half/float, etc.) — seed `coopMatrixShapes` from the family tier. |
+| D3D12 | `CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS…)` Wave-MMA / SM-6.8 tier (preview — gate behind the same spike as D.6); shapes from the documented Wave Matrix dimension set. |
+
+> **The Apple7+ gate is not a real coverage limit.** Cooperative matrix (and the Part E coopvec emulation) need `simdgroup_matrix`, which is Apple GPU Family 7+ = Apple silicon **M1 / A14 and later**. The upcoming macOS release **drops support for Intel-based Macs**, so every Mac the engine targets going forward is Apple silicon (Apple7+). The "`false` below Apple7" branch therefore only covers legacy/Intel Macs that are already falling out of support — in practice cooperative matrix and coopvec emulation are available across the whole supported Mac install base, and the Part F gate's Metal-reject path is effectively dead on supported OS versions.
+
+**Compiler integration.** The `omegaslc` runtime path rejects any `coopmat` whose tuple is not in `device->features().coopMatrixShapes`. Offline, `omegaslc` takes `--target-coopmat-shapes=<list>` (default: the portable `16×16×16 half→float` and `8×8×8 half→float` tiles common to all three vendors since ~2020). `featuresAsBitmask()` gains an advisory `OMEGASL_FEATURE_BIT_COOPMATRIX` so a shader requiring cooperative matrices is rejected at library-load on a device without them (same mechanism as the existing feature bits — full gate wiring in **Part F**).
+
+### D.8 Files touched (Part D)
+
+| File | Change |
+|---|---|
+| `gte/omegasl/src/Toks.def` | Add `MatrixA`/`MatrixB`/`Accumulator`/`row_major`/`col_major` contextual keywords |
+| `gte/omegasl/src/AST.def` | Add `BUILTIN_COOPMAT_*` macros (fill/load/store/mad/convert) |
+| `gte/omegasl/src/AST.h` | Add `CoopMatrixType` `TypeExpr` subclass; declare coopmat builtins |
+| `gte/omegasl/src/Parser.cpp` | Parse `coopmat<type, Use, M, N>` in the type path |
+| `gte/omegasl/src/Sema.cpp` | Type/use/shape/stage checks; track `usedCoopMatrix` for conditional emission |
+| `gte/omegasl/src/CodeGen.cpp` | Dispatch coopmat builtins → backend emitter hooks |
+| `gte/omegasl/src/HLSLCodeGen.cpp` | Wave Matrix emission; `cs_6_8` + experimental flag (gated on the D.6 spike) |
+| `gte/omegasl/src/MetalCodeGen.cpp` | `simdgroup_matrix` emission; include `<metal_simdgroup_matrix>` |
+| `gte/omegasl/src/GLSLCodeGen.cpp` | `coopmat`/`coopMatMulAdd` emission; conditional `#extension` |
+| `gte/include/omegaGTE/GTEDevice.h` | Add `coopMatrix` + `CoopMatrixShape`/`coopMatrixShapes`; advisory bit in `featuresAsBitmask()` |
+| `gte/src/{metal,d3d12,vulkan}/…` | Populate `coopMatrix` + `coopMatrixShapes` per the D.7 query table |
+| `gte/docs/OmegaSL-Reference.md` | New §8 "Cooperative matrices" with the D.2/D.3/D.6 tables |
+| `gte/include/omegasl.h` | Add `OMEGASL_FEATURE_BIT_COOPMATRIX` |
+
+---
+
+## Part E — Cooperative Vectors in OmegaSL
+
+### E.1 Concept
+
+A cooperative **vector** is a per-invocation vector of length `N` on which the subgroup cooperatively evaluates a matrix–vector product `out[N] = M[N×K] · in[K] (+ bias)` on the matrix-core hardware. Where a cooperative *matrix* (Part D) shares one tile across the whole subgroup (ideal for GEMM), a cooperative *vector* gives **every thread its own vector** against a shared weight matrix in memory — the natural shape for "each pixel/sample runs a small MLP." That is precisely how neural materials, neural texture compression (NTC), and neural upscaling perform inference, and it is the primitive NVIDIA RTX Neural Shaders and DirectX **Cooperative Vectors** (SM 6.9) expose directly.
+
+**Availability is narrow — narrower than cooperative matrix — which is why the feature gate (Part F) is still mandatory.** Today cooperative vector is an NVIDIA extension on Vulkan (`VK_NV_cooperative_vector`) and an SM 6.9 preview on D3D12 (`dx::linalg`). **Metal has no shader-language cooperative-vector type — but it does not need to be gated off there:** a coopvec across a subgroup is a GEMM with the lane axis as the batch dimension, so Metal **emulates** it on the `simdgroup_matrix` matrix units (E.6.1). The Part F gate therefore only rejects a `coopvec` shader where *neither* a native path nor the emulation exists — a non-NVIDIA D3D12/Vulkan GPU without the extension, or pre-Apple7 Metal lacking `simdgroup_matrix` — never emitting code that won't compile.
+
+### E.2 Surface syntax — a new opaque type
+
+```omegasl
+// coopvec<ElementType, N>
+#requires(coopvector)                       // file-scope feature gate (Part F)
+
+compute void mlp_layer(
+    buffer<half> weights : 0,               // [outN x inK], row-major
+    buffer<half> bias    : 1,
+    buffer<half> io      : 2,
+    [[thread]] uint3 tid)
+{
+    coopvec<half, 32> x;
+    coopvec_load(x, io, tid.x * 32);
+
+    coopvec<half, 64> h;
+    coopvec_matmul_add(h, x, weights, bias, /*K*/ 32, /*N*/ 64, row_major);
+    h = max(h, coopvec<half, 64>(0.0));      // ReLU activation, element-wise
+
+    coopvec_store(h, io, tid.x * 64);
+}
+```
+
+`N`, the element type, and the matrix dims are compile-time. `row_major`/`col_major` reuse the Part D layout keywords.
+
+### E.3 Operations
+
+| OmegaSL builtin | Meaning |
+|---|---|
+| `coopvec_load(v, buf, offset)` | Load `N` elements into the per-thread vector. |
+| `coopvec_store(v, buf, offset)` | Store the vector. |
+| `coopvec_matmul(out, in, mat, K, N, layout)` | `out = M · in`. |
+| `coopvec_matmul_add(out, in, mat, bias, K, N, layout)` | `out = M · in + bias`. |
+| `max`/`min`/`+`/`*`, `coopvec_convert(dst, src)` | Element-wise activations (ReLU, etc.) and per-layer type changes. |
+
+Outer-product / reduce-sum *accumulate* (the **training** ops) are out of scope — inference only.
+
+### E.4 Type system / AST
+
+Add a `CoopVectorType` `TypeExpr` subclass `{ TypeExpr *element; unsigned n; }`, reusing the Part D type-parsing path (`coopvec < type , int >`). A first-class local/parameter type, not a resource element type.
+
+### E.5 Constraints (Sema)
+
+1. **Stage** — compute **and fragment** (neural materials run in the fragment stage), broader than coopmat's compute-only. Other stages: rejected.
+2. **Element type** must be in the device-reported coopvec type set (half/float/int8; fp8 only if reported).
+3. **Dim agreement** — `coopvec_matmul*` requires `in.N == K` and `out.N == N`; the matrix buffer element type must be compatible.
+4. **Feature bit** — any shader using `coopvec` must carry the `coopvector` feature bit; Sema auto-sets it (Part F) and verifies device support at compile time on the runtime path.
+
+### E.6 Backend codegen
+
+| OmegaSL | Vulkan/GLSL (`GL_NV_cooperative_vector`) | HLSL (`dx::linalg`, SM 6.9) | Metal (emulated — E.6.1) |
+|---|---|---|---|
+| `coopvec<T,N>` | `coopvecNV<T, N>` | `dx::linalg::Vector<T, N>` | per-lane vector staged into a `simdgroup_matrix` tile |
+| `coopvec_matmul(...)` | `coopVecMatMulNV` | `dx::linalg::MatVecMul` | subgroup GEMM: `simdgroup_multiply` (lane axis = batch) |
+| `coopvec_matmul_add(...)` | `coopVecMatMulAddNV` | `dx::linalg::MatVecMulAdd` | `simdgroup_multiply_accumulate` + bias |
+
+Conditional emission (same `usedCategories` mechanism as B.4 / D.6): GLSL emits `#extension GL_NV_cooperative_vector : require`; HLSL bumps to `cs_6_9` / `ps_6_9` and sets the Agility/preview flag (**same feasibility-spike posture as Wave Matrix in D.6** — verify against the vendored DXC first); Metal includes `<metal_simdgroup_matrix>` and emits the emulation (E.6.1).
+
+#### E.6.1 Metal emulation via `simdgroup_matrix`
+
+A cooperative vector evaluated across a subgroup *is* a GEMM with the **lane axis as the batch dimension**: stacking the subgroup's per-lane inputs `in[K]` gives a `K×subgroupSize` matrix, and `M[N×K] · that = N×subgroupSize`, whose columns scatter back to each lane's `out[N]`. Metal lowers `coopvec_matmul` to:
+1. stage the per-lane input vectors into `threadgroup` memory in tile layout,
+2. load the weight tile and the staged inputs as `simdgroup_matrix` (the **Part D** path),
+3. `simdgroup_multiply[_accumulate]` on the matrix units,
+4. scatter the result columns back to each lane's output vector.
+
+This runs on the Apple-silicon matrix units, not a scalar loop. Caveats — the reason this is a **feasibility spike** rather than a certainty (the developer's "probably"): `K`/`N` must be padded to the `simdgroup_matrix` tile dims; the threadgroup staging costs shared memory; and `simdgroup_matrix` in the **fragment** stage may be restricted on some Apple families — if so, Metal-emulated `coopvec` is **compute-only** and fragment-stage coopvec falls back to the Part F gate there. Gated on Apple7+ (`simdgroup_matrix` support); below that, `coopVector = false` and the gate rejects — but Apple7+ = M1/A14+, i.e. every Mac on the upcoming macOS that drops Intel support, so this floor is effectively the entire supported install base (see the D.7 note).
+
+### E.7 Wiring to `GTEDeviceFeatures`
+
+```cpp
+struct GTEDeviceFeatures {
+    // ... Part D cooperative-matrix fields ...
+
+    // ── Cooperative vectors ────────────────────────────────────
+    bool coopVector = false;                 // device exposes any coopvec path
+    /// Element types the device accepts for coopvec (OmegaSL scalar enum).
+    OmegaCommon::Vector<uint8_t> coopVectorTypes;
+};
+```
+
+| Backend | Query |
+|---|---|
+| Vulkan | `VkPhysicalDeviceCooperativeVectorFeaturesNV` → `coopVector`; properties enumerate the supported component types. |
+| D3D12 | SM 6.9 cooperative-vector tier via `CheckFeatureSupport` (Agility-SDK preview — gate behind the E.6 spike). |
+| Metal | `coopVector = true` on Apple7+ (emulated via `simdgroup_matrix`, E.6.1); `false` below. |
+
+### E.8 Files touched (Part E)
+
+Same shape as D.8 — `Toks.def` (reuses Part D layout keywords), `AST.def` (`BUILTIN_COOPVEC_*`), `AST.h` (`CoopVectorType`), `Parser.cpp`, `Sema.cpp` (stage = compute+fragment), `CodeGen.cpp`, the three target emitters, `GTEDevice.h` (`coopVector`/`coopVectorTypes`), `gte/src/{vulkan,d3d12,metal}/…` (populate), `OmegaSL-Reference.md` (§9 "Cooperative vectors"), and `omegasl.h` (`OMEGASL_FEATURE_BIT_COOPVECTOR`).
+
+---
+
+## Part F — OmegaSL feature gating for the cooperative types
+
+The cooperative types are device-gated through the **existing** OmegaSL feature gate — the same machinery mesh shaders and raytracing already use (OmegaSL-Feature-Gap-Survey §14.3 / §14.7.1). **No new mechanism is introduced**; Parts D/E only register two new bits into it. Grounded in the real symbols:
+
+1. **Feature bits** — `gte/include/omegasl.h:263-292` defines the `OMEGASL_FEATURE_BIT_*` enum (the last assigned bit is `OMEGASL_FEATURE_BIT_CULL_DISTANCE = 1ull << 15`). Add:
+   ```c
+   OMEGASL_FEATURE_BIT_COOPMATRIX = 1ull << 16,
+   OMEGASL_FEATURE_BIT_COOPVECTOR = 1ull << 17,
+   ```
+2. **`#requires` directive** — `gte/omegasl/src/Preprocessor.cpp` (~`:226`, `requiredFeatures_ |= f->bit`) maps a `#requires(name)` feature name → bit. Register `coopmatrix` and `coopvector` in that name→bit table so `#requires(coopmatrix)` / `#requires(coopvector)` light the bits. **Sema additionally auto-sets** the bit whenever a `coopmat`/`coopvec` type is used, so an author who omits `#requires` still produces a correctly-gated library (with a Sema note suggesting the directive) — the bit can never silently go unset.
+3. **Per-shader serialization** — the bit lands in `omegasl_shader::requiredFeatures` (`omegasl.h:349`), serialized into every `.omegasllib`.
+4. **Device capability mask** — `GTEDeviceFeatures::featuresAsBitmask()` (`gte/include/omegaGTE/GTEDevice.h:108`) ORs in `OMEGASL_FEATURE_BIT_COOPMATRIX` when `coopMatrix` is set and `OMEGASL_FEATURE_BIT_COOPVECTOR` when `coopVector` is set (D.7 / E.7 populate those bools per backend).
+5. **Load-time rejection** — the engine caches the mask in `_deviceFeatures` (`GE.h:375`); `loadShaderLibraryFromInputStream` / `loadShaderLibraryRuntime` already mask each shader's `requiredFeatures` and, when a required bit is missing, substitute `_makeUnsupportedShaderSentinel(...)` (`GE.h:396`). `_checkPipelineShader` (`GE.h:407`) then surfaces the precise diagnostic at pipeline-build time.
+
+**Net effect:** a `coopvec`/`coopmat` shader loaded on a device lacking the capability — e.g. a `coopvec` library on a non-NVIDIA D3D12/Vulkan GPU without the extension, or on pre-Apple7 Metal that cannot even emulate it (E.6.1) — is rejected at load with a precise message, its sibling shaders still load, and any attempt to build a pipeline from it fails loudly via the sentinel. This is **identical** to how a mesh shader is gated on `OMEGASL_FEATURE_BIT_MESH_SHADERS` today. The shape/type-specific checks (legal tile in D.5, legal vector type in E.5) layer on top at compile time; the feature bit is the coarse "can this device run it at all" gate underneath.
+
+| File | Change |
+|---|---|
+| `gte/include/omegasl.h` | Add `OMEGASL_FEATURE_BIT_COOPMATRIX` / `OMEGASL_FEATURE_BIT_COOPVECTOR` |
+| `gte/omegasl/src/Preprocessor.cpp` | Register `coopmatrix` / `coopvector` in the `#requires` name→bit table |
+| `gte/omegasl/src/Sema.cpp` | Auto-set the feature bit on cooperative-type use; note-if-missing `#requires` |
+| `gte/include/omegaGTE/GTEDevice.h` | OR the two bits into `featuresAsBitmask()` from `coopMatrix`/`coopVector` |
+
+---
+
 ## Test plan
 
 Per-feature smoke tests written as `.omegasl` fixtures under `gte/test/omegasl/`:
@@ -318,16 +585,34 @@ Per-feature smoke tests written as `.omegasl` fixtures under `gte/test/omegasl/`
 - `subgroup_with_unsupported_tier.omegasl` — runtime compile against a fake `GTEDeviceFeatures{subgroupOps=Basic}` rejects `subgroup_add`.
 - `subgroup_prefix_min_fallback.omegasl` — HLSL output should contain the open-coded fallback expansion, not `WavePrefixMin` (which doesn't exist).
 
+**Cooperative matrix**:
+- `coopmat_gemm.omegasl` — the D.2 tile GEMM. Verify GLSL emits `coopMatMulAdd` + the `GL_KHR_cooperative_matrix` extension, MSL emits `simdgroup_multiply_accumulate` + `<metal_simdgroup_matrix>`, HLSL emits `WaveMatrixMultiplyAccumulate` at `cs_6_8` (or, if the D.6 spike found Wave Matrix unavailable in the vendored DXC, the fixture is `xfail` with the unsupported-tier diagnostic).
+- `coopmat_in_fragment.omegasl` — `coopmat` used in a fragment shader; rejected by Sema (compute-only).
+- `coopmat_unsupported_shape.omegasl` — request `coopmat<half,MatrixA,7,7>`; offline compile with `--target-coopmat-shapes=16x16x16:half` rejects it, naming the requested vs nearest-supported tuple.
+- `coopmat_use_mismatch.omegasl` — `coopmat_mad` with two `MatrixA` operands; rejected with the no-matching-overload diagnostic.
+
+**Cooperative vector**:
+- `coopvec_mlp.omegasl` — the E.2 MLP layer. Verify GLSL emits `coopVecMatMulAddNV` + `GL_NV_cooperative_vector`, HLSL emits `dx::linalg::MatVecMulAdd` at `cs_6_9` (or `xfail` if the E.6 spike found `dx::linalg` unavailable in the vendored DXC).
+- `coopvec_in_vertex.omegasl` — `coopvec` in a vertex shader; rejected by Sema (compute+fragment only).
+- `coopvec_dim_mismatch.omegasl` — `coopvec_matmul` where `in.N != K`; rejected.
+
+**Feature gate (Part F)**:
+- `coopvec_metal_emulated.omegasl` — `coopvec_matmul` compiled for Metal on an Apple7+ device: verify it emits the `simdgroup_matrix` emulation (E.6.1) — `<metal_simdgroup_matrix>`, threadgroup staging, `simdgroup_multiply[_accumulate]` — and does **not** hit the Part F gate.
+- `coopvec_unsupported.omegasl` — a `#requires(coopvector)` library loaded against a device with no coopvec path (`GTEDeviceFeatures{coopVector=false}` — pre-Apple7 Metal or a non-NVIDIA D3D12/Vulkan GPU without the extension): the shader is replaced by the unsupported sentinel, sibling shaders still load, and building a pipeline from it fails via `_checkPipelineShader` with a precise diagnostic.
+- `coopmat_requires_autoset.omegasl` — a shader using `coopmat` *without* `#requires(coopmatrix)`: verify Sema auto-sets `OMEGASL_FEATURE_BIT_COOPMATRIX` in the serialized `requiredFeatures` (and emits the suggest-directive note).
+
 ---
 
 ## Sequencing
 
-This plan can land as four PRs of decreasing risk:
+This plan can land as six PRs of decreasing risk:
 
 1. **Part A end-to-end** — swizzle parser + sema + codegen + reference doc. Self-contained, no runtime dependency beyond the texture-swizzle proposal's already-landed layout-descriptor field.
 2. **Part C struct extension only** — add `subgroupOps` and `subgroupSize` to `GTEDeviceFeatures`, populate on all three backends. Ships independently and is useful even before Part B (callers can branch on it).
 3. **Part B without fallbacks** — subgroup builtins for the tier-Quad happy path only. Refuse to compile on lower tiers. Lets the engine start using wave ops.
 4. **Part B fallbacks** — `prefix_min` / `prefix_max` software paths for HLSL and pre-Apple7 MSL. Pure quality-of-life, can land any time.
+5. **Part D — cooperative matrices** — depends on Parts B + C (subgroup scope and the device-feature plumbing) and on the **Part F** feature-gate bits. Gate the start on the **D.6 HLSL feasibility spike**: confirm the vendored DXC still exposes Wave Matrix before committing all three backends. Vulkan + Metal arms can land first (Vulkan on Linux CI, Metal `simdgroup_matrix` on the macOS host); the HLSL/D3D12 arm is now **testable on the developer's RTX 50 box** (D3D12 build still handed off per the WSL constraint, but verifiable on real HW).
+6. **Part E — cooperative vectors** — highest risk and narrowest support; depends on Part D's type-system work + Part F. Gate on the **E.6 spike** (`dx::linalg` / `VK_NV_cooperative_vector` availability in the vendored toolchains). The **RTX 50 card exercises both the Vulkan `VK_NV_cooperative_vector` and the HLSL `dx::linalg` paths**, so the native arms are fully verifiable on the developer's hardware. The **Metal arm emulates** via `simdgroup_matrix` (E.6.1) — gated on its own small spike (tile padding + fragment-stage support) and testable on the macOS host; pre-Apple7 falls to the Part F gate.
 
 ---
 
@@ -348,3 +633,11 @@ Compile-Time warning. Depending on the algorithim if people need a kernel that r
 4. **Naming: `subgroup_` vs `wave_`.** OmegaSL has historically biased toward HLSL terminology (`make_float4`, `lerp`). Switching to SPIR-V's `subgroup_` for these is a deliberate departure — chosen because the documentation surface area for subgroup operations is overwhelmingly Vulkan/SPIR-V. If you'd prefer consistency over searchability, the rename to `wave_*` is a single sed-pass through this plan.
 
 Subgroup might be more accurate semantically.
+
+5. **Cooperative matrix vs cooperative vector (Part D/E scope). — RESOLVED: both in scope.** Cooperative **matrix** (Part D, broadly portable) *and* cooperative **vector** (Part E, the neural matrix×vector path) are both planned, with proper feature gating (Part F) so the narrower coopvec path is rejected gracefully where unsupported. The developer's **RTX 50-class GPU** makes both the Vulkan `VK_NV_cooperative_vector` and HLSL `dx::linalg` (SM 6.9) paths testable on real hardware, so co-scoping is no longer blocked on HW access.
+
+   *Follow-up — RESOLVED: Metal emulates coopvec.* Rather than gate it off, Metal lowers `coopvec` onto `simdgroup_matrix` (a subgroup coopvec is a GEMM with the lane axis as the batch dimension — E.6.1), so neural shaders run on Apple7+ too. `coopVector = true` on Apple7+. Remaining open detail is only the spike outcome: whether the **fragment** stage supports `simdgroup_matrix` on the target families, or whether Metal-emulated coopvec is compute-only.
+
+6. **`coopmat` shape portability vs. performance.** The portable default tile (`16×16×16` / `8×8×8`, `half→float`) runs everywhere but is not always the fastest shape on a given vendor. Should the engine expose a "pick the best supported shape" helper over `coopMatrixShapes`, or leave shape selection entirely to the shader author (who then writes per-device variants)? Leaning toward a helper, since the device list is already enumerated — but it adds a small selection API.
+
+7. **HLSL Wave Matrix availability (the D.6 spike).** This is the one genuinely open *feasibility* question, not just a design choice: does the DXC revision this repo vendors still expose Wave Matrix, and under which type names? The answer determines whether Part D ships on all three backends or Vulkan+Metal only with HLSL deferred. Must be resolved before Part D starts.

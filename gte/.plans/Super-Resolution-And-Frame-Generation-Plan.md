@@ -56,6 +56,12 @@ Notes that drive the design:
 - AMD upscaler = **FSR** (FidelityFX), confirmed.
 - Frame generation is a **first-class goal**, separate from SR, enabled wherever
   the device supports it.
+- **Dev hardware = NVIDIA RTX 50-class GPU.** DLSS-SR, DLSS-G **Multi-Frame
+  (up to 4×)**, Reflex, and the cooperative-vector/matrix neural path
+  (`OmegaSL-Swizzle-Subgroup-Plan.md` Parts D-F) are all **testable on the
+  developer's machine** — the full NVIDIA stack is no longer HW-blocked. D3D12
+  builds still route through the user per the WSL constraint (AGENTS §Building),
+  but they are now verifiable on real RTX 50 silicon rather than hand-waved.
 
 **Confirmed by the developer (these decisions are now settled, not open):**
 1. **Latency-reduction coupling — IN SCOPE.** FG meaningfully *raises* input
@@ -217,12 +223,25 @@ FG is modeled against the **native render target** because it owns presentation.
   bits `GTEDEVICE_FEATURE_SUPER_RESOLUTION` / `..._FRAME_GENERATION`.
 
 ### 3.4 Selection policy (engine-side, one place)
-- **SR `Auto`:** Metal → MetalFX (else Reference). D3D12/Vulkan → by vendor:
-  NVIDIA→DLSS-SR, Intel→XeSS, AMD/Unknown→FSR; any init failure falls through to
-  **FSR**, then **Reference**. FSR runs on every vendor → universal safety net.
-- **FG `Auto`:** Metal → **unavailable** (report caps false). D3D12/Vulkan → by
-  vendor: NVIDIA→DLSS-G, Intel→XeFG, AMD/Unknown→FSR3-FG; init failure falls
-  through to **FSR3-FG** (cross-vendor), else **unavailable** (no reference FG).
+
+**Governing principle — vendor-native first, always.** On a vendor's own
+hardware `Auto` resolves to **that vendor's library**, never to a cross-vendor
+one: **NVIDIA GPUs use the NVIDIA libraries (Streamline/DLSS); AMD GPUs use the
+AMD libraries (FidelityFX/FSR); Intel GPUs use Intel (XeSS).** FSR is
+cross-vendor and therefore doubles as the *fallback* safety net, but it is
+**never preferred over the native library on that vendor's GPU** — an NVIDIA card
+runs DLSS and only drops to FSR if DLSS fails to initialize. A caller may still
+*force* FSR everywhere via the explicit `provider` field (output consistency or
+testing), but `Auto` will not.
+
+- **SR `Auto`:** Metal → MetalFX (else Reference). D3D12/Vulkan, by detected
+  `GEGPUVendor`: NVIDIA→DLSS-SR, Intel→XeSS, AMD/Unknown→FSR. The fallback chain
+  (→ **FSR** → **Reference**) applies only *after* the native lib has been tried
+  and failed — never as a preference over it.
+- **FG `Auto`:** Metal → **unavailable** (report caps false). D3D12/Vulkan, by
+  vendor: NVIDIA→DLSS-G, Intel→XeFG, AMD/Unknown→FSR3-FG. On native-provider init
+  failure, fall through to **FSR3-FG** (cross-vendor), else **unavailable** (no
+  reference FG).
 - Forced provider skips policy but still downgrades with a `DEBUG_CRITICAL`
   diagnostic on init failure (mirrors the mesh-shader/raytracing gate pattern).
 
@@ -361,11 +380,69 @@ like SR. Standalone-useful even without FG.
 - **Present-path seam (Phase 7)** is the highest-risk change — it touches the
   swapchain/present timeline every renderer depends on. Prototype on one backend
   (FSR3 on Vulkan) before generalizing.
-- **No dev-host HW for NVIDIA/Intel** — Phases 5c/5d/8b/8c verifiable only via
-  the user on real RTX/Arc HW.
+- **NVIDIA HW available (RTX 50), Intel not** — Phases 5c (DLSS-SR) and 8b
+  (DLSS-G incl. Multi-Frame up to 4×) are now testable on the developer's RTX 50
+  box, as is the cooperative-vector neural path. Only the **Intel** Phases 5d
+  (XeSS) / 8c (XeFG) remain HW-blocked (no Arc on hand) — the XeSS DP4a fallback
+  can still be exercised on any SM-6.4 D3D12 GPU.
 - **Multi-frame (>2×) is NVIDIA-only** — the `factor` API must degrade cleanly
   (caps clamp) so kREATE can request 4× and transparently get 2× elsewhere.
 - **AQUA determinism** — generated frames must not feed simulation/input; a
   kREATE/AQUA-side contract, documented but enforced outside `gte`.
 - **Binary redistribution / licensing** for DLSS + XeSS — resolve before 5c/5d/8b/8c.
-```
+
+## 7. Future work — broader RTX Kit & FidelityFX ecosystems
+
+SR + FG are the entry points into two large vendor ecosystems. Everything below
+is **out of scope for this plan** and listed so the `GEUpscaler` / `GEFrameGen` /
+`GELatencyReduction` surfaces are shaped not to preclude it. The same
+**vendor-native-first** rule (§3.4) governs all of it: NVIDIA features run on
+NVIDIA GPUs, AMD features on AMD GPUs, Intel on Intel — with FidelityFX (mostly
+MIT, cross-vendor) the natural fallback where an equivalent is needed everywhere.
+Most of these depend on GTE's raytracing path (see
+`Raytracing-Full-Implementation-Plan.md`) and each warrants its own plan.
+
+### 7.1 NVIDIA RTX Kit (NVIDIA GPUs)
+- **DLSS Ray Reconstruction (DLSS-RR)** — AI denoiser for ray-traced effects;
+  the natural next DLSS feature once a RT lighting path exists. Slots beside
+  DLSS-SR/-G under the Streamline integration.
+- **Reflex 2 / Frame Warp** — extends the Phase 6 `GELatencyReduction` Reflex
+  path with predictive frame warping.
+- **NVIDIA Real-Time Denoisers (NRD)** — ReBLUR/ReLAX/SIGMA denoisers (also
+  usable cross-vendor; compute-based).
+- **RTXDI** (ReSTIR direct illumination — many lights) and **RTXGI / SHaRC**
+  (spatial-hash radiance cache global illumination).
+- **RTX Mega Geometry** — cluster-based acceleration for very dense RT geometry.
+- **RTX Neural Shaders** (cooperative-vector neural rendering) and **RTX Neural
+  Texture Compression (NTC)** — depend on cooperative-vector / neural intrinsics.
+  The enabling OmegaSL surface is **now planned** in
+  `OmegaSL-Swizzle-Subgroup-Plan.md` Part E (cooperative vectors) + Part F
+  (feature gate); with the RTX 50 dev card both the Vulkan
+  `VK_NV_cooperative_vector` and HLSL `dx::linalg` paths are testable, so these
+  features are unblocked at the language level once that plan lands.
+- **NIS (NVIDIA Image Scaling)** — cheap spatial upscaler/sharpener; a low-cost
+  Streamline alternative to the OmegaSL reference path on NVIDIA HW.
+
+### 7.2 AMD FidelityFX (AMD GPUs; mostly MIT / cross-vendor)
+- **Brixelizer / Brixelizer GI** — sparse distance-field global illumination.
+- **SSSR** (stochastic screen-space reflections), **CACAO** (ambient occlusion),
+  **LPM** (HDR luma-preserving tonemap mapper), **CAS** (contrast-adaptive
+  sharpen — RCAS is already in the Phase 4 reference path).
+- Utility effects: **SPD** (single-pass downsampler), **Parallel Sort**,
+  **Blur**, **DoF**, **Lens**, **Classifier**, **Breadcrumbs** (GPU-crash
+  debugging) — several are generally useful engine building blocks independent of
+  upscaling.
+
+### 7.3 Intel (Intel GPUs)
+- **XeGTAO** — ground-truth-based ambient occlusion (cross-vendor compute).
+- Future XeSS revisions beyond the Phase 5d/8c baseline.
+
+### 7.4 Cross-cutting future enablers
+- A small **post-effect graph** so these passes (AO, SSR, denoise, tonemap)
+  compose in a defined order with SR and FG, instead of each wiring its own
+  pass. Would generalize the present/compute seams introduced here.
+- **OmegaSL neural/cooperative-vector support** — the gating dependency for the
+  neural-rendering features (7.1). **Now planned** in
+  `OmegaSL-Swizzle-Subgroup-Plan.md` Parts D-F (cooperative matrices + vectors +
+  the OmegaSL feature gate), so in-house neural inference kernels become
+  expressible once that plan ships.

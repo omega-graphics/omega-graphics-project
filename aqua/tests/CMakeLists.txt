@@ -127,3 +127,21 @@ if(APPLE)
     set_property(TARGET aqua_exec_path_test APPEND PROPERTY
         BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
 endif()
+
+# Phase 5b: SoA body mirror + the precompiled-kernel toolchain. INTERNAL test —
+# includes AQUA's src/ headers (AQBodySoA.h, AQComputeBackend.h) directly, so it
+# adds ../src to the include path. The CPU SoA round-trip always runs; the
+# device-guarded section loads the precompiled AQKernels.omegasllib (its build
+# path injected as AQUA_KERNELS_LIB_PATH) and runs AQComputeBackend's capability
+# probe. Depends on AQUAKernelLib so the lib is built first.
+add_aqua_test(
+    NAME    aqua_compute_test
+    SOURCES aqua_compute_test.cpp
+    LIBS    AQUA OmegaGTE OmegaCommonCore)
+target_include_directories(aqua_compute_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_compile_definitions(aqua_compute_test PRIVATE "AQUA_KERNELS_LIB_PATH=\"${AQUA_KERNELS_LIB}\"")
+add_dependencies(aqua_compute_test AQUAKernelLib)
+if(APPLE)
+    set_property(TARGET aqua_compute_test APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()

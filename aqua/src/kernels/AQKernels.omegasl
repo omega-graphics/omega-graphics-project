@@ -1,0 +1,24 @@
+// AQUA compute kernels — precompiled at build time by `omegaslc` into a single
+// `AQKernels.omegasllib` (Phase 5b build wiring, plan §7.5) and loaded once at
+// runtime via OmegaGraphicsEngine::loadShaderLibrary. Every AQUA compute entry
+// point lives in this one source so a single library carries the whole pipeline.
+//
+// Phase 5b ships ONLY the toolchain-probe kernel below — enough to prove the
+// precompile -> load -> pipeline -> buffer -> dispatch -> readback path end to
+// end on the active device (AQComputeBackend::selfTest). Phase 5c+ add the real
+// kernels (integration, broadphase, narrowphase, colored solver) to this file.
+
+struct AQProbeData {
+    float4 value;
+};
+
+buffer<AQProbeData> aqProbeIn : 0;
+buffer<AQProbeData> aqProbeOut : 1;
+
+// Doubles each input element. The capability probe: if this dispatch produces
+// the expected values, the device can build and run an AQUA compute pipeline.
+[in aqProbeIn, out aqProbeOut]
+compute(x=64,y=1,z=1)
+void AQProbeDouble(uint3 tid : GlobalThreadID){
+    aqProbeOut[tid[0]].value = aqProbeIn[tid[0]].value * 2.0;
+}
