@@ -441,6 +441,7 @@ template<typename T>
 constexpr bool isTransitionable_v =
     std::is_same_v<T, Composition::Color> ||
     std::is_same_v<T, std::uint32_t>      ||
+    std::is_same_v<T, SharedHandle<Composition::Brush>> ||
     std::is_same_v<T, Composition::LayerEffect::DropShadowParams>;
 
 /// Tier-1 equality for the transitionable subset. `Brush` handle
@@ -461,6 +462,25 @@ template<> bool valuesEqual<Composition::Color>(
 }
 template<> bool valuesEqual<std::uint32_t>(
         const std::uint32_t & a, const std::uint32_t & b){
+    return a == b;
+}
+template<> bool valuesEqual<SharedHandle<Composition::Brush>>(
+        const SharedHandle<Composition::Brush> & a,
+        const SharedHandle<Composition::Brush> & b){
+    // D7.5b: solid-color brushes compare by RGBA so a fresh
+    // `ColorBrush` handle carrying the same color does NOT retrigger a
+    // transition every Style pass — widgets author a new handle on
+    // each `rebuildStyle`, so an identity compare would re-fire
+    // endlessly. Any other brush kind (gradient/texture/null) falls
+    // back to handle identity, matching the snap behavior of the lerp.
+    if(a == nullptr || b == nullptr){
+        return a == b;
+    }
+    if(a->type == Composition::Brush::Type::Color &&
+       b->type == Composition::Brush::Type::Color){
+        return a->color.r == b->color.r && a->color.g == b->color.g &&
+               a->color.b == b->color.b && a->color.a == b->color.a;
+    }
     return a == b;
 }
 template<> bool valuesEqual<Composition::LayerEffect::DropShadowParams>(

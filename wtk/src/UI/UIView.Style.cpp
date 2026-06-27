@@ -55,7 +55,8 @@ ResolvedViewStyle resolveViewStyle(const StylePtr & style,const UIViewTag & view
 
 SharedHandle<Composition::Brush> resolveElementBrush(const StylePtr & style,
                                                      const UIViewTag & viewTag,
-                                                     const UIElementTag & elementTag){
+                                                     const UIElementTag & elementTag,
+                                                     ResolvedEffectTransition * outTransition){
     // Widget-View-Paint-Lifecycle-Plan Tier D / D6 follow-up
     // (2026-06-03): return `nullptr` when no inline `ElementBrush`
     // entry matches this element. Pre-D6 this returned a White8
@@ -88,6 +89,14 @@ SharedHandle<Composition::Brush> resolveElementBrush(const StylePtr & style,
         }
         if(entry.brush != nullptr){
             brush = entry.brush;
+            // D7.5b: carry the winning brush entry's inline transition
+            // metadata so `resolveStyles` can fire an inline-authored
+            // FillBrush transition (last-wins, mirroring `brush`).
+            if(outTransition != nullptr){
+                outTransition->transition = entry.transition;
+                outTransition->duration = entry.duration;
+                outTransition->curve = entry.curve;
+            }
         }
     }
     return brush;
@@ -162,6 +171,11 @@ ResolvedTextStyle resolveTextStyle(const StylePtr & style,
                 if(entry.color &&
                    takeCandidate(specificity,idx,colorSpecificity,colorOrder)){
                     resolved.color = *entry.color;
+                    // D7.5b: carry the winning color entry's inline
+                    // transition metadata for `resolveStyles` to fire.
+                    resolved.colorTransition.transition = entry.transition;
+                    resolved.colorTransition.duration = entry.duration;
+                    resolved.colorTransition.curve = entry.curve;
                     colorSpecificity = specificity;
                     colorOrder = idx;
                 }
@@ -374,14 +388,39 @@ void UIView::resolveStyles(){
     // here — a future widget that wants a real border will write
     // BorderColor / BorderWidth cells through this same path.
 
+    // Widget-Inline-Default-Strip-Plan §6 / D7.5b (2026-06-26): push an
+    // inline-authored transition into `sheetBindings_.transitions` so
+    // `applyTransitions` (which runs after this method, reading that
+    // same vector) fires `scheduler.transition(...)` when the cell
+    // changed since last frame. Inline records append to whatever the
+    // sheet cascade already recorded and share its per-Style-pass
+    // lifecycle. Before this hook, only sheet rules could drive
+    // transitions and every inline-styled widget snapped.
+    auto pushInlineTransition =
+        [this](NodeId node, PropertyKey key,
+               const UIViewInternal::ResolvedEffectTransition & tr){
+            if(!tr.transition){
+                return;
+            }
+            StyleSheets::TransitionSpec spec;
+            spec.key = key;
+            spec.timing.durationMs =
+                static_cast<std::uint32_t>((tr.duration < 0.f ? 0.f : tr.duration) * 1000.f);
+            spec.curve = tr.curve;
+            impl_->sheetBindings_.transitions.push_back(
+                ResolvedSheetBindings::TransitionRecord{node, spec});
+        };
+
     for(const auto & spec : impl_->currentLayoutV2_.elements()){
         const auto elementNodeId = impl_->ensureElementNodeId(spec.tag);
 
+        UIViewInternal::ResolvedEffectTransition brushTransition {};
         auto brush = UIViewInternal::resolveElementBrush(
-            impl_->currentStyle,impl_->tag,spec.tag);
+            impl_->currentStyle,impl_->tag,spec.tag,&brushTransition);
         if(brush != nullptr){
             impl_->styleTable_.set<SharedHandle<Composition::Brush>>(
                 elementNodeId, PropertyKey::FillBrush, brush);
+            pushInlineTransition(elementNodeId, PropertyKey::FillBrush, brushTransition);
         }
 
         const auto resolvedEffects = UIViewInternal::resolveElementEffectStyle(
@@ -423,6 +462,8 @@ void UIView::resolveStyles(){
             }
             impl_->styleTable_.set<Composition::Color>(
                 elementNodeId, PropertyKey::TextColor, resolvedText.color);
+            pushInlineTransition(elementNodeId, PropertyKey::TextColor,
+                                 resolvedText.colorTransition);
             impl_->styleTable_.set<Composition::TextLayoutDescriptor>(
                 elementNodeId, PropertyKey::TextLayout, resolvedText.layout);
             impl_->styleTable_.set<std::uint32_t>(

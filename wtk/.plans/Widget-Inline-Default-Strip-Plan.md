@@ -106,6 +106,19 @@ heavy tests.
 
 ## 3. Phase B — Button cascade rewrite
 
+> **Note (2026-06-26):** Phase B is **no longer the driver for fixing
+> Button transitions** — that bug was fixed surgically; see §6 below.
+> The diagnosis that motivated "move Button to the cascade so it
+> animates" turned out to be only half the story: the cascade path
+> would have animated the *label* color but NOT the *background*,
+> because the bg is a `FillBrush` cell and brush cells were
+> deliberately non-transitionable (snap). §6 wires inline-`Style`
+> transitions into the firing path AND makes solid-color brush fills
+> interpolate, so `BasicAppTest`'s buttons now animate without
+> touching `Button` at all. Phase B remains valid as a pure
+> architectural cleanup (unify widgets on the cascade / strip inline
+> defaults) but is now optional and no longer transition-motivated.
+
 **Goal:** Express `Button`'s state-dependent visual table as cascade
 rules driven by D6.4 pseudo-classes. `Button::rebuildStyle` shrinks
 to "author only the model-state-dependent cells" (e.g. label text,
@@ -221,3 +234,94 @@ When all of Phase L + Phase B land, this plan moves to
 `wtk/.plans/done/`. Until then, the UA sheet's seed rules are a
 safety net for app-authored views, not the source of truth for
 the in-tree widgets.
+
+## 6. Inline-`Style` transition firing + solid-color brush lerp (D7.5b)
+
+**Status:** Implemented 2026-06-26. Small-feature note (well under the
+~300-line ceiling — three resolver/scheduler touch points, no new
+phase breakdown). This is a defect fix to the D7.2 transition
+machinery in `Widget-View-Paint-Lifecycle-Plan.md` (now in
+`.plans/done/`); it is recorded here because it recontextualizes
+Phase B above.
+
+### 6.1 The bug
+
+`BasicAppTest`'s buttons snapped between Idle/Hover/Press instead of
+animating, even though `Button::rebuildStyle` authors
+`elementBrush("bg", …, transition=true, duration=…)` and
+`textColor("label", …, transition=true, …)`. Two independent root
+causes, both grounded in the source:
+
+1. **Inline transitions never fired.** The sole call to
+   `scheduler->transition<T>(…)` lives in
+   `StyleResolver::applyTransitions` (`StyleResolver.cpp`), which
+   early-returns when `impl.sheetBindings_.transitions` is empty —
+   and that vector was populated *only* from winning **sheet rules**
+   (`rule->transitions`). A widget styled purely inline (every
+   in-tree widget today) recorded no transition specs, so the pass
+   bailed and every cell snapped. The inline `transition`/`duration`
+   flags on `Style::Entry` were read for effects (drop-shadow/blur)
+   but dropped for `ElementBrush` and `TextColor`.
+
+2. **Brush cells were non-transitionable by design.** Even via the
+   sheet path, the button bg is a `FillBrush` cell
+   (`SharedHandle<Composition::Brush>`). `isTransitionable_v`
+   excluded brush handles ("a brush swap is a discrete change.
+   Snap is the correct CSS-like behavior") and
+   `KeyframeLerp<…Brush>` snapped. So the *background* fade — the
+   most visible part of a button hover — could never animate without
+   a change here. (`TextColor` is a `Composition::Color` cell and was
+   always transitionable; it was blocked only by cause 1.)
+
+### 6.2 The fix (three touch points)
+
+- **`AnimationScheduler.h`** — add `KeyframeLerp<SharedHandle<Brush>>`
+  (and a shared `lerpBrush` helper, also used by the existing
+  `KeyframeLerp<AnimatedValue>` brush branch so sheet-driven keyframe
+  brush tracks stay consistent). When both endpoints are
+  `Brush::Type::Color`, interpolate the underlying `Color` and return
+  a fresh `ColorBrush`; any other combination (gradient, texture,
+  null) snaps on the `t>=1` boundary as before. **Limitation:** only
+  *solid-color* fills fade; gradient/texture brushes still snap.
+  Paint already reads the interpolated handle for free —
+  `Impl::resolved<SharedHandle<Brush>>` queries the scheduler side
+  table first, and `SharedPtr<Brush>` is an `AnimatedValue`
+  alternative.
+
+- **`StyleResolver.cpp`** — add `SharedHandle<Brush>` to
+  `isTransitionable_v`, and a `valuesEqual<SharedHandle<Brush>>`
+  specialization that compares two solid-color brushes by RGBA
+  (falling back to handle identity for other kinds). The by-color
+  compare is essential: widgets author a *new* `ColorBrush` handle on
+  every `rebuildStyle`, so an identity compare would retrigger a
+  transition every Style pass even when the color is unchanged.
+
+- **`UIView.Style.cpp` / `UIViewImpl.h`** — surface the inline
+  transition metadata for `ElementBrush` (out-param on
+  `resolveElementBrush`) and `TextColor` (new `colorTransition` field
+  on `ResolvedTextStyle`, mirroring the existing
+  `ResolvedEffectTransition` pattern). In `resolveStyles`, after the
+  FillBrush / TextColor cells are written, push a
+  `ResolvedSheetBindings::TransitionRecord` (key + `durationMs` =
+  `duration*1000` + curve) into `impl_->sheetBindings_.transitions`
+  so `applyTransitions` (which runs right after) compares prev vs.
+  current and fires. The inline records append to whatever the sheet
+  cascade already recorded and share its per-Style-pass lifecycle.
+
+### 6.3 Why this is `Button`-free
+
+`Button::rebuildStyle` is unchanged — it already authored the
+`transition=true`/`duration` flags; they were simply being ignored.
+The fix makes the *framework* honor inline-authored transitions, so
+every inline-styled widget (not just `Button`) animates. This is the
+"keep the widget as-is, make solid-color brush fills transitionable"
+direction chosen over the heavier Phase B cascade rewrite.
+
+### 6.4 Verification
+
+Build the Metal target on macOS; visual A/B `BasicAppTest`'s button
+row (hover/press/disabled). The four buttons exercise the
+150 ms-hover (`clickMe`), slow-hover (`slowHover`), instant-press
+(`snapBtn`), and disabled (`disabledBtn`) configs. Per AGENTS Visual
+Debugging, the screenshot is user-supplied (the `omega-debugviz`
+tool is not yet trusted).

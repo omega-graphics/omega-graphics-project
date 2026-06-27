@@ -250,6 +250,39 @@ private:
 // `Composition/Animation.h`) because `AnimatedValue` is a UI-tier
 // alias and Composition shouldn't reach across the layer.
 namespace Composition::detail {
+
+// Widget-Inline-Default-Strip-Plan §6 / D7.5b (2026-06-26): solid-color
+// brush interpolation. A `FillBrush` cell carries a
+// `SharedHandle<Brush>`; brushes are otherwise opaque identities (a
+// swap is a discrete change). The one case that interpolates
+// meaningfully is two solid-color brushes — the common widget
+// background fill (e.g. the Button hover/press bg). When both
+// endpoints are `Brush::Type::Color`, lerp the underlying color and
+// return a fresh `ColorBrush`; any other combination (gradient,
+// texture, null endpoint) snaps on the `t>=1` boundary as before.
+inline ::OmegaWTK::Core::SharedPtr<::OmegaWTK::Composition::Brush>
+lerpBrush(const ::OmegaWTK::Core::SharedPtr<::OmegaWTK::Composition::Brush> & lhs,
+          const ::OmegaWTK::Core::SharedPtr<::OmegaWTK::Composition::Brush> & rhs,
+          float t){
+    if(lhs != nullptr && rhs != nullptr &&
+       lhs->type == ::OmegaWTK::Composition::Brush::Type::Color &&
+       rhs->type == ::OmegaWTK::Composition::Brush::Type::Color){
+        return ::OmegaWTK::Composition::ColorBrush(
+            ::OmegaWTK::Composition::Color::lerp(lhs->color, rhs->color, t));
+    }
+    return t >= 1.f ? rhs : lhs;
+}
+
+template<>
+struct KeyframeLerp<::OmegaWTK::Core::SharedPtr<::OmegaWTK::Composition::Brush>> {
+    static ::OmegaWTK::Core::SharedPtr<::OmegaWTK::Composition::Brush> apply(
+            const ::OmegaWTK::Core::SharedPtr<::OmegaWTK::Composition::Brush> & lhs,
+            const ::OmegaWTK::Core::SharedPtr<::OmegaWTK::Composition::Brush> & rhs,
+            float t){
+        return lerpBrush(lhs, rhs, t);
+    }
+};
+
 template<>
 struct KeyframeLerp<::OmegaWTK::AnimatedValue> {
     static ::OmegaWTK::AnimatedValue apply(
@@ -266,8 +299,10 @@ struct KeyframeLerp<::OmegaWTK::AnimatedValue> {
                 else if constexpr (std::is_same_v<T,
                                                   ::OmegaWTK::Core::SharedPtr<
                                                       ::OmegaWTK::Composition::Brush>>){
-                    // Brush handles are identities — snap.
-                    return ::OmegaWTK::AnimatedValue{t >= 1.f ? *rv : lv};
+                    // D7.5b: solid-color brushes interpolate; all other
+                    // brush kinds snap. Shared with the transition path
+                    // via `lerpBrush`.
+                    return ::OmegaWTK::AnimatedValue{lerpBrush(lv, *rv, t)};
                 }
                 else if constexpr (std::is_arithmetic_v<T>){
                     // Same fallback path the default `KeyframeLerp<T>`

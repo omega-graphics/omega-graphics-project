@@ -137,6 +137,12 @@ struct ResolvedViewStyle {
     float borderWidth = 0.f;
 };
 
+struct ResolvedEffectTransition {
+    bool transition = false;
+    float duration = 0.f;
+    SharedHandle<Composition::AnimationCurve> curve = nullptr;
+};
+
 struct ResolvedTextStyle {
     SharedHandle<Composition::Font> font = nullptr;
     Composition::Color color = Composition::Color::create8Bit(Composition::Color::Black8);
@@ -145,12 +151,10 @@ struct ResolvedTextStyle {
         Composition::TextLayoutDescriptor::None
     };
     unsigned lineLimit = 0;
-};
-
-struct ResolvedEffectTransition {
-    bool transition = false;
-    float duration = 0.f;
-    SharedHandle<Composition::AnimationCurve> curve = nullptr;
+    // D7.5b: inline transition metadata for the winning `TextColor`
+    // entry, surfaced so `resolveStyles` can fire an inline-authored
+    // text-color transition. Only the color cell animates today.
+    ResolvedEffectTransition colorTransition {};
 };
 
 struct ResolvedEffectStyle {
@@ -198,7 +202,8 @@ struct ArrangedElement {
 ResolvedViewStyle resolveViewStyle(const StylePtr & style,const UIViewTag & viewTag);
 SharedHandle<Composition::Brush> resolveElementBrush(const StylePtr & style,
                                                      const UIViewTag & viewTag,
-                                                     const UIElementTag & elementTag);
+                                                     const UIElementTag & elementTag,
+                                                     ResolvedEffectTransition * outTransition = nullptr);
 ResolvedTextStyle resolveTextStyle(const StylePtr & style,
                                    const UIViewTag & viewTag,
                                    const UIElementTag & elementTag);
