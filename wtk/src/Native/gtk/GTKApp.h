@@ -6,7 +6,7 @@
 
 namespace OmegaWTK::Native::GTK {
 
-class X11SurfaceHost;
+class SurfaceHost;
 
 GtkApplication *get_active_application();
 
@@ -15,11 +15,12 @@ GtkApplication *get_active_application();
 /// parent.
 GtkWindow *gtk_window_from_native(const NWH & window);
 
-/// Returns the per-window X11SurfaceHost. Used by the Linux Vulkan visual
-/// tree (§2.14) and NativeViewHost child-surface factories to allocate
-/// X11 child Windows underneath the toplevel. Returns nullptr on
-/// Wayland builds or if the handle is not a GTKAppWindow.
-X11SurfaceHost *gtk_x11_surface_host_from_native(const NWH & window);
+/// Returns the per-window SurfaceHost (X11 or Wayland, per the runtime-
+/// detected backend — §2.13a). Used by the Linux Vulkan visual tree (§2.14)
+/// and NativeViewHost child-surface factories to allocate child surfaces
+/// underneath the toplevel. Returns nullptr if the handle is not a
+/// GTKAppWindow or backend detection failed.
+SurfaceHost *surface_host_from_native(const NWH & window);
 
 /// Top inset (in DIPs) consumed by the GTK menu bar, if a menu is
 /// attached. Used by the WidgetTreeHost hover dispatcher (§2.3a) to

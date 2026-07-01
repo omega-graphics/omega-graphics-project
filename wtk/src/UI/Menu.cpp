@@ -85,24 +85,28 @@ menuItems(menu_items),
 native(Native::make_native_menu(name)),
 delegate(delegate),
 hasDelegate(delegate != nullptr){
+    // `native` is null on backends with no native menu object (GTK 4 — native
+    // menus are removed in favor of a virtual MenuBar, Panels §B3). Guard every
+    // dereference, matching MenuItem's `if(native)` idiom above; the menu model
+    // still holds its items for the virtual layer to consume.
     auto it = menu_items.begin();
     while(it != menu_items.end()){
         auto & menu_item = *it;
         menu_item->setParentAndInit(this);
-        native->addMenuItem(menu_item->native);
+        if(native) native->addMenuItem(menu_item->native);
         ++it;
     };
 
     if(hasDelegate) {
         delegate->menu = this;
-        native->setDelegate(delegate);
+        if(native) native->setDelegate(delegate);
     }
 };
 
 void Menu::addItem(SharedHandle<MenuItem> item){
     if(!item) return;
     item->setParentAndInit(this);
-    native->addMenuItem(item->native);
+    if(native) native->addMenuItem(item->native);
     menuItems.push_back(item);
 }
 
@@ -110,18 +114,18 @@ void Menu::insertItem(SharedHandle<MenuItem> item, unsigned idx){
     if(!item) return;
     if(idx > menuItems.size()) idx = (unsigned)menuItems.size();
     item->setParentAndInit(this);
-    native->insertMenuItem(item->native, idx);
+    if(native) native->insertMenuItem(item->native, idx);
     menuItems.insert(menuItems.begin() + idx, item);
 }
 
 void Menu::removeItem(unsigned idx){
     if(idx >= menuItems.size()) return;
-    native->removeMenuItem(idx);
+    if(native) native->removeMenuItem(idx);
     menuItems.erase(menuItems.begin() + idx);
 }
 
 void Menu::removeAllItems(){
-    native->removeAllItems();
+    if(native) native->removeAllItems();
     menuItems.clear();
 }
 

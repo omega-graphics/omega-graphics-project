@@ -30,10 +30,12 @@ static unsigned toX11Dimension(float value){
 
 #if WTK_NATIVE_X11
 X11SurfaceHost::X11SurfaceHost(Display *dpy):
+SurfaceHost(WindowingBackend::X11),
 dpy_(dpy){
 }
 #else
-X11SurfaceHost::X11SurfaceHost(){
+X11SurfaceHost::X11SurfaceHost():
+SurfaceHost(WindowingBackend::X11){
 }
 #endif
 
@@ -194,6 +196,43 @@ void X11SurfaceHost::runOnRealize(std::function<void()> action){
     // Already realized — fire synchronously. Lock released before the
     // call so subscribers can re-enter X11SurfaceHost without deadlock.
     action();
+}
+
+void X11SurfaceHost::reconfigureChild(std::uint64_t hostId,
+                                      const Composition::Rect &rectPx,
+                                      int zOrder){
+#if WTK_NATIVE_X11
+    auto it = hostChildren_.find(hostId);
+    ::Window child = (it != hostChildren_.end()) ? it->second : 0;
+    if(child == 0){
+        // First reconfigure for this hostId allocates the child Window.
+        // Returns 0 if the toplevel is not yet realized — leave the
+        // mapping unset so the caller's runOnRealize retry re-allocates.
+        child = createChildWindow(rectPx);
+        if(child == 0){
+            return;
+        }
+        hostChildren_.emplace(hostId, child);
+    }
+    reconfigureChildWindow(child, rectPx, zOrder);
+#else
+    (void)hostId;
+    (void)rectPx;
+    (void)zOrder;
+#endif
+}
+
+void X11SurfaceHost::destroyChild(std::uint64_t hostId){
+#if WTK_NATIVE_X11
+    auto it = hostChildren_.find(hostId);
+    if(it == hostChildren_.end()){
+        return;
+    }
+    destroyChildWindow(it->second);
+    hostChildren_.erase(it);
+#else
+    (void)hostId;
+#endif
 }
 
 }

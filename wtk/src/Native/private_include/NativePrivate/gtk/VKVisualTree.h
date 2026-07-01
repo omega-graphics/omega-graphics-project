@@ -3,11 +3,19 @@
 
 #include "omegaWTK/Native/NativeVisualTree.h"
 #include "NativePrivate/gtk/GTKItem.h"
+#include "NativePrivate/gtk/GTKWindowing.h"
 
 #include <gdk/gdk.h>
+// Independent #ifs (not #if/#elif): the §2.13a BOTH co-build defines both
+// protocol macros and needs both surface-handle headers present so VKVisual
+// can carry both accessor sets at once. Single-protocol builds still compile
+// exactly one. Xlib.h #defines None/True/False, but VisualBinder.h / the GTE
+// descriptor headers are always included ahead of this in the binder TU, so
+// the macro-clobber surface is the same as today's verified X11 build.
 #if WTK_NATIVE_WAYLAND
 #  include <wayland-client.h>
-#elif WTK_NATIVE_X11
+#endif
+#if WTK_NATIVE_X11
 #  include <X11/Xlib.h>
 #endif
 
@@ -19,18 +27,26 @@ namespace OmegaWTK::Native::GTK {
     /// VKVisual re-surfaces it here for the Composition binder so the
     /// binder can wire up the GENativeRenderTarget).
     ///
-    /// The accessors are conditionally compiled on the same
-    /// `WTK_NATIVE_X11` / `WTK_NATIVE_WAYLAND` switch as `GTKItem` —
-    /// a single build never has both sets live, matching the
-    /// per-protocol surface descriptor `GENativeRenderTarget` expects.
+    /// The accessors are compiled behind independent `WTK_NATIVE_X11` /
+    /// `WTK_NATIVE_WAYLAND` `#if`s, matching `GTKItem`. Under §2.13a's BOTH
+    /// co-build both sets are live at once and `backend()` (stamped from the
+    /// GdkDisplay by `make_native_visual_tree`) tells the binder which one to
+    /// read — replacing the pre-§2.13a one-protocol-per-build assumption.
     class VKVisual : public Native::Visual {
     public:
-        VKVisual(SharedHandle<GTKItem> item, Composition::Rect rect);
+        VKVisual(SharedHandle<GTKItem> item, Composition::Rect rect,
+                 WindowingBackend backend);
+
+        /// The live windowing protocol this visual's handles belong to.
+        /// The binder switches on this at runtime instead of a compile-time
+        /// `#if`, so one `OmegaWTK_Native` serves both X11 and Wayland.
+        WindowingBackend backend() const { return backend_; }
 
 #if WTK_NATIVE_WAYLAND
         wl_surface * waylandSurface() const;
         wl_display * waylandDisplay() const;
-#elif WTK_NATIVE_X11
+#endif
+#if WTK_NATIVE_X11
         ::Display * x11Display() const;
         ::Window    x11Window()  const;
 #endif
@@ -42,6 +58,7 @@ namespace OmegaWTK::Native::GTK {
 
     private:
         SharedHandle<GTKItem> item_;
+        WindowingBackend backend_;
     };
 
     /// Linux VisualTree. Holds the single root VKVisual; Pass 2 will
@@ -51,7 +68,8 @@ namespace OmegaWTK::Native::GTK {
     public:
         VKVisualTree(SharedHandle<GTKItem> rootItem,
                      Composition::Rect rect,
-                     float scale);
+                     float scale,
+                     WindowingBackend backend);
 
         Native::Visual * rootVisual() const override;
 

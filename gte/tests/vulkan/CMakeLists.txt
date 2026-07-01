@@ -1,20 +1,36 @@
 include(CMakeParseArguments)
 
 pkg_check_modules(GTK gtk+-3.0)
+# §2.15 GTK4 Migration: 2DTest is ported to GTK 4 ahead of the other windowing
+# tests as the G4-3 "render Vulkan into the toplevel GdkSurface" probe. Detect
+# gtk4 non-REQUIRED so hosts without it still configure (2DTest is then skipped);
+# the remaining windowing tests stay on gtk+-3.0 until they are converted too.
+pkg_check_modules(GTK4 gtk4)
 
 function(add_vulkan_test)
-    cmake_parse_arguments("_ARG" "" "NAME" ";SOURCES;LIBS" ${ARGN})
+    cmake_parse_arguments("_ARG" "GTK4" "NAME" "SOURCES;LIBS" ${ARGN})
     add_executable(${_ARG_NAME} ${_ARG_SOURCES})
-    target_include_directories(${_ARG_NAME} PUBLIC ${GTK_INCLUDE_DIRS})
-    target_link_directories(${_ARG_NAME} PRIVATE ${GTK_LIBRARY_DIRS})
-    target_link_libraries(${_ARG_NAME} PRIVATE "OmegaGTE" ${_ARG_LIBS} ${GTK_LIBRARIES})
+    if(_ARG_GTK4)
+        target_include_directories(${_ARG_NAME} PUBLIC ${GTK4_INCLUDE_DIRS})
+        target_link_directories(${_ARG_NAME} PRIVATE ${GTK4_LIBRARY_DIRS})
+        target_link_libraries(${_ARG_NAME} PRIVATE "OmegaGTE" ${_ARG_LIBS} ${GTK4_LIBRARIES})
+    else()
+        target_include_directories(${_ARG_NAME} PUBLIC ${GTK_INCLUDE_DIRS})
+        target_link_directories(${_ARG_NAME} PRIVATE ${GTK_LIBRARY_DIRS})
+        target_link_libraries(${_ARG_NAME} PRIVATE "OmegaGTE" ${_ARG_LIBS} ${GTK_LIBRARIES})
+    endif()
 endfunction()
 
-add_vulkan_test(
-    NAME
-    "2DTest"
-    SOURCES 
-    "2DTest/main.cpp")
+if(GTK4_FOUND)
+    add_vulkan_test(
+        GTK4
+        NAME
+        "2DTest"
+        SOURCES
+        "2DTest/main.cpp")
+else()
+    message(WARNING "OmegaGTE tests: gtk4 not found — skipping the GTK-4-ported 2DTest.")
+endif()
 
 add_vulkan_test(
     NAME

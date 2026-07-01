@@ -13,94 +13,57 @@ namespace OmegaWTK::Native::GTK {
 
 namespace {
 
-/// dpiScale captures the resolution component (Xft.dpi / GDK_DPI_SCALE
-/// / GNOME text-scaling-factor) — the part GTK does NOT auto-apply
-/// to GdkRectangle geometry. Matches GTKAppWindow::computeDpiScale.
-float computeDpiScale() {
-    GdkDisplay *display = gdk_display_get_default();
-    if(display == nullptr) return 1.f;
-    GdkScreen *screen = gdk_display_get_default_screen(display);
-    if(screen == nullptr) return 1.f;
-    gdouble dpi = gdk_screen_get_resolution(screen);
-    if(dpi <= 0.0 || !std::isfinite(dpi)) return 1.f;
-    float scale = (float)(dpi / 96.0);
-    return scale < 0.5f ? 0.5f : scale;
-}
 
-unsigned monitorIndex(GdkDisplay *display, GdkMonitor *m) {
-    if(display == nullptr || m == nullptr) return 0;
-    int n = gdk_display_get_n_monitors(display);
-    for(int i = 0; i < n; i++){
-        if(gdk_display_get_monitor(display, i) == m){
-            return (unsigned)i;
-        }
-    }
-    return 0;
-}
-
-GdkMonitor * monitorByIndex(unsigned idx) {
-    GdkDisplay *display = gdk_display_get_default();
-    if(display == nullptr) return nullptr;
-    int n = gdk_display_get_n_monitors(display);
-    if((int)idx >= n) return nullptr;
-    return gdk_display_get_monitor(display, (int)idx);
-}
-
-GdkMonitor * primaryMonitor() {
-    GdkDisplay *display = gdk_display_get_default();
-    if(display == nullptr) return nullptr;
-    GdkMonitor *m = gdk_display_get_primary_monitor(display);
-    if(m == nullptr){
-        m = gdk_display_get_monitor(display, 0);
-    }
-    return m;
-}
+// GTK 4 retired GdkScreen and the global DPI resolution, the indexed monitor
+// accessors (replaced by gdk_display_get_monitors() → GListModel), the
+// primary-monitor concept, and gdk_monitor_get_workarea. DPI is folded into the
+// per-monitor scale (gdk_monitor_get_scale_factor), so the DIP divisor is 1, the
+// combined scale is just the monitor scale, visibleFrame == frame, and the first
+// monitor stands in for "primary".
 
 bool fillMonitorDesc(GdkMonitor *m, unsigned id, NativeScreenDesc & d) {
     if(m == nullptr) return false;
 
     GdkRectangle geom{};
     gdk_monitor_get_geometry(m, &geom);
-    GdkRectangle work{};
-    gdk_monitor_get_workarea(m, &work);
-
-    float dpiScale = computeDpiScale();
     gint gdkScale = gdk_monitor_get_scale_factor(m);
     if(gdkScale < 1) gdkScale = 1;
-    float combined = dpiScale * (float)gdkScale;
 
-    // GdkRectangle is in GTK logical pixels (already divided by the
-    // GDK integer scale). Divide by dpiScale to reach DIPs — matches
-    // GTKAppWindow::fromGtkLogical so a window placed at NativeScreen
-    // coords lines up with what the AppWindow ctor expects.
-    float divisor = dpiScale > 0.f ? dpiScale : 1.f;
-    auto toRect = [divisor](const GdkRectangle & r) -> Composition::Rect {
+    auto toRect = [](const GdkRectangle & r) -> Composition::Rect {
         return Composition::Rect{
-            Composition::Point2D{(float)r.x / divisor, (float)r.y / divisor},
-            (float)r.width  / divisor,
-            (float)r.height / divisor};
+            Composition::Point2D{(float)r.x, (float)r.y},
+            (float)r.width, (float)r.height};
     };
 
     d.id           = id;
     d.frame        = toRect(geom);
-    d.visibleFrame = toRect(work);
-    d.scaleFactor  = combined;
+    d.visibleFrame = toRect(geom);     // GTK 4 has no workarea concept
+    d.scaleFactor  = (float)gdkScale;
+    d.isPrimary    = (id == 0);        // GTK 4 has no primary-monitor notion
 
-    GdkDisplay *display = gdk_monitor_get_display(m);
-    d.isPrimary = display != nullptr
-                  && gdk_display_get_primary_monitor(display) == m;
-
-    // gdk_monitor_get_refresh_rate returns millihertz; 0 on
-    // compositors that don't report it (some nested Wayland setups).
     int millihz = gdk_monitor_get_refresh_rate(m);
     d.refreshHz = millihz > 0 ? (float)millihz / 1000.f : 60.f;
-
-    // VRR not exposed by GDK — first cut reports fixed-rate. A
-    // future Wayland-VRR-protocol backend can opt in here.
     d.minRefreshHz        = d.refreshHz;
     d.variableRefreshRate = false;
     return true;
 }
+
+// get_item returns a new ref; the GListModel keeps the monitors alive for the
+// display's lifetime, so we drop our ref and hand back a borrowed pointer
+// (matching GTK 3's gdk_display_get_monitor borrow semantics).
+GdkMonitor * monitorByIndex(unsigned idx) {
+    GdkDisplay *display = gdk_display_get_default();
+    if(display == nullptr) return nullptr;
+    GListModel *monitors = gdk_display_get_monitors(display);
+    if(monitors == nullptr) return nullptr;
+    if(idx >= g_list_model_get_n_items(monitors)) return nullptr;
+    GdkMonitor *m = GDK_MONITOR(g_list_model_get_item(monitors, idx));
+    if(m != nullptr) g_object_unref(m);
+    return m;
+}
+
+GdkMonitor * primaryMonitor() { return monitorByIndex(0); }
+
 
 }
 
@@ -198,27 +161,30 @@ DisplayLinkCache & displayLinkCache() {
 
 namespace OmegaWTK::Native {
 
+
 OmegaCommon::Vector<NativeScreenDesc> enumerateScreens() {
     OmegaCommon::Vector<NativeScreenDesc> out;
     GdkDisplay *display = gdk_display_get_default();
     if(display == nullptr) return out;
-    int n = gdk_display_get_n_monitors(display);
-    for(int i = 0; i < n; i++){
-        GdkMonitor *m = gdk_display_get_monitor(display, i);
+    GListModel *monitors = gdk_display_get_monitors(display);
+    if(monitors == nullptr) return out;
+    guint n = g_list_model_get_n_items(monitors);
+    for(guint i = 0; i < n; i++){
+        GdkMonitor *m = GDK_MONITOR(g_list_model_get_item(monitors, i));
         NativeScreenDesc d;
-        if(GTK::fillMonitorDesc(m, (unsigned)i, d)){
+        if(GTK::fillMonitorDesc(m, i, d)){
             out.push_back(d);
         }
+        if(m != nullptr) g_object_unref(m);
     }
     return out;
 }
 
 NativeScreenDesc primaryScreen() {
     NativeScreenDesc d;
-    GdkMonitor *primary = GTK::primaryMonitor();
-    if(primary == nullptr) return d;
-    GdkDisplay *display = gdk_monitor_get_display(primary);
-    GTK::fillMonitorDesc(primary, GTK::monitorIndex(display, primary), d);
+    GdkMonitor *m = GTK::primaryMonitor();   // first monitor (no GTK 4 primary)
+    if(m == nullptr) return d;
+    GTK::fillMonitorDesc(m, 0, d);
     return d;
 }
 
@@ -228,11 +194,12 @@ NativeScreenDesc screenById(unsigned id) {
     if(m == nullptr){
         m = GTK::primaryMonitor();
         if(m == nullptr) return d;
-        id = GTK::monitorIndex(gdk_monitor_get_display(m), m);
+        id = 0;
     }
     GTK::fillMonitorDesc(m, id, d);
     return d;
 }
+
 
 NativeDisplayLinkPtr displayLinkForScreen(const NativeScreenDesc & screen) {
     auto & cache = GTK::displayLinkCache();

@@ -52,7 +52,17 @@ elseif(UNIX AND NOT APPLE)
 
 	find_package(PkgConfig REQUIRED)
 
-	pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+	# §2.15 GTK4 Migration (G4-7): GTK 3 retired. The Linux backend is GTK 4
+	# only — Option B′ bare GdkSurface, WTK owns the Vulkan device/surface/swap
+	# chain (no GdkVulkanContext, no GTE device adoption). The series flag and
+	# the per-file `#if WTK_GTK_MAJOR` branches are gone; gtk4 is required
+	# outright. The GTK_* names below stay (the rest of this file references
+	# them) but now alias gtk4 directly.
+	pkg_check_modules(GTK4 REQUIRED gtk4)
+	set(GTK_INCLUDE_DIRS ${GTK4_INCLUDE_DIRS})
+	set(GTK_CFLAGS_OTHER ${GTK4_CFLAGS_OTHER})
+	set(GTK_LIBRARY_DIRS ${GTK4_LIBRARY_DIRS})
+	set(GTK_LIBRARIES    ${GTK4_LIBRARIES})
 	pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
 	# Phase 6.7: outline extraction goes through PangoFc → FT_Face. The
 	# pangoft2 module exposes the PangoFcFont APIs and pulls freetype as
@@ -67,10 +77,19 @@ elseif(UNIX AND NOT APPLE)
 	pkg_check_modules(LIBNOTIFY libnotify)
 
 	pkg_check_modules(PKG_WAYLAND wayland-client wayland-server wayland-egl wayland-cursor)
-	set(OMEGA_LINUX_VK_BACKEND "AUTO" CACHE STRING "Linux Vulkan native backend selection (AUTO, WAYLAND, X11)")
-	set_property(CACHE OMEGA_LINUX_VK_BACKEND PROPERTY STRINGS AUTO WAYLAND X11)
+	# §2.13a W6: X11 is no longer assumed to be present transitively via GTK —
+	# newer Wayland-only Linux installs may ship neither the X server nor the
+	# Xlib dev headers, so AUTO must be able to degrade to Wayland alone.
+	pkg_check_modules(PKG_X11 x11)
+	set(OMEGA_LINUX_VK_BACKEND "AUTO" CACHE STRING "Linux Vulkan native backend selection (AUTO, WAYLAND, X11, BOTH)")
+	set_property(CACHE OMEGA_LINUX_VK_BACKEND PROPERTY STRINGS AUTO WAYLAND X11 BOTH)
 	string(TOUPPER "${OMEGA_LINUX_VK_BACKEND}" OMEGA_LINUX_VK_BACKEND_UPPER)
+	# Two independent booleans (not one xor flag) so the BOTH co-build can turn
+	# on the X11 and Wayland native paths simultaneously. See §2.13a of
+	# wtk/.plans/Native-API-Completion-Proposal.md — one shipped binary selects
+	# the live protocol at runtime from the GdkDisplay.
 	set(OMEGA_LINUX_USE_WAYLAND FALSE)
+	set(OMEGA_LINUX_USE_X11 FALSE)
 
 	if(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "WAYLAND")
 		if(NOT PKG_WAYLAND_FOUND)
@@ -78,20 +97,49 @@ elseif(UNIX AND NOT APPLE)
 		endif()
 		set(OMEGA_LINUX_USE_WAYLAND TRUE)
 	elseif(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "X11")
-		set(OMEGA_LINUX_USE_WAYLAND FALSE)
+		if(NOT PKG_X11_FOUND)
+			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=X11 requested, but X11 (Xlib) development packages were not found.")
+		endif()
+		set(OMEGA_LINUX_USE_X11 TRUE)
+	elseif(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "BOTH")
+		if(NOT PKG_WAYLAND_FOUND)
+			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=BOTH requested, but Wayland development packages were not found.")
+		endif()
+		if(NOT PKG_X11_FOUND)
+			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=BOTH requested, but X11 (Xlib) development packages were not found.")
+		endif()
+		set(OMEGA_LINUX_USE_WAYLAND TRUE)
+		set(OMEGA_LINUX_USE_X11 TRUE)
 	elseif(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "AUTO")
-		if(PKG_WAYLAND_FOUND AND DEFINED ENV{XDG_SESSION_TYPE} AND "$ENV{XDG_SESSION_TYPE}" STREQUAL "wayland")
+		# §2.13a W6: AUTO defaults to the BOTH co-build when both dev-package sets
+		# are present, so one shipped binary serves X11 and Wayland sessions and
+		# selects the live protocol at runtime from the GdkDisplay. When only one
+		# set is present it degrades to that protocol — including Wayland-only
+		# installs that ship no X11/Xlib headers at all.
+		if(PKG_WAYLAND_FOUND)
 			set(OMEGA_LINUX_USE_WAYLAND TRUE)
 		endif()
+		if(PKG_X11_FOUND)
+			set(OMEGA_LINUX_USE_X11 TRUE)
+		endif()
+		if(NOT OMEGA_LINUX_USE_WAYLAND AND NOT OMEGA_LINUX_USE_X11)
+			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=AUTO found neither Wayland nor X11 development packages — install one or both.")
+		endif()
 	else()
-		message(FATAL_ERROR "Unsupported OMEGA_LINUX_VK_BACKEND value: ${OMEGA_LINUX_VK_BACKEND}. Use AUTO, WAYLAND, or X11.")
+		message(FATAL_ERROR "Unsupported OMEGA_LINUX_VK_BACKEND value: ${OMEGA_LINUX_VK_BACKEND}. Use AUTO, WAYLAND, X11, or BOTH.")
 	endif()
 
-	if(OMEGA_LINUX_USE_WAYLAND)
+	if(OMEGA_LINUX_USE_WAYLAND AND OMEGA_LINUX_USE_X11)
+		message("OmegaWTK: Linux native backend = X11 + Wayland (runtime-selected co-build)")
+	elseif(OMEGA_LINUX_USE_WAYLAND)
 		message("OmegaWTK: Linux native backend = Wayland")
-		add_compile_definitions("WTK_NATIVE_WAYLAND" "VULKAN_TARGET_WAYLAND")
 	else()
 		message("OmegaWTK: Linux native backend = X11")
+	endif()
+	if(OMEGA_LINUX_USE_WAYLAND)
+		add_compile_definitions("WTK_NATIVE_WAYLAND" "VULKAN_TARGET_WAYLAND")
+	endif()
+	if(OMEGA_LINUX_USE_X11)
 		add_compile_definitions("WTK_NATIVE_X11" "VULKAN_TARGET_X11")
 	endif()
 
@@ -257,10 +305,20 @@ target_include_directories(OmegaWTK_Native
 	PRIVATE ${NATIVE_PRIVATE_INCLUDE_DIR})
 target_link_libraries(OmegaWTK_Native PUBLIC OmegaCommonCore)
 if(TARGET_LINUX)
-	target_include_directories(OmegaWTK_Native PUBLIC ${GTK3_INCLUDE_DIRS})
-	target_compile_options(OmegaWTK_Native PUBLIC ${GTK3_CFLAGS_OTHER})
-	target_link_directories(OmegaWTK_Native PUBLIC ${GTK3_LIBRARY_DIRS})
-	target_link_libraries(OmegaWTK_Native PUBLIC ${GTK3_LIBRARIES})
+	target_include_directories(OmegaWTK_Native PUBLIC ${GTK_INCLUDE_DIRS})
+	target_compile_options(OmegaWTK_Native PUBLIC ${GTK_CFLAGS_OTHER})
+	target_link_directories(OmegaWTK_Native PUBLIC ${GTK_LIBRARY_DIRS})
+	target_link_libraries(OmegaWTK_Native PUBLIC ${GTK_LIBRARIES})
+	if(OMEGA_LINUX_USE_WAYLAND AND OMEGA_LINUX_USE_X11)
+		# §2.13a BOTH co-build: WaylandSurfaceHost (W4) calls libwayland-client
+		# directly (wl_compositor / wl_subcompositor / wl_subsurface). GTK3
+		# already pulls wayland-client transitively, but link it explicitly so
+		# those symbols resolve regardless of GTK's own backend selection. X11
+		# stays transitive via GTK3, matching the verified §2.13 X11-only build.
+		target_include_directories(OmegaWTK_Native PUBLIC ${PKG_WAYLAND_INCLUDE_DIRS})
+		target_link_directories(OmegaWTK_Native PUBLIC ${PKG_WAYLAND_LIBRARY_DIRS})
+		target_link_libraries(OmegaWTK_Native PUBLIC ${PKG_WAYLAND_LIBRARIES})
+	endif()
 	if(LIBNOTIFY_FOUND)
 		target_include_directories(OmegaWTK_Native PRIVATE ${LIBNOTIFY_INCLUDE_DIRS})
 		target_compile_options(OmegaWTK_Native PRIVATE ${LIBNOTIFY_CFLAGS_OTHER})
@@ -332,16 +390,16 @@ if(TARGET_LINUX)
 	# Phase 6.7 adds pangoft2 + freetype2 for the PangoFc→FT_Face descent
 	# used by the MSDF outline extractor.
 	target_include_directories(OmegaWTK_Composition
-		PRIVATE ${GTK3_INCLUDE_DIRS} ${PANGOCAIRO_INCLUDE_DIRS} ${PANGOFT2_INCLUDE_DIRS}
+		PRIVATE ${GTK_INCLUDE_DIRS} ${PANGOCAIRO_INCLUDE_DIRS} ${PANGOFT2_INCLUDE_DIRS}
 		        ${FREETYPE2_INCLUDE_DIRS} ${FONTCONFIG_INCLUDE_DIRS})
 	target_compile_options(OmegaWTK_Composition
-		PRIVATE ${GTK3_CFLAGS_OTHER} ${PANGOCAIRO_CFLAGS_OTHER} ${PANGOFT2_CFLAGS_OTHER}
+		PRIVATE ${GTK_CFLAGS_OTHER} ${PANGOCAIRO_CFLAGS_OTHER} ${PANGOFT2_CFLAGS_OTHER}
 		        ${FREETYPE2_CFLAGS_OTHER} ${FONTCONFIG_CFLAGS_OTHER})
 	target_link_directories(OmegaWTK_Composition
-		PUBLIC ${GTK3_LIBRARY_DIRS} ${PANGOCAIRO_LIBRARY_DIRS} ${PANGOFT2_LIBRARY_DIRS}
+		PUBLIC ${GTK_LIBRARY_DIRS} ${PANGOCAIRO_LIBRARY_DIRS} ${PANGOFT2_LIBRARY_DIRS}
 		       ${FREETYPE2_LIBRARY_DIRS} ${FONTCONFIG_LIBRARY_DIRS})
 	target_link_libraries(OmegaWTK_Composition
-		PUBLIC ${GTK3_LIBRARIES} ${PANGOCAIRO_LIBRARIES} ${PANGOFT2_LIBRARIES}
+		PUBLIC ${GTK_LIBRARIES} ${PANGOCAIRO_LIBRARIES} ${PANGOFT2_LIBRARIES}
 		       ${FREETYPE2_LIBRARIES} ${FONTCONFIG_LIBRARIES})
 endif()
 

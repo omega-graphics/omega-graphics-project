@@ -16,58 +16,10 @@ namespace OmegaWTK::Native {
 
 namespace {
 
-static Composition::Color gdkRgbaToColor(const GdkRGBA &rgba){
-    return Composition::Color{
-        static_cast<float>(rgba.red),
-        static_cast<float>(rgba.green),
-        static_cast<float>(rgba.blue),
-        static_cast<float>(rgba.alpha)
-    };
-}
-
-/// `gtk_style_context_lookup_color` resolves a *named* CSS color from
-/// the current theme (`theme_bg_color`, `theme_fg_color`,
-/// `theme_selected_bg_color`, `borders`, etc.) into a concrete RGBA.
-/// Returns true and writes `out` if the lookup succeeds; otherwise
-/// leaves `out` untouched so the caller's default survives.
-static bool lookupNamedColor(GtkStyleContext *ctx,const char *name,Composition::Color &out){
-    if(ctx == nullptr || name == nullptr){
-        return false;
-    }
-    GdkRGBA rgba{};
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    // Deprecated in GTK 3.8 but still functional in GTK 3.x and the
-    // only API that resolves named CSS theme colors without rendering.
-    gboolean found = gtk_style_context_lookup_color(ctx, name, &rgba);
-G_GNUC_END_IGNORE_DEPRECATIONS
-    if(!found){
-        return false;
-    }
-    out = gdkRgbaToColor(rgba);
-    return true;
-}
-
-/// Build a synthetic GtkStyleContext for the given widget-type path.
-/// `leafType` may be 0 to query at the toplevel window level only.
-/// Returns nullptr if no default GDK screen is available (headless).
-/// Ownership transferred to caller — release with g_object_unref.
-static GtkStyleContext *makeContextForPath(GType rootType,GType leafType,const char *leafClass){
-    if(gdk_screen_get_default() == nullptr){
-        return nullptr;
-    }
-    GtkWidgetPath *path = gtk_widget_path_new();
-    gtk_widget_path_append_type(path, rootType);
-    if(leafType != 0){
-        gtk_widget_path_append_type(path, leafType);
-    }
-    GtkStyleContext *ctx = gtk_style_context_new();
-    gtk_style_context_set_path(ctx, path);
-    if(leafClass != nullptr){
-        gtk_style_context_add_class(ctx, leafClass);
-    }
-    gtk_widget_path_unref(path);
-    return ctx;
-}
+// GTK 4 removed GtkWidgetPath / synthetic GtkStyleContext color extraction
+// (and gdk_screen_get_default). Per the §2.15 scope decision the GTK 4 theme
+// query keeps only the dark/light appearance + typography; theme color
+// extraction is GTK-3-only and the ThemeDesc color defaults stand under GTK 4.
 
 /// `gtk-application-prefer-dark-theme` is the canonical GTK signal for
 /// dark mode. Many distributions also encode it via the theme name's
@@ -162,61 +114,6 @@ ThemeDesc queryCurrentTheme() {
 
     desc.appearance = queryAppearance();
 
-    GtkStyleContext *windowCtx = makeContextForPath(GTK_TYPE_WINDOW, 0, nullptr);
-    if(windowCtx != nullptr){
-        lookupNamedColor(windowCtx, "theme_bg_color",          desc.colors.background);
-        lookupNamedColor(windowCtx, "theme_fg_color",          desc.colors.foreground);
-        // `theme_selected_bg_color` doubles as the OS accent on every
-        // mainstream GTK theme. macOS routes accent through
-        // controlAccentColor; Win32 hardcodes a Windows blue. Mirroring
-        // GTK's selection color here keeps custom widgets' "accent"
-        // hooks visually consistent with the rest of the desktop.
-        Composition::Color selectionColor = desc.colors.selection;
-        if(lookupNamedColor(windowCtx, "theme_selected_bg_color", selectionColor)){
-            desc.colors.selection = selectionColor;
-            desc.colors.accent = selectionColor;
-        }
-        // `borders` is the canonical GTK name for the widget border /
-        // separator color. Some minimal themes don't ship it; fall
-        // through to the default in that case.
-        lookupNamedColor(windowCtx, "borders", desc.colors.separator);
-        g_object_unref(windowCtx);
-    }
-
-    GtkStyleContext *buttonCtx = makeContextForPath(
-        GTK_TYPE_WINDOW, GTK_TYPE_BUTTON, GTK_STYLE_CLASS_BUTTON);
-    if(buttonCtx != nullptr){
-        GtkStateFlags state = gtk_style_context_get_state(buttonCtx);
-        GdkRGBA fg{};
-        gtk_style_context_get_color(buttonCtx, state, &fg);
-        desc.colors.controlForeground = gdkRgbaToColor(fg);
-
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-        // `gtk_style_context_get_background_color` is the only API in
-        // GTK 3.x that resolves the rendered button background to a
-        // concrete RGBA without rasterizing into a Cairo surface. Its
-        // deprecation in GTK 3.16 was driven by a desire to discourage
-        // theme-color extraction from non-paint code paths — exactly
-        // what we're doing on purpose for the theme query. The
-        // replacement (`gtk_render_background` against a temporary
-        // surface and sample) would round-trip through Cairo for the
-        // same end result.
-        GdkRGBA bg{};
-        gtk_style_context_get_background_color(buttonCtx, state, &bg);
-G_GNUC_END_IGNORE_DEPRECATIONS
-        // Some themes return a fully transparent background here
-        // (relying on the parent surface to show through); fall back
-        // to the window background so controls don't render with no
-        // contrast against `background`.
-        if(bg.alpha > 0.0){
-            desc.colors.controlBackground = gdkRgbaToColor(bg);
-        }
-        else {
-            desc.colors.controlBackground = desc.colors.background;
-        }
-
-        g_object_unref(buttonCtx);
-    }
 
     populateTypography(desc);
 

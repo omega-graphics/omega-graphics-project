@@ -6,172 +6,155 @@
 
 namespace OmegaWTK::Native::GTK {
 
-/// GtkClipboard-backed implementation of the system clipboard. Wraps the
-/// shared `GDK_SELECTION_CLIPBOARD` clipboard (the Ctrl+C / Ctrl+V
-/// buffer, not the X11 PRIMARY middle-click selection).
-///
-/// The wrapper is stateless: it resolves the GtkClipboard lazily on each
-/// call so a handle obtained early (or held across display teardown)
-/// stays valid — when there is no default display every method degrades
-/// to a no-op and the reads return empty, per NativeClipboard.h.
+
+/// GdkClipboard-backed implementation. GTK 4 retired the synchronous
+/// GtkClipboard (`wait_for_text`/`wait_for_uris`); GdkClipboard reads are
+/// async-only. NativeClipboard's read accessors are synchronous by contract
+/// (NativeClipboard.h: async backends "pump a nested run-loop until the owning
+/// process replies"), so getText/getFilePaths fire the async read and iterate
+/// the default GMainContext until the GAsyncResult callback lands. As before the
+/// wrapper is stateless and resolves the clipboard lazily, degrading to no-op /
+/// empty when no display is up.
 class GTKClipboard : public NativeClipboard {
 public:
     GTKClipboard() = default;
     ~GTKClipboard() override = default;
 
     bool hasType(ClipboardDataType type) const override {
-        GtkClipboard *cb = clipboard();
-        if(cb == nullptr){
-            return false;
-        }
+        GdkClipboard *cb = clipboard();
+        if(cb == nullptr) return false;
+        GdkContentFormats *formats = gdk_clipboard_get_formats(cb); // borrowed
+        if(formats == nullptr) return false;
         switch(type){
             case ClipboardDataType::PlainText:
-                return gtk_clipboard_wait_is_text_available(cb) == TRUE;
+                return gdk_content_formats_contain_gtype(formats, G_TYPE_STRING) == TRUE ||
+                       gdk_content_formats_contain_mime_type(formats, "text/plain") == TRUE;
             case ClipboardDataType::HTML:
-                // No dedicated wait_is_html_available; probe the target.
-                return gtk_clipboard_wait_is_target_available(
-                    cb, gdk_atom_intern_static_string("text/html")) == TRUE;
+                return gdk_content_formats_contain_mime_type(formats, "text/html") == TRUE;
             case ClipboardDataType::Image:
-                return gtk_clipboard_wait_is_image_available(cb) == TRUE;
+                return gdk_content_formats_contain_gtype(formats, GDK_TYPE_TEXTURE) == TRUE ||
+                       gdk_content_formats_contain_mime_type(formats, "image/png") == TRUE;
             case ClipboardDataType::FilePaths:
-                return gtk_clipboard_wait_is_uris_available(cb) == TRUE;
+                return gdk_content_formats_contain_gtype(formats, GDK_TYPE_FILE_LIST) == TRUE ||
+                       gdk_content_formats_contain_mime_type(formats, "text/uri-list") == TRUE;
         }
         return false;
     }
 
     OmegaCommon::String getText() const override {
-        GtkClipboard *cb = clipboard();
-        if(cb == nullptr){
-            return {};
-        }
-        // wait_for_text pumps a nested loop until the owner replies;
-        // returns a freshly-allocated string (or null when no text).
-        gchar *text = gtk_clipboard_wait_for_text(cb);
-        if(text == nullptr){
-            return {};
-        }
-        OmegaCommon::String out{text};
-        g_free(text);
-        return out;
+        GdkClipboard *cb = clipboard();
+        if(cb == nullptr) return {};
+        TextReadState state;
+        gdk_clipboard_read_text_async(cb, nullptr, &GTKClipboard::onTextRead, &state);
+        pumpUntil(state.done);
+        return state.text;
     }
 
     void setText(const OmegaCommon::String & text) override {
-        GtkClipboard *cb = clipboard();
-        if(cb == nullptr){
-            return;
-        }
-        // set_text copies the buffer, so the std::string need not outlive
-        // the call. -1 lets GTK measure the NUL-terminated length, but we
-        // pass the explicit byte count to stay correct for embedded NULs.
-        gtk_clipboard_set_text(cb, text.c_str(), (gint)text.size());
+        GdkClipboard *cb = clipboard();
+        if(cb == nullptr) return;
+        // set_text copies the buffer; the std::string need not outlive the call.
+        gdk_clipboard_set_text(cb, text.c_str());
     }
 
     OmegaCommon::Vector<OmegaCommon::FS::Path> getFilePaths() const override {
-        OmegaCommon::Vector<OmegaCommon::FS::Path> out;
-        GtkClipboard *cb = clipboard();
-        if(cb == nullptr){
-            return out;
-        }
-        // NULL-terminated array of file:// URIs (or null when none).
-        gchar **uris = gtk_clipboard_wait_for_uris(cb);
-        if(uris == nullptr){
-            return out;
-        }
-        for(gchar **u = uris; *u != nullptr; ++u){
-            gchar *filename = g_filename_from_uri(*u, nullptr, nullptr);
-            if(filename != nullptr){
-                out.push_back(OmegaCommon::FS::Path(filename));
-                g_free(filename);
-            }
-        }
-        g_strfreev(uris);
-        return out;
+        GdkClipboard *cb = clipboard();
+        if(cb == nullptr) return {};
+        FileReadState state;
+        gdk_clipboard_read_value_async(cb, GDK_TYPE_FILE_LIST, G_PRIORITY_DEFAULT,
+            nullptr, &GTKClipboard::onFileRead, &state);
+        pumpUntil(state.done);
+        return state.paths;
     }
 
     void setFilePaths(const OmegaCommon::Vector<OmegaCommon::FS::Path> & paths) override {
-        GtkClipboard *cb = clipboard();
-        if(cb == nullptr){
-            return;
-        }
+        GdkClipboard *cb = clipboard();
+        if(cb == nullptr) return;
 
-        // Build a NULL-terminated, owned array of file:// URIs. The
-        // clipboard's get-callback hands these to a requesting paste; the
-        // clear-callback frees them when ownership is lost. Ownership of
-        // the array transfers to the clipboard on a successful
-        // set_with_data; on failure we free it ourselves below.
-        GPtrArray *uriArray = g_ptr_array_new();
+        GSList *files = nullptr;
         for(const auto & path : paths){
-            // str() is non-const and returns a reference, so read it off a
-            // local copy rather than const_cast'ing the iterated element.
-            OmegaCommon::FS::Path p = path;
+            OmegaCommon::FS::Path p = path;             // str() is non-const
             OmegaCommon::String s = p.str();
-            gchar *uri = g_filename_to_uri(s.c_str(), nullptr, nullptr);
-            if(uri != nullptr){
-                g_ptr_array_add(uriArray, uri);
-            }
+            files = g_slist_append(files, g_file_new_for_path(s.c_str()));
         }
-        g_ptr_array_add(uriArray, nullptr);   // NULL terminator
-        // Take the raw gchar** out of the GPtrArray (keep the buffer).
-        gchar **uris = (gchar **)g_ptr_array_free(uriArray, FALSE);
+        GdkFileList *fileList = gdk_file_list_new_from_list(files);
+        g_slist_free_full(files, g_object_unref);
 
-        static const GtkTargetEntry kUriTargets[] = {
-            { const_cast<gchar *>("text/uri-list"), 0, 0 }
-        };
-
-        gboolean ok = gtk_clipboard_set_with_data(
-            cb, kUriTargets, G_N_ELEMENTS(kUriTargets),
-            &GTKClipboard::uriGetFunc, &GTKClipboard::uriClearFunc, uris);
-
-        if(ok != TRUE){
-            // set_with_data refused ownership — the clear-callback will
-            // never run, so free our buffer here to avoid a leak.
-            g_strfreev(uris);
-        }
+        GValue value = G_VALUE_INIT;
+        g_value_init(&value, GDK_TYPE_FILE_LIST);
+        g_value_take_boxed(&value, fileList);
+        gdk_clipboard_set_value(cb, &value);
+        g_value_unset(&value);
     }
 
     void clear() override {
-        GtkClipboard *cb = clipboard();
-        if(cb == nullptr){
-            return;
-        }
-        gtk_clipboard_clear(cb);
+        GdkClipboard *cb = clipboard();
+        if(cb == nullptr) return;
+        // GTK 4 has no explicit clear; resetting content to none empties the
+        // local clipboard offer.
+        gdk_clipboard_set_content(cb, nullptr);
     }
 
 private:
-    /// Resolve the shared system clipboard, or null when no display is up
-    /// (gtk_clipboard_get asserts on a null default display, so guard it).
-    static GtkClipboard * clipboard() {
-        if(gdk_display_get_default() == nullptr){
-            return nullptr;
-        }
-        return gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    struct TextReadState { bool done = false; OmegaCommon::String text; };
+    struct FileReadState { bool done = false; OmegaCommon::Vector<OmegaCommon::FS::Path> paths; };
+
+    /// Resolve the shared system clipboard, or null when no display is up.
+    static GdkClipboard * clipboard() {
+        GdkDisplay *display = gdk_display_get_default();
+        if(display == nullptr) return nullptr;
+        return gdk_display_get_clipboard(display);
     }
 
-    /// Serve the stored file:// URI list to a requesting paste.
-    static void uriGetFunc(GtkClipboard * /*cb*/, GtkSelectionData *selection,
-                           guint /*info*/, gpointer data){
-        gchar **uris = static_cast<gchar **>(data);
-        if(uris != nullptr){
-            gtk_selection_data_set_uris(selection, uris);
+    /// Iterate the default main context until the async read completes. This is
+    /// the documented sync-over-async path for selection-protocol backends.
+    static void pumpUntil(const bool & done){
+        while(!done){
+            g_main_context_iteration(nullptr, TRUE); // block for the next event
         }
     }
 
-    /// Free the URI list when the clipboard owner changes (someone else
-    /// copied, or the contents were cleared).
-    static void uriClearFunc(GtkClipboard * /*cb*/, gpointer data){
-        gchar **uris = static_cast<gchar **>(data);
-        if(uris != nullptr){
-            g_strfreev(uris);
+    static void onTextRead(GObject *source, GAsyncResult *res, gpointer data){
+        auto *state = static_cast<TextReadState *>(data);
+        GError *error = nullptr;
+        char *text = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(source), res, &error);
+        if(text != nullptr){
+            state->text = OmegaCommon::String(text);
+            g_free(text);
         }
+        if(error != nullptr) g_error_free(error);
+        state->done = true;
+    }
+
+    static void onFileRead(GObject *source, GAsyncResult *res, gpointer data){
+        auto *state = static_cast<FileReadState *>(data);
+        GError *error = nullptr;
+        const GValue *value = gdk_clipboard_read_value_finish(GDK_CLIPBOARD(source), res, &error);
+        if(value != nullptr && G_VALUE_HOLDS(value, GDK_TYPE_FILE_LIST)){
+            GdkFileList *fileList = static_cast<GdkFileList *>(g_value_get_boxed(value));
+            if(fileList != nullptr){
+                GSList *files = gdk_file_list_get_files(fileList); // transfer container
+                for(GSList *node = files; node != nullptr; node = node->next){
+                    GFile *file = G_FILE(node->data);
+                    char *path = g_file_get_path(file);
+                    if(path != nullptr){
+                        state->paths.push_back(OmegaCommon::FS::Path(std::string(path)));
+                        g_free(path);
+                    }
+                }
+                g_slist_free(files);
+            }
+        }
+        if(error != nullptr) g_error_free(error);
+        state->done = true;
     }
 };
+
 
 }
 
 namespace OmegaWTK::Native {
     NativeClipboardPtr get_native_clipboard(){
-        // Process-wide singleton: the wrapper is stateless and the OS
-        // clipboard it fronts is itself a single shared resource.
         static NativeClipboardPtr instance = std::make_shared<GTK::GTKClipboard>();
         return instance;
     }

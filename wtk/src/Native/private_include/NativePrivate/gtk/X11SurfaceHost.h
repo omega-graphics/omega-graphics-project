@@ -8,9 +8,12 @@
 // Keeping the include surface tight lets X11SurfaceHost.h be safely
 // re-included alongside any other private GTK header.
 #include "omegaWTK/Composition/Geometry.h"
+#include "NativePrivate/gtk/SurfaceHost.h"
 
+#include <cstdint>
 #include <functional>
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -44,7 +47,7 @@
 /// the "X11-only" subsection of the Native API Completion Proposal.
 namespace OmegaWTK::Native::GTK {
 
-class X11SurfaceHost {
+class X11SurfaceHost : public SurfaceHost {
 public:
 #if WTK_NATIVE_X11
     explicit X11SurfaceHost(Display *dpy);
@@ -91,13 +94,25 @@ public:
 #endif
 
     /// True once `onToplevelRealized` has been called at least once.
-    bool isRealized() const;
+    bool isRealized() const override;
 
     /// Defer a callback until the toplevel is realized. If already
     /// realized, runs synchronously on the calling thread. Otherwise
     /// the callback is moved into a queue drained by the next
     /// `onToplevelRealized` call. Empty `action` is a no-op.
-    void runOnRealize(std::function<void()> action);
+    void runOnRealize(std::function<void()> action) override;
+
+    /// SurfaceHost `hostId`-keyed child API. Thin forwarders over the
+    /// XID-keyed child registry above: `reconfigureChild` allocates the
+    /// child `::Window` on first call for a `hostId` (via `createChildWindow`)
+    /// and caches the mapping, then forwards to `reconfigureChildWindow`;
+    /// `destroyChild` forwards to `destroyChildWindow` and drops the mapping.
+    /// On a non-X11 build both are no-ops (the whole host is). Present-but-
+    /// unused until §2.14 Pass 2, matching the child-window API itself.
+    void reconfigureChild(std::uint64_t hostId,
+                          const Composition::Rect &rectPx,
+                          int zOrder) override;
+    void destroyChild(std::uint64_t hostId) override;
 
 private:
 #if WTK_NATIVE_X11
@@ -109,6 +124,10 @@ private:
         int zOrder;
     };
     std::vector<ChildState> childOrder_;
+    /// hostId → child `::Window`, populated lazily by `reconfigureChild`.
+    /// Translates the SurfaceHost `hostId`-keyed API onto the XID-keyed
+    /// child registry without touching the §2.13-verified child logic.
+    std::unordered_map<std::uint64_t, ::Window> hostChildren_;
     void restackChildren();
 #endif
 

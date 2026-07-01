@@ -4,6 +4,7 @@
         "./autom",
         "./common",
         "./gte",
+        "./va",
         "./wtk",
         "./aqua",
         "./kreate",

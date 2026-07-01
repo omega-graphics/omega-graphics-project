@@ -7,6 +7,34 @@ omega_graphics_project(OmegaGTE VERSION ${OMEGAGTE_VERSION} LANGUAGES CXX)
 
 include(./OmegaGTE.cmake)
 
+# Locate the Vulkan SDK that autom-deps fetched under deps/vulkan_sdk/. autom-deps
+# pulls LunarG's "latest" archive (gte/AUTOMDEPS), which unpacks into a single
+# version-named directory (e.g. 1.4.350.1). Rather than pin a literal version
+# that has to be hand-edited on every SDK bump, glob the child directories and
+# select the highest version. VERSION_GREATER compares the dotted version
+# components numerically, so a future 1.4.351.0 wins over 1.4.350.1 correctly.
+function(omega_find_vulkan_sdk_dir out_var)
+	set(_vk_root "${CMAKE_CURRENT_SOURCE_DIR}/deps/vulkan_sdk")
+	file(GLOB _vk_children LIST_DIRECTORIES true "${_vk_root}/*")
+	set(_vk_best "")
+	set(_vk_best_ver "")
+	foreach(_vk_child ${_vk_children})
+		if(IS_DIRECTORY "${_vk_child}")
+			get_filename_component(_vk_ver "${_vk_child}" NAME)
+			if(_vk_best_ver STREQUAL "" OR _vk_ver VERSION_GREATER _vk_best_ver)
+				set(_vk_best "${_vk_child}")
+				set(_vk_best_ver "${_vk_ver}")
+			endif()
+		endif()
+	endforeach()
+	if(_vk_best STREQUAL "")
+		message(FATAL_ERROR
+			"OmegaGTE: no Vulkan SDK found under ${_vk_root}.\n"
+			"Run autom/tools/autom-deps to fetch it.")
+	endif()
+	set(${out_var} "${_vk_best}" PARENT_SCOPE)
+endfunction()
+
 file(GLOB MAIN_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 file(GLOB COMMON_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/*.cpp")
 
@@ -45,10 +73,18 @@ else()
 	find_package(PkgConfig)
 
 	pkg_check_modules(PKG_WAYLAND wayland-client wayland-server wayland-egl wayland-cursor)
-	set(OMEGA_LINUX_VK_BACKEND "AUTO" CACHE STRING "Linux Vulkan native backend selection (AUTO, WAYLAND, X11)")
-	set_property(CACHE OMEGA_LINUX_VK_BACKEND PROPERTY STRINGS AUTO WAYLAND X11)
+	# §2.13a W6: detect X11 explicitly — Wayland-only Linux installs may ship no
+	# Xlib dev headers, so AUTO must be able to degrade to Wayland alone.
+	pkg_check_modules(PKG_X11 x11)
+	set(OMEGA_LINUX_VK_BACKEND "AUTO" CACHE STRING "Linux Vulkan native backend selection (AUTO, WAYLAND, X11, BOTH)")
+	set_property(CACHE OMEGA_LINUX_VK_BACKEND PROPERTY STRINGS AUTO WAYLAND X11 BOTH)
 	string(TOUPPER "${OMEGA_LINUX_VK_BACKEND}" OMEGA_LINUX_VK_BACKEND_UPPER)
+	# Independent booleans so the §2.13a BOTH co-build can define both
+	# VULKAN_TARGET_* macros at once. GEVulkan.cpp already dispatches surface
+	# creation by populated handle, so both WSI paths compile and the runtime
+	# switch is the fall-through (see §2.13a "Why this is mostly a wiring change").
 	set(OMEGA_LINUX_USE_WAYLAND FALSE)
+	set(OMEGA_LINUX_USE_X11 FALSE)
 
 	set(PUBLIC_DEFS "TARGET_VULKAN")
 
@@ -60,20 +96,48 @@ else()
 		endif()
 		set(OMEGA_LINUX_USE_WAYLAND TRUE)
 	elseif(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "X11")
-		set(OMEGA_LINUX_USE_WAYLAND FALSE)
+		if(NOT PKG_X11_FOUND)
+			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=X11 requested, but X11 (Xlib) development packages were not found.")
+		endif()
+		set(OMEGA_LINUX_USE_X11 TRUE)
+	elseif(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "BOTH")
+		if(NOT PKG_WAYLAND_FOUND)
+			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=BOTH requested, but Wayland development packages were not found.")
+		endif()
+		if(NOT PKG_X11_FOUND)
+			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=BOTH requested, but X11 (Xlib) development packages were not found.")
+		endif()
+		set(OMEGA_LINUX_USE_WAYLAND TRUE)
+		set(OMEGA_LINUX_USE_X11 TRUE)
 	elseif(OMEGA_LINUX_VK_BACKEND_UPPER STREQUAL "AUTO")
-		if(PKG_WAYLAND_FOUND AND DEFINED ENV{XDG_SESSION_TYPE} AND "$ENV{XDG_SESSION_TYPE}" STREQUAL "wayland")
+		# §2.13a W6: AUTO defaults to the BOTH co-build when both dev-package sets
+		# are present (one binary, runtime-selected by populated handle in
+		# GEVulkan.cpp). When only one set is present it degrades to that protocol
+		# — including Wayland-only installs that ship no X11/Xlib headers.
+		if(PKG_WAYLAND_FOUND)
 			set(OMEGA_LINUX_USE_WAYLAND TRUE)
 		endif()
+		if(PKG_X11_FOUND)
+			set(OMEGA_LINUX_USE_X11 TRUE)
+		endif()
+		if(NOT OMEGA_LINUX_USE_WAYLAND AND NOT OMEGA_LINUX_USE_X11)
+			message(FATAL_ERROR "OMEGA_LINUX_VK_BACKEND=AUTO found neither Wayland nor X11 development packages — install one or both.")
+		endif()
 	else()
-		message(FATAL_ERROR "Unsupported OMEGA_LINUX_VK_BACKEND value: ${OMEGA_LINUX_VK_BACKEND}. Use AUTO, WAYLAND, or X11.")
+		message(FATAL_ERROR "Unsupported OMEGA_LINUX_VK_BACKEND value: ${OMEGA_LINUX_VK_BACKEND}. Use AUTO, WAYLAND, X11, or BOTH.")
 	endif()
 
-	if(OMEGA_LINUX_USE_WAYLAND)
+	if(OMEGA_LINUX_USE_WAYLAND AND OMEGA_LINUX_USE_X11)
+		message("OmegaGTE: Linux Vulkan backend = X11 + Wayland (runtime-selected co-build)")
+	elseif(OMEGA_LINUX_USE_WAYLAND)
 		message("OmegaGTE: Linux Vulkan backend = Wayland")
-		list(APPEND PUBLIC_DEFS "VULKAN_TARGET_WAYLAND")
-	elseif(NOT ANDROID)
+	elseif(OMEGA_LINUX_USE_X11)
 		message("OmegaGTE: Linux Vulkan backend = X11")
+	endif()
+	if(OMEGA_LINUX_USE_WAYLAND)
+		list(APPEND PUBLIC_DEFS "VULKAN_TARGET_WAYLAND")
+	endif()
+	if(OMEGA_LINUX_USE_X11)
 		list(APPEND PUBLIC_DEFS "VULKAN_TARGET_X11")
 	endif()
 
@@ -101,7 +165,7 @@ target_compile_definitions("omegaslc" PUBLIC ${PUBLIC_DEFS})
 if(OMEGA_HOST_TOOLS_ONLY OR NOT CMAKE_CROSSCOMPILING)
 	if(TARGET_VULKAN)
 		set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps)
-		set(VULKAN_SDK_DIR ${THIRD_PARTY_DIR}/vulkan_sdk/1.3.283.0)
+		omega_find_vulkan_sdk_dir(VULKAN_SDK_DIR)
 		set(VULKAN_INCLUDE_DIRECTORY "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/include")
 		set(VULKAN_SDK_GLSLC "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/bin/glslc")
 
@@ -137,7 +201,7 @@ target_compile_definitions("omegasl-lsp" PUBLIC ${PUBLIC_DEFS})
 if(OMEGA_HOST_TOOLS_ONLY OR NOT CMAKE_CROSSCOMPILING)
 	if(TARGET_VULKAN)
 		set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps)
-		set(VULKAN_SDK_DIR ${THIRD_PARTY_DIR}/vulkan_sdk/1.3.283.0)
+		omega_find_vulkan_sdk_dir(VULKAN_SDK_DIR)
 		set(VULKAN_INCLUDE_DIRECTORY "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/include")
 
 		target_compile_definitions("omegasl-lsp" PRIVATE "OMEGASL_DEFAULT_GLSLC=\"${CMAKE_BINARY_DIR}/bin/glslc\"")
@@ -163,7 +227,24 @@ endif()
 
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Info.plist.in" "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
 
-add_omega_graphics_module("OmegaGTE" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAGTE_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" DEPENDS "OmegaCommonCore" SOURCES ${MAIN_SRCS})
+# Vulkan loader: ship libvulkan from the vendored LunarG SDK instead of linking
+# the host's system loader. The loader lives under the SDK's VulkanLoader/
+# subtree (lib/VulkanLoader/lib/libvulkan.so), NOT the top-level lib/ dir, so the
+# old `target_link_directories(.../lib) + libvulkan.so.1` actually resolved
+# against /usr/lib. We embed the loader alongside the OmegaGTE binary via
+# EMBEDDED_LIBS so any app linking OmegaGTE resolves it at runtime through
+# $ORIGIN / @loader_path — the same mechanism OmegaCommonCore uses for ICU
+# (common/CMakeLists.txt, EMBEDDED_LIBS ${ICU_RUNTIME}). We embed libvulkan.so.1
+# (the SONAME file the NEEDED entry records), so $ORIGIN resolution finds it.
+set(OMEGAGTE_EMBEDDED_LIBS)
+if(TARGET_VULKAN AND NOT ANDROID)
+	omega_find_vulkan_sdk_dir(VULKAN_SDK_DIR)
+	set(VULKAN_SDK_LIB_DIR "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/lib")
+	set(VULKAN_LOADER_LIB_DIR "${VULKAN_SDK_LIB_DIR}/VulkanLoader/lib")
+	list(APPEND OMEGAGTE_EMBEDDED_LIBS "${VULKAN_LOADER_LIB_DIR}/libvulkan.so.1")
+endif()
+
+add_omega_graphics_module("OmegaGTE" FRAMEWORK INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" VERSION ${OMEGAGTE_VERSION} HEADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" DEPENDS "OmegaCommonCore" SOURCES ${MAIN_SRCS} EMBEDDED_LIBS ${OMEGAGTE_EMBEDDED_LIBS})
 target_compile_definitions("OmegaGTE" PRIVATE OMEGAGTE__BUILD__)
 target_compile_definitions("OmegaGTE" PUBLIC ${PUBLIC_DEFS})
 
@@ -226,11 +307,18 @@ if(TARGET_VULKAN)
 		target_include_directories("OmegaGTE" PRIVATE ${VMA_INCLUDE_DIRECTORY} ${GLM_INCLUDE_DIRECTORY})
 		target_link_libraries("OmegaGTE" PRIVATE vulkan)
 	else()
-		set(VULKAN_SDK_DIR ${THIRD_PARTY_DIR}/vulkan_sdk/1.3.283.0)
+		omega_find_vulkan_sdk_dir(VULKAN_SDK_DIR)
 		set(VULKAN_INCLUDE_DIRECTORY "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/include")
-		target_link_directories("OmegaGTE" PRIVATE "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/lib")
+		set(VULKAN_SDK_LIB_DIR "${VULKAN_SDK_DIR}/${CMAKE_SYSTEM_PROCESSOR}/lib")
+		target_link_directories("OmegaGTE" PRIVATE "${VULKAN_SDK_LIB_DIR}")
 		target_include_directories("OmegaGTE" PRIVATE ${VULKAN_INCLUDE_DIRECTORY} ${VMA_INCLUDE_DIRECTORY} ${GLM_INCLUDE_DIRECTORY})
-		target_link_libraries("OmegaGTE" PRIVATE libvulkan.so.1 libshaderc_shared.so)
+		# Link the vendored loader by full path from the VulkanLoader subtree, so
+		# the linker can never fall through to the system libvulkan. Its SONAME is
+		# libvulkan.so.1, which is embedded next to OmegaGTE (EMBEDDED_LIBS above).
+		# shaderc still resolves via VULKAN_SDK_LIB_DIR on the link path.
+		target_link_libraries("OmegaGTE" PRIVATE
+			"${VULKAN_LOADER_LIB_DIR}/libvulkan.so"
+			libshaderc_shared.so)
 	endif()
 
 	# cgltf is single-header; the implementation TU lives in

@@ -32,24 +32,36 @@ namespace OmegaWTK::Composition {
             // RGBA8 pickup when the surface didn't advertise BGRA8).
             desc.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
 
+            // §2.13a: dispatch on the visual's runtime protocol instead of a
+            // compile-time #if, so a single OmegaWTK_Native fills the right
+            // descriptor field set on either an X11 or a Wayland session.
+            // GTE's makeNativeRenderTarget already switches by populated
+            // handle (GEVulkan.cpp), so populating exactly one set is all the
+            // co-build needs. Each case is still #if-guarded so a single-
+            // protocol build only references the accessors it compiled.
+            (void)rect;
+            (void)scale;
+            switch(visual.backend()){
 #if WTK_NATIVE_WAYLAND
-            desc.wl_surface = visual.waylandSurface();
-            desc.wl_display = visual.waylandDisplay();
-            desc.width  = toBackingDimension(rect.w, scale);
-            desc.height = toBackingDimension(rect.h, scale);
-            return desc.wl_surface != nullptr && desc.wl_display != nullptr;
-#elif WTK_NATIVE_X11
-            (void)rect;
-            (void)scale;
-            desc.x_window  = visual.x11Window();
-            desc.x_display = visual.x11Display();
-            return desc.x_window != 0 && desc.x_display != nullptr;
-#else
-            (void)visual;
-            (void)rect;
-            (void)scale;
-            return false;
+            case Native::GTK::WindowingBackend::Wayland:
+                desc.wl_surface = visual.waylandSurface();
+                desc.wl_display = visual.waylandDisplay();
+                // Vulkan WSI on Wayland reports no surface extent
+                // (currentExtent == 0xFFFFFFFF), so the swap chain must be
+                // sized from the descriptor; X11 reads extent from the Window.
+                desc.width  = toBackingDimension(rect.w, scale);
+                desc.height = toBackingDimension(rect.h, scale);
+                return desc.wl_surface != nullptr && desc.wl_display != nullptr;
 #endif
+#if WTK_NATIVE_X11
+            case Native::GTK::WindowingBackend::X11:
+                desc.x_window  = visual.x11Window();
+                desc.x_display = visual.x11Display();
+                return desc.x_window != 0 && desc.x_display != nullptr;
+#endif
+            default:
+                return false;
+            }
         }
 
     }
