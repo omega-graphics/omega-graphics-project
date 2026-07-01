@@ -518,7 +518,7 @@ sub-rect parameter — the API stays narrow.
 
 ---
 
-## X11SurfaceHost (Linux only)
+## X11SurfaceHost (Linux only. UPDATE THIS to SurfaceHost as Wayland was added as a supported backend)
 
 On Linux there is no GtkSocket / GtkOffscreenWindow / GtkDrawingArea
 path — the NativeViewHost mechanism is X11-direct, and `VKVisualTree`

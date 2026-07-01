@@ -1,6 +1,8 @@
 # Native Theme Application Plan
 
-**Status:** Tier 1 implemented (2026-06-30). Tiers 2–4 remain proposal.
+**Status:** Tier 1 implemented (2026-06-30). Tier 2 implemented (2026-07-01,
+macOS built/verified; Windows chrome + Vulkan/D3D12 clear write-only,
+pending platform builds). Tiers 3–4 remain proposal.
 **Scope:** Close the cross-platform asymmetry where a `UIView` with no
 explicit background color sometimes inherits the underlying OS window's
 themed surface color and sometimes renders pitch black. Define the
@@ -537,6 +539,53 @@ panel-using test once Panels Part A lands).
 chrome-appearance call),
 the per-backend visual-tree builders.
 
+#### What actually shipped (2026-07-01, deltas from the proposal above)
+
+- **Surface-color sink on `AppWindow`.** `setSurfaceColor` / `surfaceColor`
+  + an `Impl::surfaceColor_` field (seeded opaque white, not `(0,0,0,0)`,
+  so any pre-first-Style composite is benign light, not pitch black).
+- **`AppInst::resolveWindowSurfaceColor(win)`** implements rows 3
+  (`nativeTheme().colors.background`) + 4 (appearance-keyed hardcoded
+  fallback). **Row 1 is NOT plumbed into the clear** — an explicit
+  root-`UIView` background is *already* realized by the root's
+  background-rect paint (`UIView.Update.cpp:254`), so it visually wins
+  regardless of the clear; wiring it into the clear too would mean
+  reaching the root view's resolved cell from `AppInst` for no visible
+  gain. Deferred with this note; revisit only if a translucent root
+  background needs the clear to match. Row 2 (custom Theme) is Tier 3.
+- **Resolver hook lives in `FrameBuilder`, not a standalone resolver.**
+  After `styleSubtree(root)` in `buildFrame`, gated on the root Style
+  bit, it calls `window_.setSurfaceColor(AppInst::inst()->
+  resolveWindowSurfaceColor(window_))`. A theme flip forces Style dirty
+  via `applyCascadeChange` (Tier 1), so the clear tracks OS light/dark.
+- **Compositor consumes it; dead heuristic deleted.** `renderCompositeFrame`
+  now takes the resolved color (sourced in `drainWindowSurfaces` from
+  `surface->ownerAppWindow()->surfaceColor()`, opaque-white fallback for
+  a null owner) and clears to it. The old "first slice with a non-zero
+  `background` channel wins" loop is removed — confirmed dead (nothing
+  ever wrote `slice.background`, so it always cleared transparent-black →
+  the pitch black §10 documented). `CompositeFrame::WidgetSlice.background`
+  is now unused but left in place (harmless; a later cleanup can drop it).
+- **macOS `CAMetalLayer.opaque` flip DEFERRED (not done).** With an
+  alpha-1 surface clear the metal layer is opaque-in-effect either way,
+  so the visual is identical; flipping to `YES` only adds the Open-Q3
+  corner/title-bar regression risk with no visible benefit here. Left at
+  `NO` (`MTLVisualTree.mm:58`). Revisit if a real need (perf, or a
+  translucent surface) appears. macOS visual outcome is therefore
+  unchanged in default usage, as the plan predicted — just now driven by
+  our explicit clear instead of NSWindow show-through.
+- **Windows chrome (§5.2) written, not built.** `applyImmersiveDarkMode`
+  (`WinAppWindow.cpp`) calls `DwmSetWindowAttribute` with the
+  `USE_IMMERSIVE_DARK_MODE` index (20, fallback 19), driven by
+  `nativeTheme().appearance`, on window creation (`initialDisplay`) and
+  on every theme-message fire. **Needs a Windows build check** — can't
+  compile on this macOS host.
+
+**Verification:** macOS builds/links/signs clean; visual outcome expected
+unchanged (themed clear == prior NSWindow show-through). The user-visible
+Tier 2 win (Windows/Vulkan black → themed clear) is **unverified** —
+needs Windows + Linux/Vulkan builds.
+
 ### Tier 3 — custom theme override + appearance forcing
 
 - Land row 2 of the §3 priority chain: if `application().theme() !=
@@ -668,6 +717,14 @@ This is more of a consequence than a step — it's the Style plan's Tier
   become a feature, the standard Style plan `Transition` record on
   `Property::Surface` (Style §3.5) hands off to the scheduler via the
   same `transition(...)` hook — no new mechanism required.
+  - **Decision (2026-07-01): do NOT build a light/dark surface
+    cross-fade.** Verified during Tier 1 that macOS `NSWindow`
+    auto-cross-fades the effective-appearance change frame-to-frame, so
+    a hard `setSurfaceColor` write already *looks* animated on macOS with
+    zero app work. GTK/Windows flip instantly, which is acceptable. A
+    manual cross-fade is therefore not worth the complexity — leave
+    `setSurfaceColor` a hard write across all tiers unless a concrete
+    need appears.
 
 ---
 

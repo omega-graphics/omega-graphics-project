@@ -273,6 +273,8 @@ struct IconProps {
 
 Implementation deferred question: Icon rendering can be glyph-based (font icon) or SVG-based. Start with glyph-based (render a single Unicode codepoint from an icon font). SVG icon support can layer on top via `SVGView` later.
 
+> **Superseded by Phase 2B.** The concrete glyph `Icon` above is folded into an abstract `Icon` base with three subclasses — `GlyphIcon` (this glyph behavior), `SVGIcon`, `ImageIcon`. `IconProps` is renamed `GlyphIconProps`. See [Phase 2B: Icon Type Hierarchy](#phase-2b-icon-type-hierarchy-glyph--svg--image).
+
 ### Image
 
 Props:
@@ -360,58 +362,164 @@ MeasureResult Label::measureSelf(const LayoutContext & ctx) {
 
 ---
 
-## Phase 2B: Icon Rendering from Image/SVG
+## Phase 2B: Icon Type Hierarchy (Glyph / SVG / Image)
 
-**Goal:** Replace the glyph-based `Icon` placeholder with image-based and SVG-based icon rendering.
+**Goal:** Grow the single glyph-only `Icon` into a small polymorphic family — an
+abstract `Icon` base with one concrete subclass per backing view: `GlyphIcon`,
+`SVGIcon`, `ImageIcon`. Widget code can hold `SharedHandle<Icon>` and not care
+which kind it is.
 
 ### Problem
 
-`Icon` currently renders the `token` string as a text glyph via UIView. Real icon systems use rasterized icon sheets (sprite atlases) or inline SVG. The glyph approach is a placeholder; production icons need:
-- Resolution-independent rendering (SVG preferred).
-- Named lookup from an icon registry so widget code uses semantic names (`"arrow-left"`, `"settings"`) rather than raw glyphs.
+`Icon` currently renders the `token` string as a text glyph via `UIView`. Real
+icon systems also need resolution-independent vector icons (SVG) and raster icon
+assets (PNG sprite sheets). The glyph path is only one of three, and each needs a
+*different backing view*: glyph and raster both live on `UIView`, but a vector
+icon must render through `SVGView`. `Widget` binds exactly one concrete backing
+view at construction (`explicit Widget(ViewPtr view)` — verified in
+`wtk/include/omegaWTK/UI/Widget.h:264`), so a single class that swaps its backing
+at runtime fights the base class.
 
-### Design
+### Design decision — hierarchy, not a tagged union
 
-```cpp
-struct IconSource {
-    enum class Kind : uint8_t { Glyph, Image, SVG };
-    Kind kind = Kind::Glyph;
-    OmegaCommon::String token {};                  // glyph: the codepoint string
-    SharedHandle<Media::BitmapImage> image = nullptr; // image: raster icon
-    OmegaCommon::FS::Path svgPath {};              // svg: path to SVG asset
-};
+An earlier sketch of this phase used a discriminated `IconSource { Kind; token;
+image; svgPath; }` union inside one `Icon` class that swapped backings by `kind`.
+That is **superseded**: because the backing view is fixed at construction, the
+union forced a class that owns a `UIView` it might never use (SVG) or an
+`SVGView` it might never use (glyph). A subclass-per-backing hierarchy matches the
+architecture instead — each concrete icon constructs exactly the view it needs and
+nothing else.
 
-struct IconProps {
-    IconSource source {};
-    float size = 16.f;
-    Composition::Color tintColor {0.f, 0.f, 0.f, 1.f};
-};
-```
-
-- **Glyph mode:** Current behavior (text element via UIView).
-- **Image mode:** Backed by `CanvasView`, draws the raster icon scaled to `size × size`.
-- **SVG mode:** Backed by `SVGView`, loads and renders the SVG asset at `size × size`.
-
-### Icon Registry (optional follow-up)
-
-A global `IconRegistry` maps semantic names to `IconSource` entries, loaded from an asset manifest at app startup:
+`Icon` becomes the **abstract base** (the polymorphic "any icon" type). It carries
+the two properties every icon shares — a square `size` and an optional `tint` —
+plus the shared lifecycle wiring, and declares a pure-virtual `rebuildContent()`.
+It does **not** construct a backing view; each subclass does that and forwards the
+`ViewPtr` to the protected `Widget(ViewPtr)` ctor.
 
 ```cpp
-class IconRegistry {
+// Abstract base. Not directly constructible.
+class OMEGAWTK_EXPORT Icon : public Widget {
+protected:
+    float                              size_ = 16.f;
+    // Unset tint => the subclass falls through to its backing view's
+    // default color (glyph: UA-sheet `icon` black; svg/image: native
+    // asset color). Matches the Label/Icon inline-default-strip idiom.
+    Core::Optional<Composition::Color> tint_ {};
+
+    explicit Icon(ViewPtr view, float size, Core::Optional<Composition::Color> tint);
+
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
+    // Base wires the shared lifecycle: onMount + resize both funnel through
+    // the subclass's rebuildContent(). Only the element-authoring differs.
+    void onMount() override;                       // calls rebuildContent()
+    void resize(Composition::Rect & newRect) override; // view->resize + rebuildContent + invalidate
+    virtual void rebuildContent() = 0;             // subclass authors its backing view
+
 public:
-    static IconRegistry & instance();
-    void registerIcon(const OmegaCommon::String & name, const IconSource & source);
-    Core::Optional<IconSource> resolve(const OmegaCommon::String & name) const;
+    // An icon's intrinsic size is size_ × size_ — shared measure for all kinds.
+    Composition::Rect measureSelf(/* ...same signature as Widget::measureSelf... */) override;
+
+    float size() const;
+    void  setSize(float size);
+    Core::Optional<Composition::Color> tint() const;
+    void  setTint(Core::Optional<Composition::Color> tint);
 };
 ```
 
-Widgets can then use `Icon(rect, IconProps{.source = IconRegistry::instance().resolve("settings").value()})`.
+Per-kind props stay flat (matching `LabelProps` / `RectangleProps`), each embedding
+the shared `size` + `tintColor`:
+
+```cpp
+struct OMEGAWTK_EXPORT GlyphIconProps {           // was IconProps
+    OmegaCommon::String                token {};  // codepoint / icon-font glyph
+    float                              size = 16.f;
+    Core::Optional<Composition::Color> tintColor {};
+};
+
+struct OMEGAWTK_EXPORT SVGIconProps {
+    // Exactly one source is used; svgString wins if both are set.
+    OmegaCommon::String                svgString {}; // inline SVG markup
+    OmegaCommon::FS::Path              svgPath {};   // path to an .svg asset
+    float                              size = 16.f;
+    Core::Optional<Composition::Color> tintColor {}; // deferred — see below
+};
+
+struct OMEGAWTK_EXPORT ImageIconProps {
+    SharedHandle<OmegaCommon::Img::BitmapImage> source = nullptr;
+    float                              size = 16.f;
+    Core::Optional<Composition::Color> tintColor {}; // deferred — see below
+};
+```
+
+| Subclass    | Backing view        | `rebuildContent()` authors                                                                 |
+|-------------|---------------------|--------------------------------------------------------------------------------------------|
+| `GlyphIcon` | `UIView` (`"icon"`) | Text element from `token`; `Style::textColor("icon", tint)` when tint set (today's behavior). |
+| `ImageIcon` | `UIView` (`"icon"`) | Image element (`spec.image` / `spec.imageRect`), contain-fit into the `size × size` box, reusing the `computeFitRect` helper from `Image`. |
+| `SVGIcon`   | `SVGView`           | `setSourceString` / `setSourceStream` from props; `SVGViewRenderOptions.scaleMode = Meet` so the vector fits the icon box aspect-correctly. |
+
+### Tint scope — glyph only in this phase
+
+Only `GlyphIcon` honors `tintColor` (it maps to the element's text color, which
+already works). `SVGIcon` and `ImageIcon` render at their native asset color;
+their `tintColor` is accepted but is a **documented no-op** in this phase.
+Recoloring a parsed SVG (per-path fill override in the `DisplayList`) and raster
+tint-multiply are real compositor work and are their own follow-ups — see the
+follow-up table. This keeps the phase honest and inside the small-feature ceiling.
+
+### Backward compatibility
+
+omega-codedb confirms **no code outside `Primatives.{h,cpp}` constructs the `Icon`
+widget or `IconProps`** — Button/Toggle etc. render glyphs as raw `iconToken`
+strings inside their own `UIView`, not via the Icon widget. So renaming the
+concrete glyph type to `GlyphIcon` and repurposing `Icon` as the abstract base is
+free: there are no call sites to migrate, and no compat alias is introduced.
+
+### Implementation phasing
+
+Each sub-phase is independently buildable and visually verifiable.
+
+- **2B.1 — Extract the abstract base + `GlyphIcon`.** Add the abstract `Icon`
+  base (shared `size_`/`tint_`, `onMount`/`resize`/`measureSelf`, pure-virtual
+  `rebuildContent`). Rename `IconProps` → `GlyphIconProps` and move today's
+  `Icon::rebuildContent` body verbatim into `GlyphIcon::rebuildContent`. No behavior
+  change for the glyph path. *Verify:* existing glyph rendering is pixel-identical
+  (BasicAppTest / any current Icon use) after the refactor.
+
+- **2B.2 — `ImageIcon`.** `UIView`-backed. `rebuildContent` adds one image element
+  contain-fit into the `size × size` box via the existing `computeFitRect(... Contain)`
+  from the `Image` implementation (extract it to file scope in `Primatives.cpp` if it
+  is still in the anonymous namespace). Tint deferred. *Verify:* a PNG icon renders
+  crisp and undistorted at a couple of sizes.
+
+- **2B.3 — `SVGIcon`.** `SVGView`-backed (`Widget(ViewPtr(new SVGView(rect, nullptr)))`).
+  `rebuildContent` loads `svgString` (else opens `svgPath` → `setSourceStream`), sets
+  `scaleMode = Meet`, and resizes the view to the icon rect. Tint deferred. *Verify:*
+  a vector icon renders sharp and scales aspect-correctly.
+
+- **2B.4 — `IconTest` + registry note.** New `wtk/tests/IconTest/main.cpp` renders a
+  glyph, an SVG, and a raster icon side by side (per AGENTS.md Visual Debugging — user
+  supplies the screenshot). Leave the registry as a documented follow-up (below).
+
+### Source files
+
+- `wtk/include/omegaWTK/Widgets/Primatives.h` — abstract `Icon` + three subclasses + three props structs.
+- `wtk/src/Widgets/Primatives.cpp` — base lifecycle + `GlyphIcon`; `ImageIcon`; `SVGIcon`. Split into `Primatives.Icon.cpp` only if the TU grows past the reading-chunk guidance.
+- `wtk/tests/IconTest/main.cpp` — visual test.
+
+### Follow-ups (out of scope for 2B)
+
+| Follow-up                         | Depends on                                                        |
+|-----------------------------------|-------------------------------------------------------------------|
+| SVG tint / recolor                | per-path fill override in the parsed `Composition::DisplayList`    |
+| Image tint-multiply               | a raster tint path in the compositor                              |
+| `IconRegistry` semantic-name lookup | becomes a **factory** returning `SharedHandle<Icon>` (a concrete subclass) for a name + rect, loaded from an asset manifest — not the old value-returning `resolve` (the `IconSource` union it returned no longer exists) |
 
 ### Verification
 
-- SVG icons render at correct size and tint.
-- Image icons render without distortion at various DPI scales.
-- Glyph fallback continues to work when no image/SVG source is provided.
+- Glyph, SVG, and raster icons all render at the requested `size`, side by side.
+- `GlyphIcon` tint applies; `SVGIcon`/`ImageIcon` render native color (tint no-op, as documented).
+- Resizing an icon re-fits its content (glyph rect, image contain-box, SVG Meet-scale).
+- Code holding `SharedHandle<Icon>` can paint any of the three kinds polymorphically.
 
 ---
 

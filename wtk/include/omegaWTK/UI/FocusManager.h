@@ -13,11 +13,13 @@
  One `FocusManager` is owned by each `WidgetTreeHost` (constructed in the
  host ctor, reached via `WidgetTreeHost::focusManager()`), mirroring the
  host's ownership of `OverlayHost`. The Native-API-Completion-Proposal
- §2.3a Focus "implementation order" table lands this as F2 — a skeleton
- of `setFocus` / `focusedView` / `lastFocusReason` / `clearFocus`. Tree
- traversal (`focusNext` / `focusPrevious`, F4), restoration points
- (`pushRestorationPoint` / `popAndRestore`, F5), and tab-order overrides
- (`setTabOrder`, F6) layer on in later phases.
+ §2.3a Focus "implementation order" table landed this as F2 — a skeleton
+ of `setFocus` / `focusedView` / `lastFocusReason` / `clearFocus`. F4
+ adds pre-order tree traversal (`focusNext` / `focusPrevious`, driven by
+ Tab / Shift-Tab interception in `WidgetTreeHost::dispatchInputEvent`). F5
+ adds the restoration stack (`pushRestorationPoint` / `popAndRestore`) for
+ Modal / Popover / ContextMenu dismiss. Tab-order overrides (`setTabOrder`,
+ F6) layer on in a later phase.
  */
 
 #include "omegaWTK/Core/Core.h"
@@ -94,7 +96,82 @@ namespace OmegaWTK {
         /// unchanged — it reflects why the cleared view had been focused.
         void clearFocus();
 
+        /// §2.3a F4: the root of the View subtree that `focusNext` /
+        /// `focusPrevious` traverse. Set by `WidgetTreeHost::setRoot`
+        /// alongside its own `root` assignment (the single point where the
+        /// host's root widget changes), so the traversal root never
+        /// desyncs from the tree the host is actually hosting. `nullptr`
+        /// when the host has no root — traversal then finds nothing and
+        /// the `focusNext` / `focusPrevious` early-out to `false`.
+        void setRoot(View * root);
+
+        /// §2.3a F4: advance keyboard focus to the next tab-focusable view
+        /// in the tree, selecting it with `FocusReason::Tab`.
+        ///
+        /// Traversal order is a pre-order walk of the View tree under the
+        /// root set by `setRoot` (parent, then children, then siblings) —
+        /// the DOM tab-order users intuit. Views whose `focusPolicy()`
+        /// lacks the `TabFocus` bit are skipped. Starting from the
+        /// currently focused view, focus moves to the next tab-focusable
+        /// view, wrapping past the end back to the first. When nothing is
+        /// focused (or the focused view is not in the traversal set, e.g.
+        /// an overlay), focus lands on the first tab-focusable view.
+        ///
+        /// @returns `false` (and changes nothing) when no tab-focusable
+        /// view exists under the root; `true` otherwise.
+        bool focusNext();
+
+        /// §2.3a F4: the `focusPrevious` counterpart — moves focus to the
+        /// previous tab-focusable view with `FocusReason::Backtab`,
+        /// wrapping past the start back to the last. When nothing is
+        /// focused, focus lands on the *last* tab-focusable view (so
+        /// Shift-Tab from a fresh window enters at the end, matching Qt /
+        /// browsers). Same `false`-when-empty contract as `focusNext`.
+        bool focusPrevious();
+
+        /// §2.3a F5: capture the currently focused view onto the
+        /// restoration stack.
+        ///
+        /// Called by a Modal / Popover / ContextMenu just before it takes
+        /// focus, so the view that had focus when the popup opened can be
+        /// handed it back on dismiss. The capture is the raw
+        /// `focusedView()` pointer (possibly `nullptr` when nothing is
+        /// focused — a valid "restore to no-focus" record). The stack is
+        /// LIFO so nested popups restore in reverse open order.
+        void pushRestorationPoint();
+
+        /// §2.3a F5: pop the top restoration point and re-focus the view
+        /// it captured, with `FocusReason::Popup` (a keyboard reason, so a
+        /// focus ring re-appears if the restored view was tab-focused
+        /// before the popup covered it).
+        ///
+        /// Tolerant of detached / destroyed captures: the saved pointer is
+        /// only ever *compared* against the live tree (never dereferenced)
+        /// to decide whether it is still present. A non-null capture that
+        /// is no longer in the tree — its owning subtree was torn down
+        /// while the popup was up — is skipped, leaving focus as the popup
+        /// left it. A `nullptr` capture restores the no-focus state
+        /// (`setFocus(nullptr, …)` clears focus). No-op on an empty stack.
+        ///
+        /// @note This tolerance covers the *saved* pointer only. The
+        /// current holder (`focusedView()`) is still governed by the F2
+        /// teardown contract: a caller that destroys the focused view must
+        /// `clearFocus()` first, or `setFocus`'s handling of the previous
+        /// holder dereferences freed memory. F5 does not lift that.
+        void popAndRestore();
+
     private:
+        /// §2.3a F4: root of the traversal subtree (non-owning; the widget
+        /// tree owns the views). Null until `setRoot` is called.
+        View * root_ = nullptr;
+        /// §2.3a F5: LIFO stack of captured focus holders (non-owning View
+        /// pointers, `nullptr` entries allowed). `pushRestorationPoint`
+        /// appends `currentlyFocused_`; `popAndRestore` consumes the back.
+        /// Entries are validated against the live tree at pop time rather
+        /// than eagerly pruned on view destruction, so a stale entry deep
+        /// in the stack is simply skipped when it surfaces.
+        OmegaCommon::Vector<View *> restorationStack_;
+
         /// The view that currently owns keyboard focus. Non-owning.
         View * currentlyFocused_ = nullptr;
         /// The reason the current (or most-recently) focused view was

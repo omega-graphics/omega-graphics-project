@@ -37,6 +37,9 @@ shape.
 
 ## 2. Phase L — Label / Icon strip
 
+**Status:** Implemented 2026-07-01. See §2.6 for the as-built notes and
+where reality diverged from the §2.1–2.2 sketch below.
+
 **Goal:** Move `Label`'s and `Icon`'s unconditional inline writes for
 default text-color cells onto the UA sheet. Inline writes survive
 only for cells the app explicitly authored.
@@ -104,7 +107,138 @@ of the phase.
 ~2 days incl. construction-site sweep + visual A/B on the text-
 heavy tests.
 
+### 2.6 As-built notes (2026-07-01)
+
+Three deltas from the §2.1–2.2 sketch surfaced once the resolver was
+read closely. All are recorded here because the plan is the source of
+truth.
+
+**1. The resolved-style table has NO separate alignment/wrapping
+cell.** §2.2 sketches `label.textAlignment` / `label.textWrapping` as
+distinct UA rules, but alignment + wrapping are fused into ONE
+`PropertyKey::TextLayout` cell holding a full
+`Composition::TextLayoutDescriptor` (setter `StyleRule::setTextLayout`).
+The UA sheet therefore authors one `setTextLayout({alignment,
+wrapping})` per tag plus a separate `setTextLineLimit`, not three
+independent cells. As built:
+- `label`: TextColor black, TextLayout `{LeftUpper, WrapByWord}`,
+  TextLineLimit 0. (Exactly the pre-strip `LabelProps` defaults →
+  behavior-preserving for a default `Label`.)
+- `icon`: TextColor black, TextLayout `{MiddleCenter, None}`,
+  TextLineLimit 0.
+
+`TextLayoutDescriptor` also carries its own `lineLimit` member, but the
+paint path (`UIView.Update.cpp` `ensureTextLayout`) reads the separate
+`TextLineLimit` cell and injects it into the descriptor, so the
+descriptor's own field is ignored — the `TextLineLimit` cell is
+authoritative.
+
+**2. The real work was making the inline text-write block presence-
+aware — the sketch undersold this.** §2.1 says "unset cells fall
+through to the UA sheet," but before this phase the inline write block
+in `UIView::resolveStyles` (`UIView.Style.cpp`) wrote
+`TextColor` / `TextLayout` / `TextLineLimit` UNCONDITIONALLY (filling
+defaults for unset fields) whenever ANY inline `Style` existed, which
+silently overwrote the sheet cascade that `StyleResolver::apply` had
+just written. Merely making the props `Optional` would NOT have made
+the sheet the source of truth — the block's default-black / default-
+`{LeftUpper,None}` / default-0 writes still won. The strip therefore
+required:
+- `ResolvedTextStyle` gaining per-field presence flags (`hasColor`,
+  `hasAlignment`, `hasWrapping`, `hasLineLimit`), set from the
+  `*Specificity >= 0` signals `resolveTextStyle` already computes.
+- The write block guarding each cell on its flag (same shape `TextFont`
+  and `resolveElementBrush` already used). Font presence stays signalled
+  by `font != nullptr`.
+- The fused `TextLayout` cell merges the authored sub-field(s) OVER the
+  sheet-resolved layout (via `resolvedOptional<TextLayoutDescriptor>`),
+  so authoring only alignment inline leaves wrapping to fall through
+  (and vice versa) instead of snapping the unauthored half to a default.
+
+This block is on the hot path for EVERY `UIView`, not just Label/Icon —
+verified behavior-preserving for `Button` (authors color + alignment +
+wrapping for its label/icon inline → all written, unchanged) and for
+app-authored views (unauthored text cells now fall to the sheet for
+`label`/`icon` tags, else to paint's black / `{LeftUpper,None}` / 0
+fallbacks — same values).
+
+**3. `icon` alignment is an INTENTIONAL behavior change (developer-
+approved).** §2.2 claimed `icon.textAlignment = MiddleCenter` was
+behavior-preserving because "the Icon-widget default falls out
+naturally." It does not: the Icon widget never authored alignment, so
+pre-strip it inherited the resolver's `LeftUpper` default. Button's icon
+sub-element authors `MiddleCenter` inline and is unaffected by the UA
+sheet either way, so the UA `icon` alignment governs ONLY the Icon
+widget. `MiddleCenter` (centering the glyph in its box) was chosen
+deliberately over strictly-preserving `LeftUpper`. No in-tree app
+instantiates the `Icon` widget directly, so there is no in-tree visual
+regression surface; a future Icon-widget user gets the centered default.
+
+**Other as-built facts:**
+- `followThemeForeground` (added after this plan was written) stays an
+  inline-authored color path: when set, `Label::rebuildContent` writes
+  the live OS foreground inline every rebuild (it is dynamic per theme
+  and cannot live in the static sheet); when unset + `textColor`
+  nullopt, the color falls through to the sheet.
+- **No construction-site edits needed.** `Core::Optional<T>` is
+  `std::optional<T>`, so the three `LabelProps` sites
+  (`BasicAppTest` ×2, `ImageRenderTest` ×1), which assign concrete
+  values via the named-local idiom, implicit-convert unchanged. There
+  are zero external `IconProps` sites.
+- Touched: `Widgets/Primatives.h` (props → `Core::Optional`),
+  `Widgets/Primatives.cpp` (`Label`/`Icon::rebuildContent` presence
+  guards), `UI/UIViewImpl.h` (`ResolvedTextStyle` flags),
+  `UI/UIView.Style.cpp` (presence surfacing + presence-aware write +
+  fused-layout merge), `UI/StyleSheet.cpp` (UA sheet expansion).
+
+**Verification status:** COMPLETE. `OmegaWTK` framework + `BasicAppTest`
++ `ImageRenderTest` build and link clean on the macOS Metal target, and
+the user-supplied visual A/B (§2.4) confirmed both apps render correctly
+(2026-07-01) — `BasicAppTest`'s theme-following title + wrapped
+description and `ImageRenderTest`'s white MiddleCenter title show no
+regression. Phase L is done end-to-end. (Per §4, this plan stays at the
+top level until Phase B also lands or is formally closed; §3/§6 leave
+Phase B optional.)
+
 ## 3. Phase B — Button cascade rewrite
+
+> **CLOSED — won't do (2026-07-01).** After reading the current Button
+> against the cascade infrastructure, Phase B was closed without
+> implementation. Reasoning (developer-approved):
+>
+> - **Approach (a) — UA sheet + `ThemeVars`/`Var` substitution (the §3.2
+>   recommendation) — does not fit the current Button.** `Button::rebuildStyle`
+>   computes its visuals as a per-instance function of (theme colors,
+>   per-instance overrides) with runtime color MATH: hover bg =
+>   `Color::lerp(controlBackground, accent, 0.10)`, pressed label =
+>   `contrastOn(accent)` (luminance pick), disabled = `withAlpha(0.4)`,
+>   plus per-instance `tintOverride` / `labelColorOverride` /
+>   `hoverTransitionDuration` / `pressTransitionDuration` / `cornerRadius`.
+>   D7.1's `Var` substitution does concrete-value substitution ONLY (no
+>   computation, chains not followed), and `ThemeVars` is process-wide on
+>   `AppInst` — it cannot hold per-instance values or compute blends. So
+>   (a) would require precomputing + seeding many new theme vars per theme
+>   AND still falling back to per-instance handling for overrides.
+> - **Approach (b) — per-Button sheet — fits but is plumbing churn.** The
+>   color math would stay byte-for-byte identical, just relocated from a
+>   compact `switch(state_)` into a sheet builder emitting one rule per
+>   pseudo-class. The `ButtonInteractionDelegate` stays regardless (its
+>   `pendingClick_` / drag-off-cancel / click-confirm logic is model, not
+>   visual). Net: churn + regression surface (transition timing, focus
+>   ring, disabled alpha, drag-off semantics) for ~zero functional gain.
+> - **The original motivation is already gone.** Phase B was born to fix
+>   Button transitions; that was fixed surgically in D7.5b (§6) — solid-
+>   color brush fills now interpolate and inline transitions fire, so
+>   `BasicAppTest`'s buttons already animate without touching Button.
+> - The current Button (`wtk/src/Widgets/UserInputs.Button.cpp`, ~370
+>   lines) is stable, self-contained, and builds/animates correctly. It is
+>   stable code, not decaying code — the refactor-cost/benefit does not
+>   justify the risk today.
+>
+> Revisit only if a concrete need appears (e.g. a design system that
+> genuinely requires app-swappable Button rule sets, or a FocusManager
+> landing that wants `:focused` to cascade). The sketch below is retained
+> as the record of the approach that was evaluated and set aside.
 
 > **Note (2026-06-26):** Phase B is **no longer the driver for fixing
 > Button transitions** — that bug was fixed surgically; see §6 below.
@@ -230,10 +364,18 @@ dependent cells" pattern is shared), but no code dependency.
 
 ## 5. Closing note
 
-When all of Phase L + Phase B land, this plan moves to
-`wtk/.plans/done/`. Until then, the UA sheet's seed rules are a
-safety net for app-authored views, not the source of truth for
-the in-tree widgets.
+**Plan complete (2026-07-01).** Phase L shipped end-to-end (§2.6,
+build + user visual A/B confirmed); Phase B was evaluated and CLOSED as
+won't-do (§3 header). Both tracks are resolved, so this doc moves to
+`wtk/.plans/done/`.
+
+For the `label` / `icon` element tags, the UA sheet's seed rules are now
+the source of truth for the in-tree `Label` / `Icon` widgets — they
+author only app-overridden cells inline, and unset cells fall through to
+the sheet. Button was left authoring its state-dependent visuals inline
+(a deliberate decision, not a gap): its per-instance, theme-computed
+color table does not fit the process-wide UA-sheet / `ThemeVars` model,
+and D7.5b already made its inline transitions animate.
 
 ## 6. Inline-`Style` transition firing + solid-color brush lerp (D7.5b)
 

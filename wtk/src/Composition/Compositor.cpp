@@ -292,12 +292,23 @@ void Compositor::drainWindowSurfaces(){
             }
             continue;
         }
-        renderCompositeFrame(entry.first, frame);
+        // Native-Theme-Application-Plan Tier 2 (2026-07-01): the per-frame
+        // clear value is the owning window's resolved surface color (set
+        // by the Style phase). A null owner (tests / pre-back-edge) falls
+        // back to opaque white — the old code cleared such frames to
+        // transparent black, which on an RGBA swapchain reads as pitch
+        // black; white is the benign default.
+        Composition::Color surfaceColor {1.f, 1.f, 1.f, 1.f};
+        if(appWindow != nullptr){
+            surfaceColor = appWindow->surfaceColor();
+        }
+        renderCompositeFrame(entry.first, frame, surfaceColor);
     }
 }
 
 void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget> & target,
-                                      const SharedHandle<CompositeFrame> & frame){
+                                      const SharedHandle<CompositeFrame> & frame,
+                                      const Composition::Color & surfaceColor){
     if(OmegaGTE::isDebugLayerEnabled()){
         std::cerr << "[WTK_RP] renderCompositeFrame: target=" << (target == nullptr ? "null" : "ok")
                   << " frame=" << (frame == nullptr ? "null" : "ok")
@@ -347,24 +358,15 @@ void Compositor::renderCompositeFrame(const SharedHandle<CompositionRenderTarget
         std::cerr << "[WTK_RP] renderCompositeFrame: reached dispatch, slices=" << frame->slices.size() << std::endl;
     }
 
-    float clearR = 0.f;
-    float clearG = 0.f;
-    float clearB = 0.f;
-    float clearA = 0.f;
-    for(auto & slice : frame->slices){
-        if(slice.background.a > 0.f ||
-           slice.background.r > 0.f ||
-           slice.background.g > 0.f ||
-           slice.background.b > 0.f){
-            clearR = slice.background.r;
-            clearG = slice.background.g;
-            clearB = slice.background.b;
-            clearA = slice.background.a;
-            break;
-        }
-    }
-
-    targetContext->beginFrame(clearR,clearG,clearB,clearA);
+    // Native-Theme-Application-Plan Tier 2 (2026-07-01): the clear value
+    // is the window's resolved surface color, passed in by the caller
+    // from AppWindow::surfaceColor(). This replaces the old "first slice
+    // with any non-zero background channel wins" heuristic — which was
+    // dead (nothing ever populated slice.background, so it always cleared
+    // to transparent black → pitch black on RGBA swapchains) and latently
+    // fragile (a translucent non-root slice could have hijacked the
+    // whole-window clear).
+    targetContext->beginFrame(surfaceColor.r,surfaceColor.g,surfaceColor.b,surfaceColor.a);
     targetContext->resetElementState();
 
     for(auto & slice : frame->slices){

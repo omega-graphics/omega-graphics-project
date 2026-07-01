@@ -759,9 +759,33 @@ namespace OmegaWTK {
                 // root-broadcast. When nothing holds focus the event is
                 // dropped — a no-focus state means no consumer, which is
                 // the real condition the broadcast was masking (the root
-                // widget is not itself a keyboard target). F4 layers
-                // Tab / Shift-Tab interception on top of this routing;
-                // F3 ships pure routing only.
+                // widget is not itself a keyboard target).
+                //
+                // F4 (2026-07-01): Tab / Shift-Tab traversal interception.
+                // A bare Tab moves focus forward, Shift+Tab backward, and
+                // the event is consumed — it never reaches the focused
+                // view's delegate. Doing this *before* delegate dispatch
+                // is deliberate (the plan's step 1/2 ordering): a focused
+                // TextInput must not be able to swallow Tab and trap
+                // traversal. Both KeyDown and the matching KeyUp are
+                // swallowed so a widget never sees a lone Tab release; the
+                // actual focus move happens once, on the KeyDown.
+                if(event->type == NativeEvent::KeyDown){
+                    auto *kp = static_cast<Native::KeyDownParams *>(event->params);
+                    if(kp != nullptr && kp->code == Native::KeyCode::Tab){
+                        if(kp->modifiers.shift){
+                            focusManager_->focusPrevious();
+                        } else {
+                            focusManager_->focusNext();
+                        }
+                        return;
+                    }
+                } else { // KeyUp
+                    auto *kp = static_cast<Native::KeyUpParams *>(event->params);
+                    if(kp != nullptr && kp->code == Native::KeyCode::Tab){
+                        return;
+                    }
+                }
                 if(View * focused = focusManager_->focusedView()){
                     focused->emit(event);
                 }
@@ -869,6 +893,12 @@ namespace OmegaWTK {
             return;
         }
         root = widget;
+        // §2.3a F4: keep the FocusManager's traversal root in lockstep
+        // with the host's root widget — this is the single point where
+        // `root` changes, so syncing here means `focusNext`/`focusPrevious`
+        // never walk a stale tree. A null root (widget cleared) leaves the
+        // manager with nothing to traverse.
+        focusManager_->setRoot(widget != nullptr ? &widget->viewRef() : nullptr);
     };
 
     void WidgetTreeHost::aggregateMinSize(float & outWidthDp, float & outHeightDp) const {

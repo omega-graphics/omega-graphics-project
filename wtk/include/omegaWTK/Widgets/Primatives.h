@@ -129,12 +129,19 @@ public:
 struct OMEGAWTK_EXPORT LabelProps {
     OmegaCommon::UString text {};
     SharedHandle<Composition::Font> font = nullptr;
-    Composition::Color textColor {0.f, 0.f, 0.f, 1.f};
-    Composition::TextLayoutDescriptor::Alignment alignment =
-        Composition::TextLayoutDescriptor::LeftUpper;
-    Composition::TextLayoutDescriptor::Wrapping wrapping =
-        Composition::TextLayoutDescriptor::WrapByWord;
-    unsigned lineLimit = 0;
+    // Widget-Inline-Default-Strip-Plan Phase L (2026-07-01): the visual
+    // text cells are optional. An unset cell is authored by neither the
+    // widget nor the app, so `rebuildContent` leaves it out of the inline
+    // `Style` and the value falls through to the user-agent stylesheet
+    // (`BuildUserAgentStyleSheet` seeds `label` = black / LeftUpper +
+    // WrapByWord / unlimited). A set cell is an explicit app override that
+    // wins the cascade over the UA sheet. Pre-L these were concrete
+    // defaults that the widget wrote inline on every rebuild, so the UA
+    // sheet's `label` rules were shadowed and purely informational.
+    Core::Optional<Composition::Color> textColor {};
+    Core::Optional<Composition::TextLayoutDescriptor::Alignment> alignment {};
+    Core::Optional<Composition::TextLayoutDescriptor::Wrapping> wrapping {};
+    Core::Optional<unsigned> lineLimit {};
     /// When true, the label ignores `textColor` and paints in the OS
     /// theme's foreground color, updating on every OS light/dark flip
     /// (via onThemeSet). Opt-in so existing labels that set an explicit
@@ -166,8 +173,13 @@ public:
 /// Phase 2B will add image-based and SVG-based icon rendering.
 struct OMEGAWTK_EXPORT IconProps {
     OmegaCommon::String token {};
+    // `size` stays concrete: it feeds the element's layout rect, not a
+    // style cell, so it has no UA-sheet fallthrough analog.
     float size = 16.f;
-    Composition::Color tintColor {0.f, 0.f, 0.f, 1.f};
+    // Widget-Inline-Default-Strip-Plan Phase L (2026-07-01): unset tint
+    // falls through to the UA sheet's `icon` text-color default (black).
+    // See LabelProps for the full rationale.
+    Core::Optional<Composition::Color> tintColor {};
 };
 
 class OMEGAWTK_EXPORT Icon : public Widget {

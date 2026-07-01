@@ -28,6 +28,14 @@ struct AppWindow::Impl {
     SharedHandle<Menu> menu;
     SharedHandle<Composition::CompositorSurface> windowSurface;
 
+    // Native-Theme-Application-Plan Tier 2 (2026-07-01): resolved window
+    // surface color (the per-frame clear value). Seeded white; the Style
+    // phase overwrites it every frame it runs via
+    // AppInst::resolveWindowSurfaceColor. White (not 0,0,0,0) so a frame
+    // that somehow composites before the first Style pass clears to a
+    // benign light surface rather than the old pitch black.
+    Composition::Color surfaceColor_ {1.f, 1.f, 1.f, 1.f};
+
     /// §2.14 Pass 1: per-window `Native::VisualTree`. Built in
     /// `setRootWidget` via `Native::make_native_visual_tree` and
     /// handed to the compositor via `Compositor::attachVisualTree`.

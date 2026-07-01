@@ -190,6 +190,18 @@ class AppWindowDelegate;
         /// `Style | Layout | Paint`.
         void applyCascadeChange();
 
+        /// Native-Theme-Application-Plan Tier 2 (2026-07-01): the resolved
+        /// per-window "surface" color that backs the cleared content area.
+        /// Written by the Style phase each frame via
+        /// `AppInst::resolveWindowSurfaceColor(*this)` (FrameBuilder hook),
+        /// read by the compositor at frame open as the render-pass clear
+        /// value. Replaces the old "first non-zero slice background wins"
+        /// heuristic — the clear is now an explicit, theme-driven value on
+        /// every backend (previously pitch black on Windows/Vulkan; themed
+        /// only by accident-of-architecture on macOS).
+        void setSurfaceColor(Composition::Color color);
+        Composition::Color surfaceColor() const;
+
         /// Construct an AppWindow on the manager's default screen
         /// (see `AppWindowManager::defaultScreen`, which defaults to
         /// `Native::primaryScreen()`). `rect` is interpreted as

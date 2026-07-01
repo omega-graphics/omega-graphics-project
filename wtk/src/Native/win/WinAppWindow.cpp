@@ -27,6 +27,35 @@ namespace {
             RegisterWindowMessageA("OmegaWTK.FrameBuilder.FlushFrame");
         return id;
     }
+
+    // Native-Theme-Application-Plan Tier 2 / §5.2 (2026-07-01): drive the
+    // HWND's non-client area (title bar / frame) from the resolved OS
+    // appearance bit. A bare HWND stays light-mode regardless of the
+    // system setting until the app opts in via DWMWA_USE_IMMERSIVE_DARK_MODE;
+    // macOS/GTK do this for free, so this is what brings Windows to chrome
+    // parity. Called on window creation and on every theme-observer fire.
+    //
+    // The attribute index moved: 20 on 2004+/Windows 11, 19 on 1809–1903.
+    // Try the modern index, fall back to the legacy one; both no-op (a
+    // failed HRESULT we ignore) on builds < 17763. Own constants so we
+    // don't depend on the SDK's dwmapi.h version. WRITE-ONLY on this
+    // macOS host — needs a Windows build check.
+    void applyImmersiveDarkMode(HWND hwnd){
+        if(hwnd == nullptr){
+            return;
+        }
+        auto * app = OmegaWTK::AppInst::inst();
+        const bool dark = (app != nullptr) &&
+            (app->nativeTheme().appearance == OmegaWTK::Native::ThemeAppearance::Dark);
+        BOOL useDark = dark ? TRUE : FALSE;
+        constexpr DWORD kImmersiveDarkModeNew = 20; // 2004+/Win11
+        constexpr DWORD kImmersiveDarkModeOld = 19; // 1809–1903
+        if(FAILED(DwmSetWindowAttribute(hwnd, kImmersiveDarkModeNew,
+                                        &useDark, sizeof(useDark)))){
+            DwmSetWindowAttribute(hwnd, kImmersiveDarkModeOld,
+                                  &useDark, sizeof(useDark));
+        }
+    }
 }
 
     WinAppWindow::WinAppWindow(Composition::Rect & rect,NativeEventEmitter *emitter,const NativeScreenDesc *screen):
@@ -309,6 +338,10 @@ namespace {
                         if(auto *app = OmegaWTK::AppInst::inst(); app != nullptr){
                             app->onThemeSet(desc);
                         }
+                        // Tier 2 / §5.2: re-theme the non-client area to the
+                        // new appearance (onThemeSet above refreshed the
+                        // cache that applyImmersiveDarkMode reads).
+                        applyImmersiveDarkMode(hwnd);
                     }
                     break;
                 };
@@ -409,6 +442,11 @@ namespace {
         };
         ShowWindow(hwnd,SW_SHOWDEFAULT);
         UpdateWindow(hwnd);
+        // Native-Theme-Application-Plan Tier 2 / §5.2: theme the non-client
+        // area (title bar) to the OS appearance on creation. Without this a
+        // dark-mode desktop shows a bright caption over the now-dark
+        // content clear — a worse seam than the old all-black content.
+        applyImmersiveDarkMode(hwnd);
         // NativeWindow-Ready-Signal-Plan step 5: after ShowWindow +
         // UpdateWindow, the HWND is visible and its swap chain is
         // presentable. The wndproc's WM_SHOWWINDOW(TRUE)/WM_PAINT

@@ -247,6 +247,15 @@ ResolvedTextStyle resolveTextStyle(const StylePtr & style,
         }
     }
 
+    // Widget-Inline-Default-Strip-Plan Phase L (2026-07-01): surface which
+    // cells the inline `Style` actually authored (specificity >= 0 means a
+    // matching entry set the field). `resolveStyles` writes only the
+    // authored cells so the rest fall through to the UA-sheet cascade.
+    resolved.hasColor = colorSpecificity >= 0;
+    resolved.hasAlignment = alignmentSpecificity >= 0;
+    resolved.hasWrapping = wrappingSpecificity >= 0;
+    resolved.hasLineLimit = lineLimitSpecificity >= 0;
+
     return resolved;
 }
 
@@ -515,19 +524,52 @@ void UIView::resolveStyles(){
             const UIElementTag textStyleTag = spec.textStyleTag.value_or(spec.tag);
             const auto resolvedText = UIViewInternal::resolveTextStyle(
                 impl_->currentStyle,impl_->tag,textStyleTag);
+            // Widget-Inline-Default-Strip-Plan Phase L (2026-07-01): write
+            // each text cell ONLY when the inline `Style` authored it (the
+            // per-field `has*` flags). Pre-L this block wrote TextColor /
+            // TextLayout / TextLineLimit unconditionally with defaults for
+            // unset fields, which blindly overwrote the UA-sheet cascade
+            // that `StyleResolver::apply` wrote above. Guarding on
+            // authorship lets an unset cell fall through to the sheet —
+            // the same presence-guard shape `TextFont` (null check) and
+            // `resolveElementBrush` (null return) already use.
             if(resolvedText.font != nullptr){
                 impl_->styleTable_.set<SharedHandle<Composition::Font>>(
                     elementNodeId, PropertyKey::TextFont, resolvedText.font);
             }
-            impl_->styleTable_.set<Composition::Color>(
-                elementNodeId, PropertyKey::TextColor, resolvedText.color);
-            pushInlineTransition(elementNodeId, PropertyKey::TextColor,
-                                 resolvedText.colorTransition);
-            impl_->styleTable_.set<Composition::TextLayoutDescriptor>(
-                elementNodeId, PropertyKey::TextLayout, resolvedText.layout);
-            impl_->styleTable_.set<std::uint32_t>(
-                elementNodeId, PropertyKey::TextLineLimit,
-                static_cast<std::uint32_t>(resolvedText.lineLimit));
+            if(resolvedText.hasColor){
+                impl_->styleTable_.set<Composition::Color>(
+                    elementNodeId, PropertyKey::TextColor, resolvedText.color);
+                pushInlineTransition(elementNodeId, PropertyKey::TextColor,
+                                     resolvedText.colorTransition);
+            }
+            // Alignment + wrapping share one fused `TextLayout` cell. Merge
+            // the authored sub-field(s) OVER whatever the sheet cascade
+            // already resolved into the cell (falling back to the paint-
+            // time default when the sheet is silent), so authoring only one
+            // sub-field inline leaves the other to fall through instead of
+            // snapping it to a default.
+            if(resolvedText.hasAlignment || resolvedText.hasWrapping){
+                Composition::TextLayoutDescriptor merged =
+                    impl_->resolvedOptional<Composition::TextLayoutDescriptor>(
+                        elementNodeId, PropertyKey::TextLayout)
+                    .value_or(Composition::TextLayoutDescriptor{
+                        Composition::TextLayoutDescriptor::LeftUpper,
+                        Composition::TextLayoutDescriptor::None});
+                if(resolvedText.hasAlignment){
+                    merged.alignment = resolvedText.layout.alignment;
+                }
+                if(resolvedText.hasWrapping){
+                    merged.wrapping = resolvedText.layout.wrapping;
+                }
+                impl_->styleTable_.set<Composition::TextLayoutDescriptor>(
+                    elementNodeId, PropertyKey::TextLayout, merged);
+            }
+            if(resolvedText.hasLineLimit){
+                impl_->styleTable_.set<std::uint32_t>(
+                    elementNodeId, PropertyKey::TextLineLimit,
+                    static_cast<std::uint32_t>(resolvedText.lineLimit));
+            }
         }
     }
 

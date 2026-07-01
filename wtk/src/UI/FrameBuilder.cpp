@@ -16,6 +16,7 @@
 #include "omegaWTK/Composition/CompositorClient.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
 #include "omegaWTK/UI/AppWindow.h"
+#include "omegaWTK/UI/App.h"   // Tier 2: AppInst::resolveWindowSurfaceColor
 #include "omegaWTK/UI/View.h"
 #include "omegaWTK/UI/LayoutManager.h"   // Phase 4.7.2: Layout pass invokes node.layoutManager()->measure/arrange.
 
@@ -533,6 +534,15 @@ void FrameBuilder::buildFrame(View & root){
     if((rootMask & View::Style) != 0){
         ScopedPhase stylePhase(this, FramePhase::Style);
         styleSubtree(root);
+        // Native-Theme-Application-Plan Tier 2 (2026-07-01): with the
+        // root's styles freshly resolved, recompute the window surface
+        // (clear) color per the §3 priority chain and stash it on the
+        // window for the compositor to read at frame open. Gated on the
+        // Style bit — a theme change forces it dirty via
+        // applyCascadeChange, so the clear tracks OS light/dark.
+        if(auto * app = AppInst::inst(); app != nullptr){
+            window_.setSurfaceColor(app->resolveWindowSurfaceColor(window_));
+        }
     }
 
     if((rootMask & View::Layout) != 0){

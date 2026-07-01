@@ -155,6 +155,20 @@ struct ResolvedTextStyle {
     // entry, surfaced so `resolveStyles` can fire an inline-authored
     // text-color transition. Only the color cell animates today.
     ResolvedEffectTransition colorTransition {};
+    // Widget-Inline-Default-Strip-Plan Phase L (2026-07-01): per-field
+    // presence flags. `resolveTextStyle` fills the `color`/`layout`/
+    // `lineLimit` fields with defaults when the inline `Style` did not
+    // author them; these flags let `resolveStyles` tell "authored" apart
+    // from "defaulted" so an unauthored cell is left for the UA-sheet
+    // cascade instead of being overwritten by the default. (Font presence
+    // is already signalled by `font != nullptr`.) Alignment and wrapping
+    // are tracked separately even though they share one fused `TextLayout`
+    // cell, so a Style that authors only one sub-field merges over the
+    // sheet-resolved layout rather than clobbering the other sub-field.
+    bool hasColor = false;
+    bool hasAlignment = false;
+    bool hasWrapping = false;
+    bool hasLineLimit = false;
 };
 
 struct ResolvedEffectStyle {

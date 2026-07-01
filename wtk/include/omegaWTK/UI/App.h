@@ -14,6 +14,7 @@ namespace OmegaWTK {
     };
 
 class AppWindowManager;
+class AppWindow;
 class ThemeVars;
 
 class OMEGAWTK_EXPORT AppInst {
@@ -122,6 +123,17 @@ public:
     /// fans the change out to the `AppWindowManager`, whose observer
     /// chain re-runs `onThemeSet` down every window's widget tree.
     void onThemeSet(Native::ThemeDesc & desc);
+
+    /// Native-Theme-Application-Plan Tier 2 (2026-07-01): resolve the
+    /// window "surface" color (the per-frame clear) per the plan's §3
+    /// priority chain. This tier implements rows 3 (the cached OS theme
+    /// `background`) and 4 (a hardcoded appearance fallback, reached only
+    /// if the theme is somehow unset). Row 1 (an explicit background on
+    /// the root `UIView`) is already realized by the root's
+    /// background-rect paint, and row 2 (a custom `Theme` override) lands
+    /// in Tier 3. Called by the FrameBuilder Style-phase hook, which
+    /// writes the result into `AppWindow::setSurfaceColor`.
+    Composition::Color resolveWindowSurfaceColor(const AppWindow & win) const;
 
     ~AppInst();
 };

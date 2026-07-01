@@ -109,9 +109,12 @@ namespace OmegaWTK::Composition {
         void drainWindowSurfaces();
 
         /// Render a composite frame consumed from a window surface into
-        /// the target's root visual.
+        /// the target's root visual. `surfaceColor` is the resolved
+        /// per-window clear value (Native-Theme-Application-Plan Tier 2),
+        /// sourced from the owning AppWindow by the caller.
         void renderCompositeFrame(const SharedHandle<CompositionRenderTarget> & target,
-                                  const SharedHandle<CompositeFrame> & frame);
+                                  const SharedHandle<CompositeFrame> & frame,
+                                  const Composition::Color & surfaceColor);
 
         friend class Layer;
         friend class LayerTree;

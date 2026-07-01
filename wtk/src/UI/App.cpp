@@ -176,6 +176,35 @@ void AppInst::onThemeSet(Native::ThemeDesc & desc) {
     }
 }
 
+Composition::Color AppInst::resolveWindowSurfaceColor(const AppWindow & win) const {
+    // §3 priority chain (this tier: rows 3 + 4).
+    //   Row 1 (root UIView inline background) — already realized by the
+    //     root view's own background-rect paint, so it needs no clear-
+    //     color plumbing here.
+    //   Row 2 (custom Theme override) — Tier 3.
+    //   Row 3 (default): the cached OS theme's surface color.
+    //   Row 4 (fallback): a hardcoded appearance-appropriate color,
+    //     reached only if the theme is somehow unset.
+    // `win` is unused for now (rows 3/4 are app-scoped); it is on the
+    // signature for the per-window appearance override (Open Q1) and the
+    // row-1/row-2 refinements that read window-local state.
+    (void)win;
+
+    // nativeTheme_ always holds a valid ThemeDesc — a real OS query, or
+    // the in-class defaults when headless — so row 3 is the effective
+    // default and row 4 below is a belt-and-suspenders guard for a future
+    // path that could leave the surface color unset.
+    const Composition::Color themeBackground = nativeTheme_.colors.background;
+    if(themeBackground.a > 0.f){
+        return themeBackground; // row 3
+    }
+    // Row 4: hardcoded fallback keyed on the appearance bit.
+    if(nativeTheme_.appearance == Native::ThemeAppearance::Dark){
+        return Composition::Color::create8Bit(0x1E, 0x1E, 0x1E, 255);
+    }
+    return Composition::Color{1.f, 1.f, 1.f, 1.f};
+}
+
 AppInst::~AppInst(){
     // Primary teardown site. By the time the destructor runs, every
     // user-held AppWindow SharedHandle has dropped (the caller's

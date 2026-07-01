@@ -309,16 +309,30 @@ void Label::rebuildContent() {
     if (props_.font) {
         ss->textFont("label", props_.font);
     }
-    // followThemeForeground labels paint in the OS foreground and adapt on
-    // theme flips; all others use their fixed authored color.
-    const Composition::Color effectiveColor = props_.followThemeForeground
-        ? theme_.colors.foreground
-        : props_.textColor;
-    ss->textColor("label", effectiveColor);
-    ss->textAlignment("label", props_.alignment);
-    ss->textWrapping("label", props_.wrapping);
-    if (props_.lineLimit > 0) {
-        ss->textLineLimit("label", props_.lineLimit);
+    // Widget-Inline-Default-Strip-Plan Phase L (2026-07-01): author each
+    // text cell inline ONLY when the app set it (or, for color, when the
+    // theme-following override is active). Cells left unset here fall
+    // through to the user-agent stylesheet's `label` defaults during the
+    // cascade — the UA sheet is now the source of truth for a default
+    // Label, not a shadowed safety net.
+    //
+    // Color has three cases: `followThemeForeground` wins (dynamic per OS
+    // theme, so it cannot live in the static sheet and must be written
+    // inline every rebuild); an explicitly authored `textColor` is honored;
+    // otherwise the cell is left to the UA sheet (black).
+    if (props_.followThemeForeground) {
+        ss->textColor("label", theme_.colors.foreground);
+    } else if (props_.textColor) {
+        ss->textColor("label", *props_.textColor);
+    }
+    if (props_.alignment) {
+        ss->textAlignment("label", *props_.alignment);
+    }
+    if (props_.wrapping) {
+        ss->textWrapping("label", *props_.wrapping);
+    }
+    if (props_.lineLimit && *props_.lineLimit > 0) {
+        ss->textLineLimit("label", *props_.lineLimit);
     }
     viewAs<UIView>().setStyle(ss);
 }
@@ -373,7 +387,14 @@ void Icon::rebuildContent() {
     lv2.element(spec);
 
     auto ss = Style::Create();
-    ss->textColor("icon", props_.tintColor);
+    // Widget-Inline-Default-Strip-Plan Phase L (2026-07-01): author the
+    // tint inline only when the app set it; an unset tint falls through to
+    // the UA sheet's `icon` text-color default (black). The Icon widget
+    // never authored alignment/wrapping/lineLimit, so those already flow
+    // from the UA sheet's `icon` rule (MiddleCenter / None / unlimited).
+    if (props_.tintColor) {
+        ss->textColor("icon", *props_.tintColor);
+    }
     viewAs<UIView>().setStyle(ss);
 }
 

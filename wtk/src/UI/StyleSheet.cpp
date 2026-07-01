@@ -180,23 +180,48 @@ SharedHandle<StyleSheet> StyleSheet::Builder::build() const {
 SharedHandle<StyleSheet> BuildUserAgentStyleSheet(){
     StyleSheet::Builder builder;
 
-    // Conventional `label` element default: black text.
+    // Conventional `label` element defaults. Widget-Inline-Default-Strip-
+    // Plan Phase L (2026-07-01): the `Label` widget no longer authors these
+    // cells inline unless the app overrides them, so the UA sheet is now
+    // the source of truth for a default label — black text, top-left
+    // alignment, word wrapping, unlimited lines. These values match the
+    // pre-strip `LabelProps` defaults exactly, so a default `Label` renders
+    // identically. (`TextLayout` carries alignment + wrapping in one cell;
+    // the separate `TextLineLimit` cell is authoritative for the line cap —
+    // paint reads it and injects it into the descriptor.)
     {
         StyleRule rule;
         rule.selector.tag = "label";
         rule.setTextColor(Composition::Color::create8Bit(
             Composition::Color::Black8));
+        Composition::TextLayoutDescriptor layout {};
+        layout.alignment = Composition::TextLayoutDescriptor::LeftUpper;
+        layout.wrapping  = Composition::TextLayoutDescriptor::WrapByWord;
+        rule.setTextLayout(layout);
+        rule.setTextLineLimit(0u);
         builder.addRule(std::move(rule));
     }
 
-    // Conventional `icon` element default: black tint. The Icon widget
-    // and Button's icon sub-element both render the token glyph via the
-    // text path, so `TextColor` is the right cell.
+    // Conventional `icon` element defaults. The Icon widget and Button's
+    // icon sub-element both render the token glyph via the text path, so
+    // `TextColor` is the right cell. Phase L (2026-07-01): black tint,
+    // MiddleCenter alignment (the glyph centers in its icon box), no
+    // wrapping, unlimited lines. NOTE: this alignment is an INTENTIONAL
+    // change from the Icon widget's pre-strip default of LeftUpper — the
+    // widget never authored alignment, so it inherited the resolver's
+    // LeftUpper default; centering is the correct icon default and was
+    // chosen deliberately (see the plan doc). Button's icon sub-element
+    // authors MiddleCenter inline and is unaffected either way.
     {
         StyleRule rule;
         rule.selector.tag = "icon";
         rule.setTextColor(Composition::Color::create8Bit(
             Composition::Color::Black8));
+        Composition::TextLayoutDescriptor layout {};
+        layout.alignment = Composition::TextLayoutDescriptor::MiddleCenter;
+        layout.wrapping  = Composition::TextLayoutDescriptor::None;
+        rule.setTextLayout(layout);
+        rule.setTextLineLimit(0u);
         builder.addRule(std::move(rule));
     }
 

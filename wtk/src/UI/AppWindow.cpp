@@ -295,6 +295,14 @@ void AppWindow::applyCascadeChange(){
     requestFrame();
 }
 
+void AppWindow::setSurfaceColor(Composition::Color color){
+    impl_->surfaceColor_ = color;
+}
+
+Composition::Color AppWindow::surfaceColor() const {
+    return impl_->surfaceColor_;
+}
+
 void AppWindow::addStyleSheet(SharedHandle<StyleSheets::StyleSheet> sheet){
     if(sheet == nullptr){
         return;
