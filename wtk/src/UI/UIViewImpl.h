@@ -166,6 +166,15 @@ struct ResolvedEffectStyle {
     ResolvedEffectTransition directionalBlurTransition {};
 };
 
+// Element-scoped stroke outline authored via Style::elementBorder. Both
+// fields are optional so a Style that sets only one is a partial override;
+// paint draws a border only when both a color and a positive width
+// resolve.
+struct ResolvedElementBorder {
+    Core::Optional<Composition::Color> color {};
+    Core::Optional<float> width {};
+};
+
 // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
 // `ComputedStyle` aggregate deleted. Pre-D5 it was the per-element
 // resolved-style triple `{brush, effects, text}` stored in
@@ -210,6 +219,9 @@ ResolvedTextStyle resolveTextStyle(const StylePtr & style,
 ResolvedEffectStyle resolveElementEffectStyle(const StylePtr & style,
                                               const UIViewTag & viewTag,
                                               const UIElementTag & elementTag);
+ResolvedElementBorder resolveElementBorder(const StylePtr & style,
+                                           const UIViewTag & viewTag,
+                                           const UIElementTag & elementTag);
 bool containsTag(const OmegaCommon::Vector<UIElementTag> & tags,const UIElementTag & tag);
 void addUniqueTag(OmegaCommon::Vector<UIElementTag> & tags,const UIElementTag & tag);
 StyleScope collectStyleScope(const StylePtr & style,const UIViewTag & viewTag);

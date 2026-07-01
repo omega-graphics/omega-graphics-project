@@ -1,4 +1,5 @@
 #include "omegaWTK/Core/Core.h"
+#include "omegaWTK/Native/NativeTheme.h"
 #include "omega-common/assets.h"
 #include "omega-common/fs.h"
 
@@ -31,6 +32,15 @@ class OMEGAWTK_EXPORT AppInst {
     // a null theme makes every `Var` resolve to "unbound" and the
     // resolver skips the cell (the inline-`Style` path still runs).
     SharedHandle<ThemeVars> themeVars_;
+    // Native-Theme-Application-Plan Tier 1 (2026-06-30): the most
+    // recently observed OS theme. Seeded from `Native::queryCurrentTheme()`
+    // at construction and refreshed by the per-platform theme observer
+    // (Cocoa KVO on `effectiveAppearance`, Win32 `WM_SETTINGCHANGE`/
+    // `WM_THEMECHANGED`, GTK `notify::gtk-*-theme` on `GtkSettings`),
+    // which routes through `onThemeSet(...)`. Tier 1 is observational
+    // only — nothing reads this into the render clear yet; that is
+    // Tier 2's `resolveWindowSurfaceColor`.
+    Native::ThemeDesc nativeTheme_;
     // Guards against a future caller invoking doShutdown() more than
     // once (the destructor is currently the sole call site, but the
     // idempotency keeps the contract safe to expand).
@@ -96,6 +106,22 @@ public:
     /// subsequent `Var{name}` lookups resolve as unbound and the
     /// resolver skips those cells, matching CSS `var()` fallthrough.
     void setThemeVars(SharedHandle<ThemeVars> theme);
+
+    /// Native-Theme-Application-Plan Tier 1 (2026-06-30): the most
+    /// recently observed OS theme (`ThemeAppearance` + `Colors` +
+    /// `Typography`). Seeded at construction and updated on every OS
+    /// appearance / theme change by the platform observer via
+    /// `onThemeSet(...)`. Returns the cached value — no OS query is
+    /// issued per call.
+    const Native::ThemeDesc & nativeTheme() const;
+
+    /// Native-Theme-Application-Plan Tier 1 (2026-06-30): observer
+    /// trampoline. Invoked by the per-platform OS theme observer with
+    /// a freshly-queried `ThemeDesc` when the system light/dark setting
+    /// (or theme) changes. Caches the desc (see `nativeTheme()`) and
+    /// fans the change out to the `AppWindowManager`, whose observer
+    /// chain re-runs `onThemeSet` down every window's widget tree.
+    void onThemeSet(Native::ThemeDesc & desc);
 
     ~AppInst();
 };

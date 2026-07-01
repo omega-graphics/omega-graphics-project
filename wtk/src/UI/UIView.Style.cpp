@@ -3,6 +3,10 @@
 #include "omegaWTK/UI/StyleResolver.h"
 #include "FrameBuilder.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+
 namespace OmegaWTK {
 
 namespace UIViewInternal {
@@ -23,6 +27,14 @@ ResolvedViewStyle resolveViewStyle(const StylePtr & style,const UIViewTag & view
 
     for(const auto & entry : style->entries){
         if(!matchesTag(entry.viewTag,viewTag)){
+            continue;
+        }
+        // Element-scoped entries (elementTag set) are resolved by
+        // resolveElementBorder / resolveElementBrush against the element
+        // node, not here. Skip them so an element border authored via
+        // Style::elementBorder does not also leak into the (unread)
+        // view-level border fields.
+        if(!entry.elementTag.empty()){
             continue;
         }
         switch(entry.kind){
@@ -100,6 +112,32 @@ SharedHandle<Composition::Brush> resolveElementBrush(const StylePtr & style,
         }
     }
     return brush;
+}
+
+ResolvedElementBorder resolveElementBorder(const StylePtr & style,
+                                           const UIViewTag & viewTag,
+                                           const UIElementTag & elementTag){
+    // Last-wins per field, mirroring resolveElementBrush. Only entries
+    // that name this element (elementTag) are considered; an entry may
+    // additionally constrain the view (viewTag), else it applies to any.
+    ResolvedElementBorder resolved {};
+    if(style == nullptr){
+        return resolved;
+    }
+    for(const auto & entry : style->entries){
+        if(entry.elementTag.empty() || !matchesTag(entry.elementTag,elementTag)){
+            continue;
+        }
+        if(!entry.viewTag.empty() && !matchesTag(entry.viewTag,viewTag)){
+            continue;
+        }
+        if(entry.kind == Style::Entry::Kind::BorderColor && entry.color){
+            resolved.color = entry.color;
+        } else if(entry.kind == Style::Entry::Kind::BorderWidth && entry.floatValue){
+            resolved.width = entry.floatValue;
+        }
+    }
+    return resolved;
 }
 
 ResolvedTextStyle resolveTextStyle(const StylePtr & style,
@@ -428,6 +466,27 @@ void UIView::resolveStyles(){
         if(resolvedEffects.dropShadow){
             impl_->styleTable_.set<Composition::LayerEffect::DropShadowParams>(
                 elementNodeId, PropertyKey::DropShadow, *resolvedEffects.dropShadow);
+        }
+
+        // Element-scoped stroke outline (Style::elementBorder). Writes
+        // BorderColor / BorderWidth cells under the element's OWN NodeId;
+        // UIView's paint walk reads them back and hands a
+        // Composition::Border to the shape DrawOp. Unlike the view-level
+        // border fields (resolveViewStyle), these are actually painted.
+        const auto resolvedBorder = UIViewInternal::resolveElementBorder(
+            impl_->currentStyle,impl_->tag,spec.tag);
+        if(resolvedBorder.color){
+            impl_->styleTable_.set<Composition::Color>(
+                elementNodeId, PropertyKey::BorderColor, *resolvedBorder.color);
+        }
+        if(resolvedBorder.width){
+            // BorderWidth cells are integer pixels (the StyleValue variant
+            // + Composition::Border::width are both unsigned); round the
+            // authored float to the nearest pixel.
+            const auto widthPx = static_cast<std::uint32_t>(
+                std::lround(std::max(0.f, *resolvedBorder.width)));
+            impl_->styleTable_.set<std::uint32_t>(
+                elementNodeId, PropertyKey::BorderWidth, widthPx);
         }
         // gaussianBlur / directionalBlur (and the three Transition
         // blocks) resolve but no Paint reader pulls them in the

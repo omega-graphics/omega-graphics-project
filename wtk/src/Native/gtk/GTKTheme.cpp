@@ -16,10 +16,18 @@ namespace OmegaWTK::Native {
 
 namespace {
 
-// GTK 4 removed GtkWidgetPath / synthetic GtkStyleContext color extraction
-// (and gdk_screen_get_default). Per the §2.15 scope decision the GTK 4 theme
-// query keeps only the dark/light appearance + typography; theme color
-// extraction is GTK-3-only and the ThemeDesc color defaults stand under GTK 4.
+// GTK 4 removed the synthetic GtkStyleContext construction path
+// (GtkWidgetPath / gtk_style_context_new + set_path) and gdk_screen_get_default.
+// Native-Theme-Application-Plan Tier 1 (2026-06-30) restores best-effort
+// color extraction anyway: a *real* widget's style context still resolves
+// the active theme's named colors against the display's CSS provider, so
+// `populateColors` spins up a throwaway GtkWindow purely as a style-context
+// host and reads the standard Adwaita named colors off it. The APIs used
+// (`gtk_widget_get_style_context`, `gtk_style_context_lookup_color`) are
+// deprecated in GTK 4.10 but still present — the calls are wrapped in
+// deprecation-ignore guards. Every lookup is optional; a miss leaves the
+// appearance-derived defaults from `applyAppearanceDefaults` in place.
+// A proper CSS-parse pass replaces this heuristic later (plan §5.3.1).
 
 /// `gtk-application-prefer-dark-theme` is the canonical GTK signal for
 /// dark mode. Many distributions also encode it via the theme name's
@@ -100,6 +108,81 @@ static void populateTypography(ThemeDesc &desc){
     pango_font_description_free(pfd);
 }
 
+/// Seed a coherent palette from the appearance bit BEFORE the best-effort
+/// color lookup runs. The ThemeDesc in-class initializers are a light
+/// palette (white background, black text); on a dark desktop that would
+/// leave a white surface if the named-color lookup misses. Mirror the
+/// Win32 backend's dark values so a lookup failure still yields a
+/// sensible dark surface, matching cross-platform expectations.
+static void applyAppearanceDefaults(ThemeDesc &desc){
+    if(desc.appearance != ThemeAppearance::Dark){
+        return; // in-class light defaults already stand.
+    }
+    desc.colors.background = Composition::Color::create8Bit(0x1E, 0x1E, 0x1E, 255);
+    desc.colors.foreground = Composition::Color::create8Bit(0xFF, 0xFF, 0xFF, 255);
+    desc.colors.controlBackground = Composition::Color::create8Bit(0x2D, 0x2D, 0x2D, 255);
+    desc.colors.controlForeground = Composition::Color::create8Bit(0xFF, 0xFF, 0xFF, 255);
+    desc.colors.separator = Composition::Color::create8Bit(0x40, 0x40, 0x40, 255);
+    desc.colors.selection = Composition::Color::create8Bit(0x00, 0x56, 0xC0, 255);
+    desc.colors.accent = Composition::Color::create8Bit(0x00, 0x78, 0xD4, 255);
+}
+
+/// Resolve one named theme color off a style context into `out`. Returns
+/// false (leaving `out` untouched) when the name is undefined for the
+/// active theme. `gtk_style_context_lookup_color` is deprecated in GTK
+/// 4.10 but still functional; guarded so it does not trip -Werror builds.
+static bool lookupNamedColor(GtkStyleContext *ctx, const char *name, Composition::Color &out){
+    if(ctx == nullptr){
+        return false;
+    }
+    GdkRGBA rgba{};
+    gboolean found = FALSE;
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    found = gtk_style_context_lookup_color(ctx, name, &rgba);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+    if(!found){
+        return false;
+    }
+    out = Composition::Color{
+        static_cast<float>(rgba.red),
+        static_cast<float>(rgba.green),
+        static_cast<float>(rgba.blue),
+        static_cast<float>(rgba.alpha)
+    };
+    return true;
+}
+
+/// Best-effort GTK 4 color extraction (see the file-top note). Reads the
+/// standard Adwaita named colors off a throwaway GtkWindow's style
+/// context. Any miss leaves the appearance-derived default in place.
+static void populateColors(ThemeDesc &desc){
+    GtkWidget *probe = gtk_window_new();
+    if(probe == nullptr){
+        return;
+    }
+    GtkStyleContext *ctx = nullptr;
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    ctx = gtk_widget_get_style_context(probe);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+
+    lookupNamedColor(ctx, "theme_bg_color", desc.colors.background);
+    lookupNamedColor(ctx, "theme_fg_color", desc.colors.foreground);
+    // `theme_base_color` / `theme_text_color` are the entry/list content
+    // surface — the closest classic-Adwaita analog to control colors.
+    lookupNamedColor(ctx, "theme_base_color", desc.colors.controlBackground);
+    lookupNamedColor(ctx, "theme_text_color", desc.colors.controlForeground);
+    lookupNamedColor(ctx, "borders", desc.colors.separator);
+    // Accent: libadwaita apps expose `accent_bg_color`; classic GTK
+    // themes expose `theme_selected_bg_color`. Try the modern name
+    // first. Selection tracks the same color.
+    if(lookupNamedColor(ctx, "accent_bg_color", desc.colors.accent) ||
+       lookupNamedColor(ctx, "theme_selected_bg_color", desc.colors.accent)){
+        desc.colors.selection = desc.colors.accent;
+    }
+
+    gtk_window_destroy(GTK_WINDOW(probe));
+}
+
 }
 
 ThemeDesc queryCurrentTheme() {
@@ -114,6 +197,10 @@ ThemeDesc queryCurrentTheme() {
 
     desc.appearance = queryAppearance();
 
+    // Seed appearance-appropriate defaults, then override per-field with
+    // whatever the live theme's named colors resolve to (best-effort).
+    applyAppearanceDefaults(desc);
+    populateColors(desc);
 
     populateTypography(desc);
 

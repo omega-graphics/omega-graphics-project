@@ -671,11 +671,27 @@ namespace OmegaWTK {
                 continue;
             }
             View &childView = child->viewRef();
+            // The viewport clip: a point outside `childView`'s own rect
+            // never descends into its subtree. For a ScrollView this rect
+            // is the viewport, so content scrolled past the viewport edges
+            // is unreachable — events stop reporting for children that have
+            // moved outside the scroll rect.
             if(childView.containsPoint(point)){
                 Composition::Point2D localPoint {
                     point.x - childView.getRect().pos.x,
                     point.y - childView.getRect().pos.y
                 };
+                // ScrollableContainer-Implementation-Plan §6.2 / S4: fold the
+                // child view's `contentOffset()` into the descent, mirroring
+                // the FrameBuilder paint walker's per-descent fold. A
+                // ScrollView returns `-scrollOffset` here, so subtracting it
+                // shifts the hit point in the same direction the content
+                // moved — the child hit rects track the scrolled content
+                // instead of landing on their un-scrolled positions. For a
+                // non-scrolling view `contentOffset()` is {0,0} (no effect).
+                const auto co = childView.contentOffset();
+                localPoint.x -= co.x;
+                localPoint.y -= co.y;
                 View *hit = hitTestWidget(child.get(),localPoint);
                 if(hit != nullptr){
                     return hit;

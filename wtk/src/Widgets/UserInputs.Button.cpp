@@ -20,6 +20,7 @@ namespace {
 constexpr float kHPad   = 12.f;
 constexpr float kIconGap = 6.f;
 constexpr float kFocusRingWidth = 2.f;
+constexpr float kBorderWidth = 1.f;   // resting outline (see rebuildStyle)
 constexpr float kDisabledAlpha  = 0.4f;
 constexpr float kHoverAccentMix = 0.10f;   // % of accent blended into bg on hover
 
@@ -259,15 +260,26 @@ void Button::rebuildStyle(bool animate) {
                      /*transition=*/useTransition,
                      /*duration=*/duration);
 
+    // Resting outline on the "bg" element. Always draw a subtle 1px
+    // border so the button stays visible when its fill matches the window
+    // surface — notably light mode, where controlBackground ≈
+    // windowBackground and a fill-only button vanishes into the page. The
+    // Focused state promotes it to the thicker accent focus ring.
+    // elementBorder() (element-scoped) is the border path Paint actually
+    // consumes; the old view-scoped border()/borderColor()/borderWidth()
+    // resolve into ResolvedViewStyle but are never painted.
     if(drawFocusRing) {
-        ss->border("bg", true);
-        ss->borderColor("bg", accent);
-        ss->borderWidth("bg", kFocusRingWidth);
+        ss->elementBorder("bg", accent, kFocusRingWidth, useTransition, duration);
     } else {
-        // Explicitly disable any prior focus ring (e.g. when transitioning
-        // out of Focused). Tier B's StyleResolver clears any unset cell;
-        // this stays defensive in case a Style merge keeps stale entries.
-        ss->border("bg", false);
+        // The OS separator color is the semantic "hairline border" hue
+        // and tracks the theme (light-gray in Light, dark-gray in Dark),
+        // so the outline reads correctly in both appearances. Dim it in
+        // the disabled state to match the faded fill + label.
+        Composition::Color outline = cols.separator;
+        if(state_ == InteractiveState::Disabled) {
+            outline = outline.withAlpha(kDisabledAlpha);
+        }
+        ss->elementBorder("bg", outline, kBorderWidth, useTransition, duration);
     }
 
     if(!props_.iconToken.empty()) {

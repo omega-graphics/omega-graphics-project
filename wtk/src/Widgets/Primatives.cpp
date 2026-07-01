@@ -248,7 +248,21 @@ void Separator::setProps(const SeparatorProps & props) {
 
 Label::Label(Composition::Rect rect, const LabelProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "label"))),
-      props_(props) {}
+      props_(props) {
+    // Seed the theme so a followThemeForeground label picks the current
+    // Light/Dark foreground on its first paint — onThemeSet only fires on
+    // a later *change*. Mirrors Button's construction-time seed.
+    theme_ = Native::queryCurrentTheme();
+}
+
+void Label::onThemeSet(Native::ThemeDesc & desc) {
+    theme_ = desc;
+    // Only theme-following labels care about the OS color; a label with a
+    // fixed textColor is left untouched (and avoids a needless rebuild).
+    if(props_.followThemeForeground){
+        rebuildContent();
+    }
+}
 
 void Label::onMount() {
     rebuildContent();
@@ -295,7 +309,12 @@ void Label::rebuildContent() {
     if (props_.font) {
         ss->textFont("label", props_.font);
     }
-    ss->textColor("label", props_.textColor);
+    // followThemeForeground labels paint in the OS foreground and adapt on
+    // theme flips; all others use their fixed authored color.
+    const Composition::Color effectiveColor = props_.followThemeForeground
+        ? theme_.colors.foreground
+        : props_.textColor;
+    ss->textColor("label", effectiveColor);
     ss->textAlignment("label", props_.alignment);
     ss->textWrapping("label", props_.wrapping);
     if (props_.lineLimit > 0) {

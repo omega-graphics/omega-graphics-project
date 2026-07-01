@@ -132,6 +132,22 @@ struct OMEGAWTK_EXPORT Style {
                               bool transition = false,
                               float duration = 0.f);
 
+    /// Element-scoped stroke outline. Unlike border()/borderColor()/
+    /// borderWidth() above — which are keyed on the *view* tag and are
+    /// resolved into ResolvedViewStyle but never consumed by Paint — this
+    /// authors a border on a specific *element* (a Shape). It resolves
+    /// into per-element BorderColor/BorderWidth cells that UIView's paint
+    /// walk reads and hands to the Rect/RoundedRect/Ellipse DrawOp as a
+    /// Composition::Border, which the compositor backend strokes. A
+    /// width <= 0 draws no outline. The transition/duration args ride the
+    /// same cells; per-property border animation is not yet wired, so the
+    /// outline currently snaps to its new color/width on re-resolve.
+    StylePtr elementBorder(UIElementTag elementTag,
+                                const Composition::Color & color,
+                                float width,
+                                bool transition = false,
+                                float duration = 0.f);
+
     StylePtr dropShadow(UIViewTag tag,
                              const Composition::LayerEffect::DropShadowParams & params,
                              bool transition = false,

@@ -2,6 +2,9 @@
 #include "HWNDFactory.h"
 #include "WinMenu.h"
 
+#include "omegaWTK/UI/App.h"
+#include "omegaWTK/Native/NativeTheme.h"
+
 #include <cmath>
 #include <dwmapi.h>
 #include <memory>
@@ -282,6 +285,31 @@ namespace {
                     // since the swap chain may end up on a different
                     // adapter / require recreation.
                     handleReRealize();
+                    break;
+                };
+                case WM_THEMECHANGED :
+                case WM_SETTINGCHANGE : {
+                    // Native-Theme-Application-Plan Tier 1 (2026-06-30):
+                    // OS light/dark flip. The dark-mode toggle arrives as
+                    // WM_SETTINGCHANGE with lParam pointing at the wide
+                    // string L"ImmersiveColorSet"; a classic-theme swap
+                    // arrives as WM_THEMECHANGED (no lParam string). Only
+                    // re-query on those two so unrelated WM_SETTINGCHANGE
+                    // broadcasts (fonts, mouse, etc.) don't churn the
+                    // theme. queryCurrentTheme() reads the current
+                    // AppsUseLightTheme registry value; AppInst caches it
+                    // and fans it out to the widget trees.
+                    bool immersive = (uMsg == WM_THEMECHANGED);
+                    if(uMsg == WM_SETTINGCHANGE && lParam != 0){
+                        immersive = (lstrcmpiW(reinterpret_cast<const wchar_t *>(lParam),
+                                               L"ImmersiveColorSet") == 0);
+                    }
+                    if(immersive){
+                        OmegaWTK::Native::ThemeDesc desc = OmegaWTK::Native::queryCurrentTheme();
+                        if(auto *app = OmegaWTK::AppInst::inst(); app != nullptr){
+                            app->onThemeSet(desc);
+                        }
+                    }
                     break;
                 };
                 case WM_DPICHANGED : {

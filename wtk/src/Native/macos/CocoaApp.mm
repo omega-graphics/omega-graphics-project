@@ -85,8 +85,15 @@ public:
 
 @implementation CocoaThemeObserver
 -(void)onThemeChange:(NSAppearance *)appearance {
-    OmegaWTK::Native::ThemeDesc desc;
-    // OmegaWTK::AppInst::inst()->onThemeSet(desc);
+    // Native-Theme-Application-Plan Tier 1 (2026-06-30): NSApp's
+    // effectiveAppearance flipped (KVO). Re-query the OS theme and hand
+    // it to the AppInst trampoline, which caches it and fans the change
+    // out through the AppWindowManager's observer chain.
+    (void)appearance;
+    OmegaWTK::Native::ThemeDesc desc = OmegaWTK::Native::queryCurrentTheme();
+    if(auto *app = OmegaWTK::AppInst::inst(); app != nullptr){
+        app->onThemeSet(desc);
+    }
 };
 
 - (void)observeValueForKeyPath:(NSString *)keyPath

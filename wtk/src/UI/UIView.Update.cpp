@@ -354,11 +354,33 @@ void UIView::paint(Composition::PaintContext & pc){
                 }
             }
 
+            // Element-scoped stroke outline (Style::elementBorder →
+            // BorderColor/BorderWidth cells written in resolveStyles).
+            // Build a Composition::Border once and hand it to whichever
+            // shape DrawOp we emit; the backend strokes it. Only color
+            // brushes are supported for the stroke today (matches the
+            // backend's Brush::Type::Color check). std::nullopt = no
+            // outline, the pre-existing behavior.
+            Core::Optional<Composition::Border> elementBorder;
+            {
+                auto borderColor = impl_->resolvedOptional<Composition::Color>(
+                    elementNodeId, PropertyKey::BorderColor);
+                auto borderWidth = impl_->resolvedOptional<std::uint32_t>(
+                    elementNodeId, PropertyKey::BorderWidth);
+                if(borderColor && borderWidth && *borderWidth > 0){
+                    Core::SharedPtr<Composition::Brush> strokeBrush =
+                        Composition::ColorBrush(*borderColor);
+                    elementBorder = Composition::Border{
+                        strokeBrush,
+                        static_cast<unsigned>(*borderWidth)};
+                }
+            }
+
             switch(shapeToDraw.type){
                 case Shape::Type::Rect: {
                     auto rect = shapeToDraw.rect;
                     rect = LayoutManager::clampRectToParent(rect,localBounds,layoutClamp);
-                    displayList.append(Composition::DrawOp{withOffset(rect), brush});
+                    displayList.append(Composition::DrawOp{withOffset(rect), brush, elementBorder});
                     break;
                 }
                 case Shape::Type::RoundedRect: {
@@ -372,7 +394,7 @@ void UIView::paint(Composition::PaintContext & pc){
                     rect.rad_y = std::min(rect.rad_y,rect.h * 0.5f);
                     rect.pos.x += paintOffset.x;
                     rect.pos.y += paintOffset.y;
-                    displayList.append(Composition::DrawOp{rect, brush});
+                    displayList.append(Composition::DrawOp{rect, brush, elementBorder});
                     break;
                 }
                 case Shape::Type::Ellipse: {
@@ -392,7 +414,7 @@ void UIView::paint(Composition::PaintContext & pc){
                         ellipseRect.w * 0.5f,
                         ellipseRect.h * 0.5f
                     };
-                    displayList.append(Composition::DrawOp{ellipse, brush});
+                    displayList.append(Composition::DrawOp{ellipse, brush, elementBorder});
                     break;
                 }
                 case Shape::Type::Path: {

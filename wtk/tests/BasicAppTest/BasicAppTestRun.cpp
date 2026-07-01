@@ -118,7 +118,10 @@ int RunBasicAppTest(AppInst *app) {
     // Title
     LabelProps titleProps;
     titleProps.text = U"BasicAppTest — Widget Integration";
-    titleProps.textColor = Composition::Color::create8Bit(Composition::Color::White8);
+    // Follow the OS theme foreground so the title stays legible in both
+    // Light and Dark and transitions with the appearance flip (was a
+    // hardcoded white that vanished on a light background).
+    titleProps.followThemeForeground = true;
     titleProps.alignment = Composition::TextLayoutDescriptor::MiddleCenter;
     titleProps.wrapping = Composition::TextLayoutDescriptor::None;
     auto titleLabel = make<Label>(
@@ -205,7 +208,9 @@ int RunBasicAppTest(AppInst *app) {
                      U"Ellipse), text (Label), layout (VStack/HStack), the Button widget "
                      U"with hover transitions, and the app menu system "
                      U"(File > Open, Help > About).";
-    descProps.textColor = Composition::Color::create8Bit(0xCCCCCC);
+    // Follow the OS theme foreground (was a fixed light gray that only
+    // happened to read on both backgrounds).
+    descProps.followThemeForeground = true;
     descProps.alignment = Composition::TextLayoutDescriptor::LeftUpper;
     descProps.wrapping = Composition::TextLayoutDescriptor::WrapByWord;
     auto descLabel = make<Label>(

@@ -248,6 +248,32 @@ StylePtr Style::borderWidth(UIViewTag tag,
     return copy();
 }
 
+StylePtr Style::elementBorder(UIElementTag elementTag,
+                                        const Composition::Color &color,
+                                        float width,
+                                        bool transition,
+                                        float duration){
+    // Two element-scoped entries — color + width — resolved together by
+    // resolveElementBorder() into per-element cells. elementTag (not
+    // viewTag) is set, which is how resolveViewStyle knows to skip these.
+    Entry colorEntry {};
+    colorEntry.kind = Entry::Kind::BorderColor;
+    colorEntry.elementTag = elementTag;
+    colorEntry.color = color;
+    colorEntry.transition = transition;
+    colorEntry.duration = duration;
+    entries.push_back(colorEntry);
+
+    Entry widthEntry {};
+    widthEntry.kind = Entry::Kind::BorderWidth;
+    widthEntry.elementTag = elementTag;
+    widthEntry.floatValue = width;
+    widthEntry.transition = transition;
+    widthEntry.duration = duration;
+    entries.push_back(widthEntry);
+    return copy();
+}
+
 StylePtr Style::dropShadow(UIViewTag tag,
                                      const Composition::LayerEffect::DropShadowParams & params,
                                      bool transition,

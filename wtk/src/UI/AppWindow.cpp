@@ -151,6 +151,17 @@ void AppWindow::onThemeSet(Native::ThemeDesc &desc){
     if(impl_->widgetTreeHost != nullptr){
         impl_->widgetTreeHost->root->onThemeSetRecurse(desc);
     }
+    // Native-Theme-Application-Plan Tier 1 (2026-06-30): onThemeSetRecurse
+    // only dispatches the per-widget onThemeSet hook — widgets refresh
+    // their cached ThemeDesc and rebuild their inline styles (e.g. Button
+    // re-derives its Light/Dark control colors via setStyle), but the
+    // recurse marks nothing dirty in the view tree and schedules no
+    // frame. Without this the restyle is invisible until the next
+    // unrelated invalidation. Reuse the proven cascade-change path
+    // (same one setThemeVars / addStyleSheet use): it marks every view
+    // Style|Layout|Paint dirty so the FrameBuilder re-resolves them and
+    // requests a coalesced frame so the window actually repaints.
+    applyCascadeChange();
 }
 
 void AppWindow::requestFrame(){
@@ -566,7 +577,12 @@ void AppWindowManager::setRootWindow(AppWindowPtr handle){
 };
 
 void AppWindowManager::onThemeSet(Native::ThemeDesc & desc){
-    rootWindow->onThemeSet(desc);
+    // An OS theme flip can arrive before setRootWindow (early startup) or
+    // during teardown after closeAllWindows() has reset rootWindow. Guard
+    // rather than deref — the observer must survive both edges.
+    if(rootWindow != nullptr){
+        rootWindow->onThemeSet(desc);
+    }
 }
 
 AppWindowPtr AppWindowManager::getRootWindow(){

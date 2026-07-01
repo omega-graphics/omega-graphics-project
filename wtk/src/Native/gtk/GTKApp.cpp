@@ -1,4 +1,6 @@
 #include "omegaWTK/Native/NativeApp.h"
+#include "omegaWTK/Native/NativeTheme.h"
+#include "omegaWTK/UI/App.h"
 #include "GTKApp.h"
 
 #include <gtk/gtk.h>
@@ -15,6 +17,7 @@ namespace OmegaWTK::Native::GTK {
         void on_app_shutdown(GApplication *app,gpointer userData);
         void on_app_open(GApplication *app,GFile **files,gint nFiles,
                           const gchar *hint,gpointer userData);
+        void on_theme_notify(GObject *settings,GParamSpec *pspec,gpointer userData);
     }
 
     GtkApplication *get_active_application() {
@@ -125,8 +128,39 @@ namespace OmegaWTK::Native::GTK {
             (void)app;
             auto *self = static_cast<GTKApp *>(userData);
             if(self == nullptr) return;
+            // Native-Theme-Application-Plan Tier 1 (2026-06-30): connect
+            // the OS theme observer here rather than in the GTKApp ctor.
+            // GtkSettings has no default until GTK is initialised and a
+            // display is open, which happens during g_application_run's
+            // startup — by `activate` it exists. Connect once (GtkSettings
+            // is a per-display singleton, so a second activate would
+            // otherwise stack duplicate handlers).
+            static bool themeObserverConnected = false;
+            if(!themeObserverConnected){
+                if(GtkSettings *settings = gtk_settings_get_default(); settings != nullptr){
+                    g_signal_connect(settings,"notify::gtk-application-prefer-dark-theme",
+                                     G_CALLBACK(on_theme_notify),nullptr);
+                    g_signal_connect(settings,"notify::gtk-theme-name",
+                                     G_CALLBACK(on_theme_notify),nullptr);
+                    themeObserverConnected = true;
+                }
+            }
             if(auto *delegate = self->appLevelDelegate(); delegate != nullptr){
                 delegate->onAppReady();
+            }
+        }
+
+        void on_theme_notify(GObject *settings,GParamSpec *pspec,gpointer userData){
+            // Native-Theme-Application-Plan Tier 1 (2026-06-30): the OS
+            // dark/light preference or theme name changed. Re-query the
+            // theme and hand it to the AppInst trampoline, which caches
+            // it and fans the change out to every window's widget tree.
+            (void)settings;
+            (void)pspec;
+            (void)userData;
+            OmegaWTK::Native::ThemeDesc desc = OmegaWTK::Native::queryCurrentTheme();
+            if(auto *app = OmegaWTK::AppInst::inst(); app != nullptr){
+                app->onThemeSet(desc);
             }
         }
 

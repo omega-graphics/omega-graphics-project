@@ -23,7 +23,7 @@ static Composition::Color ns_color_to_color(NSColor *nsColor) {
 }
 
 ThemeDesc queryCurrentTheme() {
-    ThemeDesc desc{};
+    __block ThemeDesc desc{};
 
     NSAppearance *appearance = [NSApp effectiveAppearance];
     if (appearance != nil) {
@@ -38,20 +38,31 @@ ThemeDesc queryCurrentTheme() {
         }
     }
 
-    NSColor *controlBg = NSColor.controlBackgroundColor;
-    NSColor *controlFg = NSColor.controlTextColor;
-    NSColor *windowBg = NSColor.windowBackgroundColor;
-    NSColor *label = NSColor.labelColor;
-    NSColor *separator = NSColor.separatorColor;
-    NSColor *selection = NSColor.selectedContentBackgroundColor;
-    NSColor *accent = NSColor.controlAccentColor;
-    desc.colors.controlBackground = ns_color_to_color(controlBg);
-    desc.colors.controlForeground = ns_color_to_color(controlFg);
-    desc.colors.background = ns_color_to_color(windowBg);
-    desc.colors.foreground = ns_color_to_color(label);
-    desc.colors.separator = ns_color_to_color(separator);
-    desc.colors.selection = ns_color_to_color(selection);
-    desc.colors.accent = ns_color_to_color(accent);
+    // Dynamic system NSColors resolve their concrete RGBA against
+    // NSAppearance.currentDrawingAppearance, which is only set during a
+    // view's draw loop. queryCurrentTheme() runs outside one — at
+    // construction and, critically, inside the effectiveAppearance KVO
+    // callback — where currentDrawingAppearance can still be the PREVIOUS
+    // appearance, so the colors would lag the just-changed appearance by
+    // one flip. Pin the resolution to the effective appearance so the
+    // colors match the appearance bit computed above on the very first
+    // change. `performAsCurrentDrawingAppearance:` is macOS 11+; fall
+    // back to a direct read on older systems.
+    void (^resolveColors)(void) = ^{
+        desc.colors.controlBackground = ns_color_to_color(NSColor.controlBackgroundColor);
+        desc.colors.controlForeground = ns_color_to_color(NSColor.controlTextColor);
+        desc.colors.background = ns_color_to_color(NSColor.windowBackgroundColor);
+        desc.colors.foreground = ns_color_to_color(NSColor.labelColor);
+        desc.colors.separator = ns_color_to_color(NSColor.separatorColor);
+        desc.colors.selection = ns_color_to_color(NSColor.selectedContentBackgroundColor);
+        desc.colors.accent = ns_color_to_color(NSColor.controlAccentColor);
+    };
+    if (appearance != nil &&
+        [appearance respondsToSelector:@selector(performAsCurrentDrawingAppearance:)]) {
+        [appearance performAsCurrentDrawingAppearance:resolveColors];
+    } else {
+        resolveColors();
+    }
 
     NSFont *systemFont = [NSFont systemFontOfSize:13];
     if (systemFont != nil && systemFont.displayName != nil) {

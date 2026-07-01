@@ -11,6 +11,7 @@
 #include "omega-common/unicode.h"
 
 #include "omegaWTK/Native/NativeApp.h"
+#include "omegaWTK/Native/NativeTheme.h"
 
 #include <stdexcept>
 #include <string>
@@ -37,6 +38,12 @@ AppInst *AppInst::inst() {
 
 AppInst::AppInst(void *data):ptr(Native::make_native_app(data)),windowManager(std::make_unique<AppWindowManager>()){
     instance = this;
+    // Native-Theme-Application-Plan Tier 1 (2026-06-30): seed the cached
+    // OS theme now that the native app exists (Cocoa needs a live NSApp;
+    // GTK returns ThemeDesc defaults until a display opens, then the
+    // observer refreshes it). The platform observer keeps this current
+    // on every subsequent light/dark flip via onThemeSet(...).
+    nativeTheme_ = Native::queryCurrentTheme();
     gte = OmegaGTE::InitWithDefaultDevice();
 
     // Open the app's default.pak from beside the executable (Resources/
@@ -150,9 +157,24 @@ void AppInst::doShutdown() {
     OMEGAWTK_DEBUG("Application Shutdown")
 };
 
-// void AppInst::onThemeSet(Native::ThemeDesc &desc) {
+// Native-Theme-Application-Plan Tier 1 (2026-06-30): OS theme cache +
+// observer trampoline. The platform theme observer calls onThemeSet(...)
+// with a freshly-queried ThemeDesc; we cache it and fan it out through
+// the AppWindowManager's observer chain (which walks each window's
+// widget tree via onThemeSetRecurse). Tier 1 is observational: this
+// refreshes the cache and lets widgets react (e.g. Button re-queries
+// its Light/Dark colors) — it does not yet drive the per-frame clear
+// color (that is Tier 2's resolveWindowSurfaceColor).
+const Native::ThemeDesc & AppInst::nativeTheme() const {
+    return nativeTheme_;
+}
 
-// }
+void AppInst::onThemeSet(Native::ThemeDesc & desc) {
+    nativeTheme_ = desc;
+    if(windowManager != nullptr){
+        windowManager->onThemeSet(desc);
+    }
+}
 
 AppInst::~AppInst(){
     // Primary teardown site. By the time the destructor runs, every

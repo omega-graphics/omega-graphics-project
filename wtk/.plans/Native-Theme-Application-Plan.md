@@ -1,6 +1,6 @@
 # Native Theme Application Plan
 
-**Status:** Proposal. Nothing below is implemented yet.
+**Status:** Tier 1 implemented (2026-06-30). Tiers 2–4 remain proposal.
 **Scope:** Close the cross-platform asymmetry where a `UIView` with no
 explicit background color sometimes inherits the underlying OS window's
 themed surface color and sometimes renders pitch black. Define the
@@ -368,9 +368,9 @@ already specified in the Style plan.
 
 ## 7. Migration tiers
 
-### Tier 1 — `NativeTheme` query parity + the observer wiring
+### Tier 1 — `NativeTheme` query parity + the observer wiring — **IMPLEMENTED (2026-06-30)**
 
-- Fill the GTK `queryCurrentTheme()` gap (§5.3.1) if not present.
+- Fill the GTK4 `queryCurrentTheme()` gap (§5.3.1) if not present. (Will be expanded with proper CSS parsing later. We shoudl be able to get basic colors however.)
 - Implement the per-platform observer plumbing so
   `NativeThemeObserver::onThemeSet` fires on OS appearance change on
   all three platforms.
@@ -385,6 +385,126 @@ already specified in the Style plan.
 `wtk/src/Native/macos/CocoaTheme.mm` (extend observer registration),
 `wtk/include/omegaWTK/UI/Application.h`,
 `wtk/src/UI/Application.cpp`.
+
+#### What actually shipped (deltas from the proposal above)
+
+- **`Application` == `AppInst`.** The Style plan's `Application` class does
+  not exist in the tree yet; the process-wide app singleton is `AppInst`
+  (`wtk/include/omegaWTK/UI/App.h` / `wtk/src/UI/App.cpp`). The
+  `nativeTheme()` getter, the cached `Native::ThemeDesc nativeTheme_`
+  field, and the `onThemeSet(ThemeDesc&)` observer trampoline live on
+  `AppInst`. The cache is seeded once in the `AppInst` ctor via
+  `Native::queryCurrentTheme()` (after the native app exists) and
+  refreshed on every OS flip. When the Style plan lands `Application`,
+  this ownership block moves there verbatim.
+- **Dispatch reuses the existing observer chain.** `AppInst::onThemeSet`
+  caches the desc, then calls `AppWindowManager::onThemeSet` (AppInst is
+  already a `friend`), which fans out to `AppWindow::onThemeSet` →
+  `Widget::onThemeSetRecurse` — the chain that was already present but
+  had no producer. Tier 1 relies on the existing per-widget `onThemeSet`
+  reactions (e.g. `Button` re-deriving its Light/Dark palette).
+- **Repaint scheduling (bug found in first verification).** The existing
+  `AppWindow::onThemeSet` only called `onThemeSetRecurse`, which
+  dispatches the per-widget hook but marks *nothing* dirty and schedules
+  *no* frame. Result: widgets rebuilt their inline styles into
+  `styleDirty`, but the window never repainted — on macOS the buttons
+  visibly kept their construction-time (light-mode white) fill across a
+  dark/light flip. Fixed by having `AppWindow::onThemeSet` call
+  `applyCascadeChange()` after the recurse — the same proven dirty-tree +
+  `requestFrame()` path `setThemeVars`/`addStyleSheet` use. Also added a
+  `rootWindow != nullptr` guard in `AppWindowManager::onThemeSet` (a flip
+  during startup/teardown was an unguarded null deref).
+- **Per-platform producers wired:**
+  - macOS: `CocoaThemeObserver::onThemeChange` (KVO on
+    `NSApp.effectiveAppearance`, already registered) now re-queries and
+    calls `AppInst::inst()->onThemeSet(...)` — previously a commented-out
+    stub. `wtk/src/Native/macos/CocoaApp.mm`.
+  - Windows: `WM_SETTINGCHANGE` (filtered on `lParam ==
+    L"ImmersiveColorSet"`) + `WM_THEMECHANGED` in
+    `WinAppWindow::ProcessWndMsgImpl`. `wtk/src/Native/win/WinAppWindow.cpp`.
+    **Unbuilt on this macOS host — needs a Windows/WSL compile check.**
+  - GTK: `notify::gtk-application-prefer-dark-theme` +
+    `notify::gtk-theme-name` on `GtkSettings`, connected once in
+    `on_app_activate` (GtkSettings has no default until a display opens
+    during `g_application_run`). `wtk/src/Native/gtk/GTKApp.cpp`.
+    **Unbuilt on this macOS host — needs a Linux/Vulkan compile check.**
+- **GTK colors (§5.3.1) added best-effort, guarded.** `GTKTheme.cpp` now
+  runs `applyAppearanceDefaults` (dark palette mirroring Win32 so a
+  lookup miss on a dark desktop still yields a dark surface) then
+  `populateColors`, which reads Adwaita named colors
+  (`theme_bg_color`, `theme_fg_color`, `theme_base_color`,
+  `theme_text_color`, `borders`, `accent_bg_color` /
+  `theme_selected_bg_color`) off a throwaway `GtkWindow`'s style context.
+  The style-context APIs are GTK-4.10-deprecated-but-present and wrapped
+  in `G_GNUC_*_IGNORE_DEPRECATIONS`. Deviates slightly from the plan's
+  "button context for control colors" — a single window context plus the
+  `theme_base_color`/`theme_text_color` named colors covers control
+  colors without the unparented-widget floating-ref dance. **Unverified
+  on this host.**
+
+#### Verification
+
+- **macOS: builds, links, signs clean** (BasicAppTest.app end-to-end).
+- **Windows / GTK: not compiled** (no toolchain on this macOS host).
+  Both need a build pass on their platform before Tier 1 is fully green.
+- **Runtime behavior** (observer actually firing on an OS dark-mode
+  flip) is not machine-verified: it requires toggling the OS appearance
+  at runtime and observing `Button` colors re-query. No visual delta
+  otherwise, since Tier 1 does not touch the clear color.
+
+#### Follow-ups surfaced during Tier 1
+
+- **macOS color staleness — FIXED during Tier 1.** `queryCurrentTheme()`
+  reads appearance-dependent `NSColor`s, which resolve against
+  `NSAppearance.currentDrawingAppearance`, *not* necessarily
+  `NSApp.effectiveAppearance`. Inside the KVO callback the current
+  drawing appearance can still be the old one, so the *colors* read on a
+  flip would lag by one event even though the *appearance bit* was
+  correct. Now resolved by pinning the color reads to the effective
+  appearance via `performAsCurrentDrawingAppearance:` (macOS 11+, with a
+  direct-read fallback) in `CocoaTheme.mm`.
+- **ScrollView-hosted widgets don't re-theme.** The `In-scroll` Button
+  inside the `ScrollableContainer` did *not* pick up the flip during
+  verification, while the top-row buttons did. Consistent with the
+  known "ScrollView orphaned by 4.7" breakage — the theme walk / dirty
+  propagation doesn't reach scrolled children. Out of scope here; tracked
+  by the ScrollView-4.7-Integration work.
+- **macOS animates the appearance transition.** `NSWindow` cross-fades
+  the effective-appearance change; GTK/Windows flip instantly. This is
+  the natural hook for the optional theme cross-fade noted in §9
+  (Animation-Scheduler) — a Tier 2+ nicety, not required for parity.
+  Confirmed during verification: the button restyle cross-faded for free
+  on the appearance flip, no scheduler needed.
+- **Element borders wired into the paint path + Button outline + Label
+  theming (out of this plan's scope, noted for traceability).**
+  Verification exposed two gaps once the observer worked:
+  1. A fill-only `Button` is invisible in Light mode (`controlBackground`
+     ≈ `windowBackground`). The `Style::border*` API turned out to be
+     *view*-tag scoped AND never read by Paint (dead) — the DrawOp struct
+     and compositor backend already stroke shape borders, but
+     `UIView.Update.cpp` never passed one. Wired it end-to-end: new
+     `Style::elementBorder(elementTag,color,width,...)` →
+     `resolveElementBorder` writes per-element `BorderColor`(Color) /
+     `BorderWidth`(uint32 px) cells → `UIView::update` reads them and
+     hands a `Composition::Border` to the Rect/RoundedRect/Ellipse
+     DrawOp → backend SDF stroke. `Button` now draws a 1px OS-`separator`
+     outline (accent focus ring, dimmed when disabled). Note:
+     per-property border *animation* is not wired (border snaps on
+     re-resolve); the theme flip still cross-fades via the macOS layer.
+     Files: `UIView.h`, `UIView.Core.cpp`, `UIView.Style.cpp`,
+     `UIViewImpl.h`, `UIView.Update.cpp`, `UserInputs.Button.cpp`.
+  2. `Label` was deliberately non-theme-aware and the test hardcoded
+     white (invisible on light). Added an opt-in
+     `LabelProps::followThemeForeground` — the label paints in
+     `nativeTheme.foreground` and updates on `onThemeSet`. BasicAppTest's
+     title + description now use it. Files: `Primatives.h`,
+     `Primatives.cpp`, `BasicAppTestRun.cpp`.
+
+  All of this is interim: theming individual widget visuals belongs to
+  the Style plan's UA stylesheet (Tier 3). When that lands, `Button` /
+  `Label` bind their border and text color to theme vars and these
+  hardcoded hooks come out — but `Style::elementBorder` + the paint-path
+  wiring is a genuine reusable feature that stays.
 
 ### Tier 2 — surface-color sink + priority chain
 

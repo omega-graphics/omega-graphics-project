@@ -135,12 +135,21 @@ struct OMEGAWTK_EXPORT LabelProps {
     Composition::TextLayoutDescriptor::Wrapping wrapping =
         Composition::TextLayoutDescriptor::WrapByWord;
     unsigned lineLimit = 0;
+    /// When true, the label ignores `textColor` and paints in the OS
+    /// theme's foreground color, updating on every OS light/dark flip
+    /// (via onThemeSet). Opt-in so existing labels that set an explicit
+    /// `textColor` keep their fixed color. This is the interim hook until
+    /// the Style plan's UA stylesheet binds label color to a theme var.
+    bool followThemeForeground = false;
 };
 
 class OMEGAWTK_EXPORT Label : public Widget {
     LabelProps props_;
+    // Cached OS theme, seeded at construction and refreshed by
+    // onThemeSet. Only consulted when props_.followThemeForeground.
+    Native::ThemeDesc theme_ {};
 protected:
-    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
+    void onThemeSet(Native::ThemeDesc & desc) override;
     void onMount() override;
     // Tier B / B4: (re)build the element list + style from props_. Runs
     // at model-change time (onMount / setProps / resize), never during
