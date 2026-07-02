@@ -383,6 +383,19 @@ namespace omegasl {
                                                                         : OMEGASL_SHADER_DESC_IO_OUT;
             target->emitResourceBinding(*this, res_desc, decl, ioMode, out, layoutDesc);
 
+            /// §2.4 push-constant tight root sizing. Carry the push block's
+            /// std140 byte size in the otherwise-unused `offset` field so the
+            /// D3D12 backend reserves exactly the root 32-bit-constants it
+            /// needs (was a blanket 32 DWORDs — half the 64-DWORD budget) and
+            /// the Vulkan backend sizes its push range to match. 0 means "size
+            /// unknown" and the runtime keeps the portable cap. `offset` is
+            /// read by no backend for any other descriptor kind (every other
+            /// desc leaves it at the zero-init default), so this reuse needs no
+            /// `.omegasllib` format change.
+            if (layoutDesc.type == OMEGASL_SHADER_PUSH_CONSTANT_DESC) {
+                layoutDesc.offset = pushConstantByteSize(res_desc->typeExpr);
+            }
+
             /// Texture-swizzle plan §A.5 / Open Q1: reject swizzle on
             /// textures used as `out` / `inout` in this shader. All three
             /// runtime backends apply view-level swizzle to reads only —
@@ -416,6 +429,90 @@ namespace omegasl {
             meta.pLayout = new omegasl_shader_layout_desc[layout.size()];
             std::copy(layout.begin(), layout.end(), meta.pLayout);
         }
+    }
+
+    namespace {
+        /// std140 (size, align) in bytes of a builtin **32-bit** scalar /
+        /// vector / matrix spelled `name` ("float", "float3", "uint4",
+        /// "float4x4", ...). Returns false for anything else — 16-/64-bit
+        /// scalars (`half`/`short`/`long`/`double`), samplers, textures,
+        /// user structs — so the caller bails to the portable cap rather
+        /// than risk a wrong (possibly too-small) size.
+        bool omegaSLStd140ScalarVecMat(const OmegaCommon::String &name,
+                                       size_t &size, size_t &align) {
+            /// Only 32-bit component bases size cleanly at a 4-byte
+            /// component here; `half`/`short`/`long`/`double` are excluded
+            /// on purpose (they fall through to false → the cap).
+            static const char *const bases[] = {"float", "int", "uint", "bool"};
+            size_t baseLen = 0;
+            bool matched = false;
+            for (auto *b : bases) {
+                size_t bl = std::char_traits<char>::length(b);
+                if (name.size() >= bl && name.compare(0, bl, b) == 0) {
+                    baseLen = bl;
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) return false;
+            OmegaCommon::String suffix = name.substr(baseLen);
+            const size_t comp = 4; // 32-bit component
+            if (suffix.empty()) { size = comp; align = comp; return true; }
+            /// vectorN — a single digit 2..4.
+            if (suffix.size() == 1 && suffix[0] >= '2' && suffix[0] <= '4') {
+                unsigned n = static_cast<unsigned>(suffix[0] - '0');
+                /// std140: vec2 aligns to 8, vec3 and vec4 align to 16.
+                align = (n == 2) ? 2 * comp : 4 * comp;
+                size = n * comp;
+                return true;
+            }
+            /// matrixCxR — "CxR" with C, R in 2..4 (e.g. "4x4", "3x3").
+            if (suffix.size() == 3 && suffix[1] == 'x'
+                && suffix[0] >= '2' && suffix[0] <= '4'
+                && suffix[2] >= '2' && suffix[2] <= '4') {
+                unsigned cols = static_cast<unsigned>(suffix[0] - '0');
+                /// std140: each column is padded to 16 bytes; the matrix is
+                /// `cols` columns and aligns to 16.
+                size = static_cast<size_t>(cols) * 16;
+                align = 16;
+                return true;
+            }
+            return false;
+        }
+
+        inline size_t alignUp(size_t off, size_t a) {
+            return (off + (a - 1)) & ~(a - 1);
+        }
+    }
+
+    size_t CodeGen::pushConstantByteSize(ast::TypeExpr *constantTypeExpr) {
+        /// `constant<T>` — T is the sole type argument.
+        if (constantTypeExpr == nullptr || constantTypeExpr->args.empty()
+            || constantTypeExpr->args[0] == nullptr) {
+            return 0;
+        }
+        ast::TypeExpr *inner = constantTypeExpr->args[0];
+        auto it = structDeclsByName.find(inner->name);
+        if (it == structDeclsByName.end()) return 0; // not a registered struct
+        ast::StructDecl *decl = it->second;
+
+        /// std140 align-then-place over the struct's ordered fields. Any
+        /// field this can't size confidently (array, nested struct,
+        /// non-32-bit type) collapses the whole result to 0 → the runtime
+        /// keeps the portable cap. This can never under-report a size, so
+        /// the D3D12 root-constant reservation never truncates the block.
+        size_t offset = 0;
+        for (auto &field : decl->fields) {
+            ast::TypeExpr *ft = field.typeExpr;
+            if (ft == nullptr || !ft->arrayDims.empty()) return 0;
+            size_t fsize = 0, falign = 0;
+            if (!omegaSLStd140ScalarVecMat(ft->name, fsize, falign)) return 0;
+            offset = alignUp(offset, falign);
+            offset += fsize;
+        }
+        if (offset == 0) return 0;
+        /// A std140 / HLSL-cbuffer block rounds up to a multiple of 16 bytes.
+        return alignUp(offset, 16);
     }
 
     void CodeGen::writeTypeExpr(ast::TypeExpr *typeExpr, std::ostream &out) {
@@ -938,7 +1035,11 @@ namespace omegasl {
                 break;
             }
             case STRUCT_DECL: {
-                target->emitStructDecl(*this, (ast::StructDecl *)decl);
+                auto *structDecl = (ast::StructDecl *)decl;
+                /// §2.4 — register by name so a later `constant<T>` push
+                /// block can resolve `T` to its ordered fields for sizing.
+                structDeclsByName[structDecl->name] = structDecl;
+                target->emitStructDecl(*this, structDecl);
                 break;
             }
             case RESOURCE_DECL: {

@@ -50,7 +50,14 @@
         };
         
         auto isAlnumAndOther = [&](char c){
-            return isalnum(c) ||  (c == '-') || (c == '_') || (c == ' ');
+            // ':' is kept so a Windows drive-letter separator survives
+            // tokenization. Without it, "C:/Users/..." loses the colon
+            // and reconstructs as "C/Users/...", corrupting every
+            // absolute path on Windows (e.g. #include resolution against
+            // the source file's own directory). The colon only appears
+            // as a drive separator in filesystem paths, so gluing it to
+            // the preceding drive letter as one ID token is safe.
+            return isalnum(c) ||  (c == '-') || (c == '_') || (c == ' ') || (c == ':');
         };
         
         char c;

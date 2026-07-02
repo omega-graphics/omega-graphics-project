@@ -106,7 +106,7 @@ inline bool operator==(const AQBroadphasePair &lhs, const AQBroadphasePair &rhs)
 /// `hullVerts` and `hullVertCount` describe the AQSpace's vertex pool; passed
 /// in so the math layer stays free of any space-owned storage. The pointer
 /// is unused unless `shape.type == AQShapeType::ConvexHull`.
-AQAABB<float> AQshapeAABB(const AQShape &shape,
+AQUA_EXPORT AQAABB<float> AQshapeAABB(const AQShape &shape,
                           const AQTransform<float> &bodyXform,
                           const OmegaGTE::FVec<3> *hullVerts = nullptr,
                           std::size_t hullVertCount = 0);
@@ -115,7 +115,7 @@ AQAABB<float> AQshapeAABB(const AQShape &shape,
 /// the shape's surface that maximizes `dot(p, dirWorld)`. Minimal correct
 /// implementations land in Phase 2 so the public surface is complete; the
 /// GJK consumer ships in Phase 3.
-OmegaGTE::FVec<3> AQshapeSupport(const AQShape &shape,
+AQUA_EXPORT OmegaGTE::FVec<3> AQshapeSupport(const AQShape &shape,
                                  const OmegaGTE::FVec<3> &dirWorld,
                                  const AQTransform<float> &bodyXform,
                                  const OmegaGTE::FVec<3> *hullVerts = nullptr,
@@ -128,7 +128,7 @@ OmegaGTE::FVec<3> AQshapeSupport(const AQShape &shape,
 /// (the §11.6 stretch posture — full hull inertia ships with Phase 3 if
 /// profiling warrants it). The plane case returns zero (planes are
 /// static-only intent and have no inertia).
-OmegaGTE::FVec<3> AQshapeInertiaMoments(const AQShape &shape, float mass,
+AQUA_EXPORT OmegaGTE::FVec<3> AQshapeInertiaMoments(const AQShape &shape, float mass,
                                         const OmegaGTE::FVec<3> *hullVerts = nullptr,
                                         std::size_t hullVertCount = 0);
 

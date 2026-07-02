@@ -161,3 +161,45 @@ option(AQUA_BUILD_TESTS "Build AQUA unit/validation tests" ON)
 if(AQUA_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
+
+# Stage the merged AQKernels.omegasllib where its consumers run from: beside
+# AQUA's own shared-library artifact (bin/ next to AQUA.dll on Windows, lib/
+# next to libAQUA.so/.dylib elsewhere — the same split the AQUA install rules
+# use) and beside the aqua test executables (their RUNTIME_OUTPUT_DIRECTORY,
+# ${CMAKE_BINARY_DIR}/aqua/tests). OUTPUT-based rather than a POST_BUILD hook
+# on AQUA: a kernel-only edit rebuilds AQKernels.omegasllib WITHOUT relinking
+# AQUA, and a POST_BUILD hook would leave the staged copies stale in exactly
+# that case. Plain `copy` (not copy_if_different) — an OUTPUT rule must
+# re-stamp its outputs or ninja re-runs it on every build.
+if(WIN32)
+    set(_AQUA_KERNELS_STAGE_DIRS "${CMAKE_BINARY_DIR}/bin")
+else()
+    set(_AQUA_KERNELS_STAGE_DIRS "${CMAKE_BINARY_DIR}/lib")
+endif()
+if(AQUA_BUILD_TESTS)
+    list(APPEND _AQUA_KERNELS_STAGE_DIRS "${CMAKE_BINARY_DIR}/aqua/tests")
+endif()
+set(_AQUA_KERNELS_STAGED_LIBS)
+set(_AQUA_KERNELS_STAGE_CMDS)
+foreach(_stage_dir IN LISTS _AQUA_KERNELS_STAGE_DIRS)
+    list(APPEND _AQUA_KERNELS_STAGED_LIBS "${_stage_dir}/AQKernels.omegasllib")
+    list(APPEND _AQUA_KERNELS_STAGE_CMDS
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_stage_dir}"
+        COMMAND ${CMAKE_COMMAND} -E copy "${AQUA_KERNELS_LIB}" "${_stage_dir}/AQKernels.omegasllib")
+endforeach()
+add_custom_command(OUTPUT ${_AQUA_KERNELS_STAGED_LIBS}
+    ${_AQUA_KERNELS_STAGE_CMDS}
+    DEPENDS "${AQUA_KERNELS_LIB}"
+    COMMENT "Staging AQKernels.omegasllib beside the AQUA runtime library and the aqua tests")
+add_custom_target(AQUAKernelLibStage DEPENDS ${_AQUA_KERNELS_STAGED_LIBS})
+add_dependencies(AQUAKernelLibStage AQUAKernelLib)
+add_dependencies(AQUA AQUAKernelLibStage)
+
+# Ship the kernel lib with the AQUA runtime artifact in the install tree too
+# (mirrors install(TARGETS AQUA): RUNTIME->bin on Windows, LIBRARY->lib
+# elsewhere).
+if(WIN32)
+    install(FILES "${AQUA_KERNELS_LIB}" DESTINATION bin)
+else()
+    install(FILES "${AQUA_KERNELS_LIB}" DESTINATION lib)
+endif()

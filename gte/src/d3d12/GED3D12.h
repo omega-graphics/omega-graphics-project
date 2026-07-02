@@ -68,13 +68,28 @@ _NAMESPACE_BEGIN_
         D3D12MA::Allocation *d3d12maAllocation = nullptr;
 
         // D3D12-CPU-Accessible-Buffer-Plan Phase 1 — CPU-side companion for a
-        // `Readback` buffer. The primary `buffer` lives on a DEFAULT heap (so
-        // the GPU can UAV-write it); this READBACK companion receives the
-        // GPU→CPU copy and is what `GEBufferReader` maps. nullptr for Upload /
-        // GPUOnly / Uniform buffers, which keep their CPU-visible primary
-        // resource. Released alongside its allocation in the destructor.
+        // `Readback` (or `Universal`) buffer. The primary `buffer` lives on a
+        // DEFAULT heap (so the GPU can UAV-write it); this READBACK companion
+        // receives the GPU→CPU copy and is what `GEBufferReader` maps. nullptr
+        // for Upload / GPUOnly / Uniform buffers, which keep their CPU-visible
+        // primary resource. Released alongside its allocation in the destructor.
         ComPtr<ID3D12Resource> cpuSideResource;
         D3D12MA::Allocation *cpuSideAllocation = nullptr;
+
+        // `Universal`-usage upload companion (UPLOAD heap, GENERIC_READ).
+        // GEBufferWriter maps THIS instead of the non-mappable DEFAULT
+        // primary; the written range is copied into the primary the next time
+        // the buffer is bound in a compute pass or used by a blit copy
+        // (GED3D12CommandBuffer::flushPendingUpload). nullptr for every other
+        // usage.
+        ComPtr<ID3D12Resource> uploadCompanion;
+        D3D12MA::Allocation *uploadAllocation = nullptr;
+        // Bytes [0, uploadDirtyBytes) of `uploadCompanion` hold CPU writes not
+        // yet copied into the primary; 0 means clean. Set by the buffer
+        // writer's flush; cleared by flushPendingUpload, and by a blit copy
+        // into this buffer (which happens after the CPU write in program order
+        // and therefore supersedes it).
+        UINT64 uploadDirtyBytes = 0;
 
         // Allocator-Lifetime-Hardening Phase 1 — keeps the D3D12MA allocator
         // alive at least as long as this buffer's allocations. Set by the
@@ -97,11 +112,13 @@ _NAMESPACE_BEGIN_
             return buffer->GetDesc().Width;
         };
         GED3D12Buffer(const BufferDescriptor::Usage & usage,ID3D12Resource *buffer, D3D12_RESOURCE_STATES currentState, D3D12MA::Allocation *d3d12maAllocation = nullptr,
-                      ID3D12Resource *cpuSideResource = nullptr, D3D12MA::Allocation *cpuSideAllocation = nullptr):
+                      ID3D12Resource *cpuSideResource = nullptr, D3D12MA::Allocation *cpuSideAllocation = nullptr,
+                      ID3D12Resource *uploadCompanion = nullptr, D3D12MA::Allocation *uploadAllocation = nullptr):
         GEBuffer(usage),buffer(buffer),
         traceResourceId(ResourceTracking::Tracker::instance().nextResourceId()), currentState(currentState),
         d3d12maAllocation(d3d12maAllocation),
-        cpuSideResource(cpuSideResource), cpuSideAllocation(cpuSideAllocation){
+        cpuSideResource(cpuSideResource), cpuSideAllocation(cpuSideAllocation),
+        uploadCompanion(uploadCompanion), uploadAllocation(uploadAllocation){
 
             ResourceTracking::Tracker::instance().emit(
                     ResourceTracking::EventType::Create,
@@ -137,6 +154,12 @@ _NAMESPACE_BEGIN_
             if (cpuSideAllocation) {
                 cpuSideAllocation->Release();
                 cpuSideAllocation = nullptr;
+            }
+            // Universal-usage upload companion, same discipline.
+            uploadCompanion.Reset();
+            if (uploadAllocation) {
+                uploadAllocation->Release();
+                uploadAllocation = nullptr;
             }
         }
     };

@@ -1731,6 +1731,16 @@ _NAMESPACE_BEGIN_
                 alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
                 break;
             }
+            case BufferDescriptor::Universal : {
+                // CPU-write + GPU-write + CPU-read. Vulkan host-visible
+                // memory serves all three directions on one resource, so no
+                // companions are needed — CPU_TO_GPU keeps the mapping
+                // writable and the storage-usage bits above keep it
+                // kernel-writable. (The D3D12 backend is where Universal
+                // pays its companion + copy cost.)
+                alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+                break;
+            }
         }
 
         alloc_info.priority = 0;
@@ -1792,6 +1802,9 @@ _NAMESPACE_BEGIN_
             case BufferDescriptor::Upload: allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU; break;
             case BufferDescriptor::Readback: allocInfo.usage = VMA_MEMORY_USAGE_GPU_TO_CPU; break;
             case BufferDescriptor::GPUOnly: allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY; break;
+            // Universal: host-visible serves CPU write + GPU write + CPU read
+            // on one resource (see the engine makeBuffer note above).
+            case BufferDescriptor::Universal: allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU; break;
         }
 
         VkBuffer buffer = VK_NULL_HANDLE;
@@ -2780,6 +2793,7 @@ _NAMESPACE_BEGIN_
         {
             VkShaderStageFlags pushStages = 0;
             bool hasPushConstant = false;
+            uint32_t pushSize = 0; // §2.4 — max sized push block across stages
             for(auto & s : shadersArr){
                 OmegaCommon::ArrayRef<omegasl_shader_layout_desc> layouts {s.pLayout,s.pLayout + s.nLayout};
                 for(auto & l : layouts){
@@ -2792,18 +2806,21 @@ _NAMESPACE_BEGIN_
                     #endif
                         pushStages |= stage;
                         hasPushConstant = true;
+                        // §2.4 — the compiler carries the block's std140 byte
+                        // size in `offset` (already a multiple of 16). Take the
+                        // max across stages that declare the shared block.
+                        if((uint32_t)l.offset > pushSize){ pushSize = (uint32_t)l.offset; }
                     }
                 }
             }
             if(hasPushConstant){
-                // Size reserved at the portable 128-byte cap — the layout desc
-                // doesn't carry the push block's struct size (threading it
-                // through to size this exactly is a follow-up). offset 0;
-                // partial updates use the vkCmdPushConstants offset at command
-                // time.
+                // §2.4 — size the range to the compiler-sized block; fall back
+                // to the portable 128-byte cap for a size-0 (legacy / unsizable)
+                // block. offset 0; partial updates use the vkCmdPushConstants
+                // offset at command time.
                 pushRange.stageFlags = pushStages;
                 pushRange.offset = 0;
-                pushRange.size = 128;
+                pushRange.size = pushSize ? ((pushSize + 3u) & ~3u) : 128;
                 layout_info.pushConstantRangeCount = 1;
                 layout_info.pPushConstantRanges = &pushRange;
             }

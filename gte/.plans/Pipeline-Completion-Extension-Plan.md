@@ -614,6 +614,212 @@ struct ComputePipelineDescriptor {
 
 ---
 
+### 2.4 Push-Constant Tight Root Sizing — closes the 2.2 follow-up
+
+**Status:** ✅ Implemented and verified (Windows/D3D12 build + `aqua_gpu_solver_test`
+root-signature creation passes). Carrier decision resolved: reuse the layout desc's `offset` field
+(verified unread for push descs on every backend; compiler previously hard-set it
+to 0). Landed changes: compiler sizes the push block std140 and writes it to
+`offset` (`gte/omegasl/src/CodeGen.cpp` — `pushConstantByteSize` + STRUCT_DECL
+registry + call in `emitResourcesAndFillLayout`); D3D12 sizes `InitAsConstants`
+from `offset` with a >64-DWORD loud clamp (`gte/src/d3d12/GED3D12.cpp`); Vulkan
+sizes its `VkPushConstantRange` from `offset` (`gte/src/vulkan/GEVulkan.cpp`); the
+`.omegasllib` already serializes `offset` (`ShaderArchive.cpp:337`), so no format
+bump; size-0 (legacy/unsizable) blocks keep the portable cap. Follow-up originally
+deferred by 2.2 Phase B ("Reserved at the portable 128-byte cap — the layout desc
+doesn't carry the struct size — a follow-up").
+
+**Problem.** The D3D12 root-signature builder
+(`createRootSignatureFromOmegaSLShaders`, `gte/src/d3d12/GED3D12.cpp`) reserves a
+**fixed 32 DWORDs** (`InitAsConstants(32, ...)`) for *every* push-constant block,
+because the block's byte size is unknown at pipeline-creation time — the app only
+supplies the size at bind time (`setComputeConstants(data, size)`), but the root
+signature is baked into the PSO before any bind. The D3D12 root signature budget
+is 64 DWORDs total; a single push block therefore eats **half the budget**
+regardless of its real size.
+
+This overflowed for real: `aqua_gpu_solver_test`'s solver kernel binds 12
+structured buffers (2 DWORDs each as root SRV/UAV = 24) plus one push block
+(`AQSolverParams` = `float4 config` + `uint4 counts` = **8 DWORDs actual**,
+reserved as **32**). The 24-DWORD over-reservation is what pushes creation past 64
+→ `CreateRootSignature: Root Signature size exceeds maximum of 64 32-bit units`.
+Sizing the block to its real 8 DWORDs takes the solver from 56 → 32 DWORDs, well
+under budget, and benefits every kernel and backend.
+
+Vulkan has the same latent waste: 2.2 Phase B declares the single
+`VkPushConstantRange` at a flat 128-byte size (`gte/src/vulkan/GEVulkan.cpp`).
+Metal needs no change — `setBytes:length:` takes the caller's byte count at bind
+time and never reserves ahead.
+
+**Fix — emit the block size at compile time, size the reservation to it.**
+
+1. **Compiler (layout emission).** At the point each target tags a resource
+   `OMEGASL_SHADER_PUSH_CONSTANT_DESC` (`HLSLTarget.cpp` ~250, `GLSLTarget.cpp`
+   ~1107, `MSLTarget.cpp` ~207), the push block's struct type `T` is already in
+   scope (`res_desc->typeExpr->args[0]`). Compute its std430 size there with the
+   existing `omegaSLStd430StructStride` / `omegaSLStructStride` machinery (the same
+   walk 2.2 Phase B uses at bind time) and store it in the layout desc. Do the
+   computation once in the shared codegen path if practical rather than in each of
+   the three targets, to keep the three in lockstep.
+
+2. **Layout-desc carrier.** `omegasl_shader_layout_desc` (`gte/include/omegasl.h`)
+   has `location` and `offset` (`size_t`) that are **not** consumed for a
+   push-constant desc today (push emission sets only `.type` + `gpu_relative_loc`).
+   Preferred: carry the byte size in `offset` for push descs — no struct change,
+   no `.omegasllib` format bump, zero-init stays valid (a pre-existing archive
+   deserializes size 0, which the backend treats as "fall back to the 128-byte
+   cap", preserving old behavior). **Verification gate before coding:** confirm
+   nothing reads `offset`/`location` for a push desc on any backend or in the
+   asset/serialization path; if `offset` turns out to be load-bearing, append a
+   dedicated `push_constant_size` field instead and bump the layout-desc version
+   the way the `swizzle_desc` TODO (omegasl.h §"swizzle-binary-compat") describes.
+
+3. **D3D12 backend.** Replace `InitAsConstants(32, l.gpu_relative_loc,
+   registerSpace)` with `InitAsConstants(dwords, ...)` where
+   `dwords = size ? ((size + 3) / 4) : 32` (round up to DWORDs; keep the 32 cap as
+   the fallback for size-0 legacy archives). Assert `dwords <= 64` with a loud
+   `DEBUG_ERROR` naming the block, so an oversized push fails at creation with a
+   clear message rather than the raw D3D runtime error.
+
+4. **Vulkan backend.** Size the `VkPushConstantRange.size` to the same
+   layout-desc byte size (rounded to 4) instead of the flat 128, same size-0
+   fallback.
+
+5. **Metal backend.** No change.
+
+**Verification.**
+- `aqua_gpu_solver_test` is the end-to-end regression: it currently fails root-sig
+  creation and must create the PSO and run after the fix. (Windows/D3D12 build is
+  a user hand-off per AGENTS.md.)
+- Add/extend a GTE-level check in `gte/tests/push_constant_test.cpp`: a kernel with
+  a small push block must produce a root signature whose reported constant cost
+  matches the block, not 32 DWORDs.
+- Confirm the existing Metal push-constant path is unaffected (no layout-desc read
+  change on Metal).
+
+**Size / phasing note (per AGENTS.md).** The code change is small (compiler size
+walk + one D3D12 line + one Vulkan line + a carrier field decision) — well under
+the ~300-line small-feature bar — so it needs no `2.4.x.y` sub-breakdown beyond the
+five numbered steps above. The one genuine decision is step 2's carrier (reuse
+`offset` vs. versioned new field); resolve that verification gate first, then
+implement steps 1→5 in order.
+
+---
+
+### 2.5 Structured-Buffer Descriptor Tables — root-budget headroom (D3D12)
+
+**Status:** Not started. Companion budget lever to 2.4. **Not required to fix
+`aqua_gpu_solver_test`** — 2.4 alone takes the solver from 56 → 32 DWORDs. This
+extension is *headroom* for future compute kernels that bind enough buffers to
+overflow 64 DWORDs on the buffer side even after push constants are sized tightly.
+
+**Problem.** Every `buffer<T>` / `uniform<T>` binding is currently a **root
+descriptor** — `InitAsShaderResourceView` (in→SRV), `InitAsUnorderedAccessView`
+(out→UAV), `InitAsConstantBufferView` (uniform→CBV) in
+`createRootSignatureFromOmegaSLShaders` (`gte/src/d3d12/GED3D12.cpp` ~3154-3167).
+Each root descriptor costs **2 DWORDs**. A kernel binding N structured buffers
+spends `2·N` DWORDs of the 64-DWORD budget on buffers alone (the solver: 12 → 24).
+Grouping them into a **descriptor table** costs **1 DWORD for the whole table**
+regardless of N: all SRVs collapse into one range-table root param, all UAVs into
+another. The solver's 24 DWORDs → ~2. This is what lets a kernel scale past ~26
+buffers, which root descriptors cannot.
+
+**⚠️ Architectural conflict — read before scheduling.** This **partially reverses
+a deliberate, completed decision** in
+[Shared-Descriptor-Heap-Plan.md](done/Shared-Descriptor-Heap-Plan.md) (DONE). That
+plan's Phase 1 *deleted* the per-buffer descriptor heap on the explicit finding
+that "`SetComputeRoot{ShaderResource,UnorderedAccess,ConstantBuffer}View` take a
+GPU virtual address directly and do not consult any descriptor heap … the SRV/UAV
+view written into the buffer's heap is therefore never sampled." Its Phase-1
+validator asserts *zero* descriptor creations on the buffer path. Moving buffers
+into a descriptor table **reintroduces exactly those per-buffer SRV/UAV
+descriptors** — now suballocated from the shared `resourceDescriptorAllocator`
+(which Phase 2 of that plan already built, so the heap machinery exists), but it is
+still the descriptor-per-buffer work Phase 1 removed. The two optimizations target
+different constraints: root-views minimize hot-path *allocation cost* (WTK's
+per-frame buffer churn); descriptor tables minimize *root-signature budget* (compute
+kernels with many buffers). They are not both optimal for the same workload.
+
+**Reconciliation — scope it to compute, not the whole buffer path.** Do **not**
+globally switch buffers to tables (that would re-impose descriptor cost on WTK's
+high-frequency buffer churn, undoing Phase 1's win). Instead gate the table model
+to the case that needs it:
+
+- Keep the root-view path (current behavior) as the default for render pipelines
+  and for compute kernels whose buffer count fits the budget.
+- Switch to SRV/UAV descriptor tables **only when a pipeline's computed root-sig
+  cost would exceed 64 DWORDs** — decided at root-signature build time in
+  `createRootSignatureFromOmegaSLShaders`, which already walks the full layout and
+  can sum the cost before choosing. A kernel that fits keeps the zero-descriptor
+  fast path; only the over-budget kernel pays for descriptors. This preserves the
+  Shared-Descriptor-Heap-Plan invariant for the common case and treats tables as
+  the overflow-relief valve.
+
+**Fix (when a pipeline is over budget).**
+
+1. **Root-sig builder** (`GED3D12.cpp` ~3082-3220). After building the per-binding
+   param list, if total DWORD cost > 64, rebuild the buffer bindings as two
+   descriptor-table root params: one `CD3DX12_DESCRIPTOR_RANGE1` array of SRVs
+   (one range per in-buffer register) under one table param, one of UAVs under
+   another. CBV/uniform buffers can join the SRV-class table as a CBV range or
+   stay root CBVs (they are only 2 DWORDs and usually few — keep as root CBV for
+   simplicity unless they also overflow). Ranges use the same
+   `DESCRIPTORS_VOLATILE | DATA_VOLATILE` flags the texture table path already
+   sets (`GED3D12.cpp` ~3213-3216).
+
+2. **Per-buffer descriptors.** The buffers now need real SRV/UAV descriptors in the
+   shared heap. Two sub-options — pick per the lifetime model:
+   - *Create-on-bind (preferred, transient):* at `bindResourceAtComputeShader`
+     (`GED3D12CommandQueue.cpp:2101`), suballocate a slot from a transient ring
+     (Shared-Descriptor-Heap-Plan **Phase 3** ring, if landed; else the
+     `resourceDescriptorAllocator`), write the SRV/UAV describing the bound buffer,
+     and `SetComputeRootDescriptorTable` with the table's base GPU handle. Keeps
+     `makeBuffer` at zero descriptors (honors Phase 1) — descriptors exist only for
+     the duration of a dispatch that actually tables its buffers. Requires the
+     table's slots to be contiguous per dispatch (allocate the whole range at once).
+   - *Create-on-make (simpler, reintroduces Phase-1 cost):* `makeBuffer` allocates
+     an SRV+UAV slot pair up front. Simpler bind path, but this is precisely the
+     per-buffer descriptor work Phase 1 deleted — only acceptable if profiling shows
+     compute buffers are low-churn relative to WTK's pool misses.
+
+3. **`getRootParameterIndexOfResource`** (`GED3D12CommandQueue.cpp:366`). Today it
+   matches a buffer to its SRV/UAV *root-descriptor* param by register. When a
+   pipeline uses the table model, buffer lookups must instead resolve to the
+   table root param + the buffer's offset within the range. The function needs to
+   know which model the bound pipeline used — store a `bool buffersAreTabled` (or
+   the chosen model enum) on `GED3D12ComputePipelineState` at creation and branch.
+
+4. **`bindResourceAtComputeShader`** (`GED3D12CommandQueue.cpp:2101-2135`). Branch
+   on the pipeline's model: root-view path unchanged; table path writes the
+   descriptor (sub-option 2a) and issues one `SetComputeRootDescriptorTable` for the
+   SRV table and one for the UAV table (batch per dispatch rather than per buffer to
+   avoid redundant table sets). Buffer state transitions
+   (`transitionBufferState` to NON_PIXEL_SHADER_RESOURCE / UNORDERED_ACCESS) stay.
+
+5. **Vulkan / Metal.** No change. Vulkan already binds buffers through descriptor
+   sets pooled per command buffer (Shared-Descriptor-Heap-Plan "Out of scope");
+   Metal uses argument buffers. This is a D3D12 root-budget artifact only.
+
+**Verification.**
+- A synthetic compute kernel binding >26 `buffer<T>` (impossible under root views:
+  26·2 = 52 + any push > 64) creates its PSO and dispatches correctly under the
+  table model. This is the case root-views cannot express at all.
+- Existing WTK / GTE compute tests unchanged (they stay on the root-view fast path
+  — assert their PSOs did **not** flip to the table model).
+- D3D12 debug layer clean: no descriptor/resource mismatch from transient table
+  slots reused before a dispatch retires (rides the same retention fence as the
+  Shared-Descriptor-Heap-Plan allocator).
+
+**Risk: HIGH.** Touches the shared compute bind hot path and re-opens a
+deliberately-closed design question. Sequence it *after* 2.4 (which resolves the
+actual solver failure) and only implement if a real kernel exceeds the buffer
+budget — otherwise leave it as a documented, ready design. If it does land, update
+[Shared-Descriptor-Heap-Plan.md](done/Shared-Descriptor-Heap-Plan.md) with a
+back-reference noting the compute-overflow exception to its buffers-use-root-views
+rule, so the two plans don't read as contradictory.
+
+---
+
 ## Extension 3: Blits ✅ Implemented
 
 **Status:** API surface and all three backends (D3D12, Metal, Vulkan) implemented. The blit pipeline reuses the existing render-pipeline machinery: each backend's `make*BlitPipelineState` builds a `RenderPipelineDescriptor` pairing the engine's built-in full-screen-triangle vertex shader (compiled lazily from an embedded OmegaSL snippet via `OmegaSLCompiler`, mirroring the mipmap-gen-2D precedent) with the caller's fragment shader, then routes through `makeRenderPipelineState`. `blitWithPipeline` opens a transient one-shot render pass on `dest`, binds `src` at fragment-shader slot 0, sets viewport/scissor from `destRegion`, draws 3 vertices, and ends the pass.

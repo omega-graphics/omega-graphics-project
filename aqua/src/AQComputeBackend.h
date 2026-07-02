@@ -44,7 +44,7 @@ namespace OmegaGTE {
 struct AQBodySoA;
 
 /// Owns the OmegaGTE handles AQUA dispatches physics compute kernels through.
-struct AQComputeBackend {
+struct AQUA_EXPORT AQComputeBackend {
     /// Stand up a compute backend for `engine` + `queue`.
     /// @returns nullptr when `engine` is null — that is a CPU-only context
     /// (`AQContext::CreateCPUOnly`), where there is no device to run kernels on.
@@ -262,15 +262,27 @@ private:
     /// Pooled per-body buffers — one float4 per body per buffer, the
     /// struct-of-float4 component groups the kernels bind at slots 1..8
     /// (see AQIntegrate.omegasl for the w-lane packing).
-    SharedHandle<OmegaGTE::GEBuffer> bodyPosAct;    ///< slot 1
-    SharedHandle<OmegaGTE::GEBuffer> bodyVelIm;     ///< slot 2
-    SharedHandle<OmegaGTE::GEBuffer> bodyQuat;      ///< slot 3
-    SharedHandle<OmegaGTE::GEBuffer> bodyWbMax;     ///< slot 4
-    SharedHandle<OmegaGTE::GEBuffer> bodyInvIGs;    ///< slot 5
-    SharedHandle<OmegaGTE::GEBuffer> bodyForceLd;   ///< slot 6
-    SharedHandle<OmegaGTE::GEBuffer> bodyTorqueAd;  ///< slot 7
-    SharedHandle<OmegaGTE::GEBuffer> bodyPseudo;    ///< slot 8
-    SharedHandle<OmegaGTE::GEBuffer> bodyCom;       ///< COM offset (5e; narrowphase slot 6)
+    ///
+    /// Buffer residency follows the GTE cross-backend contract (plan §8 +
+    /// gte D3D12-CPU-Accessible-Buffer-Plan): a buffer some kernel declares
+    /// `out`/`inout` is GPU-written and cannot be `Upload` usage (on D3D12
+    /// UPLOAD-heap memory cannot be a UAV and records no barriers, which is
+    /// what raced the 5c-5f chains). GPU-written buffers the CPU only reads
+    /// back are `Readback`; buffers the CPU ALSO writes (the body pool, the
+    /// pair counter) are `Universal` — the backend owns the staging there
+    /// (D3D12 keeps an UPLOAD companion it flushes into the primary at bind
+    /// time; the docs flag Universal as the most expensive usage, which is
+    /// exactly the shared-both-ways body state this pool holds). Kernel
+    /// inputs the CPU owns stay `Upload`.
+    SharedHandle<OmegaGTE::GEBuffer> bodyPosAct;    ///< slot 1 (Universal)
+    SharedHandle<OmegaGTE::GEBuffer> bodyVelIm;     ///< slot 2 (Universal)
+    SharedHandle<OmegaGTE::GEBuffer> bodyQuat;      ///< slot 3 (Universal)
+    SharedHandle<OmegaGTE::GEBuffer> bodyWbMax;     ///< slot 4 (Universal)
+    SharedHandle<OmegaGTE::GEBuffer> bodyInvIGs;    ///< slot 5 (input-only, Upload)
+    SharedHandle<OmegaGTE::GEBuffer> bodyForceLd;   ///< slot 6 (Universal)
+    SharedHandle<OmegaGTE::GEBuffer> bodyTorqueAd;  ///< slot 7 (Universal)
+    SharedHandle<OmegaGTE::GEBuffer> bodyPseudo;    ///< slot 8 (Universal; GPU-written by 5f)
+    SharedHandle<OmegaGTE::GEBuffer> bodyCom;       ///< COM offset (5e; narrowphase slot 6, input-only, Upload)
     std::size_t bodyCapacity = 0;
 
     /// 5e narrowphase pools (slots per AQNarrowphase.omegasl).
@@ -286,7 +298,7 @@ private:
     std::size_t npCacheCapacity = 0;
 
     /// 5f solver state (slots per AQSolver.omegasl).
-    SharedHandle<OmegaGTE::GEBuffer> bodyPseudoAng;   ///< split-impulse angular accum
+    SharedHandle<OmegaGTE::GEBuffer> bodyPseudoAng;   ///< split-impulse angular accum (Universal — CPU-zeroed, GPU-accumulated)
     SharedHandle<OmegaGTE::GEBuffer> svGroups;        ///< uint4 / group
     SharedHandle<OmegaGTE::GEBuffer> svGroupsByColor; ///< uint / group
     std::size_t svGroupCapacity = 0;
@@ -307,7 +319,7 @@ private:
     SharedHandle<OmegaGTE::GEBuffer> bpEntries, bpEntriesSorted;   ///< uint2 / body
     SharedHandle<OmegaGTE::GEBuffer> bpCellCoords;     ///< int4 / body
     SharedHandle<OmegaGTE::GEBuffer> bpEntryRanks;     ///< uint / body
-    SharedHandle<OmegaGTE::GEBuffer> bpPairCount;      ///< single uint (atomic)
+    SharedHandle<OmegaGTE::GEBuffer> bpPairCount;      ///< single uint (atomic; Universal — CPU-zeroed, GPU-appended)
     SharedHandle<OmegaGTE::GEBuffer> bpPairs, bpPairsSorted; ///< uint2 / pair
     SharedHandle<OmegaGTE::GEBuffer> bpPairRanks;      ///< uint / pair
     std::size_t bpBodyCapacity = 0;

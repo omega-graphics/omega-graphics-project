@@ -109,12 +109,14 @@ GEBuffer::GEBuffer(const BufferDescriptor::Usage &usage):usage(usage) {
 }
 
 bool GEBuffer::checkCanRead() {
-    assert(usage == BufferDescriptor::Readback && "Can only read from a `Readback` type of GEBuffer");
+    assert((usage == BufferDescriptor::Readback || usage == BufferDescriptor::Universal) &&
+           "Can only read from a `Readback` or `Universal` type of GEBuffer");
     return true;
 }
 
 bool GEBuffer::checkCanWrite() {
-    assert(usage == BufferDescriptor::Upload && "Can only write to an `Upload` type of GEBuffer");
+    assert((usage == BufferDescriptor::Upload || usage == BufferDescriptor::Universal) &&
+           "Can only write to an `Upload` or `Universal` type of GEBuffer");
     return true;
 }
 

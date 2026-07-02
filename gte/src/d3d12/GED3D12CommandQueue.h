@@ -86,6 +86,14 @@ _NAMESPACE_BEGIN_
         // writes, then clears the list.
         std::vector<GED3D12Buffer *> pendingReadbackBuffers;
 
+        // Whether the current compute pass bound any buffer as a UAV. When it
+        // did, `finishComputePass` records a global UAV barrier so a later pass
+        // that binds the same buffer as a UAV again (no state change, so no
+        // transition barrier fires) still observes this pass's writes — the
+        // sequential pass-ordering contract compute chains rely on (e.g. AQUA's
+        // per-sub-step integrate passes and per-color solver sweeps).
+        bool uavBoundInComputePass = false;
+
        friend class GED3D12CommandQueue;
 
        unsigned getRootParameterIndexOfResource(unsigned id,omegasl_shader &shader);
@@ -100,6 +108,12 @@ _NAMESPACE_BEGIN_
        /// No-op for UPLOAD-heap buffers, which are permanently GENERIC_READ and
        /// already satisfy shader-read, and when the buffer is already in `target`.
        void transitionBufferState(GED3D12Buffer *buf, D3D12_RESOURCE_STATES target);
+       /// Universal-usage buffers: copy the pending CPU write (the dirty range
+       /// of the UPLOAD companion, recorded by GEBufferWriter::flush) into the
+       /// DEFAULT primary. Called before the buffer is bound in a compute pass
+       /// or read by a blit copy; no-op when the buffer has no companion or is
+       /// clean.
+       void flushPendingUpload(GED3D12Buffer *buf);
        /// Extension 8 — (re)bind whichever of the resource / sampler heaps are
        /// set, so both types can be visible to a single draw / dispatch.
        void rebindDescriptorHeaps();

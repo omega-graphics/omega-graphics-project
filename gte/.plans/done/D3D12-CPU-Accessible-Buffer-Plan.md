@@ -133,3 +133,36 @@ and `Uniform` (root CBV) buffers are unchanged.
   no separate test required. `Upload` buffers on this DEFAULT-typed heap remain
   a separate, still-unexercised latent issue (a DEFAULT heap isn't CPU-mappable)
   and are intentionally left untouched.
+
+## Follow-up (shipped with the AQUA Phase-5 D3D12 bring-up) — `Universal` usage
+
+The plan's two one-way usages left a gap for data that is CPU-written, kernel-
+mutated, AND CPU-read back on the same logical buffer (AQUA's rigid-body state
+was the motivating case, first solved with hand-rolled `Upload` staging twins
+in the client). `BufferDescriptor::Universal` closes the gap in the backend:
+
+- **Primary** — same UAV-capable DEFAULT-heap resource as `Readback`
+  (`COMMON` initial state, promotes on first use).
+- **READBACK companion** — as for `Readback`: refreshed by `finishComputePass`
+  after every pass that UAV-binds the buffer, and by `copyBufferToBuffer` into
+  it; `GEBufferReader` maps it.
+- **UPLOAD companion** — new. `GEBufferWriter` maps it instead of the
+  non-mappable primary; `flush` records the dirty byte range (and CPU-mirrors
+  it into the READBACK companion so a read that precedes any dispatch already
+  sees the write). `GED3D12CommandBuffer::flushPendingUpload` copies the dirty
+  range into the primary when the buffer is next bound in a compute pass or
+  read by a blit copy; a blit that WRITES the buffer clears the pending range
+  instead (the copy supersedes the older CPU write in program order).
+
+Vulkan and Metal need no companions — their host-visible storage memory serves
+all three directions on one resource — so `Universal` degenerates to the
+`Upload` allocation there. Cost note (documented on the enum): Universal is
+the most expensive usage; per CPU round-trip it pays two extra resources and
+the flush/readback copies. Data that flows one way should keep using the
+matching one-way usage. Storage-role only — a Universal `Uniform` buffer is
+unsupported (the CBV bind path performs no state transition or flush).
+
+Also hardened alongside (needed by any multi-dispatch compute chain):
+`finishComputePass` emits a global UAV barrier when the pass bound a UAV, so a
+buffer that stays in `UNORDERED_ACCESS` across consecutive passes (no state
+transition, hence no transition barrier) still gets its writes ordered.

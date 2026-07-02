@@ -506,6 +506,21 @@ void GED3D12CommandBuffer::transitionBufferState(GED3D12Buffer *buf, D3D12_RESOU
     buf->currentState = target;
 }
 
+void GED3D12CommandBuffer::flushPendingUpload(GED3D12Buffer *buf) {
+    if (buf == nullptr || buf->uploadCompanion == nullptr || buf->uploadDirtyBytes == 0) {
+        return;
+    }
+    // The UPLOAD companion is permanently GENERIC_READ (a valid copy source);
+    // the primary transitions to COPY_DEST for the copy and back to whatever
+    // the caller needs afterwards (the caller's own transitionBufferState both
+    // restores the bind state and orders this copy before the dispatch).
+    transitionBufferState(buf, D3D12_RESOURCE_STATE_COPY_DEST);
+    commandList->CopyBufferRegion(buf->buffer.Get(), 0,
+                                  buf->uploadCompanion.Get(), 0,
+                                  buf->uploadDirtyBytes);
+    buf->uploadDirtyBytes = 0;
+}
+
 // Pipeline-Completion-Extension-Plan §6.3 — locate the layout-desc that
 // owns the given bind location and run the kind/sample-count check
 // against the bound texture. Logs a diagnostic on mismatch and returns
@@ -739,6 +754,12 @@ void GED3D12CommandBuffer::copyBufferToBuffer(SharedHandle<GEBuffer> &src, Share
     auto *srcBuf = (GED3D12Buffer *)src.get();
     auto *destBuf = (GED3D12Buffer *)dest.get();
 
+    // A Universal source must present its latest CPU write; a Universal
+    // destination's pending CPU write is superseded by this copy (the copy
+    // was requested after the write in program order).
+    flushPendingUpload(srcBuf);
+    destBuf->uploadDirtyBytes = 0;
+
     OmegaCommon::Vector<D3D12_RESOURCE_BARRIER> resourceBarriers;
     if (srcBuf->currentState != D3D12_RESOURCE_STATE_COPY_SOURCE &&
         srcBuf->currentState != D3D12_RESOURCE_STATE_GENERIC_READ) {
@@ -765,6 +786,15 @@ void GED3D12CommandBuffer::copyBufferToBuffer(SharedHandle<GEBuffer> &src, Share
 
     UINT64 bytes = size == 0 ? srcBuf->buffer->GetDesc().Width - srcOffset : size;
     commandList->CopyBufferRegion(destBuf->buffer.Get(), destOffset, srcBuf->buffer.Get(), srcOffset, bytes);
+
+    // Keep a Readback destination's CPU companion in sync (mirrors the texture
+    // copy paths above): GEBufferReader maps the companion, so a CPU-staged
+    // upload into the DEFAULT primary must land there too or a readback that
+    // happens before any dispatch rewrites the region reads stale bytes.
+    if (destBuf->cpuSideResource) {
+        commandList->CopyBufferRegion(destBuf->cpuSideResource.Get(), destOffset,
+                                      srcBuf->buffer.Get(), srcOffset, bytes);
+    }
 }
 
 void GED3D12CommandBuffer::copyBufferToTexture(SharedHandle<GEBuffer> &src, SharedHandle<GETexture> &dest,
@@ -2104,6 +2134,10 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &b
     auto *d3d12_buffer = (GED3D12Buffer *)buffer.get();
     auto &shader = currentComputePipeline->computeShader->internal;
     const unsigned rootParam = getRootParameterIndexOfResource(id, shader);
+    // Universal buffers: land any pending CPU write in the primary before the
+    // dispatch reads it. The SRV/UAV transition below then orders the copy
+    // ahead of the dispatch.
+    flushPendingUpload(d3d12_buffer);
     // D3D12-CPU-Accessible-Buffer-Plan Phase 1 — classify the bind from the
     // shader layout (in→SRV, out→UAV, Uniform→CBV), NOT the buffer's heap type.
     // The old heap-type heuristic bound a Storage `out` buffer that lived on an
@@ -2126,6 +2160,7 @@ void GED3D12CommandBuffer::bindResourceAtComputeShader(SharedHandle<GEBuffer> &b
             break;
         case BufferRootKind::UAV:
             transitionBufferState(d3d12_buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            uavBoundInComputePass = true;
             commandList->SetComputeRootUnorderedAccessView(
                 rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
             // D3D12-CPU-Accessible-Buffer-Plan Phase 2 — a Readback output (has a
@@ -2294,6 +2329,18 @@ void GED3D12CommandBuffer::dispatchThreadgroupsIndirect(SharedHandle<GEBuffer> &
 }
 
 void GED3D12CommandBuffer::finishComputePass() {
+    // Order this pass's UAV writes against whatever the NEXT pass does with the
+    // same buffers. Per-resource transition barriers cover the SRV<->UAV flips,
+    // but a buffer bound as a UAV in two consecutive passes keeps its state, so
+    // no transition fires — a global UAV barrier is what serializes those. A
+    // null UAV barrier orders ALL UAV accesses on the queue, which is exactly
+    // the sequential compute-pass contract callers encode against.
+    if (uavBoundInComputePass) {
+        auto uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+        commandList->ResourceBarrier(1, &uavBarrier);
+        uavBoundInComputePass = false;
+    }
+
     // D3D12-CPU-Accessible-Buffer-Plan Phase 2 — copy each Readback output's
     // DEFAULT primary into its READBACK companion so GEBufferReader (which maps
     // the companion) observes the dispatch's UAV writes. Recorded after the

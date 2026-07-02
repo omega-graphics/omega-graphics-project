@@ -6,6 +6,7 @@
 
 #include "../BufferIO.h"
 
+#include <algorithm>
 #include <atlstr.h>
 #include <cassert>
 #include <cstdio>
@@ -278,6 +279,12 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
             flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
             state = D3D12_RESOURCE_STATE_COPY_DEST;
             break;
+        case BufferDescriptor::Universal:
+            // Same UAV-capable primary as Readback; both companions are
+            // created below (see the engine makeBuffer path).
+            flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            state = D3D12_RESOURCE_STATE_COMMON;
+            break;
     }
 
     // §2.4 — round constant buffers up to the 256-byte CBV placement
@@ -317,7 +324,7 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
     // UAV-free state a READBACK heap accepts and the role it plays.
     ID3D12Resource *cpuSideRes = nullptr;
     D3D12MA::Allocation *cpuSideAllocation = nullptr;
-    if(desc.usage == BufferDescriptor::Readback){
+    if(desc.usage == BufferDescriptor::Readback || desc.usage == BufferDescriptor::Universal){
         D3D12_RESOURCE_DESC companionDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferLen);
         D3D12MA::ALLOCATION_DESC companionAllocDesc {};
         companionAllocDesc.HeapType = D3D12_HEAP_TYPE_READBACK;
@@ -333,7 +340,30 @@ SharedHandle<GEBuffer> GED3D12Heap::makeBuffer(const BufferDescriptor &desc){
         }
     }
 
-    auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation,cpuSideRes,cpuSideAllocation);
+    // Universal — the UPLOAD companion the buffer writer maps (committed from
+    // the engine allocator; the heap's DEFAULT pool cannot host it).
+    ID3D12Resource *uploadRes = nullptr;
+    D3D12MA::Allocation *uploadAllocation = nullptr;
+    if(desc.usage == BufferDescriptor::Universal){
+        D3D12_RESOURCE_DESC companionDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferLen);
+        D3D12MA::ALLOCATION_DESC companionAllocDesc {};
+        companionAllocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+        HRESULT uhr = engine->memAllocator->CreateResource(
+            &companionAllocDesc, &companionDesc, D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr, &uploadAllocation, IID_PPV_ARGS(&uploadRes));
+        if(FAILED(uhr)){
+            DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "GED3D12Heap::makeBuffer: Universal upload companion CreateResource failed");
+            if (uploadAllocation) uploadAllocation->Release();
+            if (cpuSideAllocation) cpuSideAllocation->Release();
+            if (cpuSideRes) cpuSideRes->Release();
+            if (allocation) allocation->Release();
+            buffer->Release();
+            return nullptr;
+        }
+    }
+
+    auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation,cpuSideRes,cpuSideAllocation,
+                                           uploadRes,uploadAllocation);
     d3d12_buffer->role = desc.role;
     // Allocator-Lifetime-Hardening Phase 1 — keep the allocator alive as long
     // as this buffer's allocations do.
@@ -958,6 +988,11 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
     class GED3D12BufferWriter : public GEBufferWriter {
         GED3D12Buffer * _buffer = nullptr;
         D3DByte *_data_buffer = nullptr;
+        /// The resource `setOutputBuffer` actually mapped: the UPLOAD
+        /// companion for a Universal buffer (its DEFAULT primary is not
+        /// CPU-mappable), the primary for everything else. Unmapped by
+        /// `flush` / `clearOutputBuffer`.
+        ID3D12Resource *_mapped = nullptr;
 
         bool inStruct=false;
         OmegaCommon::Vector<DataBlock> blocks;
@@ -979,7 +1014,9 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             // wrong offsets). Uniform buffers are cbuffers and keep std140.
             layoutStd = (_buffer->role == BufferDescriptor::Uniform)
                             ? BufferLayoutStd::Std140 : BufferLayoutStd::DXStructured;
-            HRESULT hr = _buffer->buffer->Map(0, nullptr, (void **)&_data_buffer);
+            _mapped = _buffer->uploadCompanion ? _buffer->uploadCompanion.Get()
+                                               : _buffer->buffer.Get();
+            HRESULT hr = _mapped->Map(0, nullptr, (void **)&_data_buffer);
             {
                 char msg[256];
                 std::snprintf(msg, sizeof(msg),
@@ -1161,7 +1198,26 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         }
 
         void flush() override {
-            _buffer->buffer->Unmap(0,nullptr);
+            // Universal: the bytes just written live in the UPLOAD companion.
+            // Record the dirty range for the GPU-side flush (the next compute
+            // bind / blit copies it into the DEFAULT primary), and mirror the
+            // range into the READBACK companion CPU-side so a GEBufferReader
+            // that runs before any dispatch already sees this write. The max
+            // keeps an earlier, longer unflushed write covered.
+            if(_buffer->uploadCompanion && currentOffset > 0){
+                _buffer->uploadDirtyBytes =
+                    std::max<UINT64>(_buffer->uploadDirtyBytes, currentOffset);
+                if(_buffer->cpuSideResource && _data_buffer != nullptr){
+                    void *readbackMap = nullptr;
+                    if(SUCCEEDED(_buffer->cpuSideResource->Map(0, nullptr, &readbackMap))){
+                        memcpy(readbackMap, _data_buffer, currentOffset);
+                        D3D12_RANGE written{0, static_cast<SIZE_T>(currentOffset)};
+                        _buffer->cpuSideResource->Unmap(0, &written);
+                    }
+                }
+            }
+            _mapped->Unmap(0,nullptr);
+            _mapped = nullptr;
             _buffer = nullptr;
             _data_buffer = nullptr;
             // std::cout << "LastOffset:" << currentOffset << std::endl;
@@ -1173,9 +1229,10 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             // a no-op when nothing is bound, so `setOutputBuffer` can
             // call it unconditionally.
             if(_buffer == nullptr) return;
-            if(_data_buffer != nullptr){
-                _buffer->buffer->Unmap(0,nullptr);
+            if(_data_buffer != nullptr && _mapped != nullptr){
+                _mapped->Unmap(0,nullptr);
             }
+            _mapped = nullptr;
             _buffer = nullptr;
             _data_buffer = nullptr;
             currentOffset = 0;
@@ -2967,6 +3024,18 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                 heap_type = D3D12_HEAP_TYPE_DEFAULT;
                 flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
                 state = D3D12_RESOURCE_STATE_COPY_DEST;
+                break;
+            }
+            case BufferDescriptor::Universal : {
+                // CPU-write + GPU-write + CPU-read. Same UAV-capable DEFAULT
+                // primary as Readback; on top of the READBACK companion it
+                // also gets an UPLOAD companion (created below) that
+                // GEBufferWriter maps and flushPendingUpload copies in. The
+                // most expensive usage — see the BufferDescriptor::Usage docs.
+                heap_type = D3D12_HEAP_TYPE_DEFAULT;
+                flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+                state = D3D12_RESOURCE_STATE_COMMON;
+                break;
             }
         }
         // §2.4 — a constant buffer bound via a root CBV must be 256-byte
@@ -3009,7 +3078,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         // READBACK heap accepts and the role it plays (copy destination).
         ID3D12Resource *cpuSideRes = nullptr;
         D3D12MA::Allocation *cpuSideAllocation = nullptr;
-        if(desc.usage == BufferDescriptor::Readback){
+        if(desc.usage == BufferDescriptor::Readback || desc.usage == BufferDescriptor::Universal){
             D3D12_RESOURCE_DESC companionDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferLen);
             D3D12MA::ALLOCATION_DESC companionAllocDesc = {};
             companionAllocDesc.HeapType = D3D12_HEAP_TYPE_READBACK;
@@ -3029,7 +3098,35 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             }
         }
 
-        auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation,cpuSideRes,cpuSideAllocation);
+        // Universal — the UPLOAD companion GEBufferWriter maps. GENERIC_READ
+        // (the permanent UPLOAD-heap state) doubles as the copy-source state
+        // for the flushPendingUpload copy into the primary.
+        ID3D12Resource *uploadRes = nullptr;
+        D3D12MA::Allocation *uploadAllocation = nullptr;
+        if(desc.usage == BufferDescriptor::Universal){
+            D3D12_RESOURCE_DESC companionDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferLen);
+            D3D12MA::ALLOCATION_DESC companionAllocDesc = {};
+            companionAllocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+            HRESULT uhr = memAllocator->CreateResource(
+                &companionAllocDesc,
+                &companionDesc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                &uploadAllocation,
+                IID_PPV_ARGS(&uploadRes));
+            if(FAILED(uhr)){
+                DEBUG_ERROR(DEBUG_DOMAIN_MEMORY, "Failed to Create D3D12 Universal upload companion buffer via D3D12MA");
+                if (uploadAllocation) uploadAllocation->Release();
+                if (cpuSideAllocation) cpuSideAllocation->Release();
+                if (cpuSideRes) cpuSideRes->Release();
+                if (allocation) allocation->Release();
+                buffer->Release();
+                return nullptr;
+            }
+        }
+
+        auto *d3d12_buffer = new GED3D12Buffer(desc.usage,buffer,state,allocation,cpuSideRes,cpuSideAllocation,
+                                               uploadRes,uploadAllocation);
         d3d12_buffer->role = desc.role;
         // Allocator-Lifetime-Hardening Phase 1 — keep the allocator alive as
         // long as this buffer's allocations do.
@@ -3174,13 +3271,28 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                     /// SetGraphics/ComputeRoot32BitConstants from the bytes the
                     /// caller passes to set{Render,Compute}Constants.
                     ///
-                    /// Num32BitValues is reserved at the portable 128-byte cap
-                    /// (32 DWORDs) because the layout desc does not carry the
-                    /// push block's struct size. This costs root-signature
-                    /// space (the budget is 64 DWORDs total); threading the
-                    /// exact byte size through the layout desc to size this
-                    /// tightly is a follow-up.
-                    parameter1.InitAsConstants(32, l.gpu_relative_loc, registerSpace);
+                    /// §2.4 — reserve exactly the block's DWORD count. The
+                    /// OmegaSL compiler carries the push block's std140 byte
+                    /// size in `l.offset` (Pipeline-Completion-Extension-Plan
+                    /// §2.4); a size-0 desc is a legacy / unsizable block and
+                    /// keeps the portable 32-DWORD (128-byte) cap. Previously
+                    /// every push block reserved a flat 32 DWORDs — half the
+                    /// 64-DWORD root budget — which overflowed multi-buffer
+                    /// compute kernels (AQUA's solver: an 8-DWORD block reserved
+                    /// as 32 tipped the root signature past 64).
+                    unsigned pushDwords = (l.offset != 0)
+                                              ? (unsigned)((l.offset + 3u) / 4u)
+                                              : 32u;
+                    /// A single push block cannot exceed the whole root budget.
+                    /// The compiler sizes tightly, so this only trips on a
+                    /// pathological (>256-byte) block; clamp loudly rather than
+                    /// hand the D3D runtime an impossible signature.
+                    if (pushDwords > 64u) {
+                        DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE,
+                                    "push constant block exceeds the 64-DWORD root-signature budget; clamping");
+                        pushDwords = 64u;
+                    }
+                    parameter1.InitAsConstants(pushDwords, l.gpu_relative_loc, registerSpace);
                 }
                 /// Create Descriptor Table for Textures
                 else {

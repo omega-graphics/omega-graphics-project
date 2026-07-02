@@ -68,6 +68,14 @@ namespace omegasl {
 
         OmegaCommon::Map<OmegaCommon::String,omegasl_shader> shaderMap;
 
+        /// §2.4 push-constant tight root sizing — `StructDecl` by name,
+        /// populated as STRUCT_DECL decls are walked so
+        /// `emitResourcesAndFillLayout` can resolve a `constant<T>` push
+        /// block's `T` to its ordered fields and compute the block's std140
+        /// byte size for the layout descriptor. Empty lookup ⇒ the block is
+        /// left size-0 and the runtime falls back to the portable cap.
+        OmegaCommon::Map<OmegaCommon::String, ast::StructDecl *> structDeclsByName;
+
         /// Names (object_file map keys) of shaders whose required-feature
         /// set could not be expressed by the active backend. Their
         /// `omegasl_shader` entry holds only the header (type, name,
@@ -283,6 +291,18 @@ namespace omegasl {
         /// Phase 10: spell a `TypeExpr` for the active target. Replaces
         /// the per-subclass `writeTypeExpr` helpers.
         void writeTypeExpr(ast::TypeExpr *typeExpr, std::ostream &out);
+
+        /// §2.4 push-constant tight root sizing — std140 byte size of the
+        /// push block `T` named by a `constant<T>` resource's `typeExpr`
+        /// (`args[0]` is `T`). Walks `T`'s ordered `StructDecl` fields with
+        /// std140 align-then-place rules (the D3D12 cbuffer layout; also a
+        /// safe upper bound for the Vulkan std430 push range). Returns 0 —
+        /// meaning "size unknown, use the portable cap" — if `T` is not a
+        /// registered struct or any field is not a recognized 32-bit
+        /// scalar/vector/matrix (e.g. a nested struct, an array, or a
+        /// 16-/64-bit type). Never under-reports a known size, so the
+        /// D3D12 root-constant reservation can never truncate the block.
+        size_t pushConstantByteSize(ast::TypeExpr *constantTypeExpr);
 
         /// §12.2 follow-up — decompose an integer matrix `Type` into its
         /// (signedness, columns, rows). Returns false for any non-integer-

@@ -22,7 +22,7 @@
 #include <omega-common/utils.h>  // OmegaCommon::Vector
 #include <cstdint>
 
-struct AQBodySoA {
+struct AQUA_EXPORT AQBodySoA {
     // --- pose + motion ---
     OmegaCommon::Vector<float> posX, posY, posZ;             ///< position
     OmegaCommon::Vector<float> velX, velY, velZ;             ///< linear velocity

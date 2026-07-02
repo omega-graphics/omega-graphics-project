@@ -249,15 +249,25 @@ bool AQComputeBackend::ensureBodyCapacity(std::size_t bodyCount) {
     }
 
     const std::size_t stride = bodyBufferStride();
-    OmegaGTE::BufferDescriptor desc{OmegaGTE::BufferDescriptor::Upload,
-                                    newCap * stride, stride};
-    auto make = [&](SharedHandle<OmegaGTE::GEBuffer>& slot) {
+    // The body pool is CPU-seeded, kernel-mutated, and CPU-read-back — the
+    // exact shared-both-ways case `Universal` usage exists for (the backend
+    // owns the staging; on D3D12 that is a DEFAULT primary + both
+    // companions). Input-only buffers (invIGs, com) are plain Upload — the
+    // kernels never write them, so the CPU writes them in place.
+    OmegaGTE::BufferDescriptor uniDesc{OmegaGTE::BufferDescriptor::Universal,
+                                       newCap * stride, stride};
+    OmegaGTE::BufferDescriptor upDesc{OmegaGTE::BufferDescriptor::Upload,
+                                      newCap * stride, stride};
+    auto make = [&](SharedHandle<OmegaGTE::GEBuffer>& slot,
+                    const OmegaGTE::BufferDescriptor& desc) {
         slot = gpuEngine->makeBuffer(desc);
         return static_cast<bool>(slot);
     };
-    if (!make(bodyPosAct) || !make(bodyVelIm) || !make(bodyQuat) ||
-        !make(bodyWbMax) || !make(bodyInvIGs) || !make(bodyForceLd) ||
-        !make(bodyTorqueAd) || !make(bodyPseudo) || !make(bodyCom)) {
+    if (!make(bodyPosAct, uniDesc) || !make(bodyVelIm, uniDesc) ||
+        !make(bodyQuat, uniDesc) || !make(bodyWbMax, uniDesc) ||
+        !make(bodyForceLd, uniDesc) || !make(bodyTorqueAd, uniDesc) ||
+        !make(bodyPseudo, uniDesc) || !make(bodyPseudoAng, uniDesc) ||
+        !make(bodyInvIGs, upDesc) || !make(bodyCom, upDesc)) {
         std::cerr << "AQComputeBackend: body-buffer allocation failed at capacity "
                   << newCap << "\n";
         bodyCapacity = 0;
@@ -282,6 +292,8 @@ bool AQComputeBackend::uploadBodies(const AQBodySoA& soa) {
         act[i] = static_cast<float>(soa.activation[i]);
     }
 
+    // Universal buffers accept the CPU write directly — the backend stages it
+    // and flushes into the GPU-resident primary at the next bind.
     return writeF4Buffer(bodyPosAct, soa.posX.data(), soa.posY.data(), soa.posZ.data(), act.data(), n) &&
            writeF4Buffer(bodyVelIm, soa.velX.data(), soa.velY.data(), soa.velZ.data(), soa.invMass.data(), n) &&
            writeF4Buffer(bodyQuat, soa.quatX.data(), soa.quatY.data(), soa.quatZ.data(), soa.quatW.data(), n) &&
@@ -406,12 +418,18 @@ bool AQComputeBackend::ensureBroadphaseCapacity(std::size_t bodyCount,
     const std::size_t u2 = OmegaGTE::omegaSLStructStride({OMEGASL_UINT2});
     const std::size_t u1 = OmegaGTE::omegaSLStructStride({OMEGASL_UINT});
 
+    // Kernel outputs (AABBs, grid entries, ranks, pairs, the counter) are
+    // `Readback` usage — GPU-writable residency with the CPU read path the
+    // downloads use. The shape/filter tables are CPU-owned inputs → Upload.
     auto grow = [&](SharedHandle<OmegaGTE::GEBuffer>& slot, std::size_t bytes,
-                    std::size_t stride) {
-        OmegaGTE::BufferDescriptor desc{OmegaGTE::BufferDescriptor::Upload, bytes, stride};
+                    std::size_t stride,
+                    OmegaGTE::BufferDescriptor::Usage usage =
+                        OmegaGTE::BufferDescriptor::Upload) {
+        OmegaGTE::BufferDescriptor desc{usage, bytes, stride};
         slot = gpuEngine->makeBuffer(desc);
         return static_cast<bool>(slot);
     };
+    const auto kGpu = OmegaGTE::BufferDescriptor::Readback;
 
     if (bodyCount > bpBodyCapacity) {
         std::size_t cap = (bpBodyCapacity == 0) ? 64 : bpBodyCapacity;
@@ -421,11 +439,11 @@ bool AQComputeBackend::ensureBroadphaseCapacity(std::size_t bodyCount,
                   grow(bpShapeLocalPos, cap * f4, f4) &&
                   grow(bpShapeLocalQuat, cap * f4, f4) &&
                   grow(bpFilter, cap * u4, u4) &&
-                  grow(bpWorldMin, cap * f4, f4) && grow(bpWorldMax, cap * f4, f4) &&
-                  grow(bpFatMin, cap * f4, f4) && grow(bpFatMax, cap * f4, f4) &&
-                  grow(bpEntries, cap * u2, u2) && grow(bpEntriesSorted, cap * u2, u2) &&
-                  grow(bpCellCoords, cap * i4, i4) &&
-                  grow(bpEntryRanks, cap * u1, u1);
+                  grow(bpWorldMin, cap * f4, f4, kGpu) && grow(bpWorldMax, cap * f4, f4, kGpu) &&
+                  grow(bpFatMin, cap * f4, f4, kGpu) && grow(bpFatMax, cap * f4, f4, kGpu) &&
+                  grow(bpEntries, cap * u2, u2, kGpu) && grow(bpEntriesSorted, cap * u2, u2, kGpu) &&
+                  grow(bpCellCoords, cap * i4, i4, kGpu) &&
+                  grow(bpEntryRanks, cap * u1, u1, kGpu);
         if (!ok) {
             std::cerr << "AQComputeBackend: broadphase body-pool allocation failed\n";
             bpBodyCapacity = 0;
@@ -433,7 +451,9 @@ bool AQComputeBackend::ensureBroadphaseCapacity(std::size_t bodyCount,
         }
         bpBodyCapacity = cap;
     }
-    if (!bpPairCount && !grow(bpPairCount, u1, u1)) {
+    // CPU-zeroed each chain run + GPU-appended → Universal.
+    if (!bpPairCount &&
+        !grow(bpPairCount, u1, u1, OmegaGTE::BufferDescriptor::Universal)) {
         return false;
     }
     // The hull pool can be empty; allocate at least one slot so the buffer
@@ -458,8 +478,9 @@ bool AQComputeBackend::ensurePairCapacity(std::size_t pairCapacity) {
     const std::size_t u1 = OmegaGTE::omegaSLStructStride({OMEGASL_UINT});
     std::size_t cap = (bpPairCapacity == 0) ? 256 : bpPairCapacity;
     while (cap < pairCapacity) { cap *= 2; }
-    OmegaGTE::BufferDescriptor pairDesc{OmegaGTE::BufferDescriptor::Upload, cap * u2, u2};
-    OmegaGTE::BufferDescriptor rankDesc{OmegaGTE::BufferDescriptor::Upload, cap * u1, u1};
+    // All three are kernel outputs → Readback usage (GPU-writable residency).
+    OmegaGTE::BufferDescriptor pairDesc{OmegaGTE::BufferDescriptor::Readback, cap * u2, u2};
+    OmegaGTE::BufferDescriptor rankDesc{OmegaGTE::BufferDescriptor::Readback, cap * u1, u1};
     bpPairs = gpuEngine->makeBuffer(pairDesc);
     bpPairsSorted = gpuEngine->makeBuffer(pairDesc);
     bpPairRanks = gpuEngine->makeBuffer(rankDesc);
@@ -617,7 +638,8 @@ bool AQComputeBackend::runBroadphaseChain(std::size_t bodyCount, float cellSize,
         return false;
     }
 
-    // Zero the append counter.
+    // Zero the append counter (Universal buffer — the CPU write stages in the
+    // backend and lands in the GPU-resident counter at its first bind below).
     {
         auto writer = OmegaGTE::GEBufferWriter::Create();
         writer->setOutputBuffer(bpPairCount);
@@ -812,29 +834,33 @@ bool AQComputeBackend::ensureNarrowphaseCapacity(std::size_t pairCount) {
     const std::size_t rowStride = 7 * 16;
 
     auto grow = [&](SharedHandle<OmegaGTE::GEBuffer>& slot, std::size_t bytes,
-                    std::size_t stride) {
-        OmegaGTE::BufferDescriptor desc{OmegaGTE::BufferDescriptor::Upload, bytes, stride};
+                    std::size_t stride,
+                    OmegaGTE::BufferDescriptor::Usage usage =
+                        OmegaGTE::BufferDescriptor::Upload) {
+        OmegaGTE::BufferDescriptor desc{usage, bytes, stride};
         slot = gpuEngine->makeBuffer(desc);
         return static_cast<bool>(slot);
     };
+    const auto kGpu = OmegaGTE::BufferDescriptor::Readback;
 
     // Per-body material table rides body capacity (grown by uploadBodies
-    // first; allocate at the pool's current capacity).
+    // first; allocate at the pool's current capacity). Input-only → Upload.
     if (!npMaterial && bodyCapacity > 0) {
         if (!grow(npMaterial, bodyCapacity * f4, f4)) {
             return false;
         }
     }
 
+    // Everything below is written by the count/scan/build kernels → Readback.
     std::size_t cap = (npPairCapacity == 0) ? 64 : npPairCapacity;
     while (cap < pairCount) { cap *= 2; }
-    bool ok = grow(npContactFlag, cap * u1, u1) &&
-              grow(npPointCount, cap * u1, u1) &&
-              grow(npCpuFallback, cap * u1, u1) &&
-              grow(npScanA, cap * u1, u1) && grow(npScanB, cap * u1, u1) &&
-              grow(npScanC, cap * u1, u1) && grow(npScanD, cap * u1, u1) &&
-              grow(npManifolds, cap * manifoldStride, manifoldStride) &&
-              grow(npRows, cap * 12 * rowStride, rowStride);
+    bool ok = grow(npContactFlag, cap * u1, u1, kGpu) &&
+              grow(npPointCount, cap * u1, u1, kGpu) &&
+              grow(npCpuFallback, cap * u1, u1, kGpu) &&
+              grow(npScanA, cap * u1, u1, kGpu) && grow(npScanB, cap * u1, u1, kGpu) &&
+              grow(npScanC, cap * u1, u1, kGpu) && grow(npScanD, cap * u1, u1, kGpu) &&
+              grow(npManifolds, cap * manifoldStride, manifoldStride, kGpu) &&
+              grow(npRows, cap * 12 * rowStride, rowStride, kGpu);
     if (!ok) {
         std::cerr << "AQComputeBackend: narrowphase pool allocation failed at "
                   << cap << " pairs\n";
@@ -1315,16 +1341,9 @@ bool AQComputeBackend::encodeSolve(float dt, int velocityIters, int positionIter
     }
 
     // The split-impulse accumulators start zeroed each sub-step (the CPU
-    // zeroes them at the top of runNarrowphaseAndSolve).
-    const std::size_t f4 = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4});
-    if (!bodyPseudoAng) {
-        OmegaGTE::BufferDescriptor desc{OmegaGTE::BufferDescriptor::Upload,
-                                        bodyCapacity * f4, f4};
-        bodyPseudoAng = gpuEngine->makeBuffer(desc);
-        if (!bodyPseudoAng) {
-            return false;
-        }
-    }
+    // zeroes them at the top of runNarrowphaseAndSolve). Both are Universal
+    // buffers (allocated with the body pool) — the zeros stage in the backend
+    // and land in the GPU primaries when the solve passes bind them.
     OmegaCommon::Vector<float> zeros(bodyCount, 0.f);
     if (!writeF4Buffer(bodyPseudo, zeros.data(), zeros.data(), zeros.data(), nullptr, bodyCount) ||
         !writeF4Buffer(bodyPseudoAng, zeros.data(), zeros.data(), zeros.data(), nullptr, bodyCount)) {
@@ -1490,7 +1509,9 @@ bool AQComputeBackend::selfTest() {
 
     OmegaGTE::BufferDescriptor inDesc{OmegaGTE::BufferDescriptor::Upload,
                                       kElementCount * structSize, structSize};
-    OmegaGTE::BufferDescriptor outDesc{OmegaGTE::BufferDescriptor::Upload,
+    // The kernel writes the output (`out` → UAV), so it must be Readback
+    // usage — the CPU reads it back after the dispatch.
+    OmegaGTE::BufferDescriptor outDesc{OmegaGTE::BufferDescriptor::Readback,
                                        kElementCount * structSize, structSize};
     auto inBuffer = gpuEngine->makeBuffer(inDesc);
     auto outBuffer = gpuEngine->makeBuffer(outDesc);

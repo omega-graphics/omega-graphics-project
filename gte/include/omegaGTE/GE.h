@@ -191,10 +191,26 @@ _NAMESPACE_BEGIN_
     /// @paragraph Each object in the buffer MUST be the identical.
     struct  OMEGAGTE_EXPORT BufferDescriptor {
         /// Describes the usage of the Buffer.
+        /// @paragraph `Upload` is CPU-written and GPU-read; `Readback` is
+        /// GPU-written and CPU-read; `GPUOnly` never crosses to the CPU.
+        /// `Universal` supports all three directions on one logical buffer —
+        /// the CPU writes it, kernels mutate it, and the CPU reads the result
+        /// back. It is the MOST EXPENSIVE usage: on D3D12 it is a DEFAULT-heap
+        /// primary plus BOTH an UPLOAD companion (CPU writes stage there and
+        /// are copied into the primary when the buffer is next bound in a
+        /// compute pass or used in a blit) and a READBACK companion (refreshed
+        /// after each compute pass that UAV-binds it), so every CPU round-trip
+        /// pays extra memory and copy bandwidth. Reach for it only when the
+        /// SAME data genuinely has to be shared back and forth between the CPU
+        /// and the GPU (e.g. simulation state the CPU seeds, kernels advance,
+        /// and the CPU reads back); when the data flows one way, the matching
+        /// one-way usage is always cheaper. Storage-role buffers only — do not
+        /// combine with `Role::Uniform`.
         typedef enum : int {
             Upload,
             Readback,
-            GPUOnly
+            GPUOnly,
+            Universal
         } Usage;
         /// @enum Usage
         Usage usage = Upload;

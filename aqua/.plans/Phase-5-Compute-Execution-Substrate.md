@@ -680,6 +680,30 @@ two decisions the earlier phases leaned and deferred here.
   `ensureCapacity` grows pools geometrically; no per-sub-step allocation
   (roadmap §6, "avoid per-frame allocation in the step path").
 
+  *As-built correction (D3D12 bring-up).* The first implementation put every
+  pooled buffer on `Upload` usage and let the kernels write it in place. That
+  happens to work on backends with host-visible storage memory, but on D3D12
+  an UPLOAD-heap resource cannot be a UAV and the backend records no barriers
+  for it, so the 5c/5d/5f multi-dispatch chains raced (partial integration,
+  wrong/nondeterministic pair lists — the LastTest.log failure set). The
+  as-built residency is: kernel-written buffers the CPU only reads back are
+  `Readback` usage (the UAV-capable DEFAULT-heap primary + CPU-read companion
+  on D3D12); CPU-owned inputs stay `Upload`; and buffers that are both
+  CPU-written and GPU-mutated (the body pool, the pair counter, the pseudo
+  accumulators) are the new `Universal` usage, added to GTE for exactly this
+  case — the D3D12 backend keeps an UPLOAD companion the buffer writer maps
+  and flushes into the primary at the next compute bind / blit
+  (`flushPendingUpload`), so AQUA needs no hand-rolled staging. Universal is
+  GTE's most expensive usage (two companions + copies per CPU round-trip);
+  the body state that genuinely ping-pongs CPU↔GPU is the justified use.
+  Two more backend fixes landed with the bring-up: `finishComputePass` emits
+  a global UAV barrier when the pass bound a UAV (orders UAV→UAV pass chains,
+  e.g. the per-color solver sweeps), and a blit into a companion-backed
+  buffer also refreshes its CPU companion so a readback that precedes any
+  dispatch (e.g. the untouched `pseudo` lanes in `downloadBodies`) sees the
+  staged upload. `GPUOnly` + explicit staging remains the §11.5 optimization
+  once the readback-per-stage pattern goes.
+
 ---
 
 ## 9. Validation — how we measure "better"
