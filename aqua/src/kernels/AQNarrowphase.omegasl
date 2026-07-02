@@ -1,0 +1,1116 @@
+// AQUA compute kernels — narrowphase stage (Phase 5e). Per-pair manifold +
+// constraint-row build with prefix-sum allocation (plan §6.D):
+//
+//   AQNarrowphaseCount — one thread per candidate pair: run the (typeA,typeB)
+//                        specialized contact branch, emit contactFlag (0/1),
+//                        pointCount, and cpuFallback (1 for the pairs whose
+//                        routine is GJK/EPA — sphere/hull, box/capsule,
+//                        box/hull, capsule/hull, hull/hull — which stay on
+//                        the CPU until the bounded-iteration GJK port lands;
+//                        a flagged pair produces no GPU contact).
+//   AQPrefixScan       — inclusive Hillis-Steele scan over a uint array
+//                        (log2(n) ping-pong dispatches; the build pass
+//                        derives the exclusive offsets by subtracting its
+//                        own re-computed counts).
+//   AQNarrowphaseBuild — re-run the branch, write the manifold record at its
+//                        scanned slot and the 3-rows-per-point constraint
+//                        rows at rowBase = 3 * (exclusive point prefix) —
+//                        the same dense pair-ordered layout the CPU
+//                        publishes. Warm-start impulses come from a sorted
+//                        (key -> accums) cache array via binary search
+//                        (plan §6.D / Phase 3 §8 sorted-array form).
+//
+// The contact routines are transliterations of AQNarrowphase.cpp: same
+// canonical (lower AQShapeType first) dispatch with the normal flipped back
+// to caller order, same SAT axis order, same Sutherland-Hodgman clip, same
+// reduce-to-4-deepest selection. Divergence: the clip polygon is capped at
+// 16 vertices (the CPU uses a growable vector; a box/box clip peaks at 8).
+// Row math mirrors AQSpace::runNarrowphaseAndSolve's build loop (Catto
+// effective mass, velocity-threshold restitution bias at 1 m/s, deterministic
+// tangent basis).
+
+#include "AQKernelsCommon.omegaslh"
+
+// (Element structs + AQManifoldGPU/AQRowGPU come from AQKernelsCommon.omegaslh
+// — the 5f solver kernels bind the same manifold/row buffers.)
+
+// config = (dt, 0, 0, 0);
+// counts = (pairCount, cacheCount, combineModes (rest | fric<<8), scanStride).
+struct AQNarrowphaseParams {
+    float4 config;
+    uint4  counts;
+};
+
+constant<AQNarrowphaseParams> aqNpParams : 0;
+
+// Per-body state (the pooled 5c body buffers + the 5e additions).
+buffer<AQF4> aqNpPosAct   : 1;   // xyz position, w activation
+buffer<AQF4> aqNpQuat     : 2;   // xyzw orientation
+buffer<AQF4> aqNpVelIm    : 3;   // xyz velocity, w invMass
+buffer<AQF4> aqNpWbMax    : 4;   // xyz omega (body), w maxAngularSpeed
+buffer<AQF4> aqNpInvIGs   : 5;   // xyz inv inertia, w gravityScale
+buffer<AQF4> aqNpCom      : 6;   // xyz COM offset
+buffer<AQF4> aqNpMaterial : 7;   // restitution, friction, isTrigger, 0
+
+// Shape tables (the SAME buffers the broadphase uploads, bound here).
+buffer<AQU4> aqNpShapeInfo      : 8;   // type, firstVert, vertCount, flags
+buffer<AQF4>   aqNpShapeParams    : 9;
+buffer<AQF4>   aqNpShapeLocalPos  : 10;
+buffer<AQF4>   aqNpShapeLocalQuat : 11;
+buffer<AQF4>   aqNpHullVerts      : 12;
+
+// Candidate pairs (the broadphase's sorted output).
+buffer<AQU2> aqNpPairs : 13;
+
+// Count-pass outputs.
+buffer<AQU1> aqNpContactFlag : 14;
+buffer<AQU1> aqNpPointCount  : 15;
+buffer<AQU1> aqNpCpuFallback : 16;
+
+// Prefix-scan ping-pong (host binds the pair per dispatch).
+buffer<AQU1> aqNpScanIn  : 17;
+buffer<AQU1> aqNpScanOut : 18;
+
+// Build-pass inputs: the FINAL inclusive scans (host binds whichever
+// ping-pong buffer holds the result).
+buffer<AQU1> aqNpScanFlagFinal : 19;
+buffer<AQU1> aqNpScanPtsFinal  : 20;
+
+// Build-pass outputs.
+buffer<AQManifoldGPU> aqNpManifolds : 21;
+buffer<AQRowGPU>      aqNpRows      : 22;
+
+// Warm-start cache, sorted ascending by (hi=featureKey, lo=(a | b<<16)) —
+// the uint64 order of the CPU's pairFeatureKey. Values = (accumNormal,
+// accumFriction0, accumFriction1, 0).
+buffer<AQU2> aqNpCacheKeys : 23;
+buffer<AQF4>   aqNpCacheVals : 24;
+
+// ---------------------------------------------------------------------------
+// Shared shape helpers (mirroring AQNarrowphase.cpp's locals).
+// ---------------------------------------------------------------------------
+
+struct AQXform {
+    float3 p;
+    float4 q;
+};
+
+struct AQOBB {
+    float3 c;
+    float3 ax0;
+    float3 ax1;
+    float3 ax2;
+    float3 h;
+};
+
+struct AQPlaneW {
+    float3 n;
+    float d;
+};
+
+// Local (up to 4 point) manifold the contact routines fill.
+struct AQManifoldLocal {
+    float3 normal;
+    int    count;
+    float3 p0; float3 p1; float3 p2; float3 p3;
+    float  d0; float  d1; float  d2; float  d3;
+    uint   k0; uint   k1; uint   k2; uint   k3;
+};
+
+float aqDot3(float3 a, float3 b){
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+
+AQXform aqShapeWorld(float3 bodyP, float4 bodyQ, float3 localP, float4 localQ){
+    AQXform x;
+    x.q = aqQuatMul(bodyQ, localQ);
+    x.p = bodyP + aqRotate(bodyQ, localP);
+    return x;
+}
+
+AQOBB aqMakeOBB(AQXform xf, float3 halfExtents){
+    AQOBB o;
+    o.c = xf.p;
+    o.ax0 = aqRotate(xf.q, float3(1.0, 0.0, 0.0));
+    o.ax1 = aqRotate(xf.q, float3(0.0, 1.0, 0.0));
+    o.ax2 = aqRotate(xf.q, float3(0.0, 0.0, 1.0));
+    o.h = halfExtents;
+    return o;
+}
+
+AQPlaneW aqMakePlaneW(AQXform xf, float3 nLocal, float offset){
+    AQPlaneW pw;
+    pw.n = aqRotate(xf.q, nLocal);
+    pw.d = offset + aqDot3(pw.n, xf.p);
+    return pw;
+}
+
+// Segment-segment closest points (Eberly / Lengyel), AQNarrowphase.cpp:96.
+void aqSegSegClosest(float3 p1, float3 q1, float3 p2, float3 q2,
+                     out float3 c1, out float3 c2){
+    float3 d1 = q1 - p1;
+    float3 d2 = q2 - p2;
+    float3 r = p1 - p2;
+    float a = aqDot3(d1, d1);
+    float e = aqDot3(d2, d2);
+    float f = aqDot3(d2, r);
+    float eps = 1e-8;
+    float s = 0.0;
+    float t = 0.0;
+    if(a <= eps && e <= eps){
+        c1 = p1;
+        c2 = p2;
+        return;
+    }
+    if(a <= eps){
+        s = 0.0;
+        t = clamp(f / e, 0.0, 1.0);
+    } else {
+        float c = aqDot3(d1, r);
+        if(e <= eps){
+            t = 0.0;
+            s = clamp(-c / a, 0.0, 1.0);
+        } else {
+            float b = aqDot3(d1, d2);
+            float denom = a * e - b * b;
+            s = (denom != 0.0) ? clamp((b * f - c * e) / denom, 0.0, 1.0) : 0.0;
+            t = (b * s + f) / e;
+            if(t < 0.0){
+                t = 0.0;
+                s = clamp(-c / a, 0.0, 1.0);
+            } else if(t > 1.0){
+                t = 1.0;
+                s = clamp((b - c) / a, 0.0, 1.0);
+            }
+        }
+    }
+    c1 = p1 + d1 * s;
+    c2 = p2 + d2 * t;
+}
+
+// SAT axis projection overlap (AQNarrowphase.cpp:141). Returns the overlap
+// (negative = separated); signOut = +1 when B is on the axis's positive side.
+float aqSatOverlap(AQOBB A, AQOBB B, float3 axis, out float signOut){
+    float axisLen2 = aqDot3(axis, axis);
+    if(axisLen2 < 1e-12){
+        signOut = 1.0;
+        return 3.4028234663852886e38;   // degenerate cross axis — never wins
+    }
+    float invLen = 1.0 / sqrt(axisLen2);
+    float3 axisN = axis * invLen;
+    float prA = abs(aqDot3(axisN, A.ax0) * A.h[0]) +
+                abs(aqDot3(axisN, A.ax1) * A.h[1]) +
+                abs(aqDot3(axisN, A.ax2) * A.h[2]);
+    float prB = abs(aqDot3(axisN, B.ax0) * B.h[0]) +
+                abs(aqDot3(axisN, B.ax1) * B.h[1]) +
+                abs(aqDot3(axisN, B.ax2) * B.h[2]);
+    float dist = aqDot3(axisN, B.c - A.c);
+    signOut = (dist >= 0.0) ? 1.0 : -1.0;
+    return (prA + prB) - abs(dist);
+}
+
+// ---------------------------------------------------------------------------
+// Specialized contact routines — canonical (lower AQShapeType first) order,
+// exactly the AQNarrowphase.cpp bodies. Each fills `m` and returns hit.
+// ---------------------------------------------------------------------------
+
+bool aqNphSphereSphere(float rA, float rB, AQXform xa, AQXform xb,
+                       out AQManifoldLocal m){
+    float3 d = xb.p - xa.p;
+    float d2 = aqDot3(d, d);
+    float rSum = rA + rB;
+    if(d2 >= rSum * rSum){
+        return false;
+    }
+    float dist = sqrt(max(d2, 1e-12));
+    float3 n = (dist > 1e-6) ? d * (1.0 / dist) : float3(1.0, 0.0, 0.0);
+    m.normal = n;
+    m.count = 1;
+    m.p0 = (xa.p + xb.p) * 0.5 + n * ((rA - rB) * 0.5);
+    m.d0 = rSum - dist;
+    m.k0 = 0u;
+    return true;
+}
+
+bool aqNphSphereBox(float r, AQXform xs, AQOBB box, out AQManifoldLocal m){
+    float3 rel = xs.p - box.c;
+    float3 off = float3(aqDot3(rel, box.ax0), aqDot3(rel, box.ax1), aqDot3(rel, box.ax2));
+    float cx = clamp(off[0], -box.h[0], box.h[0]);
+    float cy = clamp(off[1], -box.h[1], box.h[1]);
+    float cz = clamp(off[2], -box.h[2], box.h[2]);
+    float3 closestW = box.c + box.ax0 * cx + box.ax1 * cy + box.ax2 * cz;
+    float3 d = xs.p - closestW;
+    float d2 = aqDot3(d, d);
+    if(d2 > r * r){
+        bool inside = off[0] >= -box.h[0] && off[0] <= box.h[0] &&
+                      off[1] >= -box.h[1] && off[1] <= box.h[1] &&
+                      off[2] >= -box.h[2] && off[2] <= box.h[2];
+        if(!inside){
+            return false;
+        }
+    }
+    float dist = sqrt(max(d2, 1e-12));
+    float3 nClosestToS = float3(0.0, 0.0, 0.0);
+    float depth = 0.0;
+    if(dist > 1e-6){
+        nClosestToS = d * (1.0 / dist);
+        depth = r - dist;
+    } else {
+        float dx = box.h[0] - abs(off[0]);
+        float dy = box.h[1] - abs(off[1]);
+        float dz = box.h[2] - abs(off[2]);
+        if(dx < dy && dx < dz){
+            nClosestToS = box.ax0 * ((off[0] >= 0.0) ? 1.0 : -1.0);
+        } else if(dy < dz){
+            nClosestToS = box.ax1 * ((off[1] >= 0.0) ? 1.0 : -1.0);
+        } else {
+            nClosestToS = box.ax2 * ((off[2] >= 0.0) ? 1.0 : -1.0);
+        }
+        depth = r + min(min(dx, dy), dz);
+    }
+    m.normal = nClosestToS * -1.0;
+    m.count = 1;
+    m.p0 = closestW;
+    m.d0 = depth;
+    m.k0 = 0u;
+    return true;
+}
+
+bool aqNphSphereCapsule(float rS, AQXform xs, float rC, float hh, AQXform xc,
+                        out AQManifoldLocal m){
+    float3 axisW = aqRotate(xc.q, float3(0.0, hh, 0.0));
+    float3 p0 = xc.p - axisW;
+    float3 p1 = xc.p + axisW;
+    float3 seg = p1 - p0;
+    float seg2 = aqDot3(seg, seg);
+    float t = (seg2 > 0.0) ? aqDot3(xs.p - p0, seg) / seg2 : 0.0;
+    t = clamp(t, 0.0, 1.0);
+    float3 closest = p0 + seg * t;
+    float3 d = xs.p - closest;
+    float d2 = aqDot3(d, d);
+    float rSum = rS + rC;
+    if(d2 >= rSum * rSum){
+        return false;
+    }
+    float dist = sqrt(max(d2, 1e-12));
+    float3 nCapToSphere = (dist > 1e-6) ? d * (1.0 / dist) : float3(0.0, 1.0, 0.0);
+    m.normal = nCapToSphere * -1.0;
+    m.count = 1;
+    m.p0 = (xs.p + closest) * 0.5 + nCapToSphere * ((rC - rS) * 0.5);
+    m.d0 = rSum - dist;
+    m.k0 = 0u;
+    return true;
+}
+
+bool aqNphSpherePlane(float r, AQXform xs, AQPlaneW pl, out AQManifoldLocal m){
+    float sd = aqDot3(pl.n, xs.p) - pl.d;
+    if(sd >= r){
+        return false;
+    }
+    m.normal = pl.n * -1.0;
+    m.count = 1;
+    m.p0 = xs.p - pl.n * sd;
+    m.d0 = r - sd;
+    m.k0 = 0u;
+    return true;
+}
+
+bool aqNphCapsuleCapsule(float rA, float hhA, AQXform xa,
+                         float rB, float hhB, AQXform xb, out AQManifoldLocal m){
+    float3 axisA = aqRotate(xa.q, float3(0.0, hhA, 0.0));
+    float3 axisB = aqRotate(xb.q, float3(0.0, hhB, 0.0));
+    float3 c1 = float3(0.0, 0.0, 0.0);
+    float3 c2 = float3(0.0, 0.0, 0.0);
+    aqSegSegClosest(xa.p - axisA, xa.p + axisA, xb.p - axisB, xb.p + axisB, c1, c2);
+    float3 d = c2 - c1;
+    float d2 = aqDot3(d, d);
+    float rSum = rA + rB;
+    if(d2 >= rSum * rSum){
+        return false;
+    }
+    float dist = sqrt(max(d2, 1e-12));
+    float3 nAtoB = (dist > 1e-6) ? d * (1.0 / dist) : float3(0.0, 1.0, 0.0);
+    m.normal = nAtoB;
+    m.count = 1;
+    m.p0 = (c1 + c2) * 0.5 + nAtoB * ((rA - rB) * 0.5);
+    m.d0 = rSum - dist;
+    m.k0 = 0u;
+    return true;
+}
+
+bool aqNphCapsulePlane(float r, float hh, AQXform xa, AQPlaneW pl,
+                       out AQManifoldLocal m){
+    float3 axisA = aqRotate(xa.q, float3(0.0, hh, 0.0));
+    float3 e0 = xa.p - axisA;
+    float3 e1 = xa.p + axisA;
+    float sd0 = aqDot3(pl.n, e0) - pl.d;
+    float sd1 = aqDot3(pl.n, e1) - pl.d;
+    int count = 0;
+    if(sd0 < r){
+        m.p0 = e0 - pl.n * sd0;
+        m.d0 = r - sd0;
+        m.k0 = 0u;
+        count = 1;
+    }
+    if(sd1 < r){
+        if(count == 0){
+            m.p0 = e1 - pl.n * sd1;
+            m.d0 = r - sd1;
+            m.k0 = 1u;
+            count = 1;
+        } else {
+            m.p1 = e1 - pl.n * sd1;
+            m.d1 = r - sd1;
+            m.k1 = 1u;
+            count = 2;
+        }
+    }
+    if(count == 0){
+        return false;
+    }
+    m.normal = pl.n * -1.0;
+    m.count = count;
+    return true;
+}
+
+// Box/box — SAT (15 axes) + reference/incident face pick + Sutherland-Hodgman
+// clip + reduce-to-4-deepest (AQNarrowphase.cpp:318). Uses fixed 16-slot
+// arrays where the CPU used growable vectors (a quad clipped by 4 planes
+// peaks at 8 vertices).
+bool aqNphBoxBox(AQOBB oa, AQOBB ob, out AQManifoldLocal m){
+    float bestOverlap = 3.4028234663852886e38;
+    float3 bestAxis = float3(0.0, 1.0, 0.0);
+
+    // 6 face axes + 9 edge-cross axes, in the CPU's order. A negative
+    // overlap on ANY axis separates the boxes.
+    float3 axes[15];
+    axes[0] = oa.ax0; axes[1] = oa.ax1; axes[2] = oa.ax2;
+    axes[3] = ob.ax0; axes[4] = ob.ax1; axes[5] = ob.ax2;
+    axes[6] = cross(oa.ax0, ob.ax0); axes[7] = cross(oa.ax0, ob.ax1); axes[8] = cross(oa.ax0, ob.ax2);
+    axes[9] = cross(oa.ax1, ob.ax0); axes[10] = cross(oa.ax1, ob.ax1); axes[11] = cross(oa.ax1, ob.ax2);
+    axes[12] = cross(oa.ax2, ob.ax0); axes[13] = cross(oa.ax2, ob.ax1); axes[14] = cross(oa.ax2, ob.ax2);
+    for(int i = 0; i < 15; i++){
+        float sign = 1.0;
+        float ov = aqSatOverlap(oa, ob, axes[i], sign);
+        if(ov < 0.0){
+            return false;
+        }
+        if(ov < bestOverlap){
+            bestOverlap = ov;
+            float invLen = 1.0 / sqrt(aqDot3(axes[i], axes[i]));
+            bestAxis = axes[i] * (sign * invLen);
+        }
+    }
+
+    // Reference face on A (most aligned with bestAxis), incident face on B
+    // (most anti-aligned).
+    float3 aAx[3];
+    aAx[0] = oa.ax0; aAx[1] = oa.ax1; aAx[2] = oa.ax2;
+    float3 bAx[3];
+    bAx[0] = ob.ax0; bAx[1] = ob.ax1; bAx[2] = ob.ax2;
+
+    int refAxisA = 0;
+    float refDot = abs(aqDot3(bestAxis, aAx[0]));
+    for(int i = 1; i < 3; i++){
+        float d = abs(aqDot3(bestAxis, aAx[i]));
+        if(d > refDot){
+            refDot = d;
+            refAxisA = i;
+        }
+    }
+    float refSign = (aqDot3(bestAxis, aAx[refAxisA]) >= 0.0) ? 1.0 : -1.0;
+    float3 refNormal = aAx[refAxisA] * refSign;
+    float3 refCenter = oa.c + refNormal * oa.h[refAxisA];
+    int refU = (refAxisA + 1) % 3;
+    int refV = (refAxisA + 2) % 3;
+    float3 refUaxis = aAx[refU];
+    float3 refVaxis = aAx[refV];
+    float refUH = oa.h[refU];
+    float refVH = oa.h[refV];
+
+    int incAxisB = 0;
+    float incDot = abs(aqDot3(bestAxis, bAx[0]));
+    for(int i = 1; i < 3; i++){
+        float d = abs(aqDot3(bestAxis, bAx[i]));
+        if(d > incDot){
+            incDot = d;
+            incAxisB = i;
+        }
+    }
+    float incSign = (aqDot3(bestAxis, bAx[incAxisB]) >= 0.0) ? -1.0 : 1.0;
+    float3 incNormal = bAx[incAxisB] * incSign;
+    float3 incCenter = ob.c + incNormal * ob.h[incAxisB];
+    int incU = (incAxisB + 1) % 3;
+    int incV = (incAxisB + 2) % 3;
+    float3 incUaxis = bAx[incU];
+    float3 incVaxis = bAx[incV];
+    float incUH = ob.h[incU];
+    float incVH = ob.h[incV];
+
+    // Incident face quad -> clip against the 4 reference side planes.
+    float3 poly[16];
+    int polyN = 4;
+    poly[0] = incCenter + incUaxis * incUH + incVaxis * incVH;
+    poly[1] = incCenter - incUaxis * incUH + incVaxis * incVH;
+    poly[2] = incCenter - incUaxis * incUH - incVaxis * incVH;
+    poly[3] = incCenter + incUaxis * incUH - incVaxis * incVH;
+
+    float refUdC = aqDot3(refUaxis, refCenter);
+    float refVdC = aqDot3(refVaxis, refCenter);
+    float3 sideN[4];
+    float sideD[4];
+    sideN[0] = refUaxis;         sideD[0] = refUdC + refUH;
+    sideN[1] = refUaxis * -1.0;  sideD[1] = -refUdC + refUH;
+    sideN[2] = refVaxis;         sideD[2] = refVdC + refVH;
+    sideN[3] = refVaxis * -1.0;  sideD[3] = -refVdC + refVH;
+
+    for(int s = 0; s < 4; s++){
+        float3 next[16];
+        int nextN = 0;
+        for(int i = 0; i < polyN; i++){
+            float3 v0 = poly[i];
+            float3 v1 = poly[(i + 1) % polyN];
+            float s0 = aqDot3(v0, sideN[s]) - sideD[s];
+            float s1 = aqDot3(v1, sideN[s]) - sideD[s];
+            bool in0 = (s0 <= 0.0);
+            bool in1 = (s1 <= 0.0);
+            if(in0 && nextN < 16){
+                next[nextN] = v0;
+                nextN = nextN + 1;
+            }
+            if(in0 != in1 && nextN < 16){
+                float t = s0 / (s0 - s1);
+                next[nextN] = v0 + (v1 - v0) * t;
+                nextN = nextN + 1;
+            }
+        }
+        for(int i = 0; i < nextN; i++){
+            poly[i] = next[i];
+        }
+        polyN = nextN;
+    }
+
+    // Keep points on/below the reference plane, projected onto it.
+    float refD = aqDot3(refNormal, refCenter);
+    float3 candP[16];
+    float candD[16];
+    uint candK[16];
+    int candN = 0;
+    for(int i = 0; i < polyN && candN < 16; i++){
+        float sd = aqDot3(refNormal, poly[i]) - refD;
+        if(sd <= 0.0){
+            candP[candN] = poly[i] - refNormal * sd;
+            candD[candN] = -sd;
+            uint key = (((uint)refAxisA) << 24) |
+                       (((refSign > 0.0) ? 1u : 0u) << 23) |
+                       (((uint)incAxisB) << 16) |
+                       (((incSign > 0.0) ? 1u : 0u) << 15) |
+                       (uint)i;
+            candK[candN] = key;
+            candN = candN + 1;
+        }
+    }
+
+    if(candN == 0){
+        // Degenerate clip: single deepest incident corner (CPU fallback).
+        m.normal = bestAxis;
+        m.count = 1;
+        float3 deepest = poly[0];   // poly may be empty — recompute corners
+        float3 c0 = incCenter + incUaxis * incUH + incVaxis * incVH;
+        float3 c1 = incCenter - incUaxis * incUH + incVaxis * incVH;
+        float3 c2 = incCenter - incUaxis * incUH - incVaxis * incVH;
+        float3 c3 = incCenter + incUaxis * incUH - incVaxis * incVH;
+        deepest = c0;
+        float bestSd = aqDot3(refNormal, c0) - refD;
+        float sd1 = aqDot3(refNormal, c1) - refD;
+        float sd2 = aqDot3(refNormal, c2) - refD;
+        float sd3 = aqDot3(refNormal, c3) - refD;
+        if(sd1 < bestSd){ bestSd = sd1; deepest = c1; }
+        if(sd2 < bestSd){ bestSd = sd2; deepest = c2; }
+        if(sd3 < bestSd){ bestSd = sd3; deepest = c3; }
+        m.p0 = deepest - refNormal * (bestSd * 0.5);
+        m.d0 = max(0.0, -bestSd);
+        m.k0 = 0u;
+        return true;
+    }
+
+    // reduceContacts: keep the 4 deepest via the CPU's selection order.
+    int keep = (candN < 4) ? candN : 4;
+    for(int i = 0; i < keep; i++){
+        int best = i;
+        for(int j = i + 1; j < candN; j++){
+            if(candD[j] > candD[best]){
+                best = j;
+            }
+        }
+        float3 tp = candP[i]; candP[i] = candP[best]; candP[best] = tp;
+        float td = candD[i]; candD[i] = candD[best]; candD[best] = td;
+        uint tk = candK[i]; candK[i] = candK[best]; candK[best] = tk;
+    }
+    m.normal = bestAxis;
+    m.count = keep;
+    m.p0 = candP[0]; m.d0 = candD[0]; m.k0 = candK[0];
+    if(keep > 1){ m.p1 = candP[1]; m.d1 = candD[1]; m.k1 = candK[1]; }
+    if(keep > 2){ m.p2 = candP[2]; m.d2 = candD[2]; m.k2 = candK[2]; }
+    if(keep > 3){ m.p3 = candP[3]; m.d3 = candD[3]; m.k3 = candK[3]; }
+    return true;
+}
+
+bool aqNphBoxPlane(AQOBB oa, AQPlaneW pl, out AQManifoldLocal m){
+    float3 candP[8];
+    float candD[8];
+    uint candK[8];
+    int count = 0;
+    for(int sx = -1; sx <= 1; sx += 2){
+        for(int sy = -1; sy <= 1; sy += 2){
+            for(int sz = -1; sz <= 1; sz += 2){
+                float3 corner = oa.c
+                    + oa.ax0 * ((float)sx * oa.h[0])
+                    + oa.ax1 * ((float)sy * oa.h[1])
+                    + oa.ax2 * ((float)sz * oa.h[2]);
+                float sd = aqDot3(pl.n, corner) - pl.d;
+                if(sd < 0.0){
+                    candP[count] = corner - pl.n * sd;
+                    candD[count] = -sd;
+                    uint k = ((sx > 0) ? 1u : 0u) | ((sy > 0) ? 2u : 0u) | ((sz > 0) ? 4u : 0u);
+                    candK[count] = k;
+                    count = count + 1;
+                }
+            }
+        }
+    }
+    if(count == 0){
+        return false;
+    }
+    int keep = (count < 4) ? count : 4;
+    for(int i = 0; i < keep; i++){
+        int best = i;
+        for(int j = i + 1; j < count; j++){
+            if(candD[j] > candD[best]){
+                best = j;
+            }
+        }
+        float3 tp = candP[i]; candP[i] = candP[best]; candP[best] = tp;
+        float td = candD[i]; candD[i] = candD[best]; candD[best] = td;
+        uint tk = candK[i]; candK[i] = candK[best]; candK[best] = tk;
+    }
+    m.normal = pl.n * -1.0;
+    m.count = keep;
+    m.p0 = candP[0]; m.d0 = candD[0]; m.k0 = candK[0];
+    if(keep > 1){ m.p1 = candP[1]; m.d1 = candD[1]; m.k1 = candK[1]; }
+    if(keep > 2){ m.p2 = candP[2]; m.d2 = candD[2]; m.k2 = candK[2]; }
+    if(keep > 3){ m.p3 = candP[3]; m.d3 = candD[3]; m.k3 = candK[3]; }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher — AQnarrowphase's canonicalized branch table over VALUES only.
+// Resources are entry-scoped in OmegaSL (helpers can't read buffers), so the
+// entry functions load the per-pair state, canonicalize, and handle the one
+// buffer-dependent case (plane/hull vertex scan) inline; everything else
+// dispatches here. `needsCpu` marks the GJK/EPA pairs the GPU does not yet
+// run (sphere/hull, box/capsule, box/hull, capsule/hull, hull/hull).
+// ---------------------------------------------------------------------------
+
+bool aqNphDispatch(uint tA, uint tB, float4 spA, float4 spB,
+                   AQXform xa, AQXform xb,
+                   out AQManifoldLocal m, out bool needsCpu){
+    needsCpu = false;
+    bool hit = false;
+    if(tA == 0u){                                        // sphere / ...
+        if(tB == 0u){
+            hit = aqNphSphereSphere(spA[0], spB[0], xa, xb, m);
+        } else if(tB == 1u){
+            hit = aqNphSphereBox(spA[0], xa, aqMakeOBB(xb, float3(spB[0], spB[1], spB[2])), m);
+        } else if(tB == 2u){
+            hit = aqNphSphereCapsule(spA[0], xa, spB[0], spB[1], xb, m);
+        } else if(tB == 3u){
+            hit = aqNphSpherePlane(spA[0], xa, aqMakePlaneW(xb, float3(spB[0], spB[1], spB[2]), spB[3]), m);
+        } else {
+            needsCpu = true;                              // sphere/hull -> GJK
+        }
+    } else if(tA == 1u){                                  // box / ...
+        if(tB == 1u){
+            hit = aqNphBoxBox(aqMakeOBB(xa, float3(spA[0], spA[1], spA[2])),
+                              aqMakeOBB(xb, float3(spB[0], spB[1], spB[2])), m);
+        } else if(tB == 3u){
+            hit = aqNphBoxPlane(aqMakeOBB(xa, float3(spA[0], spA[1], spA[2])),
+                                aqMakePlaneW(xb, float3(spB[0], spB[1], spB[2]), spB[3]), m);
+        } else {
+            needsCpu = true;                              // box/capsule, box/hull -> GJK
+        }
+    } else if(tA == 2u){                                  // capsule / ...
+        if(tB == 2u){
+            hit = aqNphCapsuleCapsule(spA[0], spA[1], xa, spB[0], spB[1], xb, m);
+        } else if(tB == 3u){
+            hit = aqNphCapsulePlane(spA[0], spA[1], xa,
+                                    aqMakePlaneW(xb, float3(spB[0], spB[1], spB[2]), spB[3]), m);
+        } else {
+            needsCpu = true;                              // capsule/hull -> GJK
+        }
+    } else if(tA == 4u){                                  // hull / hull
+        needsCpu = true;
+    }
+    // (tA == 3u) plane/hull is handled inline by the entries (buffer access).
+    return hit;
+}
+
+// Fill the up-to-4 keeper points of a plane/hull (or any candidate-list)
+// manifold from candidate arrays reduced by the CPU's deepest-first
+// selection. Value-only so both entries share it.
+void aqReduceFillManifold(float3 n, int candN, float3 candP0, float3 candP1,
+                          float3 candP2, float3 candP3, float candD0,
+                          float candD1, float candD2, float candD3,
+                          uint candK0, uint candK1, uint candK2, uint candK3,
+                          out AQManifoldLocal m){
+    m.normal = n;
+    m.count = candN;
+    m.p0 = candP0; m.d0 = candD0; m.k0 = candK0;
+    m.p1 = candP1; m.d1 = candD1; m.k1 = candK1;
+    m.p2 = candP2; m.d2 = candD2; m.k2 = candK2;
+    m.p3 = candP3; m.d3 = candD3; m.k3 = candK3;
+}
+
+// ---------------------------------------------------------------------------
+// Pass 1 — count. One thread per candidate pair.
+// ---------------------------------------------------------------------------
+
+[in aqNpParams, in aqNpPosAct, in aqNpQuat, in aqNpMaterial,
+ in aqNpShapeInfo, in aqNpShapeParams, in aqNpShapeLocalPos, in aqNpShapeLocalQuat,
+ in aqNpHullVerts, in aqNpPairs,
+ out aqNpContactFlag, out aqNpPointCount, out aqNpCpuFallback]
+compute(x=64,y=1,z=1)
+void AQNarrowphaseCount(uint3 tid : GlobalThreadID){
+    uint p = tid[0];
+    if(p >= aqNpParams.counts[0]){
+        return;
+    }
+    uint2 pair = aqNpPairs[p].v;
+    uint a = pair[0];
+    uint b = pair[1];
+
+    // Trigger pairs produce events, not contacts (runNarrowphaseAndSolve).
+    bool trig = (aqNpMaterial[a].v[2] != 0.0) || (aqNpMaterial[b].v[2] != 0.0);
+
+    AQManifoldLocal m;
+    m.count = 0;
+    m.normal = float3(0.0, 0.0, 0.0);
+    m.p0 = float3(0.0, 0.0, 0.0); m.p1 = float3(0.0, 0.0, 0.0);
+    m.p2 = float3(0.0, 0.0, 0.0); m.p3 = float3(0.0, 0.0, 0.0);
+    m.d0 = 0.0; m.d1 = 0.0; m.d2 = 0.0; m.d3 = 0.0;
+    m.k0 = 0u; m.k1 = 0u; m.k2 = 0u; m.k3 = 0u;
+    bool needsCpu = false;
+    bool hit = false;
+
+    uint4 infoA = aqNpShapeInfo[a].v;
+    uint4 infoB = aqNpShapeInfo[b].v;
+    if(!trig && (infoA[3] & 1u) != 0u && (infoB[3] & 1u) != 0u){
+        // Canonical order: lower AQShapeType first.
+        uint tA = infoA[0];
+        uint tB = infoB[0];
+        bool swapped = false;
+        uint idxA = a;
+        uint idxB = b;
+        if(tA > tB){
+            swapped = true;
+            uint tt = tA; tA = tB; tB = tt;
+            idxA = b;
+            idxB = a;
+        }
+        uint4 iB = aqNpShapeInfo[idxB].v;
+        float4 spA = aqNpShapeParams[idxA].v;
+        float4 spB = aqNpShapeParams[idxB].v;
+        float4 posA4 = aqNpPosAct[idxA].v;
+        float4 posB4 = aqNpPosAct[idxB].v;
+        float4 lpA4 = aqNpShapeLocalPos[idxA].v;
+        float4 lpB4 = aqNpShapeLocalPos[idxB].v;
+        AQXform xa = aqShapeWorld(float3(posA4[0], posA4[1], posA4[2]), aqNpQuat[idxA].v,
+                                  float3(lpA4[0], lpA4[1], lpA4[2]), aqNpShapeLocalQuat[idxA].v);
+        AQXform xb = aqShapeWorld(float3(posB4[0], posB4[1], posB4[2]), aqNpQuat[idxB].v,
+                                  float3(lpB4[0], lpB4[1], lpB4[2]), aqNpShapeLocalQuat[idxB].v);
+        if(tA == 3u && tB == 4u){
+            // Plane/hull — the buffer-dependent branch, inlined
+            // (AQNarrowphase.cpp:571 with the hull first; the hull->plane
+            // normal double-flips through the canonical order back to +pl.n).
+            AQPlaneW pl = aqMakePlaneW(xa, float3(spA[0], spA[1], spA[2]), spA[3]);
+            uint firstVert = iB[1];
+            uint vertCount = iB[2];
+            float3 candP[16];
+            float candD[16];
+            uint candK[16];
+            for(int z = 0; z < 4; z++){
+                candP[z] = float3(0.0, 0.0, 0.0);
+                candD[z] = 0.0;
+                candK[z] = 0u;
+            }
+            int count = 0;
+            for(uint vi = 0u; vi < vertCount && count < 16; vi++){
+                float4 v4 = aqNpHullVerts[firstVert + vi].v;
+                float3 w = xb.p + aqRotate(xb.q, float3(v4[0], v4[1], v4[2]));
+                float sd = aqDot3(pl.n, w) - pl.d;
+                if(sd < 0.0){
+                    candP[count] = w - pl.n * sd;
+                    candD[count] = -sd;
+                    candK[count] = vi;
+                    count = count + 1;
+                }
+            }
+            if(count > 0){
+                int keep = (count < 4) ? count : 4;
+                for(int i2 = 0; i2 < keep; i2++){
+                    int best = i2;
+                    for(int j2 = i2 + 1; j2 < count; j2++){
+                        if(candD[j2] > candD[best]){
+                            best = j2;
+                        }
+                    }
+                    float3 tp = candP[i2]; candP[i2] = candP[best]; candP[best] = tp;
+                    float td = candD[i2]; candD[i2] = candD[best]; candD[best] = td;
+                    uint tk = candK[i2]; candK[i2] = candK[best]; candK[best] = tk;
+                }
+                aqReduceFillManifold(pl.n, keep, candP[0], candP[1], candP[2], candP[3],
+                                     candD[0], candD[1], candD[2], candD[3],
+                                     candK[0], candK[1], candK[2], candK[3], m);
+                hit = true;
+            }
+        } else {
+            hit = aqNphDispatch(tA, tB, spA, spB, xa, xb, m, needsCpu);
+        }
+        if(hit && swapped){
+            m.normal = m.normal * -1.0;
+        }
+    }
+
+    aqNpContactFlag[p].v = (hit && m.count > 0) ? 1u : 0u;
+    aqNpPointCount[p].v = (hit && m.count > 0) ? (uint)m.count : 0u;
+    aqNpCpuFallback[p].v = (needsCpu && !trig) ? 1u : 0u;
+}
+
+// ---------------------------------------------------------------------------
+// AQPrefixScan — one Hillis-Steele step of an inclusive scan over uints:
+// out[i] = in[i] + (i >= stride ? in[i - stride] : 0). The host dispatches
+// ceil(log2(n)) steps with stride 1, 2, 4, ..., ping-ponging the two
+// bindings. Deterministic (integer adds).
+// ---------------------------------------------------------------------------
+
+[in aqNpParams, in aqNpScanIn, out aqNpScanOut]
+compute(x=64,y=1,z=1)
+void AQPrefixScan(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    uint n = aqNpParams.counts[0];
+    if(i >= n){
+        return;
+    }
+    uint stride = aqNpParams.counts[3];
+    uint v = aqNpScanIn[i].v;
+    if(i >= stride){
+        v = v + aqNpScanIn[i - stride].v;
+    }
+    aqNpScanOut[i].v = v;
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2 — build. Re-runs the branch and writes the manifold + rows densely,
+// mirroring AQSpace::runNarrowphaseAndSolve's row-build loop.
+// ---------------------------------------------------------------------------
+
+// buildTangentBasis (AQSpace.cpp:1524) — deterministic tangent pair.
+void aqTangentBasis(float3 n, out float3 t1, out float3 t2){
+    float3 alt = (abs(n[0]) < 0.6) ? float3(1.0, 0.0, 0.0)
+               : ((abs(n[1]) < 0.6) ? float3(0.0, 1.0, 0.0) : float3(0.0, 0.0, 1.0));
+    t1 = cross(n, alt);
+    float t1n2 = aqDot3(t1, t1);
+    t1 = (t1n2 > 1e-12) ? t1 * (1.0 / sqrt(t1n2)) : float3(1.0, 0.0, 0.0);
+    t2 = cross(n, t1);
+    float t2n2 = aqDot3(t2, t2);
+    t2 = (t2n2 > 1e-12) ? t2 * (1.0 / sqrt(t2n2)) : float3(0.0, 1.0, 0.0);
+}
+
+// combineMaterial (AQSpace.cpp:1509): 0 Average, 1 Min, 2 Max, 3 Multiply.
+float aqCombineMaterial(uint mode, float a, float b){
+    if(mode == 1u){
+        return min(a, b);
+    }
+    if(mode == 2u){
+        return max(a, b);
+    }
+    if(mode == 3u){
+        return a * b;
+    }
+    return (a + b) * 0.5;
+}
+
+[in aqNpParams, in aqNpPosAct, in aqNpQuat, in aqNpVelIm, in aqNpWbMax,
+ in aqNpInvIGs, in aqNpCom, in aqNpMaterial,
+ in aqNpShapeInfo, in aqNpShapeParams, in aqNpShapeLocalPos, in aqNpShapeLocalQuat,
+ in aqNpHullVerts, in aqNpPairs, in aqNpScanFlagFinal, in aqNpScanPtsFinal,
+ in aqNpCacheKeys, in aqNpCacheVals,
+ out aqNpManifolds, out aqNpRows]
+compute(x=64,y=1,z=1)
+void AQNarrowphaseBuild(uint3 tid : GlobalThreadID){
+    uint p = tid[0];
+    if(p >= aqNpParams.counts[0]){
+        return;
+    }
+    uint2 pair = aqNpPairs[p].v;
+    uint a = pair[0];
+    uint b = pair[1];
+
+    float4 matA = aqNpMaterial[a].v;
+    float4 matB = aqNpMaterial[b].v;
+    bool trig = (matA[2] != 0.0) || (matB[2] != 0.0);
+
+    AQManifoldLocal m;
+    m.count = 0;
+    m.normal = float3(0.0, 0.0, 0.0);
+    m.p0 = float3(0.0, 0.0, 0.0); m.p1 = float3(0.0, 0.0, 0.0);
+    m.p2 = float3(0.0, 0.0, 0.0); m.p3 = float3(0.0, 0.0, 0.0);
+    m.d0 = 0.0; m.d1 = 0.0; m.d2 = 0.0; m.d3 = 0.0;
+    m.k0 = 0u; m.k1 = 0u; m.k2 = 0u; m.k3 = 0u;
+    bool needsCpu = false;
+    bool hit = false;
+
+    uint4 infoA = aqNpShapeInfo[a].v;
+    uint4 infoB = aqNpShapeInfo[b].v;
+    if(!trig && (infoA[3] & 1u) != 0u && (infoB[3] & 1u) != 0u){
+        // Canonical order: lower AQShapeType first (identical block to the
+        // count pass — both re-run the branch, plan §6.D two-pass shape).
+        uint tA = infoA[0];
+        uint tB = infoB[0];
+        bool swapped = false;
+        uint idxA = a;
+        uint idxB = b;
+        if(tA > tB){
+            swapped = true;
+            uint tt = tA; tA = tB; tB = tt;
+            idxA = b;
+            idxB = a;
+        }
+        uint4 iB = aqNpShapeInfo[idxB].v;
+        float4 spA = aqNpShapeParams[idxA].v;
+        float4 spB = aqNpShapeParams[idxB].v;
+        float4 pA4 = aqNpPosAct[idxA].v;
+        float4 pB4 = aqNpPosAct[idxB].v;
+        float4 lpA4 = aqNpShapeLocalPos[idxA].v;
+        float4 lpB4 = aqNpShapeLocalPos[idxB].v;
+        AQXform xa = aqShapeWorld(float3(pA4[0], pA4[1], pA4[2]), aqNpQuat[idxA].v,
+                                  float3(lpA4[0], lpA4[1], lpA4[2]), aqNpShapeLocalQuat[idxA].v);
+        AQXform xb = aqShapeWorld(float3(pB4[0], pB4[1], pB4[2]), aqNpQuat[idxB].v,
+                                  float3(lpB4[0], lpB4[1], lpB4[2]), aqNpShapeLocalQuat[idxB].v);
+        if(tA == 3u && tB == 4u){
+            AQPlaneW pl = aqMakePlaneW(xa, float3(spA[0], spA[1], spA[2]), spA[3]);
+            uint firstVert = iB[1];
+            uint vertCount = iB[2];
+            float3 candP[16];
+            float candD[16];
+            uint candK[16];
+            for(int z = 0; z < 4; z++){
+                candP[z] = float3(0.0, 0.0, 0.0);
+                candD[z] = 0.0;
+                candK[z] = 0u;
+            }
+            int count = 0;
+            for(uint vi = 0u; vi < vertCount && count < 16; vi++){
+                float4 v4 = aqNpHullVerts[firstVert + vi].v;
+                float3 w = xb.p + aqRotate(xb.q, float3(v4[0], v4[1], v4[2]));
+                float sd = aqDot3(pl.n, w) - pl.d;
+                if(sd < 0.0){
+                    candP[count] = w - pl.n * sd;
+                    candD[count] = -sd;
+                    candK[count] = vi;
+                    count = count + 1;
+                }
+            }
+            if(count > 0){
+                int keep = (count < 4) ? count : 4;
+                for(int i2 = 0; i2 < keep; i2++){
+                    int best = i2;
+                    for(int j2 = i2 + 1; j2 < count; j2++){
+                        if(candD[j2] > candD[best]){
+                            best = j2;
+                        }
+                    }
+                    float3 tp = candP[i2]; candP[i2] = candP[best]; candP[best] = tp;
+                    float td = candD[i2]; candD[i2] = candD[best]; candD[best] = td;
+                    uint tk = candK[i2]; candK[i2] = candK[best]; candK[best] = tk;
+                }
+                aqReduceFillManifold(pl.n, keep, candP[0], candP[1], candP[2], candP[3],
+                                     candD[0], candD[1], candD[2], candD[3],
+                                     candK[0], candK[1], candK[2], candK[3], m);
+                hit = true;
+            }
+        } else {
+            hit = aqNphDispatch(tA, tB, spA, spB, xa, xb, m, needsCpu);
+        }
+        if(hit && swapped){
+            m.normal = m.normal * -1.0;
+        }
+    }
+    if(!hit || m.count <= 0){
+        return;
+    }
+
+    // Exclusive offsets from the inclusive scans (subtract own values).
+    uint mi = aqNpScanFlagFinal[p].v - 1u;                  // this pair HAS contact
+    uint rowBase = 3u * (aqNpScanPtsFinal[p].v - (uint)m.count);
+
+    uint combineModes = aqNpParams.counts[2];
+    float restCombined = aqCombineMaterial(combineModes & 0xFFu, matA[0], matB[0]);
+    float fricCombined = aqCombineMaterial((combineModes >> 8u) & 0xFFu, matA[1], matB[1]);
+
+    // Warm-start accumulators per point (0 on a cache miss / empty cache).
+    // Inline binary search over the sorted cache — ascending by (hi =
+    // featureKey, lo = a | b<<16), the CPU's uint64 pairFeatureKey order.
+    // Inlined here because resources are entry-scoped (helpers can't read
+    // the cache buffers).
+    uint cacheCount = aqNpParams.counts[1];
+    uint keyLo = (a & 0xFFFFu) | ((b & 0xFFFFu) << 16u);
+    float3 accs[4];
+    for(int z2 = 0; z2 < 4; z2++){
+        accs[z2] = float3(0.0, 0.0, 0.0);
+    }
+    if(cacheCount > 0u){
+        for(int pi2 = 0; pi2 < m.count; pi2++){
+            uint hi = m.k0;
+            if(pi2 == 1){ hi = m.k1; }
+            if(pi2 == 2){ hi = m.k2; }
+            if(pi2 == 3){ hi = m.k3; }
+            uint l = 0u;
+            uint r = cacheCount;
+            while(l < r){
+                uint mid = (l + r) / 2u;
+                uint2 k = aqNpCacheKeys[mid].v;
+                bool less = (k[1] < hi) || (k[1] == hi && k[0] < keyLo);
+                if(less){
+                    l = mid + 1u;
+                } else {
+                    r = mid;
+                }
+            }
+            if(l < cacheCount){
+                uint2 k = aqNpCacheKeys[l].v;
+                if(k[0] == keyLo && k[1] == hi){
+                    float4 vals = aqNpCacheVals[l].v;
+                    accs[pi2] = float3(vals[0], vals[1], vals[2]);
+                }
+            }
+        }
+    }
+    float3 acc0 = accs[0];
+    float3 acc1 = accs[1];
+    float3 acc2 = accs[2];
+    float3 acc3 = accs[3];
+
+    // Manifold record.
+    AQManifoldGPU rec;
+    rec.header = make_uint4(a, b, (uint)m.count, 0u);
+    rec.normal = float4(m.normal[0], m.normal[1], m.normal[2], 0.0);
+    rec.materials = float4(restCombined, fricCombined, 0.0, 0.0);
+    rec.pointPos0 = float4(m.p0[0], m.p0[1], m.p0[2], m.d0);
+    rec.pointPos1 = float4(m.p1[0], m.p1[1], m.p1[2], m.d1);
+    rec.pointPos2 = float4(m.p2[0], m.p2[1], m.p2[2], m.d2);
+    rec.pointPos3 = float4(m.p3[0], m.p3[1], m.p3[2], m.d3);
+    rec.pointAccum0 = float4(acc0[0], acc0[1], acc0[2], 0.0);
+    rec.pointAccum1 = float4(acc1[0], acc1[1], acc1[2], 0.0);
+    rec.pointAccum2 = float4(acc2[0], acc2[1], acc2[2], 0.0);
+    rec.pointAccum3 = float4(acc3[0], acc3[1], acc3[2], 0.0);
+    rec.pointKeys = make_uint4(m.k0, m.k1, m.k2, m.k3);
+    aqNpManifolds[mi] = rec;
+
+    // --- Row build (AQSpace.cpp:1637-1721) ---
+    float4 posA4 = aqNpPosAct[a].v;
+    float4 posB4 = aqNpPosAct[b].v;
+    float4 qA = aqNpQuat[a].v;
+    float4 qB = aqNpQuat[b].v;
+    float4 velImA = aqNpVelIm[a].v;
+    float4 velImB = aqNpVelIm[b].v;
+    float invMassA = velImA[3];
+    float invMassB = velImB[3];
+    float4 invIA4 = aqNpInvIGs[a].v;
+    float4 invIB4 = aqNpInvIGs[b].v;
+    AQMat3R invIA = aqWorldInvInertia(qA, float3(invIA4[0], invIA4[1], invIA4[2]));
+    AQMat3R invIB = aqWorldInvInertia(qB, float3(invIB4[0], invIB4[1], invIB4[2]));
+    float4 comA4 = aqNpCom[a].v;
+    float4 comB4 = aqNpCom[b].v;
+    float3 comA = float3(posA4[0], posA4[1], posA4[2]) + aqRotate(qA, float3(comA4[0], comA4[1], comA4[2]));
+    float3 comB = float3(posB4[0], posB4[1], posB4[2]) + aqRotate(qB, float3(comB4[0], comB4[1], comB4[2]));
+
+    float3 t1 = float3(1.0, 0.0, 0.0);
+    float3 t2 = float3(0.0, 1.0, 0.0);
+    aqTangentBasis(m.normal, t1, t2);
+
+    float4 wbA4 = aqNpWbMax[a].v;
+    float4 wbB4 = aqNpWbMax[b].v;
+    float3 wA = aqRotate(qA, float3(wbA4[0], wbA4[1], wbA4[2]));
+    float3 wB = aqRotate(qB, float3(wbB4[0], wbB4[1], wbB4[2]));
+    float3 velA = float3(velImA[0], velImA[1], velImA[2]);
+    float3 velB = float3(velImB[0], velImB[1], velImB[2]);
+
+    for(int pi = 0; pi < m.count; pi++){
+        float3 cp = m.p0;
+        float depth = m.d0;
+        float3 warm = acc0;
+        if(pi == 1){ cp = m.p1; depth = m.d1; warm = acc1; }
+        if(pi == 2){ cp = m.p2; depth = m.d2; warm = acc2; }
+        if(pi == 3){ cp = m.p3; depth = m.d3; warm = acc3; }
+
+        float3 rA = cp - comA;
+        float3 rB = cp - comB;
+
+        float3 pvA = velA + cross(wA, rA);
+        float3 pvB = velB + cross(wB, rB);
+        float relVN = aqDot3(pvB - pvA, m.normal);
+        float bias = (relVN < -1.0) ? (restCombined * relVN) : 0.0;   // kRestitutionVelThr
+
+        uint normalRowIdx = rowBase + (uint)pi * 3u;
+
+        // Effective mass along `dir` (Catto 2005 §3).
+        float3 rAxN = cross(rA, m.normal);
+        float3 rBxN = cross(rB, m.normal);
+        float kN = invMassA + invMassB + aqDot3(rAxN, aqMat3Vec(invIA, rAxN))
+                 + aqDot3(rBxN, aqMat3Vec(invIB, rBxN));
+        float effN = (kN > 1e-12) ? (1.0 / kN) : 0.0;
+
+        AQRowGPU nRow;
+        nRow.meta = make_uint4(0u, a, b, normalRowIdx);       // ContactNormal, self-peer
+        nRow.cp = float4(cp[0], cp[1], cp[2], 0.0);
+        nRow.rA = float4(rA[0], rA[1], rA[2], 0.0);
+        nRow.rB = float4(rB[0], rB[1], rB[2], 0.0);
+        nRow.dir = float4(m.normal[0], m.normal[1], m.normal[2], 0.0);
+        nRow.terms = float4(effN, bias, warm[0], 0.0);
+        nRow.extra = float4(0.0, 0.0, 0.0, 0.0);
+        aqNpRows[normalRowIdx] = nRow;
+
+        float3 rAx1 = cross(rA, t1);
+        float3 rBx1 = cross(rB, t1);
+        float k1 = invMassA + invMassB + aqDot3(rAx1, aqMat3Vec(invIA, rAx1))
+                 + aqDot3(rBx1, aqMat3Vec(invIB, rBx1));
+        float eff1 = (k1 > 1e-12) ? (1.0 / k1) : 0.0;
+
+        AQRowGPU f1Row;
+        f1Row.meta = make_uint4(1u, a, b, normalRowIdx);      // ContactFriction
+        f1Row.cp = float4(cp[0], cp[1], cp[2], 0.0);
+        f1Row.rA = float4(rA[0], rA[1], rA[2], 0.0);
+        f1Row.rB = float4(rB[0], rB[1], rB[2], 0.0);
+        f1Row.dir = float4(t1[0], t1[1], t1[2], 0.0);
+        f1Row.terms = float4(eff1, 0.0, warm[1], fricCombined);
+        f1Row.extra = float4(0.0, 0.0, 0.0, 0.0);
+        aqNpRows[normalRowIdx + 1u] = f1Row;
+
+        float3 rAx2 = cross(rA, t2);
+        float3 rBx2 = cross(rB, t2);
+        float k2 = invMassA + invMassB + aqDot3(rAx2, aqMat3Vec(invIA, rAx2))
+                 + aqDot3(rBx2, aqMat3Vec(invIB, rBx2));
+        float eff2 = (k2 > 1e-12) ? (1.0 / k2) : 0.0;
+
+        AQRowGPU f2Row;
+        f2Row.meta = make_uint4(1u, a, b, normalRowIdx);
+        f2Row.cp = float4(cp[0], cp[1], cp[2], 0.0);
+        f2Row.rA = float4(rA[0], rA[1], rA[2], 0.0);
+        f2Row.rB = float4(rB[0], rB[1], rB[2], 0.0);
+        f2Row.dir = float4(t2[0], t2[1], t2[2], 0.0);
+        f2Row.terms = float4(eff2, 0.0, warm[2], fricCombined);
+        f2Row.extra = float4(0.0, 0.0, 0.0, 0.0);
+        aqNpRows[normalRowIdx + 2u] = f2Row;
+    }
+}

@@ -255,11 +255,23 @@ namespace omegasl {
         structDeclMap[_decl->name] = _decl;
     }
 
-    /// GLSL emits its used-struct text inside `emitShaderEntryHeader`
-    /// (interleaved with the fragment-output / interstage varying decls
-    /// for internal structs), so the pre-entry-header pass is a no-op.
-    void GLSLTarget::emitShaderUsedStructs(CodeGen &/*cg*/, ast::ShaderDecl */*decl*/,
-                                           std::ostream &/*out*/) {}
+    /// Plain (non-`internal`) struct definitions are emitted here — BEFORE
+    /// the user-function prototypes, which may reference them by value.
+    /// Interstage-varying emission for `internal` structs stays in
+    /// `emitShaderEntryHeader` (it is positional: varyings interleave with
+    /// the fragment-output decls).
+    void GLSLTarget::emitShaderUsedStructs(CodeGen &cg, ast::ShaderDecl *_decl,
+                                           std::ostream &out) {
+        std::vector<std::string> used;
+        cg.typeResolver->getStructsInFuncDecl(_decl, used);
+        for (auto &s : used) {
+            auto pred = [&](ast::StructDecl *d) -> bool { return d->name == s; };
+            auto it = std::find_if(internalStructs.begin(), internalStructs.end(), pred);
+            if (it == internalStructs.end()) {
+                out << generatedStructs[s] << std::endl << std::endl;
+            }
+        }
+    }
 
     /// §6.1 — GLSL `shared` is only valid at global scope, so each top-level
     /// `threadgroup` local in the compute body is hoisted here as
@@ -525,9 +537,9 @@ namespace omegasl {
                     }
                     idx += 1;
                 }
-            } else {
-                out << generatedStructs[s] << std::endl << std::endl;
             }
+            /// Plain (non-internal) structs were already emitted by
+            /// emitShaderUsedStructs, before the user-function prototypes.
         }
 
         extra_stmts.str("");

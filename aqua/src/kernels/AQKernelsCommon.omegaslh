@@ -1,0 +1,247 @@
+// AQUA compute kernels — shared header (Phase 5c+). Math helpers, the
+// buffer-element structs, and the push-constant block shared by every
+// per-stage kernel source (AQIntegrate.omegasl, AQBroadphase.omegasl, ...).
+// Each stage file `#include`s this and is compiled to its own .omegasllib;
+// the build then merges the per-stage libs into the single
+// AQKernels.omegasllib AQUA loads at runtime (omegaslc --link).
+//
+// The helpers are transliterations of AQMath.h / OmegaGTE::GTEMath with the
+// float operation ORDER of the CPU templates preserved (plan §5/§8): same
+// left-associated sums, the GTE analytic 3x3 inverse formula, the GTE
+// Hamilton product component order, the AQMath sinc-series quaternion exp.
+
+// ---------------------------------------------------------------------------
+// Quaternion helpers.
+// ---------------------------------------------------------------------------
+
+// AQrotate (AQMath.h): v' = v + 2w(u x v) + 2u x (u x v), u = q.xyz.
+float3 aqRotate(float4 q, float3 v){
+    float3 u = float3(q[0], q[1], q[2]);
+    float3 t = cross(u, v) * 2.0;
+    return v + t * q[3] + cross(u, t);
+}
+
+// AQrotate with q.conjugate() (conjugate = {-x, -y, -z, w}) — world -> body.
+float3 aqRotateConj(float4 q, float3 v){
+    float3 u = float3(-q[0], -q[1], -q[2]);
+    float3 t = cross(u, v) * 2.0;
+    return v + t * q[3] + cross(u, t);
+}
+
+// OmegaGTE::Quaternion Hamilton product (a * b), component order verbatim.
+float4 aqQuatMul(float4 a, float4 b){
+    return float4(
+        a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
+        a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+        a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
+        a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2]);
+}
+
+// AQquatExp (AQMath.h): quaternion from a half-angle rotation vector, with the
+// sinc Taylor fallback near zero so the GPU and CPU paths agree at rest.
+float4 aqQuatExp(float3 halfAngle){
+    float x = halfAngle[0];
+    float y = halfAngle[1];
+    float z = halfAngle[2];
+    float t2 = x*x + y*y + z*z;
+    float t = sqrt(t2);
+    float s = (t < 0.0001) ? (1.0 - t2 / 6.0) : (sin(t) / t);
+    float w = (t < 0.0001) ? (1.0 - t2 / 2.0) : cos(t);
+    return float4(x*s, y*s, z*s, w);
+}
+
+// OmegaGTE::Quaternion::normalized() — divide by length (not multiply by the
+// reciprocal), matching the CPU's rounding.
+float4 aqQuatNormalize(float4 q){
+    float len = sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+    return float4(q[0]/len, q[1]/len, q[2]/len, q[3]/len);
+}
+
+// ---------------------------------------------------------------------------
+// 3x3 matrix as rows, matching GTE's m[i][k] = (row i, col k) multiply
+// semantics (AQskew comment, AQMath.h:43).
+// ---------------------------------------------------------------------------
+
+struct AQMat3R {
+    float3 r0;
+    float3 r1;
+    float3 r2;
+};
+
+// AQskew (AQMath.h): AQskew(a) * b == cross(a, b).
+AQMat3R aqSkew(float3 a){
+    AQMat3R m;
+    m.r0 = float3(0.0, -a[2], a[1]);
+    m.r1 = float3(a[2], 0.0, -a[0]);
+    m.r2 = float3(-a[1], a[0], 0.0);
+    return m;
+}
+
+AQMat3R aqMat3Sub(AQMat3R a, AQMat3R b){
+    AQMat3R m;
+    m.r0 = a.r0 - b.r0;
+    m.r1 = a.r1 - b.r1;
+    m.r2 = a.r2 - b.r2;
+    return m;
+}
+
+// a + s*b with GTE's scalar-multiply-then-add shape (dt * (M) then +).
+AQMat3R aqMat3AddScaled(AQMat3R a, AQMat3R b, float s){
+    AQMat3R m;
+    m.r0 = a.r0 + b.r0 * s;
+    m.r1 = a.r1 + b.r1 * s;
+    m.r2 = a.r2 + b.r2 * s;
+    return m;
+}
+
+// GTE Matrix<3,3> * Matrix<3,3>: r[i][j] = sum_k a[i][k] * b[k][j], the sum
+// left-associated exactly as the CPU accumulates it.
+AQMat3R aqMat3Mul(AQMat3R a, AQMat3R b){
+    AQMat3R m;
+    m.r0 = float3(a.r0[0]*b.r0[0] + a.r0[1]*b.r1[0] + a.r0[2]*b.r2[0],
+                  a.r0[0]*b.r0[1] + a.r0[1]*b.r1[1] + a.r0[2]*b.r2[1],
+                  a.r0[0]*b.r0[2] + a.r0[1]*b.r1[2] + a.r0[2]*b.r2[2]);
+    m.r1 = float3(a.r1[0]*b.r0[0] + a.r1[1]*b.r1[0] + a.r1[2]*b.r2[0],
+                  a.r1[0]*b.r0[1] + a.r1[1]*b.r1[1] + a.r1[2]*b.r2[1],
+                  a.r1[0]*b.r0[2] + a.r1[1]*b.r1[2] + a.r1[2]*b.r2[2]);
+    m.r2 = float3(a.r2[0]*b.r0[0] + a.r2[1]*b.r1[0] + a.r2[2]*b.r2[0],
+                  a.r2[0]*b.r0[1] + a.r2[1]*b.r1[1] + a.r2[2]*b.r2[1],
+                  a.r2[0]*b.r0[2] + a.r2[1]*b.r1[2] + a.r2[2]*b.r2[2]);
+    return m;
+}
+
+// GTE Matrix<3,3> * Vec3.
+float3 aqMat3Vec(AQMat3R m, float3 v){
+    return float3(m.r0[0]*v[0] + m.r0[1]*v[1] + m.r0[2]*v[2],
+                  m.r1[0]*v[0] + m.r1[1]*v[1] + m.r1[2]*v[2],
+                  m.r2[0]*v[0] + m.r2[1]*v[1] + m.r2[2]*v[2]);
+}
+
+// OmegaGTE::determinant(Matrix<3,3>) — formula verbatim.
+float aqMat3Det(AQMat3R m){
+    return m.r0[0] * (m.r1[1]*m.r2[2] - m.r1[2]*m.r2[1])
+         - m.r0[1] * (m.r1[0]*m.r2[2] - m.r1[2]*m.r2[0])
+         + m.r0[2] * (m.r1[0]*m.r2[1] - m.r1[1]*m.r2[0]);
+}
+
+// OmegaGTE::inverse(Matrix<3,3>) — analytic adjugate over determinant, entry
+// order verbatim (NOT the OmegaSL builtin inverse(), whose emulation has a
+// different operation order).
+AQMat3R aqMat3Inverse(AQMat3R m){
+    float det = aqMat3Det(m);
+    float invDet = 1.0 / det;
+    AQMat3R r;
+    r.r0 = float3((m.r1[1]*m.r2[2] - m.r1[2]*m.r2[1]) * invDet,
+                  (m.r0[2]*m.r2[1] - m.r0[1]*m.r2[2]) * invDet,
+                  (m.r0[1]*m.r1[2] - m.r0[2]*m.r1[1]) * invDet);
+    r.r1 = float3((m.r1[2]*m.r2[0] - m.r1[0]*m.r2[2]) * invDet,
+                  (m.r0[0]*m.r2[2] - m.r0[2]*m.r2[0]) * invDet,
+                  (m.r0[2]*m.r1[0] - m.r0[0]*m.r1[2]) * invDet);
+    r.r2 = float3((m.r1[0]*m.r2[1] - m.r1[1]*m.r2[0]) * invDet,
+                  (m.r0[1]*m.r2[0] - m.r0[0]*m.r2[1]) * invDet,
+                  (m.r0[0]*m.r1[1] - m.r0[1]*m.r1[0]) * invDet);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// AQworldInvInertia (AQMath.h:224) — world-space inverse inertia
+// R * diag(invMomentsBody) * R^T, built as sum_k d_k * (a_k a_k^T) where a_k
+// is the k-th body axis rotated into world. Convention-safe and matching the
+// CPU's accumulation order (k-major, += per entry). Used by the narrowphase
+// row build (5e) and the position solve (5f).
+// ---------------------------------------------------------------------------
+
+AQMat3R aqWorldInvInertia(float4 q, float3 invMomentsBody){
+    AQMat3R m;
+    m.r0 = float3(0.0, 0.0, 0.0);
+    m.r1 = float3(0.0, 0.0, 0.0);
+    m.r2 = float3(0.0, 0.0, 0.0);
+    for(int k = 0; k < 3; k++){
+        float3 axisLocal = float3(0.0, 0.0, 0.0);
+        axisLocal[k] = 1.0;
+        float3 a = aqRotate(q, axisLocal);
+        float d = invMomentsBody[k];
+        m.r0[0] += d * a[0] * a[0];
+        m.r0[1] += d * a[0] * a[1];
+        m.r0[2] += d * a[0] * a[2];
+        m.r1[0] += d * a[1] * a[0];
+        m.r1[1] += d * a[1] * a[1];
+        m.r1[2] += d * a[1] * a[2];
+        m.r2[0] += d * a[2] * a[0];
+        m.r2[1] += d * a[2] * a[1];
+        m.r2[2] += d * a[2] * a[2];
+    }
+    return m;
+}
+
+// ---------------------------------------------------------------------------
+// Body-state buffer element + the shared per-dispatch push-constant block.
+// Body state rides in struct-of-float4 component groups (plan §7.2 — "the
+// matching OmegaSL struct for each buffer is one component group"); the w
+// lane carries the per-body scalar noted at each declaration site.
+// Activation encoding matches AQActivationState: 0 Active, 1 Sleeping,
+// 2 Kinematic (exact small integers in float).
+// ---------------------------------------------------------------------------
+
+struct AQF4 {
+    float4 v;
+};
+
+struct AQU1 {
+    uint v;
+};
+
+struct AQU2 {
+    uint2 v;
+};
+
+struct AQU4 {
+    uint4 v;
+};
+
+struct AQI4 {
+    int4 v;
+};
+
+struct AQCounter {
+    atomic_uint n;
+};
+
+// Per-dispatch scalars (plan §7.3 AQStepParams). gravityDt = (gx, gy, gz, dt);
+// counts[0] = bodyCount.
+struct AQStepParams {
+    float4 gravityDt;
+    uint4  counts;
+};
+
+// One contact manifold, GPU layout (192 B) — written by the 5e build pass,
+// read by the 5f split-impulse position solve. pointKeys packs the 4 feature
+// keys into one uint4.
+struct AQManifoldGPU {
+    uint4  header;        // a, b, pointCount, 0
+    float4 normal;        // xyz world normal (A -> B), w 0
+    float4 materials;     // restitutionCombined, frictionCombined, 0, 0
+    float4 pointPos0;     // xyz world position, w depth
+    float4 pointPos1;
+    float4 pointPos2;
+    float4 pointPos3;
+    float4 pointAccum0;   // accumNormal, accumFriction0, accumFriction1, 0
+    float4 pointAccum1;
+    float4 pointAccum2;
+    float4 pointAccum3;
+    uint4  pointKeys;     // featureKey per point
+};
+
+// One constraint row, GPU layout (112 B) — AQConstraintRow mirrored. kind:
+// 0 ContactNormal, 1 ContactFriction, 2 JointAxis, 3 JointLimit, 4 JointMotor
+// (the joint kinds arrive via CPU upload). extra = (compliance,
+// isAngular 0/1, 0, 0).
+struct AQRowGPU {
+    uint4  meta;          // kind, bodyA, bodyB, peerRow (global row index)
+    float4 cp;            // contactPoint.xyz
+    float4 rA;
+    float4 rB;
+    float4 dir;
+    float4 terms;         // effectiveMass, bias, accumImpulse, frictionCoeff
+    float4 extra;         // compliance, isAngular, 0, 0
+};

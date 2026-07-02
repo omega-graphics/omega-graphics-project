@@ -145,3 +145,69 @@ if(APPLE)
     set_property(TARGET aqua_compute_test APPEND PROPERTY
         BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
 endif()
+
+# Phase 5c: integration-kernel stage-isolation parity (plan §9/§13 5c) — the
+# GPU AQIntegrateVelocity/AQIntegratePosition kernels vs the CPU AQIntegrator
+# templates from identical state, plus the within-path byte-identical re-run.
+# Same INTERNAL-test shape as aqua_compute_test (src/ headers + kernel-lib
+# path via compile definition); device-guarded, skips on headless CI.
+add_aqua_test(
+    NAME    aqua_gpu_integrate_test
+    SOURCES aqua_gpu_integrate_test.cpp
+    LIBS    AQUA OmegaGTE OmegaCommonCore)
+target_include_directories(aqua_gpu_integrate_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_compile_definitions(aqua_gpu_integrate_test PRIVATE "AQUA_KERNELS_LIB_PATH=\"${AQUA_KERNELS_LIB}\"")
+add_dependencies(aqua_gpu_integrate_test AQUAKernelLib)
+if(APPLE)
+    set_property(TARGET aqua_gpu_integrate_test APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()
+
+# Phase 5e: narrowphase stage-isolation parity (plan §9/§13 5e) — the GPU
+# count -> prefix-scan -> build chain vs the CPU narrowphase's manifolds and a
+# host recomputation of the CPU row-build; plus the warm-start cache round
+# trip and the cpuFallback flags for GJK pairs. Device-guarded.
+add_aqua_test(
+    NAME    aqua_gpu_narrowphase_test
+    SOURCES aqua_gpu_narrowphase_test.cpp
+    LIBS    AQUA OmegaGTE OmegaCommonCore)
+target_include_directories(aqua_gpu_narrowphase_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_compile_definitions(aqua_gpu_narrowphase_test PRIVATE "AQUA_KERNELS_LIB_PATH=\"${AQUA_KERNELS_LIB}\"")
+add_dependencies(aqua_gpu_narrowphase_test AQUAKernelLib)
+if(APPLE)
+    set_property(TARGET aqua_gpu_narrowphase_test APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()
+
+# Phase 5f: colored-solver stage parity (plan §9/§13 5f) — one full GPU
+# sub-step (velocity half-step -> narrowphase -> CPU-colored GPU PGS +
+# split-impulse -> position half-step) on a penetrating box stack vs one CPU
+# advance; state within the cross-path band, impulses within the
+# measured-relaxed band, full-sub-step re-run byte-identical. Device-guarded.
+add_aqua_test(
+    NAME    aqua_gpu_solver_test
+    SOURCES aqua_gpu_solver_test.cpp
+    LIBS    AQUA OmegaGTE OmegaCommonCore)
+target_include_directories(aqua_gpu_solver_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_compile_definitions(aqua_gpu_solver_test PRIVATE "AQUA_KERNELS_LIB_PATH=\"${AQUA_KERNELS_LIB}\"")
+add_dependencies(aqua_gpu_solver_test AQUAKernelLib)
+if(APPLE)
+    set_property(TARGET aqua_gpu_solver_test APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()
+
+# Phase 5d: broadphase stage-isolation parity (plan §9/§13 5d) — the GPU grid
+# chain (AABB refresh -> hash -> stable sort -> pair scan -> pair sort) vs the
+# CPU broadphase's candidate list on a randomized static scene; the ordered
+# pair lists must be identical. Device-guarded like the other GPU tests.
+add_aqua_test(
+    NAME    aqua_gpu_broadphase_test
+    SOURCES aqua_gpu_broadphase_test.cpp
+    LIBS    AQUA OmegaGTE OmegaCommonCore)
+target_include_directories(aqua_gpu_broadphase_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_compile_definitions(aqua_gpu_broadphase_test PRIVATE "AQUA_KERNELS_LIB_PATH=\"${AQUA_KERNELS_LIB}\"")
+add_dependencies(aqua_gpu_broadphase_test AQUAKernelLib)
+if(APPLE)
+    set_property(TARGET aqua_gpu_broadphase_test APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()

@@ -1,0 +1,460 @@
+// AQUA compute kernels — broadphase stage (Phase 5d). The sort-based uniform
+// grid (plan §6.B/§6.C), restructured into the GPU form:
+//
+//   AQRefreshAABB       — world + fat AABB per body (AQshapeAABB transliterated,
+//                         all five shape types, |R|·h bound with the ULP pad).
+//   AQGridHash          — one entry per GRID body: (32-bit cell hash of the
+//                         fat-AABB center cell, body index) + the integer cell
+//                         coords. Planes / shapeless bodies get the sentinel
+//                         key and sort to the end.
+//   AQSortEntriesRank / AQSortEntriesScatter
+//                       — stable rank sort by (key, body). O(n^2) work but
+//                         trivially parallel and EXACTLY the stable-sort order
+//                         the CPU path produces; the Merrill-Grimshaw radix
+//                         sort is the flagged 5.x perf upgrade (plan §4).
+//   AQBroadphasePairs   — one thread per body: 27-neighborhood binary search
+//                         over the sorted entries. The stored cell coords are
+//                         compared exactly, so a 32-bit hash collision can
+//                         never emit a duplicate or a wrong-cell candidate —
+//                         each unordered pair is found exactly once (by the
+//                         lower-index body), so NO dedup pass is needed.
+//                         Plane bodies pair against every filter-accepted
+//                         non-plane body (the CPU's §5b plane path). Appends
+//                         through an atomic bump allocator (plan §11.7).
+//   AQSortPairsRank / AQSortPairsScatter
+//                       — orders the pair list by (a, b), yielding the exact
+//                         byte-identical list the CPU broadphase publishes.
+//
+// WHY center-cell insertion is enough: the host passes cellSize >= the maximum
+// fat-AABB extent (any axis, any grid body). Two overlapping fat AABBs have
+// center distance <= (extA+extB)/2 <= cellSize on every axis, so their center
+// cells differ by at most 1 per axis and the 27-neighborhood always finds the
+// pair. The FINAL list only keeps exactly-overlap-tested pairs, so it is
+// independent of the grid used to find candidates — which is what makes the
+// GPU list byte-identical to the CPU's straddle-insertion grid.
+
+#include "AQKernelsCommon.omegaslh"
+
+// ---------------------------------------------------------------------------
+// Broadphase-local element structs + params.
+// ---------------------------------------------------------------------------
+
+// (AQU1/AQU2/AQU4/AQI4/AQCounter element structs come from
+// AQKernelsCommon.omegaslh.)
+
+// config = (cellSize, fattenMargin, frameDt, unused);
+// counts = (bodyCount, pairCapacity, unused, unused).
+struct AQBroadphaseParams {
+    float4 config;
+    uint4  counts;
+};
+
+constant<AQBroadphaseParams> aqBpParams : 0;
+
+// Per-body inputs. Pose/velocity are the SAME pooled body buffers the
+// integration kernels use (bound here at these slots); the shape table is
+// dereferenced per body at upload (shape handle -> flat arrays).
+buffer<AQF4> aqBpPosAct         : 1;  // xyz position, w activation
+buffer<AQF4> aqBpQuat           : 2;  // xyzw orientation
+buffer<AQF4> aqBpVelIm          : 3;  // xyz velocity, w invMass
+buffer<AQU4> aqBpShapeInfo      : 4;  // x type (AQShapeType), y firstVert, z vertCount, w flags (bit0 hasShape)
+buffer<AQF4> aqBpShapeParams    : 5;  // sphere (r,-,-,-) box (hx,hy,hz,-) capsule (r,hh,-,-) plane (nx,ny,nz,offset)
+buffer<AQF4> aqBpShapeLocalPos  : 6;  // xyz shape local position
+buffer<AQF4> aqBpShapeLocalQuat : 7;  // xyzw shape local orientation
+buffer<AQF4> aqBpHullVerts      : 8;  // hull vertex pool (xyz)
+buffer<AQU4> aqBpFilter         : 9;  // x layer, y mask
+
+// Per-body AABB outputs (world = tight, fat = margin + v*frameDt dilation).
+buffer<AQF4> aqBpWorldMin : 10;
+buffer<AQF4> aqBpWorldMax : 11;
+buffer<AQF4> aqBpFatMin   : 12;
+buffer<AQF4> aqBpFatMax   : 13;
+
+// Grid + sort scratch.
+buffer<AQU2> aqBpEntries       : 14;  // (cellKey, body), body order
+buffer<AQI4> aqBpCellCoords    : 15;  // (cx, cy, cz, valid) per body
+buffer<AQU1> aqBpEntryRanks    : 16;
+buffer<AQU2> aqBpEntriesSorted : 17;
+
+// Pair output + sort scratch.
+buffer<AQCounter> aqBpPairCount : 18;
+buffer<AQU2>      aqBpPairs       : 19;
+buffer<AQU1>      aqBpPairRanks   : 20;
+buffer<AQU2>      aqBpPairsSorted : 21;
+
+// ---------------------------------------------------------------------------
+// Local helpers.
+// ---------------------------------------------------------------------------
+
+// 32-bit cell hash (classic large-prime XOR). Top bit cleared so the sentinel
+// key 0xFFFFFFFF can never collide with a real cell's key. Collisions between
+// REAL cells are harmless: the pair scan re-checks the integer coords.
+uint aqCellHash(int cx, int cy, int cz){
+    uint h = ((uint)cx * 73856093u) ^ ((uint)cy * 19349663u) ^ ((uint)cz * 83492791u);
+    return h & 0x7FFFFFFFu;
+}
+
+// CPU floorDiv (AQSpace.cpp): (int)std::floor(v / cell).
+int aqFloorDiv(float v, float cell){
+    return (int)floor(v / cell);
+}
+
+// AQAABB::overlaps, transliterated (note the negated any-axis-separated form).
+bool aqAabbOverlap(float3 minA, float3 maxA, float3 minB, float3 maxB){
+    if(maxA[0] < minB[0] || minA[0] > maxB[0] ||
+       maxA[1] < minB[1] || minA[1] > maxB[1] ||
+       maxA[2] < minB[2] || minA[2] > maxB[2]){
+        return false;
+    }
+    return true;
+}
+
+// AQfilterAccepts (AQCollision.h): symmetric layer/mask rule.
+bool aqFilterAccepts(uint layerA, uint maskA, uint layerB, uint maskB){
+    return ((layerA & maskB) != 0u) && ((layerB & maskA) != 0u);
+}
+
+// ---------------------------------------------------------------------------
+// AQRefreshAABB — AQshapeAABB (AQCollision.cpp) + the runBroadphase fatten,
+// one thread per body. Shape world pose composes body * local exactly as
+// AQTransform::operator* does (r.q = q*cq; r.p = p + rotate(q, cp)).
+// ---------------------------------------------------------------------------
+
+[in aqBpParams, in aqBpPosAct, in aqBpQuat, in aqBpVelIm, in aqBpShapeInfo,
+ in aqBpShapeParams, in aqBpShapeLocalPos, in aqBpShapeLocalQuat, in aqBpHullVerts,
+ out aqBpWorldMin, out aqBpWorldMax, out aqBpFatMin, out aqBpFatMax]
+compute(x=64,y=1,z=1)
+void AQRefreshAABB(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqBpParams.counts[0]){
+        return;
+    }
+
+    uint4 info = aqBpShapeInfo[i].v;
+    if((info[3] & 1u) == 0u){
+        // No shape — broadphase-invisible. Write empty bounds so stale data
+        // can never read as a huge box.
+        aqBpWorldMin[i].v = float4(0.0, 0.0, 0.0, 0.0);
+        aqBpWorldMax[i].v = float4(0.0, 0.0, 0.0, 0.0);
+        aqBpFatMin[i].v = float4(0.0, 0.0, 0.0, 0.0);
+        aqBpFatMax[i].v = float4(0.0, 0.0, 0.0, 0.0);
+        return;
+    }
+
+    // Shape world pose = body * local.
+    float4 posAct = aqBpPosAct[i].v;
+    float3 bp = float3(posAct[0], posAct[1], posAct[2]);
+    float4 bq = aqBpQuat[i].v;
+    float4 lp4 = aqBpShapeLocalPos[i].v;
+    float3 lp = float3(lp4[0], lp4[1], lp4[2]);
+    float4 lq = aqBpShapeLocalQuat[i].v;
+    float4 xq = aqQuatMul(bq, lq);
+    float3 xp = bp + aqRotate(bq, lp);
+
+    uint shapeType = info[0];
+    float4 sp = aqBpShapeParams[i].v;
+
+    float3 wmin = float3(0.0, 0.0, 0.0);
+    float3 wmax = float3(0.0, 0.0, 0.0);
+
+    if(shapeType == 0u){
+        // Sphere: c +- r.
+        float r = sp[0];
+        wmin = xp - float3(r, r, r);
+        wmax = xp + float3(r, r, r);
+    }
+    else if(shapeType == 1u || shapeType == 4u){
+        // Box — the |R|·h oriented-box bound with the scale-aware ULP pad
+        // (AQaabbOfOrientedBox, AQMath.h). The hull case is the same rule run
+        // on the local-AABB of the hull's vertices, recentered at the shape's
+        // world transform of the local center.
+        float hx = sp[0];
+        float hy = sp[1];
+        float hz = sp[2];
+        float3 centerW = xp;
+        if(shapeType == 4u){
+            float bigF = 3.4028234663852886e38;
+            float3 lmin = float3(bigF, bigF, bigF);
+            float3 lmax = float3(-bigF, -bigF, -bigF);
+            uint first = info[1];
+            uint count = info[2];
+            for(uint k = 0u; k < count; k++){
+                float4 v4 = aqBpHullVerts[first + k].v;
+                lmin = float3(min(lmin[0], v4[0]), min(lmin[1], v4[1]), min(lmin[2], v4[2]));
+                lmax = float3(max(lmax[0], v4[0]), max(lmax[1], v4[1]), max(lmax[2], v4[2]));
+            }
+            float3 ext = lmax - lmin;
+            hx = ext[0] * 0.5;
+            hy = ext[1] * 0.5;
+            hz = ext[2] * 0.5;
+            float3 cLocal = (lmin + lmax) * 0.5;
+            centerW = xp + aqRotate(xq, cLocal);
+        }
+        float3 rx = aqRotate(xq, float3(1.0, 0.0, 0.0));
+        float3 ry = aqRotate(xq, float3(0.0, 1.0, 0.0));
+        float3 rz = aqRotate(xq, float3(0.0, 0.0, 1.0));
+        float eps = 1.1920928955078125e-07;   // std::numeric_limits<float>::epsilon()
+        float pad = 8.0 * eps *
+            (abs(centerW[0]) + abs(centerW[1]) + abs(centerW[2]) + hx + hy + hz);
+        float3 h = float3(
+            abs(rx[0]) * hx + abs(ry[0]) * hy + abs(rz[0]) * hz + pad,
+            abs(rx[1]) * hx + abs(ry[1]) * hy + abs(rz[1]) * hz + pad,
+            abs(rx[2]) * hx + abs(ry[2]) * hy + abs(rz[2]) * hz + pad);
+        wmin = centerW - h;
+        wmax = centerW + h;
+    }
+    else if(shapeType == 2u){
+        // Capsule: AABB of the two segment endpoints, expanded by r.
+        float r = sp[0];
+        float hh = sp[1];
+        float3 axisW = aqRotate(xq, float3(0.0, hh, 0.0));
+        float3 a = xp - axisW;
+        float3 b = xp + axisW;
+        wmin = float3(min(a[0], b[0]) - r, min(a[1], b[1]) - r, min(a[2], b[2]) - r);
+        wmax = float3(max(a[0], b[0]) + r, max(a[1], b[1]) + r, max(a[2], b[2]) + r);
+    }
+    else {
+        // Plane: huge finite stand-in bound (AQCollision.cpp kHuge).
+        float kHuge = 1e18;
+        wmin = float3(-kHuge, -kHuge, -kHuge);
+        wmax = float3(kHuge, kHuge, kHuge);
+    }
+
+    aqBpWorldMin[i].v = float4(wmin[0], wmin[1], wmin[2], 0.0);
+    aqBpWorldMax[i].v = float4(wmax[0], wmax[1], wmax[2], 0.0);
+
+    // Fatten: margin + velocity-proportional dilation at the frame dt
+    // (runBroadphase step 1).
+    float4 velIm = aqBpVelIm[i].v;
+    float3 vel = float3(velIm[0], velIm[1], velIm[2]);
+    float vmag = sqrt(vel[0]*vel[0] + vel[1]*vel[1] + vel[2]*vel[2]);
+    float margin = aqBpParams.config[1] + vmag * aqBpParams.config[2];
+    aqBpFatMin[i].v = float4(wmin[0] - margin, wmin[1] - margin, wmin[2] - margin, 0.0);
+    aqBpFatMax[i].v = float4(wmax[0] + margin, wmax[1] + margin, wmax[2] + margin, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// AQGridHash — one entry per body: the center cell of the fat AABB, hashed.
+// Planes and shapeless bodies take the sentinel key (sorts to the end) and an
+// invalid coord record.
+// ---------------------------------------------------------------------------
+
+[in aqBpParams, in aqBpShapeInfo, in aqBpFatMin, in aqBpFatMax,
+ out aqBpEntries, out aqBpCellCoords]
+compute(x=64,y=1,z=1)
+void AQGridHash(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqBpParams.counts[0]){
+        return;
+    }
+    uint4 info = aqBpShapeInfo[i].v;
+    bool inGrid = ((info[3] & 1u) != 0u) && (info[0] != 3u);   // has shape, not a plane
+    if(!inGrid){
+        aqBpEntries[i].v = make_uint2(0xFFFFFFFFu, i);
+        aqBpCellCoords[i].v = make_int4(0, 0, 0, 0);
+        return;
+    }
+    float cellSize = aqBpParams.config[0];
+    float4 fmin = aqBpFatMin[i].v;
+    float4 fmax = aqBpFatMax[i].v;
+    float3 center = float3((fmin[0] + fmax[0]) * 0.5,
+                           (fmin[1] + fmax[1]) * 0.5,
+                           (fmin[2] + fmax[2]) * 0.5);
+    int cx = aqFloorDiv(center[0], cellSize);
+    int cy = aqFloorDiv(center[1], cellSize);
+    int cz = aqFloorDiv(center[2], cellSize);
+    aqBpEntries[i].v = make_uint2(aqCellHash(cx, cy, cz), i);
+    aqBpCellCoords[i].v = make_int4(cx, cy, cz, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Stable rank sort of the (key, body) entries. rank_i = #{ j : key_j < key_i
+// or (key_j == key_i and j < i) } — the exact output order of a stable sort
+// by key with insertion order preserved (entries are written in body order,
+// matching the CPU's stable_sort over body-ordered CellEntry records).
+// ---------------------------------------------------------------------------
+
+[in aqBpParams, in aqBpEntries, out aqBpEntryRanks]
+compute(x=64,y=1,z=1)
+void AQSortEntriesRank(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    uint n = aqBpParams.counts[0];
+    if(i >= n){
+        return;
+    }
+    uint ki = aqBpEntries[i].v[0];
+    uint rank = 0u;
+    for(uint j = 0u; j < n; j++){
+        uint kj = aqBpEntries[j].v[0];
+        if(kj < ki || (kj == ki && j < i)){
+            rank = rank + 1u;
+        }
+    }
+    aqBpEntryRanks[i].v = rank;
+}
+
+[in aqBpParams, in aqBpEntries, in aqBpEntryRanks, out aqBpEntriesSorted]
+compute(x=64,y=1,z=1)
+void AQSortEntriesScatter(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqBpParams.counts[0]){
+        return;
+    }
+    aqBpEntriesSorted[aqBpEntryRanks[i].v].v = aqBpEntries[i].v;
+}
+
+// ---------------------------------------------------------------------------
+// AQBroadphasePairs — candidate generation. One thread per body.
+// ---------------------------------------------------------------------------
+
+[in aqBpParams, in aqBpShapeInfo, in aqBpFilter, in aqBpFatMin, in aqBpFatMax,
+ in aqBpCellCoords, in aqBpEntriesSorted, inout aqBpPairCount, out aqBpPairs]
+compute(x=64,y=1,z=1)
+void AQBroadphasePairs(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    uint n = aqBpParams.counts[0];
+    if(i >= n){
+        return;
+    }
+    uint4 infoI = aqBpShapeInfo[i].v;
+    if((infoI[3] & 1u) == 0u){
+        return;                                   // no shape
+    }
+    uint4 filtI = aqBpFilter[i].v;
+    float4 fminI4 = aqBpFatMin[i].v;
+    float4 fmaxI4 = aqBpFatMax[i].v;
+    float3 fminI = float3(fminI4[0], fminI4[1], fminI4[2]);
+    float3 fmaxI = float3(fmaxI4[0], fmaxI4[1], fmaxI4[2]);
+    uint capacity = aqBpParams.counts[1];
+
+    if(infoI[0] == 3u){
+        // Plane: candidate against every filter-accepted non-plane body
+        // (runBroadphase §5b). Emitted only by the plane's own thread, so
+        // each plane pair appears exactly once.
+        for(uint j = 0u; j < n; j++){
+            if(j == i){
+                continue;
+            }
+            uint4 infoJ = aqBpShapeInfo[j].v;
+            if((infoJ[3] & 1u) == 0u || infoJ[0] == 3u){
+                continue;
+            }
+            uint4 filtJ = aqBpFilter[j].v;
+            if(!aqFilterAccepts(filtI[0], filtI[1], filtJ[0], filtJ[1])){
+                continue;
+            }
+            float4 fminJ4 = aqBpFatMin[j].v;
+            float4 fmaxJ4 = aqBpFatMax[j].v;
+            float3 fminJ = float3(fminJ4[0], fminJ4[1], fminJ4[2]);
+            float3 fmaxJ = float3(fmaxJ4[0], fmaxJ4[1], fmaxJ4[2]);
+            if(!aqAabbOverlap(fminI, fmaxI, fminJ, fmaxJ)){
+                continue;
+            }
+            uint a = min(i, j);
+            uint b = max(i, j);
+            uint slot = atomic_add(aqBpPairCount[0].n, 1u);
+            if(slot < capacity){
+                aqBpPairs[slot].v = make_uint2(a, b);
+            }
+        }
+        return;
+    }
+
+    // Grid body: scan the 27-cell neighborhood of the center cell via binary
+    // search over the sorted (key, body) entries. Emit only when i < j so
+    // each pair is produced exactly once; the exact coord compare filters
+    // both hash aliases and sentinel entries.
+    int4 cc = aqBpCellCoords[i].v;
+    for(int dz = -1; dz <= 1; dz++){
+        for(int dy = -1; dy <= 1; dy++){
+            for(int dx = -1; dx <= 1; dx++){
+                int ncx = cc[0] + dx;
+                int ncy = cc[1] + dy;
+                int ncz = cc[2] + dz;
+                uint h = aqCellHash(ncx, ncy, ncz);
+
+                // lower_bound on key h.
+                uint lo = 0u;
+                uint hi = n;
+                while(lo < hi){
+                    uint mid = (lo + hi) / 2u;
+                    if(aqBpEntriesSorted[mid].v[0] < h){
+                        lo = mid + 1u;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                uint k = lo;
+                while(k < n && aqBpEntriesSorted[k].v[0] == h){
+                    uint j = aqBpEntriesSorted[k].v[1];
+                    k = k + 1u;
+                    if(j <= i){
+                        continue;                 // emit once, from the lower index
+                    }
+                    int4 ccJ = aqBpCellCoords[j].v;
+                    if(ccJ[3] == 0 || ccJ[0] != ncx || ccJ[1] != ncy || ccJ[2] != ncz){
+                        continue;                 // hash alias — different real cell
+                    }
+                    uint4 filtJ = aqBpFilter[j].v;
+                    if(!aqFilterAccepts(filtI[0], filtI[1], filtJ[0], filtJ[1])){
+                        continue;
+                    }
+                    float4 fminJ4 = aqBpFatMin[j].v;
+                    float4 fmaxJ4 = aqBpFatMax[j].v;
+                    float3 fminJ = float3(fminJ4[0], fminJ4[1], fminJ4[2]);
+                    float3 fmaxJ = float3(fmaxJ4[0], fmaxJ4[1], fmaxJ4[2]);
+                    if(!aqAabbOverlap(fminI, fmaxI, fminJ, fmaxJ)){
+                        continue;
+                    }
+                    uint slot = atomic_add(aqBpPairCount[0].n, 1u);
+                    if(slot < capacity){
+                        aqBpPairs[slot].v = make_uint2(i, j);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pair sort — same stable rank scheme, keyed lexicographically by (a, b).
+// Reads the pair count from the atomic counter (no host round-trip between
+// the append pass and the sort). Pairs past `capacity` were dropped by the
+// append guard; the host detects count > capacity and re-runs with a grown
+// buffer, so the sorted prefix here is only consumed when no overflow
+// happened.
+// ---------------------------------------------------------------------------
+
+[in aqBpParams, in aqBpPairs, inout aqBpPairCount, out aqBpPairRanks]
+compute(x=64,y=1,z=1)
+void AQSortPairsRank(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    uint total = atomic_load(aqBpPairCount[0].n);
+    uint used = min(total, aqBpParams.counts[1]);
+    if(i >= used){
+        return;
+    }
+    uint2 pi = aqBpPairs[i].v;
+    uint rank = 0u;
+    for(uint j = 0u; j < used; j++){
+        uint2 pj = aqBpPairs[j].v;
+        bool less = (pj[0] < pi[0]) || (pj[0] == pi[0] && pj[1] < pi[1]);
+        bool equalEarlier = (pj[0] == pi[0]) && (pj[1] == pi[1]) && (j < i);
+        if(less || equalEarlier){
+            rank = rank + 1u;
+        }
+    }
+    aqBpPairRanks[i].v = rank;
+}
+
+[in aqBpParams, in aqBpPairs, inout aqBpPairCount, in aqBpPairRanks, out aqBpPairsSorted]
+compute(x=64,y=1,z=1)
+void AQSortPairsScatter(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    uint total = atomic_load(aqBpPairCount[0].n);
+    uint used = min(total, aqBpParams.counts[1]);
+    if(i >= used){
+        return;
+    }
+    aqBpPairsSorted[aqBpPairRanks[i].v].v = aqBpPairs[i].v;
+}

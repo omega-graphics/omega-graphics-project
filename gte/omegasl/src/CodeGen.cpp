@@ -1019,6 +1019,28 @@ namespace omegasl {
                 /// GLSL `#version 450`, HLSL nothing).
                 target->emitDefaultHeaders(*this, shaderOut);
 
+                /// Struct-use closure: a user function emitted into this TU
+                /// may take, return, or locally declare a struct type the
+                /// shader body itself never names (AQUA's physics-kernel
+                /// helpers do exactly this). Merge every user function's
+                /// used-struct set into the shader's set so the target's
+                /// emitShaderUsedStructs sees the full closure.
+                for (auto *uf : userFuncDecls) {
+                    std::vector<std::string> fnStructs;
+                    typeResolver->getStructsInFuncDecl(uf, fnStructs);
+                    for (auto &sn : fnStructs) {
+                        typeResolver->addStructUseToFuncDecl(_decl, sn);
+                    }
+                }
+
+                /// Struct definitions BEFORE the user-function prototypes —
+                /// a prototype may reference a struct type by value, so the
+                /// definition must already be in scope on every backend.
+                /// (HLSL/MSL emit cached struct text; GLSL emits its plain
+                /// structs here and keeps interstage-varying emission for
+                /// `internal` structs in its entry header.)
+                target->emitShaderUsedStructs(*this, _decl, shaderOut);
+
                 /// Prototypes first (dedup by name), then bodies — supports
                 /// forward declarations and calls between user functions
                 /// regardless of definition order.
@@ -1034,11 +1056,6 @@ namespace omegasl {
                     if (uf->isForwardDecl) continue;
                     emitUserFunction(uf);
                 }
-
-                /// HLSL/MSL emit cached struct text at file scope here;
-                /// GLSL emits its own struct decls inside the entry header,
-                /// so its hook is a no-op.
-                target->emitShaderUsedStructs(*this, _decl, shaderOut);
 
                 /// §6.1 — file-scope thread-group-shared declarations.
                 /// HLSL `groupshared` and GLSL `shared` are global-scope

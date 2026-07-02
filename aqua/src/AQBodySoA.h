@@ -37,6 +37,12 @@ struct AQBodySoA {
     // --- per-body scalars ---
     OmegaCommon::Vector<float> linearDamping, angularDamping, gravityScale, maxAngularSpeed;
     OmegaCommon::Vector<float> comX, comY, comZ;             ///< COM offset (reserved)
+    // --- split-impulse pseudo-velocity (Phase 5c; per-substep solver output) ---
+    // Not part of AQBodyState (it lives on AQRigidBody::Impl), so gatherFrom
+    // zero-fills it and scatterTo leaves the AoS untouched. The GPU position
+    // half-step consumes it (pos += pseudoLinear * dt); the 5f position-solve
+    // kernel writes it. Test harnesses set it directly on the SoA.
+    OmegaCommon::Vector<float> pseudoLinX, pseudoLinY, pseudoLinZ;
     // --- activation (Active / Sleeping / Kinematic) ---
     OmegaCommon::Vector<std::uint8_t> activation;
 

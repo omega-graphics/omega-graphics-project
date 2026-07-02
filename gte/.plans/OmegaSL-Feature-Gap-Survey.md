@@ -1420,6 +1420,20 @@ called `degrees` doesn't get spuriously mangled.
 
 ### 5.2 Vector math not yet listed [LANDED — distance / faceforward / refract / inverse / any / all + bool vectors]
 
+**Fix (2026-07-01) — `dot()` / `cross()` as binary-expression operands.**
+The two oldest vector builtins carry `"SCALAR_TYPE"` / `"VECTOR_TYPE"`
+placeholder return types on their `FuncType` records, and Sema's CALL_EXPR
+branch returned that placeholder verbatim. A placeholder resolves to no real
+type, so any call used as a binary-expression operand (`v + cross(u, t)`,
+`1.0 + dot(a, b)`) failed the binary type match — while the same call as a
+full initializer (`float3 c = cross(u, t);`) slipped through because the
+unresolvable placeholder skips the initializer check. Surfaced by AQUA's
+Phase 5 kernel port (quaternion rotate is exactly the failing shape). Fixed
+in `Sema.cpp`'s dot/cross branch: return the CONCRETE type — `float3` for
+`cross`, the component scalar of the (now validated: same-typed numeric
+vectors) arguments for `dot` — and stamp the args' `resolvedType` like the
+other builtin branches. Test: `dot_cross_operand.omegasl`.
+
 | Function | Purpose | Status |
 |----------|---------|--------|
 | `distance(a,b)` | length of difference | **landed** — 2-arg, returns scalar `float`; native on all three backends |
@@ -2651,6 +2665,64 @@ targets mobile GLES.
 ---
 
 ## 12. Cross-backend semantic alignment
+
+### 12.-1 Expression precedence — assignment/ternary + unary operands [FIXED 2026-07-01]
+
+Two silent mis-parses, surfaced by AQUA's Phase 5e narrowphase kernels:
+
+1. **`s = cond ? a : b` parsed as `(s = cond) ? a : b`.** The ternary check
+   sat above the precedence climber, and the climber treats `=` as a plain
+   binary op — so the assignment consumed the condition first. Fixed in the
+   climb: an assignment's RHS is now a full recursive `parseExpr` (ternary
+   included, and `a = b = c` gets correct right associativity).
+2. **Prefix unary operands consumed a full expression:** `-a + b` parsed as
+   `-(a + b)` — value-identical under `*` (sign commutes, why it survived),
+   WRONG under `+`/`-`/comparisons (`x >= -a && ...` became `x >= -(a && …)`).
+   Fixed: `!`/`-`/`++`/`--`/`~` (and `*`/`&` pointer forms) parse their
+   operand at unary precedence (minPrec 11 — primary/postfix only) and the
+   binary climb now also runs after a prefix expression.
+
+Also fixed the same day: **scientific-notation float literals** — the lexer
+had no `e`/`E` exponent support (`1e18` lexed as `1` + identifier `e18`,
+silently dropping 18 orders of magnitude), and the parser classified
+`1e18` (no decimal point) as an int (`std::stoi` stops at `e`). Tests:
+`precedence_unary_ternary.omegasl` (the ternary case is discriminating —
+the old parse fails Sema as float=bool), `sci_notation_literal.omegasl`.
+NOTE: these fixes change codegen for pre-existing shaders; `add_omegasl_lib`
+now depends on the omegaslc binary, so every shader lib rebuilds on a
+compiler change (previously they went stale). That staleness fix immediately
+exposed a LATENT Phase 8d bug: MSL static samplers emit no entry-function
+parameter (they flush as in-body `constexpr sampler`) but still advanced
+`paramIndex`, so the next resource emitted a stray leading comma
+(`fragFunc (,texture2d...`). Fixed in `MSLTarget::emitResourceBinding`;
+surfaced by the 2DTest shader lib finally rebuilding.
+
+### 12.0 TU assembly — struct definitions vs. user functions [FIXED 2026-07-01]
+
+Two related defects in per-shader TU assembly, surfaced by AQUA's Phase 5
+kernels (whose math helpers pass a user struct — a 3x3 matrix-of-rows — that
+no shader body names directly):
+
+1. **User-function prototypes were emitted before struct definitions** on
+   every backend, so a helper taking/returning a struct produced
+   "unknown type name" in the downstream compiler.
+2. **The used-struct set was shader-only.** A struct used exclusively in a
+   user function's signature/locals was never emitted at all (Sema tracks
+   used types per FuncDecl, but CodeGen consulted only the ShaderDecl's set).
+
+Fix: `SemFrontend::addStructUseToFuncDecl` (new hook, implemented by `Sem`);
+CodeGen's SHADER_DECL arm now merges every user function's used-struct set
+into the shader's (the struct-use closure) and calls
+`emitShaderUsedStructs` BEFORE the prototype pass. Follow-up (same day): the
+FUNC_DECL Sema path never registered struct-typed PARAMS or RETURN types in
+the per-decl used-type context (only locals were tracked), so a struct named
+exclusively in helper signatures — AQUA's `out AQManifoldLocal m` — was
+still dropped; both now register, mirroring the SHADER_DECL path. GLSL previously emitted
+its plain structs inside `emitShaderEntryHeader` (after user functions) —
+its `emitShaderUsedStructs` no-op now emits the plain (non-`internal`)
+structs, and the entry header keeps only the interstage-varying emission.
+Verified: metal + dxc + glslc all compile the AQUA kernels; golden HLSL
+files unchanged (no user functions there); full test suite green.
 
 Cases where the OmegaSL surface is *uniform* at the syntax level but the
 generated code has *different runtime behavior* across backends. These are

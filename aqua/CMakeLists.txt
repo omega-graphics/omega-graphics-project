@@ -61,15 +61,32 @@ if(APPLE)
         BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
 endif()
 
-# Phase 5b: precompile AQUA's compute kernels into a single `.omegasllib` (the
-# decision in plan §7.5/§11.4), loaded at runtime via loadShaderLibrary. Uses the
-# `add_omegasl_lib` helper from gte/OmegaGTE.cmake (omegaslc --output <lib> <src>),
-# the same pattern WTK's compositor + kREATE's pipelines use. The build edge
-# AQUA -> AQUAKernelLib -> omegaslc keeps ordering correct on a clean configure.
+# Phase 5b/5c: precompile AQUA's compute kernels, loaded at runtime as a single
+# `.omegasllib` via loadShaderLibrary (the decision in plan §7.5/§11.4). The
+# kernels are SPLIT per pipeline stage (developer direction, 2026-07-01): one
+# `.omegasl` source per stage sharing math helpers + common structs through
+# `AQKernelsCommon.omegaslh`, each compiled to its own lib, then merged into
+# the ONE AQKernels.omegasllib by `omegaslc --link` (a pure container merge).
 # AQUA_KERNELS_LIB is exported (CACHE INTERNAL) so the tests can load it by path.
-set(AQUA_KERNELS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/AQKernels.omegasl" CACHE INTERNAL "")
+set(AQUA_KERNELS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels")
+set(AQUA_KERNELS_COMMON "${AQUA_KERNELS_DIR}/AQKernelsCommon.omegaslh")
 set(AQUA_KERNELS_LIB "${CMAKE_CURRENT_BINARY_DIR}/AQKernels.omegasllib" CACHE INTERNAL "")
-add_omegasl_lib(AQUAKernelLib "${AQUA_KERNELS_SRC}" "${AQUA_KERNELS_LIB}")
+
+# One entry per stage source; each becomes AQUAKernel<Stage>Lib and a
+# per-stage .omegasllib under the build dir.
+set(AQUA_KERNEL_STAGES Probe Integrate Broadphase Narrowphase Solver)
+set(AQUA_KERNEL_STAGE_LIBS)
+foreach(_stage IN LISTS AQUA_KERNEL_STAGES)
+    set(_stage_src "${AQUA_KERNELS_DIR}/AQ${_stage}.omegasl")
+    set(_stage_lib "${CMAKE_CURRENT_BINARY_DIR}/AQ${_stage}.omegasllib")
+    add_omegasl_lib(AQUAKernel${_stage}Lib "${_stage_src}" "${_stage_lib}"
+        EXTRA_DEPENDS "${AQUA_KERNELS_COMMON}")
+    add_dependencies(AQUAKernel${_stage}Lib omegaslc)
+    list(APPEND AQUA_KERNEL_STAGE_LIBS "${_stage_lib}")
+endforeach()
+
+add_omegasl_linked_lib(AQUAKernelLib "${AQUA_KERNELS_LIB}"
+    SOURCES ${AQUA_KERNEL_STAGE_LIBS})
 add_dependencies(AQUAKernelLib omegaslc)
 add_dependencies(AQUA AQUAKernelLib)
 

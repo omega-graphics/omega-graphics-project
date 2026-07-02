@@ -1,0 +1,26 @@
+/// Scientific-notation float literals. The lexer must consume the
+/// `e`/`E` [+/-] exponent as part of the numeric token — before the fix,
+/// `1e18` lexed as the literal `1` followed by a stray identifier `e18`,
+/// silently losing 18 orders of magnitude (AQUA's broadphase kernels hit
+/// this with FLT_MAX / FLT_EPSILON spelled scientifically). The parser must
+/// also classify an exponent literal WITHOUT a decimal point as float
+/// (std::stoi would stop at the 'e').
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> src : 0;
+buffer<Pt> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_sci_notation(uint3 tid : GlobalThreadID){
+    float big = 3.4028234663852886e38;     // FLT_MAX, full digits
+    float huge = 1e18;                     // no decimal point
+    float eps = 1.1920928955078125e-07;    // negative exponent
+    float pos = 2.5e+3;                    // explicit positive exponent
+    float suffixed = 1.5e2f;               // exponent then float suffix
+    float sum = big / huge * eps + pos + suffixed;
+    dst[0].value = float4(sum, huge, eps, pos);
+}

@@ -12,6 +12,7 @@ void AQBodySoA::resize(std::size_t n) {
     linearDamping.resize(n); angularDamping.resize(n);
     gravityScale.resize(n); maxAngularSpeed.resize(n);
     comX.resize(n); comY.resize(n); comZ.resize(n);
+    pseudoLinX.resize(n); pseudoLinY.resize(n); pseudoLinZ.resize(n);
     activation.resize(n);
 }
 
@@ -33,6 +34,9 @@ void AQBodySoA::gatherFrom(const AQBodyState<float>* states, std::size_t n) {
         linearDamping[i] = s.linearDamping; angularDamping[i] = s.angularDamping;
         gravityScale[i] = s.gravityScale; maxAngularSpeed[i] = s.maxAngularSpeed;
         comX[i] = s.comOffset[0][0]; comY[i] = s.comOffset[1][0]; comZ[i] = s.comOffset[2][0];
+        // Pseudo-velocity is per-substep solver state, not AQBodyState — a
+        // fresh gather starts it at zero (the "no solver ran" value).
+        pseudoLinX[i] = 0.f; pseudoLinY[i] = 0.f; pseudoLinZ[i] = 0.f;
         activation[i] = static_cast<std::uint8_t>(s.activation);
     }
 }

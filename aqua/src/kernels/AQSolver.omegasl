@@ -1,0 +1,321 @@
+// AQUA compute kernels — colored constraint solver (Phase 5f, plan §6.E-G).
+//
+// The CPU sequential-impulse PGS sweep is Gauss-Seidel: contact c's impulse
+// changes the body velocities contact c+1 reads. The GPU form partitions the
+// CONSTRAINT GROUPS (one contact manifold or one joint = one group = one
+// contiguous row span) into colors such that no two groups in a color share a
+// MOVABLE body; each color is one conflict-free parallel dispatch and the
+// color sequence recovers the GS coupling (Tonge 2012 lineage, plan §4).
+//
+// Group granularity (a deliberate refinement of the plan's per-row sketch):
+// one THREAD solves all of its group's rows IN ROW ORDER, so
+//   * a friction row reads its normal peer's SAME-iteration accumulated
+//     impulse exactly like the CPU sweep (the peer precedes it in the span);
+//   * the color count tracks body valence (number of contacting neighbors),
+//     not row count — a 10-box stack colors in ~3 colors instead of ~24.
+// Within a color no two groups touch the same movable body, so the body
+// velocity writes never race — NO atomics in the solve, which is what makes a
+// single GPU path run-to-run deterministic (plan §8).
+//
+//   AQSolveVelocityColor — mode 0: the warm-start pass (apply each row's
+//                          cached accumImpulse once — CPU pass D); mode 1:
+//                          one PGS iteration over the color's groups (CPU
+//                          pass E, per-kind clamps + CFM term).
+//   AQSolvePositionColor — the split-impulse pseudo-velocity solve over the
+//                          color's MANIFOLD groups (CPU pass F): depth-only
+//                          RHS, ERP 0.2, slop 5 mm, 2 m/s cap, accumulating
+//                          pseudoLinear/pseudoAngular per body (never real
+//                          velocity — Catto 2009).
+//
+// Impulse application transliterates AQRigidBody::applyImpulseAtPoint /
+// applyAngularImpulse: linear rows apply ±dir·dl at the contact point (arm =
+// the row's precomputed rA/rB — float-identical to the CPU's recompute since
+// pose is frozen during the velocity solve); angular rows apply a pure torque
+// impulse. Writes are guarded on movability, matching the CPU's no-op writes
+// into infinite-mass bodies without the formal data race.
+
+#include "AQKernelsCommon.omegaslh"
+
+// config = (dt, 0, 0, 0);
+// counts = (colorStart, colorCount, mode, bodyCount) — colorStart/colorCount
+// index into the groups-by-color list; mode 0 warm-start, 1 velocity sweep.
+struct AQSolverParams {
+    float4 config;
+    uint4  counts;
+};
+
+constant<AQSolverParams> aqSvParams : 0;
+
+buffer<AQF4> aqSvPosAct : 1;   // xyz position, w activation
+buffer<AQF4> aqSvVelIm  : 2;   // xyz velocity, w invMass
+buffer<AQF4> aqSvQuat   : 3;   // xyzw orientation
+buffer<AQF4> aqSvWbMax  : 4;   // xyz omega (body frame), w maxAngularSpeed
+buffer<AQF4> aqSvInvIGs : 5;   // xyz inv principal inertia, w gravityScale
+buffer<AQF4> aqSvCom    : 6;   // xyz COM offset
+
+buffer<AQRowGPU> aqSvRows : 7;
+
+// Group table: (firstRow, rowCount, manifoldIndex, 0). manifoldIndex is
+// 0xFFFFFFFF for joint groups (skipped by the position solve).
+buffer<AQU4> aqSvGroups : 8;
+// Group indices ordered by color; a color is the contiguous slice
+// [colorStart, colorStart + colorCount).
+buffer<AQU1> aqSvGroupsByColor : 9;
+
+buffer<AQManifoldGPU> aqSvManifolds : 10;
+
+buffer<AQF4> aqSvPseudoLin : 11;   // xyz split-impulse pseudoLinear
+buffer<AQF4> aqSvPseudoAng : 12;   // xyz split-impulse pseudoAngular
+
+float aqSvDot3(float3 a, float3 b){
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+
+// ---------------------------------------------------------------------------
+// Velocity solve — one thread per group in the color.
+// ---------------------------------------------------------------------------
+
+[in aqSvParams, in aqSvPosAct, inout aqSvVelIm, in aqSvQuat, inout aqSvWbMax,
+ in aqSvInvIGs, inout aqSvRows, in aqSvGroups, in aqSvGroupsByColor]
+compute(x=64,y=1,z=1)
+void AQSolveVelocityColor(uint3 tid : GlobalThreadID){
+    uint t = tid[0];
+    if(t >= aqSvParams.counts[1]){
+        return;
+    }
+    uint g = aqSvGroupsByColor[aqSvParams.counts[0] + t].v;
+    uint4 group = aqSvGroups[g].v;
+    uint firstRow = group[0];
+    uint rowCount = group[1];
+    uint mode = aqSvParams.counts[2];
+    float dt = aqSvParams.config[0];
+    float invDt2 = (dt > 0.0) ? (1.0 / (dt * dt)) : 0.0;
+
+    for(uint r = 0u; r < rowCount; r++){
+        uint ri = firstRow + r;
+        AQRowGPU row = aqSvRows[ri];
+        uint kind = row.meta[0];
+        uint a = row.meta[1];
+        uint b = row.meta[2];
+
+        // Sleep/static skip (runNarrowphaseAndSolve's rowInert): a row whose
+        // two bodies are both non-movable is skipped everywhere.
+        float4 velImA = aqSvVelIm[a].v;
+        float4 velImB = aqSvVelIm[b].v;
+        bool movableA = (velImA[3] > 0.0) && (aqSvPosAct[a].v[3] == 0.0);
+        bool movableB = (velImB[3] > 0.0) && (aqSvPosAct[b].v[3] == 0.0);
+        if(!movableA && !movableB){
+            continue;
+        }
+
+        float4 qA = aqSvQuat[a].v;
+        float4 qB = aqSvQuat[b].v;
+        float4 wbA4 = aqSvWbMax[a].v;
+        float4 wbB4 = aqSvWbMax[b].v;
+        float3 dir = float3(row.dir[0], row.dir[1], row.dir[2]);
+        bool isAngular = (row.extra[1] != 0.0);
+
+        float dl = 0.0;
+        if(mode == 0u){
+            // Warm start: apply the cached accumulated impulse once.
+            dl = row.terms[2];
+            if(dl == 0.0){
+                continue;
+            }
+        } else {
+            // One PGS step (CPU pass E).
+            float3 wA = aqRotate(qA, float3(wbA4[0], wbA4[1], wbA4[2]));
+            float3 wB = aqRotate(qB, float3(wbB4[0], wbB4[1], wbB4[2]));
+            float relV = 0.0;
+            if(isAngular){
+                float3 dw = wB - wA;
+                relV = aqSvDot3(dw, dir);
+            } else {
+                float3 rA = float3(row.rA[0], row.rA[1], row.rA[2]);
+                float3 rB = float3(row.rB[0], row.rB[1], row.rB[2]);
+                float3 velA = float3(velImA[0], velImA[1], velImA[2]) + cross(wA, rA);
+                float3 velB = float3(velImB[0], velImB[1], velImB[2]) + cross(wB, rB);
+                relV = aqSvDot3(velB - velA, dir);
+            }
+            float gamma = row.extra[0] * invDt2;             // CFM (0 => hard)
+            float accum = row.terms[2];
+            float lambda = -(relV + row.terms[1] + gamma * accum) * row.terms[0];
+
+            float newAccum = accum + lambda;
+            if(kind == 0u || kind == 3u){                    // normal / joint limit
+                if(newAccum < 0.0){
+                    newAccum = 0.0;
+                }
+            } else if(kind == 1u){                           // friction cone
+                float peerN = aqSvRows[row.meta[3]].terms[2];
+                float maxF = row.terms[3] * peerN;
+                newAccum = clamp(newAccum, -maxF, maxF);
+            } else if(kind == 4u){                           // motor cap
+                float maxM = row.terms[3];
+                newAccum = clamp(newAccum, -maxM, maxM);
+            }
+            dl = newAccum - accum;
+            row.terms[2] = newAccum;
+            aqSvRows[ri].terms[2] = newAccum;
+            if(dl == 0.0){
+                continue;
+            }
+        }
+
+        // applyRowImpulse: ±dir·dl to (B, A). Writes guarded on movability —
+        // the CPU writes 0-deltas into infinite-mass bodies; skipping them is
+        // value-identical and race-free across the color.
+        float3 P = dir * dl;
+        if(isAngular){
+            if(movableB){
+                float3 lB = aqRotateConj(qB, P);
+                float4 invIB = aqSvInvIGs[b].v;
+                aqSvWbMax[b].v = float4(wbB4[0] + invIB[0] * lB[0],
+                                        wbB4[1] + invIB[1] * lB[1],
+                                        wbB4[2] + invIB[2] * lB[2], wbB4[3]);
+            }
+            if(movableA){
+                float3 lA = aqRotateConj(qA, P);
+                float4 invIA = aqSvInvIGs[a].v;
+                aqSvWbMax[a].v = float4(wbA4[0] - invIA[0] * lA[0],
+                                        wbA4[1] - invIA[1] * lA[1],
+                                        wbA4[2] - invIA[2] * lA[2], wbA4[3]);
+            }
+        } else {
+            if(movableB){
+                float3 rB = float3(row.rB[0], row.rB[1], row.rB[2]);
+                float3 velB = float3(velImB[0], velImB[1], velImB[2]) + P * velImB[3];
+                aqSvVelIm[b].v = float4(velB[0], velB[1], velB[2], velImB[3]);
+                float3 lB = aqRotateConj(qB, cross(rB, P));
+                float4 invIB = aqSvInvIGs[b].v;
+                aqSvWbMax[b].v = float4(wbB4[0] + invIB[0] * lB[0],
+                                        wbB4[1] + invIB[1] * lB[1],
+                                        wbB4[2] + invIB[2] * lB[2], wbB4[3]);
+            }
+            if(movableA){
+                float3 rA = float3(row.rA[0], row.rA[1], row.rA[2]);
+                float3 velA = float3(velImA[0], velImA[1], velImA[2]) - P * velImA[3];
+                aqSvVelIm[a].v = float4(velA[0], velA[1], velA[2], velImA[3]);
+                float3 lA = aqRotateConj(qA, cross(rA, P));
+                float4 invIA = aqSvInvIGs[a].v;
+                aqSvWbMax[a].v = float4(wbA4[0] - invIA[0] * lA[0],
+                                        wbA4[1] - invIA[1] * lA[1],
+                                        wbA4[2] - invIA[2] * lA[2], wbA4[3]);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Split-impulse position solve — one thread per MANIFOLD group in the color
+// (CPU pass F). Constants verbatim: 5 mm slop, ERP 0.2, 2 m/s cap.
+// ---------------------------------------------------------------------------
+
+[in aqSvParams, in aqSvPosAct, in aqSvVelIm, in aqSvQuat, in aqSvInvIGs,
+ in aqSvCom, in aqSvGroups, in aqSvGroupsByColor, in aqSvManifolds,
+ inout aqSvPseudoLin, inout aqSvPseudoAng]
+compute(x=64,y=1,z=1)
+void AQSolvePositionColor(uint3 tid : GlobalThreadID){
+    uint t = tid[0];
+    if(t >= aqSvParams.counts[1]){
+        return;
+    }
+    uint g = aqSvGroupsByColor[aqSvParams.counts[0] + t].v;
+    uint4 group = aqSvGroups[g].v;
+    uint mi = group[2];
+    if(mi == 0xFFFFFFFFu){
+        return;                       // joint group — position solve is contacts-only
+    }
+    float dt = aqSvParams.config[0];
+
+    AQManifoldGPU m = aqSvManifolds[mi];
+    uint a = m.header[0];
+    uint b = m.header[1];
+    uint pointCount = m.header[2];
+    float3 n = float3(m.normal[0], m.normal[1], m.normal[2]);
+
+    float4 velImA = aqSvVelIm[a].v;
+    float4 velImB = aqSvVelIm[b].v;
+    bool movableA = (velImA[3] > 0.0) && (aqSvPosAct[a].v[3] == 0.0);
+    bool movableB = (velImB[3] > 0.0) && (aqSvPosAct[b].v[3] == 0.0);
+    if(!movableA && !movableB){
+        return;
+    }
+
+    float4 posA4 = aqSvPosAct[a].v;
+    float4 posB4 = aqSvPosAct[b].v;
+    float4 qA = aqSvQuat[a].v;
+    float4 qB = aqSvQuat[b].v;
+    float4 invIA4 = aqSvInvIGs[a].v;
+    float4 invIB4 = aqSvInvIGs[b].v;
+    AQMat3R invIA = aqWorldInvInertia(qA, float3(invIA4[0], invIA4[1], invIA4[2]));
+    AQMat3R invIB = aqWorldInvInertia(qB, float3(invIB4[0], invIB4[1], invIB4[2]));
+    float4 comA4 = aqSvCom[a].v;
+    float4 comB4 = aqSvCom[b].v;
+    float3 comA = float3(posA4[0], posA4[1], posA4[2]) + aqRotate(qA, float3(comA4[0], comA4[1], comA4[2]));
+    float3 comB = float3(posB4[0], posB4[1], posB4[2]) + aqRotate(qB, float3(comB4[0], comB4[1], comB4[2]));
+
+    float4 plA = aqSvPseudoLin[a].v;
+    float4 plB = aqSvPseudoLin[b].v;
+    float4 paA = aqSvPseudoAng[a].v;
+    float4 paB = aqSvPseudoAng[b].v;
+    float3 pseudoLinA = float3(plA[0], plA[1], plA[2]);
+    float3 pseudoLinB = float3(plB[0], plB[1], plB[2]);
+    float3 pseudoAngA = float3(paA[0], paA[1], paA[2]);
+    float3 pseudoAngB = float3(paB[0], paB[1], paB[2]);
+
+    for(uint pk = 0u; pk < pointCount; pk++){
+        float4 pp = m.pointPos0;
+        if(pk == 1u){ pp = m.pointPos1; }
+        if(pk == 2u){ pp = m.pointPos2; }
+        if(pk == 3u){ pp = m.pointPos3; }
+        float depth = pp[3];
+        float pen = depth - 0.005;                       // kSlop
+        if(pen <= 0.0){
+            continue;
+        }
+        float3 cp = float3(pp[0], pp[1], pp[2]);
+        float3 rA = cp - comA;
+        float3 rB = cp - comB;
+
+        float3 pVelA = pseudoLinA + cross(pseudoAngA, rA);
+        float3 pVelB = pseudoLinB + cross(pseudoAngB, rB);
+        float relPV = aqSvDot3(pVelB - pVelA, n);
+
+        float targetVel = 0.2 * pen / dt;                // kPositionERP
+        if(targetVel > 2.0){                             // kMaxPosCorrectionVel
+            targetVel = 2.0;
+        }
+
+        float3 rAxN = cross(rA, n);
+        float3 rBxN = cross(rB, n);
+        float k = velImA[3] + velImB[3]
+                + aqSvDot3(rAxN, aqMat3Vec(invIA, rAxN))
+                + aqSvDot3(rBxN, aqMat3Vec(invIB, rBxN));
+        if(k < 1e-12){
+            continue;
+        }
+        float lambda = (targetVel - relPV) / k;
+        if(lambda < 0.0){
+            lambda = 0.0;
+        }
+        float3 P = n * lambda;
+        pseudoLinB = pseudoLinB + P * velImB[3];
+        pseudoAngB = pseudoAngB + aqMat3Vec(invIB, cross(rB, P));
+        pseudoLinA = pseudoLinA - P * velImA[3];
+        pseudoAngA = pseudoAngA - aqMat3Vec(invIA, cross(rA, P));
+    }
+
+    // Write-back guard: any finite-mass body (the CPU accumulates pseudo into
+    // sleeping bodies too — pair-level inertness was already handled above).
+    // The host colors conflicts on ANY shared finite-mass body, so these
+    // writes never race within a color; static bodies are never written.
+    if(velImB[3] > 0.0){
+        aqSvPseudoLin[b].v = float4(pseudoLinB[0], pseudoLinB[1], pseudoLinB[2], 0.0);
+        aqSvPseudoAng[b].v = float4(pseudoAngB[0], pseudoAngB[1], pseudoAngB[2], 0.0);
+    }
+    if(velImA[3] > 0.0){
+        aqSvPseudoLin[a].v = float4(pseudoLinA[0], pseudoLinA[1], pseudoLinA[2], 0.0);
+        aqSvPseudoAng[a].v = float4(pseudoAngA[0], pseudoAngA[1], pseudoAngA[2], 0.0);
+    }
+}

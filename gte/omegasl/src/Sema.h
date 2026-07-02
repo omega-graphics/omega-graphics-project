@@ -106,6 +106,8 @@ namespace omegasl {
 
         void getStructsInFuncDecl(ast::FuncDecl *funcDecl, std::vector<std::string> &out) override;
 
+        void addStructUseToFuncDecl(ast::FuncDecl *funcDecl, const std::string &structName) override;
+
         void setSemContext(std::shared_ptr<SemContext> & _currentContext);
 
         void addTypeToCurrentContext(OmegaCommon::StrRef name, ast::Scope *loc,OmegaCommon::MapVec<OmegaCommon::String,ast::TypeExpr *> & fields);

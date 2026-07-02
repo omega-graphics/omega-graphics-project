@@ -472,6 +472,36 @@ namespace omegasl {
                                 }
                                 break;
                             }
+                            /// Scientific-notation exponent: `e`/`E` [`+`/`-`]
+                            /// digits (decimal literals only, consumed before
+                            /// any suffix so `1e5f` works). Without this the
+                            /// exponent lexed as a SEPARATE identifier token
+                            /// and the literal silently lost its magnitude —
+                            /// `1e18` became `1` (AQUA Phase 5d hit this with
+                            /// FLT_MAX / FLT_EPSILON spelled scientifically).
+                            /// Once `e` is consumed the token is committed: a
+                            /// malformed exponent (`1e`, `1e+`) keeps the
+                            /// characters and fails loudly at parse instead of
+                            /// silently splitting into two tokens.
+                            c = AHEAD_CHAR();
+                            if(c == 'e' || c == 'E'){
+                                c = NEXT_CHAR();
+                                PUSH_CHAR(c);
+                                c = AHEAD_CHAR();
+                                if(c == '+' || c == '-'){
+                                    c = NEXT_CHAR();
+                                    PUSH_CHAR(c);
+                                }
+                                while(true){
+                                    c = AHEAD_CHAR();
+                                    if(std::isdigit(c)){
+                                        c = NEXT_CHAR();
+                                        PUSH_CHAR(c);
+                                        continue;
+                                    }
+                                    break;
+                                }
+                            }
                         }
                         c = AHEAD_CHAR();
                         /// Suffixes:

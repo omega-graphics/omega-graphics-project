@@ -1,0 +1,44 @@
+/// dot() / cross() as binary-expression operands. The builtins' FuncType
+/// records carry "SCALAR_TYPE"/"VECTOR_TYPE" placeholder return types; Sema's
+/// CALL_EXPR branch must return the CONCRETE result type (cross → float3,
+/// dot → the component scalar of its arguments) so a call used inside a larger
+/// expression type-checks. Before the fix, `v + cross(u, t)` failed the
+/// binary-expr type match while `float3 c = cross(u, t);` was accepted (the
+/// unresolvable placeholder skipped the initializer check) — AQUA's Phase 5
+/// physics kernels are full of the operand form.
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> src : 0;
+buffer<Pt> dst : 1;
+
+/// Helper returning a chained vector expression with call operands — the
+/// quaternion rotate every AQUA kernel uses: v + 2w(u×v) + 2u×(u×v).
+float3 quat_rotate(float4 q, float3 v){
+    float3 u = float3(q[0], q[1], q[2]);
+    float3 t = cross(u, v) * 2.0;
+    return v + t * q[3] + cross(u, t);
+}
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_dot_cross_operand(uint3 tid : GlobalThreadID){
+    float3 a = float3(src[0].value[0], src[0].value[1], src[0].value[2]);
+    float3 b = float3(1.0, 0.0, 0.0);
+
+    /// cross() as an operand of vector add / scalar mul.
+    float3 w = a + cross(a, b) * 0.5;
+    /// cross() on the LEFT of the binary op.
+    float3 w2 = cross(a, b) + a;
+
+    /// dot() as a scalar operand: literal + call, call + call, call in a
+    /// nested builtin argument.
+    float s = 1.0 + dot(a, b) * 2.0;
+    float t = dot(a, b) + dot(b, a);
+    float n = sqrt(dot(w, w));
+
+    float3 r = quat_rotate(src[0].value, w2);
+    dst[0].value = float4(r[0] + w[0], r[1] + s, r[2] + t, n);
+}

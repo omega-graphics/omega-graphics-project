@@ -2118,7 +2118,12 @@ namespace omegasl {
                 /// `lf` suffix so the backend doesn't re-narrow through float.
                 _e->d_num = std::stod(s.substr(0, s.size() - suffixLen));
             }
-            else if(s.find('.') != std::string::npos || hasFloatSuffix || hasHalfSuffix){
+            else if(s.find('.') != std::string::npos || hasFloatSuffix || hasHalfSuffix
+                    || s.find('e') != std::string::npos || s.find('E') != std::string::npos){
+                /// The exponent test makes `1e18` (no decimal point, no
+                /// suffix) a FLOAT literal — std::stoi would silently stop at
+                /// the 'e' and return 1. Hex literals never reach this branch
+                /// (handled above), so 'e'/'E' here always means an exponent.
                 /// Half literals (`1.0h`) reuse f_num — Sema's literal
                 /// coercion rules already let a float literal initialize
                 /// a `half` slot. The `h`-suffix recognition exists so
@@ -2403,8 +2408,10 @@ namespace omegasl {
                 _pointer_expr->ptType = ast::PointerExpr::Dereference;
 
                 first_tok = getTok();
-                _expr = parseExpr(first_tok,parentScope);
-                if(_expr == nullptr){
+                /// Unary operand binds TIGHTLY (C precedence): parse only a
+                /// primary/postfix expression (minPrec 11 blocks every binary
+                /// op), so `*p + x` reads as `(*p) + x`.
+                if(!parseOpExpr(first_tok,&_expr,parentScope,11) || _expr == nullptr){
                     delete _pointer_expr;
                     return false;
                 }
@@ -2420,8 +2427,8 @@ namespace omegasl {
                 _pointer_expr->ptType = ast::PointerExpr::AddressOf;
 
                 first_tok = getTok();
-                _expr = parseExpr(first_tok,parentScope);
-                if(_expr == nullptr){
+                /// Same tight-binding operand rule as the dereference case.
+                if(!parseOpExpr(first_tok,&_expr,parentScope,11) || _expr == nullptr){
                     delete _pointer_expr;
                     return false;
                 }
@@ -2447,9 +2454,13 @@ namespace omegasl {
                 _unary_op_expr->scope = parentScope;
 
                 first_tok = getTok();
-                _expr = parseExpr(first_tok,parentScope);
-
-                if(_expr == nullptr){
+                /// Unary operand binds TIGHTLY (C precedence): parse only a
+                /// primary/postfix expression (minPrec 11 blocks every binary
+                /// op). Before this fix `-a + b` silently parsed as
+                /// `-(a + b)` — value-identical under `*`, WRONG under `+`
+                /// (AQUA 5e's box/box side-plane offsets hit the difference).
+                if(!parseOpExpr(first_tok,&_expr,parentScope,11) || _expr == nullptr){
+                    delete _unary_op_expr;
                     return false;
                 }
                 _unary_op_expr->expr = _expr;
@@ -2480,7 +2491,13 @@ namespace omegasl {
                 _expr = unaryExpr;
             }
 
+        }
+
+        {
             /// Precedence-climbing: parse binary operators with precedence >= minPrec (multiplicative > additive > comparison).
+            /// Runs for PREFIX expressions too — the tight-binding operand
+            /// above leaves the following binary operator for this climb, so
+            /// `-a + b` builds `(-a) + b`.
             while(true){
                 first_tok = aheadTok();
                 int prec = getBinaryPrecedence(first_tok);
@@ -2490,7 +2507,21 @@ namespace omegasl {
                 OmegaCommon::String opStr = getBinaryOpStr(first_tok);
                 first_tok = getTok();
                 ast::Expr *rhs = nullptr;
-                if(!parseOpExpr(first_tok, &rhs, parentScope, prec + 1)){
+                if(prec == 0){
+                    /// Assignment. C precedence puts `?:` ABOVE `=`, so the
+                    /// RHS is a FULL expression including ternary:
+                    /// `a = c ? x : y` must parse as `a = (c ? x : y)`, not
+                    /// `(a = c) ? x : y` (which the climb-then-ternary order
+                    /// used to produce — a silent mis-parse Sema only caught
+                    /// when the condition's type happened not to be bool).
+                    /// parseExpr recursion also gives `a = b = c` the correct
+                    /// right associativity.
+                    rhs = parseExpr(first_tok, parentScope);
+                    if(rhs == nullptr){
+                        return false;
+                    }
+                }
+                else if(!parseOpExpr(first_tok, &rhs, parentScope, prec + 1)){
                     if(rhs) delete rhs;
                     return false;
                 }

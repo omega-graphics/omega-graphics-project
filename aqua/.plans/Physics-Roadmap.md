@@ -95,9 +95,9 @@ partially and the rest not at all.
 | Continuous detection | Newtonian | None | CCD for fast/thin bodies |
 | Particle systems | Particle | None | Pools, emitters, force fields, particle↔collider collision |
 | PBD / XPBD core | shared | None | Constraint-projection solver with compliance |
-| Cloth & ropes | Soft body | None | Distance + bending constraints, pinning, self-collision |
+| Cloth, ropes & hair | Soft body | None | Distance + bending constraints, pinning, self-collision; strand hair (many inextensible strands, strand–strand friction) |
 | Deformable solids | Soft body | None | Volumetric soft bodies, two-way rigid coupling |
-| Fluids *(optional)* | Particle | None | SPH / position-based fluids on the particle substrate |
+| Fluids — liquids & gases *(optional)* | Particle | None | SPH / position-based fluids for liquids **and** compressible/smoke gas on the same particle substrate |
 | Compute execution | execution | CPU only, kernels empty | OmegaSL kernels for hot loops, CPU fallback at parity |
 | Debug & tooling | shared | None | Debug draw (contacts, AABBs, constraints), validation, loud failures |
 
@@ -578,6 +578,8 @@ thousands of particles) colliding with the Phase 2 static geometry.
 **Depends on:** Phases 2 (colliders, grid) and 5 (compute — particles are the
 canonical massively-parallel workload).
 
+**Full prior-art brief:** `aqua/.plans/Phase-6-Particle-Systems.md`.
+
 ---
 
 ### Phase 7 — Position-Based Dynamics core — [shared: particle + soft]
@@ -614,28 +616,39 @@ PhysX 5).
   method it's best at.
 
 This must be decided **before** Phase 7, because Phases 8–9 build directly on the
-answer. Lean: **hybrid**, unless GPU throughput and unified coupling outweigh
-rigid-stacking fidelity for the project's use cases.
+answer. Please check recency audits in the Offical phased plans of AQUA. (There should an official XPBD algortithim that is good for the GPU that we will share)
+
+**Full prior-art brief:** `aqua/.plans/Phase-7-Position-Based-Dynamics-Core.md`.
 
 ---
 
-### Phase 8 — Cloth & ropes — [Soft body I]
+### Phase 8 — Cloth, ropes & hair — [Soft body I]
 
-**Goal:** The first deformables: 1D ropes and 2D cloth.
+**Goal:** The first deformables: 1D ropes, 2D cloth, and 1D **hair** — the three
+strand/sheet structures that all sit directly on the Phase 7 XPBD substrate.
 
 **Deliverable:** A cloth sheet pinned at two corners draping over a Phase 2
-sphere, with the rope from Phase 7 generalized to arbitrary chains.
+sphere; the rope from Phase 7 generalized to arbitrary chains; and a **head of
+hair** — tens of thousands of rooted strands with bending stiffness and
+strand–strand friction — settling under gravity and swept by a moving collider.
 
 **Work:**
 - Build cloth from a grid: **distance constraints** (structural/shear) +
   **bending constraints**.
-- **Pinning** (attach particles to kinematic/rigid bodies or world points).
-- **Cloth↔rigid collision** (two-way coupling with the rigid solver per the
+- **Hair as rooted strands**: many short particle chains pinned at a root, with
+  **inextensible distance constraints** and a **bending/curl model** (rest-curvature
+  or follow-the-leader) so strands hold shape; **strand–strand friction** and
+  cohesion via the spatial hash so the volume behaves like hair, not spaghetti.
+- **Pinning** (attach particles/roots to kinematic/rigid bodies or world points).
+- **Cloth/hair↔rigid collision** (two-way coupling with the rigid solver per the
   Phase 7 decision).
 - **Self-collision** (basic, via the spatial hash) — known-hard; start
-  conservative.
+  conservative. Hair leans on segment-based repulsion rather than full
+  strand-vs-strand intersection.
 
 **Depends on:** Phase 7 (XPBD core), Phase 2 (colliders).
+
+**Full prior-art brief:** `aqua/.plans/Phase-8-Cloth-Ropes-Hair.md`.
 
 ---
 
@@ -655,22 +668,37 @@ with both the cube deforming and the boxes reacting (two-way coupling).
 
 **Depends on:** Phases 7, 8, and 3 (rigid coupling).
 
+**Full prior-art brief:** `aqua/.plans/Phase-9-Deformable-Solids.md`.
+
 ---
 
-### Phase 10 — Fluids *(optional / advanced)* — [Particle + soft]
+### Phase 10 — Fluids: liquids & gases *(optional / advanced)* — [Particle + soft]
 
-**Goal:** Liquids and gases on the particle substrate.
+**Goal:** Fluids on the particle substrate — **and fluid is not just liquid.**
+Both incompressible **liquids** (water, sloshing, splashes) and compressible
+**gases** (smoke, steam, plumes) fall out of the same smoothed-particle machinery
+with different equations of state and boundary handling.
 
-**Deliverable:** A dam-break: a volume of fluid particles collapsing and sloshing
-inside Phase 2 static geometry.
+**Deliverable:** Two scenes on one solver — a **dam-break** (a volume of liquid
+particles collapsing and sloshing inside Phase 2 static geometry) and a **rising
+smoke plume** (a buoyant gas emitter whose particles expand, advect, and curl
+around a Phase 2 obstacle).
 
 **Work:** **SPH** (smoothed-particle hydrodynamics) or **position-based fluids
-(PBF)** layered on the Phase 6 particle pool and Phase 7 constraint solver;
-density/pressure constraints; optional surface extraction handed to kREATE for
-rendering.
+(PBF)** layered on the Phase 6 particle pool and Phase 7 constraint solver:
+- **Liquids** — a near-incompressibility (density) constraint, surface tension,
+  and viscosity; the dam-break is the reference.
+- **Gases** — a compressible equation of state with **buoyancy** (temperature /
+  density-driven), thermal advection and cooling, and vorticity confinement so
+  plumes keep their rolls; the smoke plume is the reference.
+- Shared neighbor-finding on the Phase 6 spatial hash; optional surface / volume
+  extraction handed to kREATE for rendering (liquid surface mesh, gas density
+  field).
 
 **Depends on:** Phases 6, 7. Optional for a "complete" engine — gate on whether
-the project needs fluids.
+the project needs fluids (§7.8).
+
+**Full prior-art brief:** `aqua/.plans/Phase-10-Fluids-Liquids-Gases.md`.
 
 ---
 
@@ -723,8 +751,11 @@ decided deliberately:
 6. **Narrowphase — general GJK/EPA vs. specialized per-pair (vs. hybrid).**
    (Phase 3.)
 7. **CCD scope.** (Phase 4.) Which bodies get continuous detection.
-8. **Fluids in scope?** (Phase 10.) Optional for "complete"; decide before
-   committing to the particle substrate's surface-output design.
+8. **Fluids in scope — and liquids-only vs. liquids + gases?** (Phase 10.)
+   Optional for "complete"; decide before committing to the particle substrate's
+   surface/volume-output design. Gases (smoke/steam) reuse the same SPH/PBF
+   machinery with a compressible EOS + buoyancy, so "fluids in scope" should be
+   read as *both* phases of matter, not liquids alone.
 
 ---
 
@@ -750,11 +781,11 @@ Phase 6  Particle systems                [Particle] ◄────────�
 Phase 7  Position-Based Dynamics core    [shared]
    │     ◄── solver-architecture decision gates Phases 8–9
    ├─────────────────────────┐
-Phase 8  Cloth & ropes        Phase 9  Deformable solids   [Soft body]
+Phase 8  Cloth, ropes & hair  Phase 9  Deformable solids   [Soft body]
    │                              │
    └──────────────┬───────────────┘
                   │
-Phase 10  Fluids (optional)              [Particle + soft]
+Phase 10  Fluids: liquids & gases (opt.)  [Particle + soft]
 ```
 
 The critical path to **"kREATE can use AQUA for rigid-body physics"** runs

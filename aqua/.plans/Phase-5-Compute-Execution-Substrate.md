@@ -1011,21 +1011,213 @@ readback-first #5, `float` #6, atomic-append-with-scatter-fallback #7).
   (§6.A, §6.H), line-by-line transliterations of the half-steps. Parity test:
   Phase 1 spinning-body + a free-fall scene, GPU vs CPU within tolerance;
   within-path bitwise re-run. First real dispatch through `encodeStep`.
+
+  **Status (2026-07-01): COMPLETE.** `aqua_gpu_integrate_test` passes on the
+  Metal host: 8 bodies covering every kernel branch (free-fall, the fast
+  asymmetric tumbler on the 4-iteration Newton path, slow spin, damped,
+  max-|ω| clamp, sleeping, static-with-stray-accum, gravity-scaled +
+  pseudo-shifted), 120 sub-steps, CPU vs GPU within the 1e-4 band; sleeping
+  body bit-exact; two GPU runs byte-identical (deliverable #4 for this
+  stage). Phase 1–4 battery unchanged (contact-test's 3 failures remain the
+  pre-existing set). Notable decisions and divergences, recorded:
+  - **Kernel sources are SPLIT per stage** (developer direction, 2026-07-01):
+    `src/kernels/AQProbe.omegasl` + `AQIntegrate.omegasl` share math helpers
+    and the `AQF4`/`AQStepParams` structs via `AQKernelsCommon.omegaslh`;
+    each compiles to its own lib and `omegaslc --link` merges them into the
+    single `AQKernels.omegasllib` (new `add_omegasl_linked_lib` CMake helper;
+    `add_omegasl_lib` grew `EXTRA_DEPENDS` so header edits rebuild). 5d/5e/5f
+    add `AQBroadphase/AQNarrowphase/AQSolver.omegasl` to the same merge.
+  - **Two omegaslc fixes were required** (per the "extend the compiler, don't
+    contort the kernel" direction): (1) `dot()`/`cross()` returned their
+    placeholder `"SCALAR_TYPE"/"VECTOR_TYPE"` FuncType return types, so a call
+    used as a binary-expression operand failed Sema's type match — they now
+    return the concrete types (Feature-Gap-Survey §5.2 note; test
+    `dot_cross_operand.omegasl`); (2) per-shader TU assembly emitted user
+    functions before struct definitions and omitted structs used only by
+    helpers — fixed via a struct-use closure + emit-structs-before-prototypes
+    (new `SemFrontend::addStructUseToFuncDecl`; survey §12.0). All 131
+    omegaslc tests green; kernels verified with metal AND dxc AND glslc.
+  - **Body buffers are struct-of-float4 component groups** at slots 1–8
+    (posAct/velIm/quat/wbMax/invIGs/forceLd/torqueAd/pseudo — w lanes carry
+    activation/invMass/maxω/gravityScale/damping), `Upload` usage so
+    GEBufferWriter/Reader work both ways, pooled with geometric growth on
+    `ensureBodyCapacity`. The shared push-constant block (`AQStepParams`:
+    gravity+dt, counts) rides `setComputeConstants` — no params buffer.
+  - **The kernel helpers transliterate GTE formulas verbatim** (Hamilton
+    product order, analytic 3×3 adjugate inverse — NOT the OmegaSL builtin
+    `inverse()`, divide-by-length quaternion normalize, sinc-series quat exp)
+    so the cross-path gap is only codegen reassociation/FMA + GPU-vs-libm
+    trig, as §8 budgets.
+  - **`AQBodySoA` grew `pseudoLin{X,Y,Z}`** (zero-filled by `gatherFrom`,
+    ignored by `scatterTo`) — the position kernel consumes the split-impulse
+    shift, the 5f position solve will produce it.
+  - **`encodeIntegrate(dt, gravity, n, substeps)`** encodes all sub-steps
+    into ONE command buffer (velocity pass, position pass, repeat) and syncs
+    once — the per-`advance` cadence the §6.I readback plan wants.
 - **5d — Broadphase kernels.** `AQRefreshAABB`, `AQGridHash`, `AQRadixSort`,
   `AQPrefixScan`, `AQBroadphasePairs` (atomic append + scatter fallback), pair
   sort+unique (§6.B, §6.C). Parity: GPU ordered pair list byte-identical to the
   CPU broadphase oracle on randomized moving scenes (Phase 2's own oracle, now
   cross-path).
+
+  **Status (2026-07-01): COMPLETE.** `aqua_gpu_broadphase_test` passes on the
+  Metal host: 64-body randomized static scene (spheres/boxes/capsules/hulls +
+  ground plane + shapeless bodies + a restrictive filter group), GPU fat AABBs
+  match the CPU fat AABBs on every shape type, and the GPU ordered pair list
+  is IDENTICAL to the CPU broadphase's `candidatePairs()` (89 pairs); the
+  atomic-append overflow path is exercised (deliberately small pair hint →
+  count-driven regrow + re-run); two GPU runs identical. Kernels in
+  `AQBroadphase.omegasl` (7 entries), source-verified with dxc + glslc.
+  Notable decisions and divergences from the §6.C sketch, recorded:
+  - **Center-cell insertion + 27-neighborhood binary search, not
+    straddle-insertion + cell-start scan.** The host passes `cellSize >= max
+    fat-AABB extent` (computed from the refreshed bounds), which guarantees
+    two overlapping fat AABBs have center cells within 1 cell per axis — so
+    the neighborhood always finds the pair. Since only exact-overlap-tested
+    pairs survive, the FINAL list is grid-independent, which is what makes it
+    byte-identical to the CPU's differently-shaped grid. Binary search over
+    the sorted (key, body) entries replaces the `cellStart[]` table (no hash
+    table, no `AQPrefixScan` needed in this stage; the scan ships in 5e for
+    row allocation).
+  - **32-bit hashed cell keys + an exact integer-coord recheck.** The CPU's
+    64-bit packed cell key would need INT64 in every sort; instead the kernel
+    hashes coords to 31 bits (sentinel 0xFFFFFFFF reserved for planes /
+    shapeless) and the pair scan compares the stored `int4` cell coords
+    exactly — a hash collision can neither lose a pair (the body's own entry
+    is still found) nor emit a duplicate/wrong-cell candidate. Consequence:
+    each unordered pair is found EXACTLY once (one entry per body, emitted by
+    the lower index), so no dedup pass exists at all.
+  - **Stable O(n²) rank sort instead of the radix sort — the flagged perf
+    follow-up.** `AQSortEntriesRank/Scatter` + `AQSortPairsRank/Scatter`
+    compute each element's stable rank by brute scan (exactly the CPU
+    stable-sort order). Correctness-first: at the body counts the parity
+    scenes run, n² is microseconds on GPU; the Merrill-Grimshaw LSD radix
+    sort (plan §4) replaces the internals in a 5.x increment without touching
+    the chain's contract.
+  - **Two more omegaslc fixes surfaced** (extend-don't-workaround): the lexer
+    had NO scientific-notation support — `1e18` lexed as `1` + identifier
+    `e18` and the exponent silently vanished (plane bounds became ±1.0, the
+    |R|·h ULP pad became ~10⁰·sizes and blew every box AABB to ±150); fixed
+    in Lexer.cpp + the Parser's float-classification branch (`1e18` without a
+    decimal point must not go through std::stoi), test
+    `sci_notation_literal.omegasl`. And `add_omegasl_lib`'s custom command
+    did not depend on the omegaslc binary, so compiler fixes left every
+    shader lib stale — the helper now lists `omegaslc` in DEPENDS (this also
+    fixes WTK/kREATE lib staleness).
+  - **Backend surface:** `uploadBroadphaseInputs` (per-body dereferenced
+    shape table: type/params/local pose + filters + hull pool),
+    `encodeRefreshAABB`, `downloadFatAABBs` (host computes cellSize from
+    these — the one CPU-side reduction, a 5.x GPU-reduce candidate),
+    `encodeBroadphase` (hash→sort→pairs→sort in one command buffer;
+    overflow-regrow loop driven by the raw append count), `downloadPairs`.
+    Poses/velocities ride the SAME pooled body buffers 5c fills.
 - **5e — Narrowphase kernels.** `AQNarrowphase` count+build with the prefix-sum
   row allocation and the type-pair pre-sort (§6.D); the sorted-array warm-start
   cache. Parity: GPU manifolds + rows match CPU narrowphase (depth/normal/row
   fields) within `1e-4`.
+
+  **Status (2026-07-01): COMPLETE (specialized matrix; GJK/EPA pairs flagged
+  for CPU).** `aqua_gpu_narrowphase_test` passes on the Metal host: a 12-body
+  scene exercising every specialized branch (sphere/sphere, sphere/box,
+  sphere/capsule, sphere/plane, box/box SAT+clip, box/plane, capsule/capsule,
+  capsule/plane, hull/plane) — GPU manifolds match the CPU's
+  `contactManifolds()` (geometry 1e-4, structure + featureKeys exact), GPU
+  rows match a host recomputation of the CPU row-build (effective masses,
+  tangent basis, peer indices), the warm-start cache round-trips, and two
+  runs are bit-identical. Kernels in `AQNarrowphase.omegasl` (Count /
+  AQPrefixScan / Build), dxc + glslc source-verified. Decisions/divergences:
+  - **GJK/EPA pairs are NOT ported yet** (sphere/hull, box/capsule, box/hull,
+    capsule/hull, hull/hull): the count pass emits a per-pair `cpuFallback`
+    flag so the 5g step wiring can route exactly those pairs through the CPU
+    `AQgjkEpaContact`. The bounded-iteration GPU GJK/EPA port (§6.D) is the
+    recorded follow-up; the parity scene asserts the flag fires for exactly
+    the box/capsule pair.
+  - **Two-pass count+build with inclusive Hillis-Steele scans**
+    (`AQPrefixScan`, ping-pong dispatches; the build pass derives exclusive
+    offsets by subtracting its own re-computed counts). The type-pair
+    pre-sort (§6.D divergence mitigation) is SKIPPED — it would reorder the
+    dense output away from the CPU's pair-ordered layout that the parity
+    contract compares; revisit only with a scatter-back index when profiling
+    demands it.
+  - **Warm-start cache is the §6.D sorted-array form**: entries sorted by the
+    CPU's uint64 pairFeatureKey order as (hi=featureKey, lo=a|b<<16) uint2s,
+    binary-searched per point in the build pass.
+  - **Resources are entry-scoped in OmegaSL** (helpers cannot read buffers —
+    by design; Metal requires threading pointers). The contact routines take
+    values; the two entries load per-pair state, canonicalize, and inline the
+    one buffer-dependent branch (plane/hull vertex scan) + the cache search.
+  - **Three more omegaslc bugs found and fixed** (extend-don't-workaround):
+    (1) `s = cond ? a : b` mis-parsed as `(s = cond) ? a : b` — assignment
+    RHS now parses as a full expression; (2) prefix unary operands consumed a
+    whole expression (`-a + b` was `-(a + b)`, silently value-wrong under
+    `+`/`-`; only sign-commutative `*` masked it) — operands now bind at
+    unary precedence and the binary climb runs after prefix expressions;
+    (3) struct types named ONLY in helper signatures (`out AQManifoldLocal`)
+    were never emitted — FUNC_DECL param/return types now register in the
+    used-type context. Survey §12.-1/§12.0; tests
+    `precedence_unary_ternary.omegasl` (discriminating) + the suite.
+  - **Divergence noted:** the box/box Sutherland-Hodgman polygon is capped at
+    16 vertices (CPU uses a growable vector; a quad clipped by 4 planes peaks
+    at 8) — unreachable in practice, recorded for honesty.
+  - **Backend surface:** `uploadNarrowphaseInputs` (restitution/friction/
+    isTrigger), `uploadWarmStartCache`, `encodeNarrowphase` (one command
+    buffer: count, 2×⌈log2 n⌉ scan steps, build; one sync),
+    `downloadNarrowphase` (dense manifolds + rows + fallback flags).
+    `uploadBodies` grew the 9th body buffer (COM offsets); the narrowphase
+    binds the broadphase's shape tables and sorted-pair buffer directly —
+    the 5d→5e chain runs GPU-resident with no intermediate readback.
 - **5f — Colored solver kernels.** CPU-side greedy coloring producing
   `colorOffset[]`/`rowByColor[]`; `AQSolveVelocityColor` + `AQSolvePositionColor`
   dispatched per color per iteration (§6.E–G); the degenerate-coloring loud
   guard. Parity: GPU colored solve on the Phase 3 settling stack matches CPU PGS
   within the measured-relaxed impulse band; the §8 cross-path tolerance constants
   are pinned here from the measured divergence.
+
+  **Status (2026-07-01): COMPLETE.** `aqua_gpu_solver_test` passes on the
+  Metal host: ONE FULL SUB-STEP of the ported pipeline (velocity half-step →
+  broadphase → narrowphase → CPU greedy coloring → warm-start + 48 colored
+  PGS sweeps → 16 colored split-impulse iterations → position half-step with
+  the pseudo shift) on a 5-box penetrating stack over the ground plane,
+  against one CPU `advance`. **Measured cross-path divergence, pinned as the
+  §8 regression constants: position 1.7e-4, velocity 3.1e-4, accumulated
+  impulses 2.9e-4 relative (bands 1e-3 state / 5e-3 impulse).** The full GPU
+  sub-step re-runs byte-identical (within-path determinism at the pipeline
+  level). Decisions/divergences from the §6.F sketch, recorded:
+  - **Coloring is at CONSTRAINT-GROUP granularity, not per-row.** One group =
+    one manifold's (or joint's) contiguous row span; one THREAD solves its
+    group's rows in row order. Two wins over per-row coloring: a friction row
+    reads its normal peer's SAME-iteration accumulated impulse exactly like
+    the CPU sweep (the peer precedes it in the span — better fidelity than
+    the plan's "previous color/iteration" note), and the color count tracks
+    contact valence, not row count (a 10-box stack colors in ~3 colors
+    instead of ~24 — the granularity that makes colored-GS practical, and
+    what PhysX's batches actually are).
+  - **The coloring conflict rule is "shared FINITE-MASS body"** (not
+    "movable"): the position solve accumulates pseudo state into sleeping
+    finite-mass bodies too (CPU pass F skips only fully-inert pairs), so
+    those writes must not race. Static bodies never conflict — the ground
+    plane's manifolds parallelize (the stack solves in 2 colors + the plane
+    contacts). Greedy first-free-color in group order, deterministic
+    (§11.3 first cut); the §9 degenerate guard fires when colors*2 > groups.
+  - **Warm start is mode 0 of `AQSolveVelocityColor`** (CPU pass D as a
+    colored dispatch), so the whole solve is one command buffer:
+    warm-start colors + velIters×colors + posIters×colors, one sync.
+  - **Velocity writes are movability-guarded** in-kernel — value-identical
+    to the CPU's no-op writes into infinite-mass bodies, without the formal
+    data race.
+  - **Known corner divergence (recorded):** the CPU position loop applies
+    `pseudoLinear·dt` to SLEEPING dynamic bodies too (usually zero since
+    islands sleep together); the GPU position half-step skips sleeping
+    bodies entirely. Only observable mid-sleep-transition with a non-zero
+    pseudo — revisit in 5g's island wiring if the deliverable tests care.
+  - **Backend surface:** `setSolveGroups` (greedy color + group-table/
+    by-color-list upload), `encodeSolve(dt, velIters, posIters, warmStart,
+    bodyCount)` (zeroes pseudoLin/pseudoAng first — CPU zeroes at solve
+    top), and the split `encodeVelocityHalfStep`/`encodePositionHalfStep`
+    so a caller interleaves the solve exactly like the CPU sub-step
+    (encodeIntegrate stays as the fused non-contact form). New
+    `bodyPseudoAng` body buffer. 5g wires this sequence into
+    `AQSpace::stepInternal` behind `AQExecPath` and flips `usable()`.
 - **5g — Deliverable tests + Auto wiring + docs.** The four §1 deliverables
   (GPU stack, CPU↔GPU parity on stack + bridge, forced-CPU fallback, within-path
   determinism) wired into `tests/CMakeLists.txt`; `AQExecPath::Auto` resolution

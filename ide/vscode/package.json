@@ -29,7 +29,7 @@
                 ],
                 "extensions": [
                     ".omegasl",
-                    ".osl"
+                    ".omegaslh"
                 ],
                 "configuration": "./language-configuration.json"
             }

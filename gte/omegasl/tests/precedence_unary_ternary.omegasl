@@ -1,0 +1,44 @@
+/// Expression-precedence regressions (both found by AQUA's Phase 5e kernels):
+///
+/// 1. Assignment vs ternary: `s = cond ? a : b` must parse as
+///    `s = (cond ? a : b)`. The old climb-then-ternary order produced
+///    `(s = cond) ? a : b`, which Sema rejects here (float = bool) — so this
+///    file COMPILING is the discriminating assertion.
+/// 2. Unary operand binding: `-a + b` must parse as `(-a) + b`. The old
+///    full-expression operand gave `-(a + b)` — silently value-wrong under
+///    `+`/`-` (only sign-commutative under `*`).
+
+struct Pt {
+    float4 value;
+};
+
+buffer<Pt> src : 0;
+buffer<Pt> dst : 1;
+
+[in src, out dst]
+compute(x=1,y=1,z=1)
+void test_precedence(uint3 tid : GlobalThreadID){
+    float x = src[0].value[0];
+    float a = src[0].value[1];
+    float b = src[0].value[2];
+
+    /// (1) ternary as an assignment-statement RHS (not a decl initializer).
+    float s = 0.0;
+    s = (x > 0.5) ? 1.0 : 2.0;
+    /// ... and with an expression condition + expression branches.
+    float t = 0.0;
+    t = x > a ? a + b : a - b;
+
+    /// (2) unary minus followed by additive/relational binary operators.
+    float u = -a + b;                      // (-a) + b
+    float v = -a - b;                      // (-a) - b
+    bool inside = x >= -a && x <= a;       // x >= (-a), not -(a && ...)
+    float w = inside ? u : v;
+
+    /// (2b) logical-not and bit-not operands bind tightly too.
+    bool nn = !inside && (b > 0.0);
+    uint k = (uint)x;
+    uint msk = ~k & 0xFFu;
+
+    dst[0].value = float4(s + t, w, nn ? 1.0 : 0.0, (float)msk);
+}

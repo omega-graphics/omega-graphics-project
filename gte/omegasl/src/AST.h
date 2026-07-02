@@ -287,6 +287,12 @@ namespace omegasl {
             virtual TypeExpr *evalExprForTypeExpr(Expr *expr) = 0;
 
             virtual void getStructsInFuncDecl(FuncDecl *funcDecl,std::vector<std::string> & out) = 0;
+            /** @brief Records that `funcDecl` uses the struct type `structName`
+             * (dedup-safe). CodeGen uses this to close a shader's used-struct
+             * set over the user functions emitted into its TU, so a struct
+             * that only appears in a helper's signature/locals is still
+             * defined before the helper's prototype. **/
+            virtual void addStructUseToFuncDecl(FuncDecl *funcDecl,const std::string & structName) = 0;
             /** @brief Retrieves the underlying Type associated with this TypeExpr
              * @param expr The TypeExpr to evalutate.
              * @returns Type **/

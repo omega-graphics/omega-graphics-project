@@ -56,6 +56,9 @@ add_omegasl_compile_test(omegasl_compile_vector_math         vector_math.omegasl
 add_omegasl_compile_test(omegasl_compile_resource_types      resource_types.omegasl)
 add_omegasl_compile_test(omegasl_compile_compute_gradient    compute_gradient.omegasl)
 add_omegasl_compile_test(omegasl_compile_user_functions      user_functions.omegasl)
+add_omegasl_compile_test(omegasl_compile_dot_cross_operand   dot_cross_operand.omegasl)
+add_omegasl_compile_test(omegasl_compile_sci_notation        sci_notation_literal.omegasl)
+add_omegasl_compile_test(omegasl_compile_precedence          precedence_unary_ternary.omegasl)
 add_omegasl_compile_test(omegasl_compile_const_fold          const_fold.omegasl)
 add_omegasl_compile_test(omegasl_compile_tessellation        tessellation.omegasl)
 # Tessellation is incomplete on two backends, for the same structural

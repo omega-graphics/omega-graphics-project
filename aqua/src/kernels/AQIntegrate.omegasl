@@ -1,0 +1,188 @@
+// AQUA compute kernels — integration stage (Phase 5c). Line-by-line
+// transliterations of the two CPU half-steps (AQStepBodyVelocity /
+// AQStepBodyPosition, aqua/include/aqua/AQIntegrator.h) plus the
+// split-impulse position apply from AQSpace::stepInternal. The float
+// operation ORDER deliberately mirrors the CPU recipe (plan §5/§8); the
+// remaining CPU<->GPU gap is codegen reassociation/FMA and libm-vs-GPU trig —
+// the tolerance band the 5c parity test asserts, per the §8 determinism
+// contract. Shared math + the buffer-element/params structs live in
+// AQKernelsCommon.omegaslh; this file is compiled to its own .omegasllib and
+// merged into AQKernels.omegasllib by the build.
+
+#include "AQKernelsCommon.omegaslh"
+
+constant<AQStepParams> aqParams : 0;
+
+buffer<AQF4> aqBodyPosAct   : 1;  // xyz position,          w activation (0/1/2)
+buffer<AQF4> aqBodyVelIm    : 2;  // xyz linear velocity,   w invMass
+buffer<AQF4> aqBodyQuat     : 3;  // xyzw orientation
+buffer<AQF4> aqBodyWbMax    : 4;  // xyz omega (body frame), w maxAngularSpeed
+buffer<AQF4> aqBodyInvIGs   : 5;  // xyz inv principal inertia, w gravityScale
+buffer<AQF4> aqBodyForceLd  : 6;  // xyz force accum,       w linearDamping
+buffer<AQF4> aqBodyTorqueAd : 7;  // xyz torque accum,      w angularDamping
+buffer<AQF4> aqBodyPseudo   : 8;  // xyz split-impulse pseudoLinear, w unused
+
+// Half-step #1 — AQStepBodyVelocity (AQIntegrator.h:80-163), one thread per
+// body. Gravity + accumulated force, linear damping, world torque -> body
+// frame, explicit inverse-inertia kick, the adaptive implicit-gyroscopic
+// Newton iteration (cap 4, gated on ||w||*dt > 1e-2 — warp-uniform, a pure
+// function of the state), angular damping, and the opt-in max-|w| clamp.
+// No atomics, no cross-thread reads (plan §6.A).
+[in aqParams, in aqBodyPosAct, inout aqBodyVelIm, in aqBodyQuat,
+ inout aqBodyWbMax, in aqBodyInvIGs, in aqBodyForceLd, in aqBodyTorqueAd]
+compute(x=64,y=1,z=1)
+void AQIntegrateVelocity(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqParams.counts[0]){
+        return;
+    }
+
+    float4 velIm = aqBodyVelIm[i].v;
+    float invMass = velIm[3];
+    if(invMass == 0.0){
+        return;                       // static / kinematic / immovable
+    }
+    float activation = aqBodyPosAct[i].v[3];
+    if(activation == 1.0){
+        return;                       // Sleeping (Phase 4 fast-path)
+    }
+
+    float dt = aqParams.gravityDt[3];
+    float3 gravity = float3(aqParams.gravityDt[0], aqParams.gravityDt[1], aqParams.gravityDt[2]);
+
+    float4 invIGs = aqBodyInvIGs[i].v;
+    float3 invInertia = float3(invIGs[0], invIGs[1], invIGs[2]);
+    float gravityScale = invIGs[3];
+
+    float4 forceLd = aqBodyForceLd[i].v;
+    float3 force = float3(forceLd[0], forceLd[1], forceLd[2]);
+    float linearDamping = forceLd[3];
+
+    float4 torqueAd = aqBodyTorqueAd[i].v;
+    float3 torque = float3(torqueAd[0], torqueAd[1], torqueAd[2]);
+    float angularDamping = torqueAd[3];
+
+    float4 q = aqBodyQuat[i].v;
+    float4 wbMax = aqBodyWbMax[i].v;
+    float3 w = float3(wbMax[0], wbMax[1], wbMax[2]);
+    float maxAngularSpeed = wbMax[3];
+
+    // 1. Linear: symplectic Euler, velocity first.
+    float3 vel = float3(velIm[0], velIm[1], velIm[2]);
+    vel = vel + (gravity * gravityScale + force * invMass) * dt;
+
+    // 1a. Linear damping (exponential, unconditionally stable).
+    if(linearDamping > 0.0){
+        vel = vel * (1.0 / (1.0 + linearDamping * dt));
+    }
+
+    // 2. Angular: world torque -> body frame, explicit Ib^-1 kick (diagonal).
+    float3 tauBody = aqRotateConj(q, torque);
+    w[0] = w[0] + dt * invInertia[0] * tauBody[0];
+    w[1] = w[1] + dt * invInertia[1] * tauBody[1];
+    w[2] = w[2] + dt * invInertia[2] * tauBody[2];
+
+    // 3. Implicit gyroscopic Newton iteration in the body frame; skip cleanly
+    //    when any axis has infinite inertia. The iteration count is a pure
+    //    function of ||w||*dt (deterministic, warp-uniform).
+    if(invInertia[0] > 0.0 && invInertia[1] > 0.0 && invInertia[2] > 0.0){
+        float ibx = 1.0 / invInertia[0];
+        float iby = 1.0 / invInertia[1];
+        float ibz = 1.0 / invInertia[2];
+
+        AQMat3R Ib;
+        Ib.r0 = float3(ibx, 0.0, 0.0);
+        Ib.r1 = float3(0.0, iby, 0.0);
+        Ib.r2 = float3(0.0, 0.0, ibz);
+
+        float omegaSq = w[0]*w[0] + w[1]*w[1] + w[2]*w[2];
+        float stepAngleSq = omegaSq * dt * dt;
+        float thr = 0.01;             // kAQAdaptiveAngle<float>()
+        int iters = (stepAngleSq > thr * thr) ? 4 : 1;   // kAQAdaptiveCap
+
+        float3 w0 = w;                // post-kick starting point (Newton fixed)
+        for(int k = 0; k < iters; k++){
+            float3 Iw  = float3(ibx * w[0], iby * w[1], ibz * w[2]);
+            float3 dw  = w - w0;
+            float3 Idw = float3(ibx * dw[0], iby * dw[1], ibz * dw[2]);
+            float3 f   = Idw + cross(w, Iw) * dt;               // full residual
+            AQMat3R J  = aqMat3AddScaled(Ib, aqMat3Sub(aqMat3Mul(aqSkew(w), Ib), aqSkew(Iw)), dt);
+            w = w - aqMat3Vec(aqMat3Inverse(J), f);
+        }
+    }
+
+    // 3a. Angular damping (after Newton, before the orientation update).
+    if(angularDamping > 0.0){
+        float s = 1.0 / (1.0 + angularDamping * dt);
+        w[0] = w[0] * s;
+        w[1] = w[1] * s;
+        w[2] = w[2] * s;
+    }
+
+    // 3b. Opt-in max-angular-speed clamp (off when maxAngularSpeed == 0).
+    if(maxAngularSpeed > 0.0){
+        float wn2 = w[0]*w[0] + w[1]*w[1] + w[2]*w[2];
+        float cap2 = maxAngularSpeed * maxAngularSpeed;
+        if(wn2 > cap2){
+            float scale = maxAngularSpeed / sqrt(wn2);
+            w[0] = w[0] * scale;
+            w[1] = w[1] * scale;
+            w[2] = w[2] * scale;
+        }
+    }
+
+    aqBodyVelIm[i].v = float4(vel[0], vel[1], vel[2], invMass);
+    aqBodyWbMax[i].v = float4(w[0], w[1], w[2], maxAngularSpeed);
+}
+
+// Half-step #2 — AQStepBodyPosition (AQIntegrator.h:173-204) plus the
+// split-impulse position apply from AQSpace::stepInternal (AQSpace.cpp:698):
+// exp-map orientation update, symplectic position update, pseudoLinear * dt,
+// then consume the force/torque accumulators. Static / kinematic / sleeping
+// bodies keep their pose but still clear the accumulators (Phase 1 semantics).
+// The CPU's debug-build NaN assert has no kernel form — the §9 post-step
+// readback guard is the loud-fail replacement (plan §6.H).
+[in aqParams, inout aqBodyPosAct, in aqBodyVelIm, inout aqBodyQuat,
+ in aqBodyWbMax, inout aqBodyForceLd, inout aqBodyTorqueAd, in aqBodyPseudo]
+compute(x=64,y=1,z=1)
+void AQIntegratePosition(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqParams.counts[0]){
+        return;
+    }
+
+    float dt = aqParams.gravityDt[3];
+
+    float4 posAct = aqBodyPosAct[i].v;
+    float activation = posAct[3];
+    float4 velIm = aqBodyVelIm[i].v;
+    float invMass = velIm[3];
+
+    // Consume the per-sub-step accumulators in every case (the w lanes carry
+    // the damping coefficients and must survive the clear).
+    float linearDamping  = aqBodyForceLd[i].v[3];
+    float angularDamping = aqBodyTorqueAd[i].v[3];
+    aqBodyForceLd[i].v  = float4(0.0, 0.0, 0.0, linearDamping);
+    aqBodyTorqueAd[i].v = float4(0.0, 0.0, 0.0, angularDamping);
+
+    if(invMass == 0.0 || activation == 1.0){
+        return;                       // pose stays put
+    }
+
+    // 4. Orientation: exponential-map update from body-frame w (on-manifold).
+    float4 q = aqBodyQuat[i].v;
+    float4 wbMax = aqBodyWbMax[i].v;
+    float3 w = float3(wbMax[0], wbMax[1], wbMax[2]);
+    float4 e = aqQuatExp(w * (dt * 0.5));
+    aqBodyQuat[i].v = aqQuatNormalize(aqQuatMul(q, e));
+
+    // 5. Position: symplectic update with the new velocity, then the
+    //    split-impulse pseudo-velocity shift (zero when no solver ran).
+    float3 pos = float3(posAct[0], posAct[1], posAct[2]);
+    float3 vel = float3(velIm[0], velIm[1], velIm[2]);
+    pos = pos + vel * dt;
+    float4 pseudo = aqBodyPseudo[i].v;
+    pos = pos + float3(pseudo[0], pseudo[1], pseudo[2]) * dt;
+
+    aqBodyPosAct[i].v = float4(pos[0], pos[1], pos[2], activation);
+}

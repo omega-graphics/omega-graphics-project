@@ -366,6 +366,14 @@ namespace omegasl {
         }
     }
 
+    void Sem::addStructUseToFuncDecl(ast::FuncDecl *funcDecl, const std::string &structName){
+        /// Dedup-safe append into the decl's used-struct list — the CodeGen
+        /// struct-use-closure hook (SemFrontend::addStructUseToFuncDecl).
+        if(!hasTypeNameInFuncDeclContext(structName, funcDecl)){
+            addTypeNameToFuncDeclContext(structName, funcDecl);
+        }
+    }
+
     void Sem::setSemContext(std::shared_ptr<SemContext> & _currentContext){
         currentContext = _currentContext;
     }
@@ -2728,12 +2736,42 @@ namespace omegasl {
                     auto a0 = performSemForExpr(_expr->args[0],funcContext);
                     auto a1 = performSemForExpr(_expr->args[1],funcContext);
                     if(!a0 || !a1) return nullptr;
+                    /// Stamp the resolved arg types for type-aware codegen,
+                    /// mirroring the modf/frexp and atomic branches.
+                    _expr->args[0]->resolvedType = a0;
+                    _expr->args[1]->resolvedType = a1;
                     auto t0 = resolveTypeWithExpr(a0), t1 = resolveTypeWithExpr(a1);
                     if(func_found == ast::builtins::cross &&
                        (!(t0 == ast::builtins::float3_type) || !(t1 == ast::builtins::float3_type))){
                         auto e = std::make_unique<TypeError>("cross() requires float3 arguments"); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                         return nullptr;
                     }
+                    /// Return the CONCRETE result type, not the FuncType's
+                    /// "VECTOR_TYPE"/"SCALAR_TYPE" placeholder. The placeholder
+                    /// resolves to no real type, so any use of `dot(...)` /
+                    /// `cross(...)` as a binary-expression operand (`v +
+                    /// cross(u, t)`) failed the type match even though the
+                    /// same call was accepted as a full initializer (where the
+                    /// unresolvable placeholder skipped the check). cross() is
+                    /// always float3; dot() returns the component scalar of
+                    /// its (validated same-typed, numeric-vector) arguments.
+                    if(func_found == ast::builtins::cross){
+                        return ast::TypeExpr::Create(ast::builtins::float3_type);
+                    }
+                    if(t0 == nullptr || t1 == nullptr || t0 != t1){
+                        auto e = std::make_unique<TypeError>("dot() requires two vectors of the same type");
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    auto dotInfo = vectorComponentInfo(t0);
+                    if(dotInfo.scalar == nullptr){
+                        auto e = std::make_unique<TypeError>("dot() requires numeric vector arguments");
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    return ast::TypeExpr::Create(dotInfo.scalar);
                 }
                 else {
                     /// User-defined function call: validate argument count against parameter count.
@@ -3298,10 +3336,24 @@ namespace omegasl {
                 if(returnTy == nullptr){
                     return false;
                 }
+                /// Register a user-struct return type in the decl's used-type
+                /// context — CodeGen's struct-use closure folds it into every
+                /// shader TU this function is emitted into. Mirrors the
+                /// SHADER_DECL path; without it a struct only ever named in a
+                /// helper signature was never emitted.
+                if(!returnTy->builtin && !hasTypeNameInFuncDeclContext(returnTy->name,_decl)){
+                    addTypeNameToFuncDeclContext(returnTy->name,_decl);
+                }
                 for(auto & p : _decl->params){
                     auto p_ty = resolveTypeWithExpr(p.typeExpr);
                     if(p_ty == nullptr){
                         return false;
+                    }
+                    /// Same registration for user-struct params (including
+                    /// `out`/`inout` ones — an out-param is often the ONLY
+                    /// place the struct is named in the function).
+                    if(!p_ty->builtin && !hasTypeNameInFuncDeclContext(p_ty->name,_decl)){
+                        addTypeNameToFuncDeclContext(p_ty->name,_decl);
                     }
                     /// §3.6 — `const` cannot combine with `out` / `inout`.
                     /// Those qualifiers write the caller's storage back

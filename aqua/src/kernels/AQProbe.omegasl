@@ -1,0 +1,18 @@
+// AQUA compute kernels — toolchain probe (Phase 5b). Compiled to its own
+// .omegasllib and merged into AQKernels.omegasllib by the build (see
+// aqua/CMakeLists.txt; per-stage kernel sources share AQKernelsCommon.omegaslh).
+
+struct AQProbeData {
+    float4 value;
+};
+
+buffer<AQProbeData> aqProbeIn : 0;
+buffer<AQProbeData> aqProbeOut : 1;
+
+// Doubles each input element. The capability probe: if this dispatch produces
+// the expected values, the device can build and run an AQUA compute pipeline.
+[in aqProbeIn, out aqProbeOut]
+compute(x=64,y=1,z=1)
+void AQProbeDouble(uint3 tid : GlobalThreadID){
+    aqProbeOut[tid[0]].value = aqProbeIn[tid[0]].value * 2.0;
+}
