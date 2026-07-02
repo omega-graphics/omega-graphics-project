@@ -139,13 +139,19 @@ _NAMESPACE_BEGIN_
 
     void GEVulkanCommandBuffer::insertResourceBarrierIfNeeded(GEVulkanBuffer *buffer, unsigned int &resource_id,
                                                               omegasl_shader &shader) {
-        // Temporary diagnostic fallback:
-        // current explicit buffer barrier path can trigger VK_ERROR_DEVICE_LOST on some drivers.
-        // Skip barriers for now to keep BasicAppTest stable while Vulkan sync is reworked.
-        (void)buffer;
-        (void)resource_id;
-        (void)shader;
-        return;
+        // The graphics (vertex/fragment) buffer-barrier path can trigger
+        // VK_ERROR_DEVICE_LOST on some drivers and is still being reworked, so
+        // keep skipping it there to keep BasicAppTest stable. Compute is
+        // re-enabled: multi-pass GPU kernels (AQUA physics) need the
+        // write->read hazard barrier between successive dispatches, or the
+        // passes race and produce non-deterministic, oracle-mismatching output.
+        // A COMPUTE->COMPUTE buffer barrier on a compute queue (no render pass
+        // in flight) is not affected by the graphics-path issue.
+        if(shader.type != OMEGASL_SHADER_COMPUTE){
+            (void)buffer;
+            (void)resource_id;
+            return;
+        }
 
         auto ioMode = getResourceIOModeForResourceID(resource_id,shader);
 
