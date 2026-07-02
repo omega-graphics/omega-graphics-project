@@ -1287,3 +1287,205 @@ record:
   in `AQSpace.cpp` because `AQRigidBody::Impl`/`AQSpace::Impl` are private and
   only `AQSpace` is their friend — the same split the brief assumes for the
   per-type math vs. the SoA driver.
+
+---
+
+## 13. Phase 4.x — Joint split-impulse position correction (Baumgarte retirement)
+
+**Status: active plan (implementation phasing below). Added 2026-07-02.**
+
+### 13.1 Why this section exists — revising the §6.I decision
+
+§6.I shipped joints on a **Baumgarte velocity bias** for position correction:
+each joint row bakes its constraint error `C` into `bias = (β/dt)·C` (β = 0.2,
+`AQJoint.cpp` `softParams`, hard branch), and the PGS velocity sweep
+(`AQSpace.cpp` §E) adds that `bias` term to the row's relative velocity. The
+rationale recorded there was that "the Catto-2009 split-impulse argument is
+specific to one-sided contact rows," so joints stayed on Baumgarte while
+contacts got the clean split-impulse (pseudo-velocity) pass (§6.I / Phase 3 §F).
+
+That decision is now **overruled**, with a documented reason (case-law style —
+rule + scope + why):
+
+- **Rule.** Joint *position-error* correction moves off the Baumgarte velocity
+  bias and onto the same split-impulse pseudo-velocity pass contacts already
+  use. The velocity solve keeps only genuine velocity goals (motor target
+  speeds; restitution has none for joints).
+- **Scope.** AQUA rigid-body joints — the bilateral `JointAxis` position rows
+  of every type (Distance, BallSocket, Hinge, Slider, Fixed) and, in a second
+  step, the one-sided `JointLimit` rows. Motors (`JointMotor`) are unaffected.
+- **Why.** Two reasons, both rooted in the developer's standing AQUA bar
+  (highest-precision, no-shortcut, cross-platform-identical physics; see the
+  determinism work in §13.6):
+  1. **Baumgarte is a shortcut that injects energy and pollutes the reaction
+     force.** The velocity bias reaches equilibrium at a small *steady* joint
+     stretch, and the impulse spent holding that stretch is added on top of the
+     true constraint impulse. This is exactly what the §9 bridge deliverable's
+     support-force oracle measures: `jointImpulse()` returns the velocity-solve
+     accumulated impulse (`AQSpace::Impl::…lastLinearImpulse`), so the anchor
+     "vertical force" reads high. The §9 note already conceded "the Baumgarte
+     position-bias inflates the pure support force slightly" and set the oracle
+     tolerance to ~15% to absorb it.
+  2. **The inflation is not stable across toolchains.** After AQUA moved to
+     `-ffp-contract=off` for cross-platform-identical results (§13.6), the
+     bridge oracle settled at ~18.8% over the analytic chain weight — past the
+     15% tolerance. Split-impulse removes the bias term from the measured
+     impulse entirely, so the oracle converges to the analytic weight (≈0%)
+     *and* does so identically on every backend. The fix is the algorithm, not
+     a wider tolerance — matching the "adjust the algorithm" directive.
+
+The §6.I text and the `AQJoint.cpp:16-17` comment ("joints skip split-impulse")
+are updated by this section when it lands.
+
+### 13.2 Why split-impulse and not XPBD
+
+§12's recency audit named **XPBD** (Müller/Macklin 2020) as the modern
+alternative that is "infinitely stiff with no Baumgarte-style energy injection."
+It is *not* chosen here, for the reason §12 already recorded: XPBD for joints is
+the **§7.2 unified-XPBD architectural fork**, deferred to Phase 7, and adopting
+it for joints alone would prejudge that decision (n-substep × 1-iteration loop,
+no warm-start, a different solver shape).
+
+Split-impulse position correction is the **minimal, non-fork-prejudging** way to
+retire Baumgarte: it keeps the Phase 3/4 PGS-row-buffer architecture, the
+velocity warm-start, the sub-step count, and the row schema — it only relocates
+*where* position error is corrected. It is also strictly consistent with the
+path contacts already ship. When Phase 7 revisits §7.2, a unified-XPBD recast
+still reuses this row layout (the `compliance` field already carries XPBD's
+parameter surface, per §12); this change does not close that door.
+
+### 13.3 Design
+
+**Row schema (`AQConstraintRow`, `include/aqua/AQContact.h`).** Add one field:
+
+- `float positionError = 0.f;` — the signed scalar constraint value `C` along
+  `direction` (metres for linear rows, radians for angular rows). Today `C` is
+  computed in `AQbuildJointRows` and immediately folded into `bias` then lost;
+  the split-impulse pass needs it live. This mirrors the role `AQContactPoint::
+  depth` plays for the contact split-impulse pass.
+
+**Joint build (`AQJoint.cpp`).** `softParams` grows a flag (or a sibling
+`softParamsSplit`) so that for a **hard** position row it returns
+`bias = 0` and hands `C` back to be stored in `row.positionError`, instead of
+`bias = (β/dt)·C`. The **soft** branch (`AQJointSoftness.frequency > 0`) is
+unchanged in spirit — a soft joint is a spring the user asked for, and its ERP
+bias is a modelling parameter, not a stabilisation shortcut; soft rows keep
+their velocity bias and do **not** enter the position pass (documented so the
+two paths never both correct the same error). Motor rows (`JointMotor`) keep
+their velocity bias (target speed). The per-type builders (`emitPoint3`,
+`emitAngular3`, Distance, Hinge/Slider limit-motor) are otherwise untouched —
+they already compute `C` at each call site (`dot(Cvec, ax)`, `dot(theta, ax)`,
+`len - target`, …); they just pass it through to `positionError`.
+
+**Velocity sweep (`AQSpace.cpp` §E).** Unchanged in structure. Because hard
+position rows now carry `bias = 0`, the sweep naturally solves them to pure
+zero relative velocity — no bias term, no injected energy. Motor/soft rows are
+unaffected.
+
+**Split-impulse pass (`AQSpace.cpp` §F).** Currently iterates `impl->manifolds`
+only. Add a second loop over `impl->jointRowSpans` → their rows, applying
+bilateral pseudo-velocity correction per row, reusing the existing per-body
+`pseudoLinear`/`pseudoAngular` accumulators (already zeroed once per sub-step,
+§ init) and the existing `positionIters` count:
+
+```
+for span in jointRowSpans:
+  for row in span rows:
+    if row.kind == JointMotor: continue          // velocity goal, not position
+    if row.compliance != 0:    continue          // soft joint: user spring, skip
+    C = row.positionError
+    // one-sided for limits, bilateral otherwise
+    if row.kind == JointLimit and C <= 0: continue
+    target = clamp(ERP * C / dt, ±maxPosVel)
+    if row.isAngular:
+        relPV = dot(pseudoAngB - pseudoAngA, dir)
+        k     = dot(dir, invIB·dir) + dot(dir, invIA·dir)
+        λ     = (target - relPV) / k
+        if row.kind == JointLimit: λ = clamp λ to the one-sided cone
+        pseudoAngB += invIB·(dir·λ);  pseudoAngA -= invIA·(dir·λ)
+    else:
+        // same rAxN/rBxN effective-mass form as the contact pass, at row.rA/rB
+        …apply dir·λ at the joint anchor via pseudoLinear/pseudoAngular…
+```
+
+`ERP`, `maxPosVel` reuse the contact constants (`kPositionERP = 0.2`,
+`kMaxPosCorrectionVel = 2`) so joints and contacts correct position at the same
+rate — important where a body is in both a joint and a contact. Sign
+convention: `positionError` is defined so a positive `C` means "B drifted +dir
+from A," matching `Cvec = bW - aW` in `AQbuildJointRows`; the pseudo-impulse
+pushes them back together (verify the sign against the Distance and BallSocket
+cases in test).
+
+**`jointImpulse()` (`AQSpace.cpp`).** No API change; it now returns the pure
+constraint impulse (Baumgarte term gone). The §9 bridge oracle consequently
+reads ≈ the analytic weight. Its tolerance can tighten from 15% → e.g. 5% once
+the change lands (a follow-up assertion tightening, not a loosening).
+
+**Determinism.** The joint position loop visits `jointRowSpans` in the existing
+deterministic build order; the pseudo-velocity accumulators are per-body and
+order-stable. No new nondeterminism. The §5/§8 byte-identical contract is
+preserved and re-checked by the determinism test.
+
+### 13.4 Row-kind handling matrix
+
+| Row kind    | Velocity `bias` after change | In split-impulse pass? | Notes |
+|-------------|------------------------------|------------------------|-------|
+| `JointAxis` (hard)  | 0                    | yes, bilateral         | the core fix — the bridge's ball-socket rows |
+| `JointAxis` (soft)  | ERP bias (unchanged) | no                     | user spring; position handled by the spring |
+| `JointLimit`        | 0 (Phase 4x.3)       | yes, one-sided         | like a contact; retires limit-bounce energy |
+| `JointMotor`        | target speed (unchanged) | no                 | velocity goal, not a position error |
+
+### 13.5 Implementation phasing
+
+Small-to-moderate; each phase is independently verifiable and reversible.
+
+- **4x.1 — Schema plumbing (no behaviour change).** Add `positionError` to
+  `AQConstraintRow` and its GPU mirror struct; populate it in `AQbuildJointRows`
+  alongside the existing `bias`. Leave Baumgarte on. The whole suite must be
+  **bit-identical** to before (positionError is written but unread). Gate.
+- **4x.2 — CPU bilateral `JointAxis` split-impulse (the core fix).** Flip hard
+  `JointAxis` rows to `bias = 0`; add the joint loop to §F for bilateral rows.
+  Verify: bridge oracle → ≈ analytic weight on macOS/Linux **and** the joint-
+  error < 1 mm / symmetry / ends-pinned invariants still hold; `aqua_phase4_test`
+  green; `aqua_contact_test` unchanged (contacts untouched).
+- **4x.3 — CPU one-sided `JointLimit` split-impulse.** Move limit rows too, for
+  consistency and to kill limit-bounce energy. Verify the hinge-door limit case
+  in `aqua_phase4_test` (settles at the limit without overshoot/bounce).
+- **4x.4 — GPU mirror.** Port to the compute path so CPU and GPU stay
+  bit-parity: `AQComputeBackend.h/.cpp` constraint-row struct gains
+  `positionError`; `src/kernels/AQSolver.omegasl` gains the joint split-impulse
+  in its position pass with the same order and math. Verify `aqua_gpu_solver_test`
+  and the CPU/GPU cross-path determinism check. (Ties to §7.3 SoA layout;
+  `AQKernelsCommon.omegaslh` shared struct updated once.)
+- **4x.5 — Tighten oracles + doc.** Tighten the §9 bridge support-force oracle
+  (15% → ~5%), update the §6.I text and the `AQJoint.cpp` header comment, and
+  move this doc to `.plans/done/` only when 4x.1–4x.4 are all shipped.
+
+### 13.6 Context — the determinism build
+
+This work was surfaced while fixing `aqua_contact_test`'s three failures
+(2026-07-02). Two of those were cross-platform FP divergence, fixed by
+`-ffp-contract=off` on AQUA (Clang contracts `a*b+c` into a single-rounded FMA;
+MSVC's `/fp:precise` does not — the divergence amplified over the settling
+stack's chaotic sub-steps). The third was a genuine GJK/EPA bug (a degenerate,
+zero-volume tetrahedron handed to EPA produced a NaN witness; fixed with the
+`expandToTetrahedron` "enclose the origin" recovery in `AQGJK.cpp`). The
+deterministic build is what pushed the bridge oracle past its 15% tolerance and
+exposed the Baumgarte shortcut this section retires.
+
+### 13.7 Risks / open decisions
+
+- **Limit one-sidedness sign.** `JointLimit`'s `positionError` must encode "how
+  far past the limit" with the correct sign for the one-sided clamp; the current
+  Baumgarte limit bias (`-(β(coord-max))/dt`, `emitAxisLimitMotor`) is the
+  reference for that sign. Nail it in 4x.3 against the hinge-door test.
+- **Coupled joint+contact bodies.** A body in both a joint and a resting contact
+  now takes pseudo-impulses from both loops in the same §F sweep. Sharing `ERP`/
+  `maxPosVel` keeps the two correction rates matched; watch the stacked-and-
+  jointed case for pseudo-velocity fighting (none expected — contacts are
+  one-sided, joints bilateral, and they act on different error directions).
+- **Warm-start scope.** Only the *velocity* impulse is warm-started (unchanged);
+  the pseudo-velocity pass is fresh each sub-step, exactly as contacts do. Do
+  not warm-start the position pass.
+- **Soft joints keep ERP bias by design.** Confirm no test drives a *hard* joint
+  through the soft path; the split only diverts the hard branch.

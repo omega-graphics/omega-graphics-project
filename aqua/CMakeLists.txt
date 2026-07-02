@@ -21,6 +21,31 @@ target_include_directories("AQUA" PUBLIC
     $<TARGET_PROPERTY:OmegaGTE,INCLUDE_DIRECTORIES>)
 target_compile_definitions(AQUA PRIVATE AQUA__BUILD__)
 
+# Cross-platform-identical results: disable floating-point multiply-add
+# contraction across the simulation TUs. Clang defaults to `-ffp-contract=on`
+# in C++ mode (it fuses `a*b + c` into a single-rounded FMA); MSVC's default
+# `/fp:precise` does not contract. That divergence made the same source produce
+# different rounding in the solver's dot/cross hot path, and over a settling
+# stack's ~1200 chaotic sub-steps it amplified enough to fail aqua_contact_test
+# on macOS/Linux (Clang) while it passed on Windows (MSVC) — the resting-impulse
+# oracle drifted from its analytic value by 21% (contraction off brings it to
+# 0.0%). AQUA's contract is reproducible physics (byte-identical manifolds /
+# impulses — see aqua_contact_test's determinism case), which requires every
+# backend to round identically, so we forbid the fuse rather than loosen the
+# oracle. Contraction is also an active correctness hazard for the geometric
+# predicates here: a fused `a*b - c*d` cross product / 2x2 determinant rounds
+# its two products differently and can flip sign near zero. Orthogonal to `-O2`
+# below — vectorization still applies; only the multiply-add fuse is disabled.
+#
+# Only real cl.exe needs no flag (its default already forbids the fuse); every
+# LLVM/GCC driver — including clang-cl, where CMake's `MSVC` is also true —
+# takes `-ffp-contract=off`, so we branch on the compiler *id*, not `MSVC`.
+# PRIVATE: only AQUA's own TUs run the simulation; consumers reading results
+# back don't need it.
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(AQUA PRIVATE -ffp-contract=off)
+endif()
+
 # Phase 5 (compute substrate): AQUA dispatches OmegaSL compute kernels through
 # OmegaGTE, so its TUs now include <omegaGTE/GE.h>, which hard-#errors unless the
 # target-platform macro is defined (TARGET_METAL / TARGET_DIRECTX / TARGET_VULKAN —

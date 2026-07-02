@@ -205,6 +205,78 @@ bool simplexClosest(SupportPt *s, int &n, FVec<3> &closest) {
     return false;
 }
 
+// Expand a degenerate (1-, 2-, or 3-vertex) simplex whose lowest-dimensional
+// feature already contains the origin into a NON-DEGENERATE tetrahedron, so
+// the EPA polytope starts with positive volume. This is the classic
+// "enclose the origin" recovery (van den Bergen 2001 §4; the same job
+// Bullet's `EncloseOrigin` does): step the simplex up one dimension at a
+// time, at each step probing support directions until the new vertex is not
+// coincident (1→2), collinear (2→3), or coplanar (3→4) with the vertices
+// already kept. Returns false only when the Minkowski difference is
+// genuinely lower-dimensional (both shapes flat along some axis) and no
+// non-zero-volume tetrahedron exists — a true degenerate contact the caller
+// must reject rather than hand to EPA, which would divide by a zero face
+// area and emit a NaN witness point.
+//
+// Robustness matters here because GJK legitimately reaches this state for
+// deep overlaps: the reduced simplex can pass exactly through the origin, at
+// which point the previous "cross one edge with +Y" seed produced a support
+// coplanar with the triangle and a flat tetrahedron.
+bool expandToTetrahedron(const AQShape &A, const AQShape &B,
+                         const AQTransform<float> &xfA, const AQTransform<float> &xfB,
+                         const FVec<3> *hullVerts, std::size_t hullVertCount,
+                         SupportPt simplex[4], int &n) {
+    const FVec<3> axes[6] = {
+        AQvec3( 1.f,  0.f,  0.f), AQvec3(-1.f,  0.f,  0.f),
+        AQvec3( 0.f,  1.f,  0.f), AQvec3( 0.f, -1.f,  0.f),
+        AQvec3( 0.f,  0.f,  1.f), AQvec3( 0.f,  0.f, -1.f),
+    };
+
+    // 1 → 2: a second vertex distinct from the first.
+    if (n == 1) {
+        for (int i = 0; i < 6; ++i) {
+            const SupportPt s = mdSupport(A, B, xfA, xfB, hullVerts, hullVertCount, axes[i]);
+            const FVec<3> e = s.p - simplex[0].p;
+            if (OmegaGTE::dot(e, e) > 1e-10f) { simplex[1] = s; n = 2; break; }
+        }
+        if (n == 1) return false;
+    }
+
+    // 2 → 3: a third vertex that is not collinear with the segment. Probe
+    // perpendiculars formed by crossing the segment with each cardinal axis,
+    // trying both signs so a one-sided hull still yields triangle area.
+    if (n == 2) {
+        const FVec<3> d = simplex[1].p - simplex[0].p;
+        for (int i = 0; i < 6 && n == 2; ++i) {
+            const FVec<3> perp = OmegaGTE::cross(d, axes[i]);
+            if (OmegaGTE::dot(perp, perp) < 1e-12f) continue;   // axis parallel to segment
+            for (int sgn = 0; sgn < 2; ++sgn) {
+                const FVec<3> dir = (sgn == 0) ? perp : perp * -1.f;
+                const SupportPt s = mdSupport(A, B, xfA, xfB, hullVerts, hullVertCount, dir);
+                const FVec<3> area = OmegaGTE::cross(d, s.p - simplex[0].p);
+                if (OmegaGTE::dot(area, area) > 1e-12f) { simplex[2] = s; n = 3; break; }
+            }
+        }
+        if (n == 2) return false;
+    }
+
+    // 3 → 4: an apex off the triangle plane. Support along the triangle
+    // normal, on whichever side gives non-zero tetrahedron volume.
+    if (n == 3) {
+        const FVec<3> nrm = OmegaGTE::cross(simplex[1].p - simplex[0].p,
+                                            simplex[2].p - simplex[0].p);
+        for (int sgn = 0; sgn < 2; ++sgn) {
+            const FVec<3> dir = (sgn == 0) ? nrm : nrm * -1.f;
+            const SupportPt s = mdSupport(A, B, xfA, xfB, hullVerts, hullVertCount, dir);
+            const float vol = OmegaGTE::dot(nrm, s.p - simplex[0].p);
+            if (std::abs(vol) > 1e-10f) { simplex[3] = s; n = 4; return true; }
+        }
+        return false;
+    }
+
+    return n == 4;
+}
+
 // GJK distance phase. Iterates until either origin is enclosed (returns
 // true; simplex left as a tetrahedron for EPA) or the support direction
 // stops finding new vertices that pass origin (returns false; the bodies
@@ -245,13 +317,9 @@ bool gjk(const AQShape &A, const AQShape &B,
     dir = simplex[0].p * -1.f;
     if (OmegaGTE::dot(dir, dir) < 1e-12f) {
         // Origin already on the first support — collision (degenerate origin
-        // case). Build a non-degenerate tetrahedron via three more supports
-        // along orthogonal axes so EPA has something to work with.
-        simplex[1] = mdSupport(A, B, xfA, xfB, hullVerts, hullVertCount, AQvec3(1.f, 0.f, 0.f));
-        simplex[2] = mdSupport(A, B, xfA, xfB, hullVerts, hullVertCount, AQvec3(0.f, 1.f, 0.f));
-        simplex[3] = mdSupport(A, B, xfA, xfB, hullVerts, hullVertCount, AQvec3(0.f, 0.f, 1.f));
-        simplexN = 4;
-        return true;
+        // case). Grow a non-degenerate tetrahedron around it for EPA.
+        return expandToTetrahedron(A, B, xfA, xfB, hullVerts, hullVertCount,
+                                   simplex, simplexN);
     }
 
     // Nesterov-accelerated GJK state. `prevDir` is d_{k−1} (last
@@ -296,15 +364,12 @@ bool gjk(const AQShape &A, const AQShape &B,
         const bool enclosed = simplexClosest(simplex, simplexN, closest);
         if (enclosed) return true;
         if (OmegaGTE::dot(closest, closest) < 1e-12f) {
-            // Origin is on the simplex (numerically zero distance) — collision.
-            // Promote whatever we have to a tetrahedron so EPA can start.
-            while (simplexN < 4) {
-                FVec<3> seed = AQvec3(1.f, 0.f, 0.f);
-                if (simplexN >= 2) seed = OmegaGTE::cross(simplex[1].p - simplex[0].p, AQvec3(0.f, 1.f, 0.f));
-                if (OmegaGTE::dot(seed, seed) < 1e-12f) seed = AQvec3(0.f, 1.f, 0.f);
-                simplex[simplexN++] = mdSupport(A, B, xfA, xfB, hullVerts, hullVertCount, seed);
-            }
-            return true;
+            // Origin lies on the reduced simplex (numerically zero distance)
+            // — a genuine (deep) collision. Promote to a NON-DEGENERATE
+            // tetrahedron so EPA has positive volume; bail only if the
+            // Minkowski difference is truly lower-dimensional.
+            return expandToTetrahedron(A, B, xfA, xfB, hullVerts, hullVertCount,
+                                       simplex, simplexN);
         }
 
         // Compute next iteration's search direction. Classical mode after
