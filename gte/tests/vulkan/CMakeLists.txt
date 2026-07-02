@@ -7,27 +7,95 @@ pkg_check_modules(GTK gtk+-3.0)
 # the remaining windowing tests stay on gtk+-3.0 until they are converted too.
 pkg_check_modules(GTK4 gtk4)
 
+# Cross-backend test-window runtime (GTETestWindow-CrossBackend-Plan.md, Phase
+# 3). An OBJECT library so the GTK-4 bare-GdkSurface windowing + run-loop
+# implementation is compiled once and folded directly into each windowed test
+# exe — no extra link target for the tests to thread through. Built only when
+# gtk4 is present (the windowed 2DTest is likewise gated on GTK4_FOUND below).
+# PUBLIC_DEFS (TARGET_VULKAN + the VULKAN_TARGET_* backend macro) is inherited
+# from the parent gte/CMakeLists.txt, so the descriptor fill here matches the
+# same #ifdef gating GE.h uses for the NativeRenderTargetDescriptor fields.
+if(GTK4_FOUND)
+    add_library(omegagte_testwindow_vulkan OBJECT GTETestWindow_GTK.cpp)
+    target_include_directories(omegagte_testwindow_vulkan PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/include"
+        ${GTK4_INCLUDE_DIRS})
+    target_compile_definitions(omegagte_testwindow_vulkan PRIVATE ${PUBLIC_DEFS})
+endif()
+
 function(add_vulkan_test)
-    cmake_parse_arguments("_ARG" "GTK4" "NAME" "SOURCES;LIBS" ${ARGN})
-    add_executable(${_ARG_NAME} ${_ARG_SOURCES})
+    cmake_parse_arguments("_ARG" "GTK4" "NAME" "SOURCES;LIBS;ASSETS;SHADERS" ${ARGN})
     if(_ARG_GTK4)
+        # Windowed test: fold in the shared GTETestWindow object lib and link
+        # GTK 4 (which resolves the object lib's GDK/GTK symbols). The test body
+        # itself is the platform-independent shared source and pulls no GTK.
+        add_executable(${_ARG_NAME}
+            ${_ARG_SOURCES}
+            $<TARGET_OBJECTS:omegagte_testwindow_vulkan>)
         target_include_directories(${_ARG_NAME} PUBLIC ${GTK4_INCLUDE_DIRS})
         target_link_directories(${_ARG_NAME} PRIVATE ${GTK4_LIBRARY_DIRS})
         target_link_libraries(${_ARG_NAME} PRIVATE "OmegaGTE" ${_ARG_LIBS} ${GTK4_LIBRARIES})
+
+        # Stage runtime assets next to the exe. The test chdir's to
+        # getExecutableDir() at startup, so its "./<file>" loads resolve there;
+        # for a plain executable $<TARGET_FILE_DIR> is CMAKE_CURRENT_BINARY_DIR.
+        foreach(_asset IN LISTS _ARG_ASSETS)
+            if(NOT IS_ABSOLUTE "${_asset}")
+                set(_asset_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_asset}")
+            else()
+                set(_asset_abs "${_asset}")
+            endif()
+            get_filename_component(_asset_name "${_asset_abs}" NAME)
+            add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_asset_abs}" "$<TARGET_FILE_DIR:${_ARG_NAME}>/${_asset_name}")
+        endforeach()
+
+        # Compile each OmegaSL source to a .omegasllib in the exe's output dir
+        # (CMAKE_CURRENT_BINARY_DIR). INCLUDE_DIRS points omegaslc at the
+        # shader's own directory so a shared `#include "*.omegaslh"` resolves.
+        foreach(_shader IN LISTS _ARG_SHADERS)
+            if(NOT IS_ABSOLUTE "${_shader}")
+                set(_shader_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_shader}")
+            else()
+                set(_shader_abs "${_shader}")
+            endif()
+            get_filename_component(_shader_basename "${_shader_abs}" NAME_WE)
+            get_filename_component(_shader_dir "${_shader_abs}" DIRECTORY)
+            set(_shader_target "${_ARG_NAME}_${_shader_basename}_Shader")
+            set(_shader_output "${CMAKE_CURRENT_BINARY_DIR}/${_shader_basename}.omegasllib")
+            add_omegasl_lib("${_shader_target}" "${_shader_abs}" "${_shader_output}"
+                INCLUDE_DIRS "${_shader_dir}")
+            add_dependencies(${_ARG_NAME} "${_shader_target}")
+        endforeach()
     else()
+        add_executable(${_ARG_NAME} ${_ARG_SOURCES})
         target_include_directories(${_ARG_NAME} PUBLIC ${GTK_INCLUDE_DIRS})
         target_link_directories(${_ARG_NAME} PRIVATE ${GTK_LIBRARY_DIRS})
         target_link_libraries(${_ARG_NAME} PRIVATE "OmegaGTE" ${_ARG_LIBS} ${GTK_LIBRARIES})
     endif()
 endfunction()
 
+# 2DTest now builds from the shared, backend-neutral body at
+# gte/tests/2DTest/main.cpp (GTETestWindow-CrossBackend-Plan.md, Phase 3). The
+# GTK-4 windowing / run-loop lives behind the omegagte_testwindow_vulkan object
+# lib; the runtime assets (test.png, the OmegaSL source) are the canonical
+# shared copies under gte/tests/assets/2DTest/ — the shader is precompiled to a
+# .omegasllib here (Open Decision #2) and test.png is loaded portably through
+# GETextureAsset (OmegaCommon::Img on Vulkan).
 if(GTK4_FOUND)
     add_vulkan_test(
         GTK4
         NAME
         "2DTest"
         SOURCES
-        "2DTest/main.cpp")
+        "../2DTest/main.cpp"
+        ASSETS
+        "../assets/2DTest/test.png"
+        SHADERS
+        "../assets/2DTest/shaders.omegasl")
 else()
     message(WARNING "OmegaGTE tests: gtk4 not found — skipping the GTK-4-ported 2DTest.")
 endif()

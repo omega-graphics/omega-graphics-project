@@ -1,6 +1,6 @@
 # GTETestWindow Cross-Backend Plan
 
-> Status: **Phase 1 landed & verified; Phase 2 implemented (pending Mac verification).** Phase 1 (API + Win32 + DX 2DTest) is shipped and visually confirmed. Phase 2 (Cocoa backend + Metal 2DTest, converged onto precompiled shaders and the portable GETextureAsset for both backends, assets relocated to `assets/2DTest/`) is written but not yet built — this is a Windows host, so Metal needs a macOS build, and the DX texture path change needs a re-screenshot. Open Decisions #1/#4/#5 (Phase 1) and #2 (precompiled, Phase 2) are resolved; #3 (D3D12 ComputeTest hidden window) remains for Phase 4. Phases 3–6 are still proposals.
+> Status: **Phase 1 landed & verified; Phase 2 implemented (pending Mac verification); Phase 3 landed & verified on native Wayland.** Phase 1 (API + Win32 + DX 2DTest) is shipped and visually confirmed. Phase 2 (Cocoa backend + Metal 2DTest, converged onto precompiled shaders and the portable GETextureAsset for both backends, assets relocated to `assets/2DTest/`) is written but not yet built — this is a Windows host, so Metal needs a macOS build, and the DX texture path change needs a re-screenshot. Open Decisions #1/#4/#5 (Phase 1) and #2 (precompiled, Phase 2) are resolved; #3 (D3D12 ComputeTest hidden window) remains for Phase 4. Phases 3–6 are still proposals.
 
 ## Goal
 
@@ -303,9 +303,46 @@ Tests that **don't** migrate (already headless / CLI, no swap chain):
 3. Rewrite Metal 2DTest through the new API. The Metal sibling still uses runtime shader compilation today (`compile(... fromString(shaders))` at `metal/2DTest/main.mm:237`); the shared body must accept either a runtime source or a precompiled `.omegasllib` based on which is present next to the executable. (Cleanest: shared body checks for `./shaders.omegasllib`; if absent, falls back to an inline string. Or — preferred — converge all three on the precompiled path. Flagged under Open Decisions.)
 4. Run, screenshot, confirm visual parity with today.
 
-### Phase 3 — Vulkan/X11 backend
+### Phase 3 — Vulkan/X11/Wayland backend ✅ Done (verified on native Wayland)
 
-1. Write `gte/Tests/vulkan/GTETestWindow_GTK.cpp`. Carry the GTK-realize → fill X11 descriptor path from `vulkan/2DTest/main.cpp:141`.
+> Implemented, built, and visually confirmed on the native Linux/Wayland host
+> (NVIDIA RTX 5080, Vulkan). The 2DTest window renders the shared body's green
+> clear + the sampled `test.png` (pear) rect, upright — UV winding / Y-flip
+> parity with DX/Metal holds. No Vulkan validation errors. What landed:
+> - `gte/tests/vulkan/GTETestWindow_GTK.cpp` — GTK-4 bare-`GdkSurface` backend.
+>   Carries the developer-directed bare-toplevel architecture from the old
+>   `vulkan/2DTest/main.cpp` (no `GtkWindow` → no GSK renderer competing with the
+>   Vulkan swap chain). `onReady` fires from the `layout` signal — the race-free
+>   point the compositor first reports a real logical size, required because
+>   Wayland WSI has no surface extent. `onClose` fires after the loop, strictly
+>   before the `GdkSurface`/`wl_surface` is destroyed, so the test body tears
+>   down the Vulkan swap chain while its backing surface is still alive. Runtime
+>   X11/Wayland dispatch gated by the same `VULKAN_TARGET_*` macros as `GE.h`.
+>   `onFrame` is intentionally NOT pumped (the bare toplevel has no repaint
+>   clock we can hook without reintroducing GSK, and the swap-chain present
+>   persists the one-shot frame; an animating test would drive it off the
+>   surface's `GdkFrameClock`).
+> - **CMake:** added the GTK-4-gated `omegagte_testwindow_vulkan` OBJECT lib and
+>   extended `add_vulkan_test` with the object-lib injection + `ASSETS`/`SHADERS`
+>   staging (mirrors `add_d3d12_test`). The windowed (`GTK4`) branch links GTK 4,
+>   which resolves the object lib's GDK/GTK symbols; the test body pulls no GTK.
+>   The non-`GTK4` branch (still-GTK3 tests, Phase 4) is unchanged.
+> - **Vulkan 2DTest now builds from the shared `../2DTest/main.cpp`** with the
+>   relocated `../assets/2DTest/` copies — precompiled `shaders.omegasllib` +
+>   portable `GETextureAsset` (OmegaCommon::Img PNG decode on Vulkan). No
+>   `#ifdef` islands; same code path as DX/Metal. The old
+>   `vulkan/2DTest/main.cpp` (runtime-string shader, flat-red rect, no texture)
+>   is deleted.
+> - **Runtime parity fix:** at display scale 2 the descriptor first carried the
+>   pixel extent (600×600), which mismatched the shared body's fixed 300×300
+>   viewport (content landed in one quadrant). The Wayland descriptor now
+>   carries the LOGICAL extent so swap chain == viewport == descriptor size —
+>   the same 1:1 invariant Win32 (client rect) and Cocoa (`contentsScale = 1`)
+>   hold. HiDPI-crisp rendering (pixel-sized swap chain + `wl_surface_set_-
+>   buffer_scale` + pixel-sized viewport) is the same retina follow-up left open
+>   on Metal; deferred by developer call.
+
+1. Write `gte/Tests/vulkan/GTETestWindow_GTK.cpp`. Carry the GTK-realize → fill X11/Wayland descriptor path from `vulkan/2DTest/main.cpp:141`.
 2. CMake: `add_vulkan_test` injects the object lib; the test exe no longer has to pull GTK directly — the object lib does.
 3. Rewrite Vulkan 2DTest through the new API.
 4. Run, screenshot, confirm.
