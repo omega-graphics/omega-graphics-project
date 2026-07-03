@@ -1,5 +1,4 @@
 #include "LspServer.h"
-#include "Json.h"
 
 #include <omega-common/json.h>
 
@@ -48,34 +47,35 @@ namespace lsp {
             return dflt;
         }
 
-        /// Echo a request id back verbatim — it may be a number or a string,
-        /// and the client matches the response by it.
-        Json idToJson(OJSON * idField) {
+        /// Echo a request id back — it may be a number or a string, and the
+        /// client matches the response by it. Numbers are normalized to an
+        /// integer (LSP ids are integral), preserving the prior wire behavior.
+        OJSON idToJson(OJSON * idField) {
             if (idField == nullptr) {
-                return Json::null();
+                return OJSON(nullptr);
             }
             if (idField->isNumber()) {
-                return Json::integer((long long)idField->asFloat());
+                return OJSON(idField->asInt());
             }
             if (idField->isString()) {
-                return Json::str(std::string(idField->asString()));
+                return OJSON(OmegaCommon::String(idField->asString()));
             }
-            return Json::null();
+            return OJSON(nullptr);
         }
 
         /// --- Outgoing LSP value builders -------------------------------------
 
-        Json makePosition(unsigned line, unsigned character) {
-            Json p = Json::object();
-            p.set("line", Json::integer(line));
-            p.set("character", Json::integer(character));
+        OJSON makePosition(unsigned line, unsigned character) {
+            OJSON p = OJSON::Object();
+            p["line"] = OJSON((long long)line);
+            p["character"] = OJSON((long long)character);
             return p;
         }
 
-        Json makeRange(const Range & r) {
-            Json out = Json::object();
-            out.set("start", makePosition(r.startLine, r.startChar));
-            out.set("end", makePosition(r.endLine, r.endChar));
+        OJSON makeRange(const Range & r) {
+            OJSON out = OJSON::Object();
+            out["start"] = makePosition(r.startLine, r.startChar);
+            out["end"] = makePosition(r.endLine, r.endChar);
             return out;
         }
 
@@ -282,28 +282,29 @@ namespace lsp {
         return true;
     }
 
-    void LspServer::writeMessage(const Json & message) {
-        std::string body = message.dump();
+    void LspServer::writeMessage(OJSON & message) {
+        /// Compact (whitespace-free) serialization for the wire.
+        OmegaCommon::String body = OJSON::serialize(message, false);
         out_ << "Content-Length: " << body.size() << "\r\n\r\n" << body;
         out_.flush();
     }
 
-    void LspServer::sendResult(const Json & id, Json result) {
-        Json msg = Json::object();
-        msg.set("jsonrpc", Json::str("2.0"));
-        msg.set("id", id);
-        msg.set("result", std::move(result));
+    void LspServer::sendResult(const OJSON & id, OJSON result) {
+        OJSON msg = OJSON::Object();
+        msg["jsonrpc"] = OJSON("2.0");
+        msg["id"] = id;
+        msg["result"] = std::move(result);
         writeMessage(msg);
     }
 
-    void LspServer::sendError(const Json & id, int code, const std::string & message) {
-        Json err = Json::object();
-        err.set("code", Json::integer(code));
-        err.set("message", Json::str(message));
-        Json msg = Json::object();
-        msg.set("jsonrpc", Json::str("2.0"));
-        msg.set("id", id);
-        msg.set("error", std::move(err));
+    void LspServer::sendError(const OJSON & id, int code, const std::string & message) {
+        OJSON err = OJSON::Object();
+        err["code"] = OJSON(code);
+        err["message"] = OJSON(OmegaCommon::String(message));
+        OJSON msg = OJSON::Object();
+        msg["jsonrpc"] = OJSON("2.0");
+        msg["id"] = id;
+        msg["error"] = std::move(err);
         writeMessage(msg);
     }
 
@@ -313,8 +314,18 @@ namespace lsp {
             if (body.empty()) {
                 continue;
             }
-            OJSON message = OJSON::parse(OmegaCommon::String(body));
-            if (dispatch(message)) {
+            /// Parse defensively: a single malformed message must not take the
+            /// server down. Per JSON-RPC 2.0, answer with ParseError (-32700)
+            /// and a null id — we can't recover an id from unparseable text —
+            /// log to stderr, and keep serving the next message.
+            auto parsed = OJSON::TryParse(OmegaCommon::String(body));
+            if (parsed.isErr()) {
+                std::cerr << "omegasl-lsp: dropping malformed message: "
+                          << parsed.error() << std::endl;
+                sendError(OJSON(nullptr), -32700, "Parse error: " + parsed.error());
+                continue;
+            }
+            if (dispatch(parsed.value())) {
                 break; // `exit`
             }
         }
@@ -324,9 +335,9 @@ namespace lsp {
     bool LspServer::dispatch(OJSON & message) {
         std::string method = getString(message, "method");
         OJSON * idField = field(message, "id");
-        Json id = idToJson(idField);
+        OJSON id = idToJson(idField);
         OJSON * paramsField = field(message, "params");
-        OJSON emptyParams = OJSON::parse(OmegaCommon::String("{}"));
+        OJSON emptyParams = OJSON::Object();
         OJSON & params = paramsField != nullptr ? *paramsField : emptyParams;
 
         if (method == "initialize") {
@@ -335,7 +346,7 @@ namespace lsp {
             // No-op notification.
         } else if (method == "shutdown") {
             shutdownRequested_ = true;
-            sendResult(id, Json::null());
+            sendResult(id, OJSON(nullptr));
         } else if (method == "exit") {
             return true;
         } else if (method == "textDocument/didOpen") {
@@ -358,23 +369,23 @@ namespace lsp {
         return false;
     }
 
-    void LspServer::handleInitialize(const Json & id, OJSON & /*params*/) {
-        Json completion = Json::object();
-        completion.set("resolveProvider", Json::boolean(false));
+    void LspServer::handleInitialize(const OJSON & id, OJSON & /*params*/) {
+        OJSON completion = OJSON::Object();
+        completion["resolveProvider"] = OJSON(false);
 
-        Json capabilities = Json::object();
-        capabilities.set("textDocumentSync", Json::integer(1)); // Full
-        capabilities.set("documentSymbolProvider", Json::boolean(true));
-        capabilities.set("hoverProvider", Json::boolean(true));
-        capabilities.set("completionProvider", std::move(completion));
+        OJSON capabilities = OJSON::Object();
+        capabilities["textDocumentSync"] = OJSON(1); // Full
+        capabilities["documentSymbolProvider"] = OJSON(true);
+        capabilities["hoverProvider"] = OJSON(true);
+        capabilities["completionProvider"] = std::move(completion);
 
-        Json serverInfo = Json::object();
-        serverInfo.set("name", Json::str("omegasl-lsp"));
-        serverInfo.set("version", Json::str("0.1.0"));
+        OJSON serverInfo = OJSON::Object();
+        serverInfo["name"] = OJSON("omegasl-lsp");
+        serverInfo["version"] = OJSON("0.1.0");
 
-        Json result = Json::object();
-        result.set("capabilities", std::move(capabilities));
-        result.set("serverInfo", std::move(serverInfo));
+        OJSON result = OJSON::Object();
+        result["capabilities"] = std::move(capabilities);
+        result["serverInfo"] = std::move(serverInfo);
         sendResult(id, std::move(result));
     }
 
@@ -440,49 +451,49 @@ namespace lsp {
     }
 
     void LspServer::publishDiagnostics(const std::string & uri, const AnalysisResult & result) {
-        Json diagnostics = Json::array();
+        OJSON diagnostics = OJSON::Array();
         for (const auto & d : result.diagnostics) {
-            Json item = Json::object();
-            item.set("range", makeRange(d.range));
-            item.set("severity", Json::integer((int)d.severity));
-            item.set("source", Json::str("omegasl"));
-            item.set("message", Json::str(d.message));
-            diagnostics.push(std::move(item));
+            OJSON item = OJSON::Object();
+            item["range"] = makeRange(d.range);
+            item["severity"] = OJSON((int)d.severity);
+            item["source"] = OJSON("omegasl");
+            item["message"] = OJSON(OmegaCommon::String(d.message));
+            diagnostics.push_back(item);
         }
-        Json params = Json::object();
-        params.set("uri", Json::str(uri));
-        params.set("diagnostics", std::move(diagnostics));
+        OJSON params = OJSON::Object();
+        params["uri"] = OJSON(OmegaCommon::String(uri));
+        params["diagnostics"] = std::move(diagnostics);
 
-        Json msg = Json::object();
-        msg.set("jsonrpc", Json::str("2.0"));
-        msg.set("method", Json::str("textDocument/publishDiagnostics"));
-        msg.set("params", std::move(params));
+        OJSON msg = OJSON::Object();
+        msg["jsonrpc"] = OJSON("2.0");
+        msg["method"] = OJSON("textDocument/publishDiagnostics");
+        msg["params"] = std::move(params);
         writeMessage(msg);
     }
 
-    void LspServer::handleDocumentSymbol(const Json & id, OJSON & params) {
+    void LspServer::handleDocumentSymbol(const OJSON & id, OJSON & params) {
         OJSON * doc = field(params, "textDocument");
         std::string uri = doc != nullptr ? getString(*doc, "uri") : std::string();
 
-        Json symbols = Json::array();
+        OJSON symbols = OJSON::Array();
         auto it = analyses_.find(uri);
         if (it != analyses_.end()) {
             for (const auto & sym : it->second.symbols) {
-                Json node = Json::object();
-                node.set("name", Json::str(sym.name));
+                OJSON node = OJSON::Object();
+                node["name"] = OJSON(OmegaCommon::String(sym.name));
                 if (!sym.detail.empty()) {
-                    node.set("detail", Json::str(sym.detail));
+                    node["detail"] = OJSON(OmegaCommon::String(sym.detail));
                 }
-                node.set("kind", Json::integer(lspSymbolKind(sym.kind)));
-                node.set("range", makeRange(sym.range));
-                node.set("selectionRange", makeRange(sym.range));
-                symbols.push(std::move(node));
+                node["kind"] = OJSON(lspSymbolKind(sym.kind));
+                node["range"] = makeRange(sym.range);
+                node["selectionRange"] = makeRange(sym.range);
+                symbols.push_back(node);
             }
         }
         sendResult(id, std::move(symbols));
     }
 
-    void LspServer::handleHover(const Json & id, OJSON & params) {
+    void LspServer::handleHover(const OJSON & id, OJSON & params) {
         OJSON * doc = field(params, "textDocument");
         OJSON * position = field(params, "position");
         std::string uri = doc != nullptr ? getString(*doc, "uri") : std::string();
@@ -491,7 +502,7 @@ namespace lsp {
 
         auto docIt = documents_.find(uri);
         if (docIt == documents_.end()) {
-            sendResult(id, Json::null());
+            sendResult(id, OJSON(nullptr));
             return;
         }
 
@@ -500,7 +511,7 @@ namespace lsp {
         unsigned endCol = 0;
         std::string word = identifierAt(lineText, character, startCol, endCol);
         if (word.empty()) {
-            sendResult(id, Json::null());
+            sendResult(id, OJSON(nullptr));
             return;
         }
 
@@ -529,7 +540,7 @@ namespace lsp {
         }
 
         if (signature.empty()) {
-            sendResult(id, Json::null());
+            sendResult(id, OJSON(nullptr));
             return;
         }
 
@@ -538,9 +549,9 @@ namespace lsp {
             markdown += "\n\n" + note;
         }
 
-        Json contents = Json::object();
-        contents.set("kind", Json::str("markdown"));
-        contents.set("value", Json::str(markdown));
+        OJSON contents = OJSON::Object();
+        contents["kind"] = OJSON("markdown");
+        contents["value"] = OJSON(OmegaCommon::String(markdown));
 
         Range range;
         range.startLine = (unsigned)line;
@@ -548,26 +559,26 @@ namespace lsp {
         range.startChar = startCol;
         range.endChar = endCol;
 
-        Json result = Json::object();
-        result.set("contents", std::move(contents));
-        result.set("range", makeRange(range));
+        OJSON result = OJSON::Object();
+        result["contents"] = std::move(contents);
+        result["range"] = makeRange(range);
         sendResult(id, std::move(result));
     }
 
-    void LspServer::handleCompletion(const Json & id, OJSON & params) {
+    void LspServer::handleCompletion(const OJSON & id, OJSON & params) {
         OJSON * doc = field(params, "textDocument");
         std::string uri = doc != nullptr ? getString(*doc, "uri") : std::string();
 
-        Json items = Json::array();
+        OJSON items = OJSON::Array();
 
         auto addItem = [&](const std::string & label, int kind, const std::string & detail) {
-            Json item = Json::object();
-            item.set("label", Json::str(label));
-            item.set("kind", Json::integer(kind));
+            OJSON item = OJSON::Object();
+            item["label"] = OJSON(OmegaCommon::String(label));
+            item["kind"] = OJSON(kind);
             if (!detail.empty()) {
-                item.set("detail", Json::str(detail));
+                item["detail"] = OJSON(OmegaCommon::String(detail));
             }
-            items.push(std::move(item));
+            items.push_back(item);
         };
 
         for (const auto & kw : keywords()) {
@@ -602,9 +613,9 @@ namespace lsp {
         }
 
         /// `isIncomplete:false` — the list is exhaustive for this position.
-        Json result = Json::object();
-        result.set("isIncomplete", Json::boolean(false));
-        result.set("items", std::move(items));
+        OJSON result = OJSON::Object();
+        result["isIncomplete"] = OJSON(false);
+        result["items"] = std::move(items);
         sendResult(id, std::move(result));
     }
 

@@ -16,6 +16,7 @@ namespace OmegaWTK {
 class AppWindowManager;
 class AppWindow;
 class ThemeVars;
+class Theme;
 
 class OMEGAWTK_EXPORT AppInst {
     Native::NAP ptr;
@@ -42,6 +43,15 @@ class OMEGAWTK_EXPORT AppInst {
     // only — nothing reads this into the render clear yet; that is
     // Tier 2's `resolveWindowSurfaceColor`.
     Native::ThemeDesc nativeTheme_;
+    // Native-Theme-Application-Plan Tier 3 (2026-07-01): the active
+    // app-registered custom theme, or null to fall through to the OS
+    // theme. When set, its variant `surface` overrides the clear color
+    // (priority-chain row 2) and its variant `vars` back `themeVars()`.
+    SharedHandle<Theme> theme_;
+    // Tier 3: when set, the app pins the appearance (Light/Dark) instead
+    // of following the OS bit. Drives both the custom-theme variant pick
+    // and the row-4 clear fallback. Empty = follow `nativeTheme_.appearance`.
+    Core::Optional<Native::ThemeAppearance> forcedAppearance_;
     // Guards against a future caller invoking doShutdown() more than
     // once (the destructor is currently the sole call site, but the
     // idempotency keeps the contract safe to expand).
@@ -55,6 +65,10 @@ class OMEGAWTK_EXPORT AppInst {
     /// returns) closes the device under any still-live caller-held
     /// window and surfaces as D3D12MA errors on Windows.
     void doShutdown();
+    /// Tier 3: mark every known window's cascade dirty after a theme
+    /// input (`themeVars_`, `theme_`, `forcedAppearance_`) changes, so
+    /// the next frame re-resolves cells and re-derives the surface color.
+    void dirtyThemeCascade();
 public:
     OMEGACOMMON_CLASS("OmegaWTK.AppInst")
 
@@ -134,6 +148,28 @@ public:
     /// in Tier 3. Called by the FrameBuilder Style-phase hook, which
     /// writes the result into `AppWindow::setSurfaceColor`.
     Composition::Color resolveWindowSurfaceColor(const AppWindow & win) const;
+
+    /// Native-Theme-Application-Plan Tier 3 (2026-07-01): install (or
+    /// clear, with a null handle) the active custom `Theme`. While a
+    /// theme is set, `resolveWindowSurfaceColor` returns the active
+    /// variant's `surface` (priority-chain row 2) and `themeVars()`
+    /// returns the active variant's `vars`. Swapping the theme dirties
+    /// every known window's cascade so the next frame re-resolves against
+    /// the new bindings — the same path `setThemeVars` uses.
+    void setTheme(SharedHandle<Theme> theme);
+    SharedHandle<Theme> theme() const;
+
+    /// Tier 3: pin the appearance regardless of the OS setting. Pass a
+    /// value to force Light or Dark (the custom theme, if any, still
+    /// picks its matching variant); pass an empty optional to resume
+    /// following the OS. Dirties every window's cascade like `setTheme`.
+    void setForcedAppearance(Core::Optional<Native::ThemeAppearance> appearance);
+    Core::Optional<Native::ThemeAppearance> forcedAppearance() const;
+
+    /// Tier 3: the appearance in effect — `forcedAppearance()` if set,
+    /// else `nativeTheme().appearance`. This is the bit that selects a
+    /// custom theme's variant and the row-4 clear fallback.
+    Native::ThemeAppearance activeAppearance() const;
 
     ~AppInst();
 };

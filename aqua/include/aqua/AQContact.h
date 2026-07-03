@@ -92,6 +92,15 @@ struct AQConstraintRow {
     OmegaGTE::FVec<3> direction     = OmegaGTE::FVec<3>::Create();
     float             effectiveMass = 0.f;   ///< 1 / Keff, precomputed once
     float             bias          = 0.f;   ///< restitution bias on normal; 0 on friction
+    /// Signed constraint value `C` along `direction`, for the split-impulse
+    /// position pass (Phase 4.x §13). Metres for a linear row, radians for an
+    /// angular row. Contacts leave it 0 (they carry penetration in
+    /// `AQContactPoint::depth` instead). Hard joint position rows (`JointAxis`
+    /// bilateral, `JointLimit` one-sided) store their error here and set
+    /// `bias = 0`, so the pseudo-velocity pass corrects position without the
+    /// Baumgarte velocity bias that inflated the reported joint impulse. Soft
+    /// joints and motors keep their velocity `bias` and leave this unused.
+    float             positionError = 0.f;
     float             accumImpulse  = 0.f;   ///< warm-started across the sweep
     std::uint32_t     peerRow       = 0;     ///< friction → its normal row index
     float             frictionCoeff = 0.f;   ///< μ on friction rows; 0 on normal; motor max-impulse on JointMotor rows

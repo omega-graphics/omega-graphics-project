@@ -22,6 +22,8 @@ struct AQJointBodyKin {
     OmegaGTE::FQuaternion  q       = OmegaGTE::FQuaternion::Identity(); ///< orientation
     float                  invMass = 0.f;                              ///< 0 for static / kinematic (one-way)
     OmegaGTE::FMatrix<3,3> invI    = OmegaGTE::FMatrix<3,3>::Create();  ///< world inverse inertia (R·diag(Ib⁻¹)·Rᵀ)
+    OmegaGTE::FVec<3>      vel     = OmegaGTE::FVec<3>::Create();      ///< world COM linear velocity (for speculative limits)
+    OmegaGTE::FVec<3>      omega   = OmegaGTE::FVec<3>::Create();      ///< world angular velocity (for speculative limits)
 };
 
 /// Per-joint rest-pose state captured at creation; the angular locks and the
