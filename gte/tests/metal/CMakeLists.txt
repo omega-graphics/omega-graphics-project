@@ -109,25 +109,26 @@ function(add_metal_cli_test)
     )
 endfunction()
 
-# 2DTest now builds from the shared, backend-neutral body at
-# gte/Tests/2DTest/main.cpp (Phase 2). The runtime assets (test.png, the OmegaSL
-# source) are the canonical shared copies under gte/Tests/assets/2DTest/; the
-# shader is precompiled here (Open Decision #2) and staged into the bundle, and
-# test.png is loaded portably via GETextureAsset. The local 2DTest/ subfolder
-# keeps only the Cocoa bundle template items (Info.plist, the .nib/.xib).
+# 2DTest now builds from the shared, backend-neutral body declared once in
+# gte/Tests/CMakeLists.txt (GTE_TEST_2DTEST_*, Phase 2). The runtime assets
+# (test.png, the OmegaSL source) are the canonical shared copies under
+# gte/Tests/assets/2DTest/; the shader is precompiled here (Open Decision #2)
+# and staged into the bundle, and test.png is loaded portably via
+# GETextureAsset. The local 2DTest/ subfolder keeps only the Cocoa bundle
+# template items (Info.plist, the .nib/.xib).
 add_metal_test(
     NAME
     "2DTest"
     SOURCES
-    "../2DTest/main.cpp"
+    ${GTE_TEST_2DTEST_SOURCES}
     RESOURCES
     "2DTest/English.lproj/MainMenu.xib"
     PLIST
     "${CMAKE_CURRENT_SOURCE_DIR}/2DTest/Info.plist"
     ASSETS
-    "../assets/2DTest/test.png"
+    ${GTE_TEST_2DTEST_ASSETS}
     SHADERS
-    "../assets/2DTest/shaders.omegasl"
+    ${GTE_TEST_2DTEST_SHADERS}
     FRAMEWORKS
     "Cocoa"
     "Metal"
@@ -144,15 +145,28 @@ add_metal_cli_test(
     "Foundation"
 )
 
-add_metal_cli_test(
+# GPUTessTest now builds from the shared, backend-neutral body declared once
+# in gte/Tests/CMakeLists.txt (GTE_TEST_GPUTESSTEST_*, Phase 4). It used to be
+# a CLI test that hand-rolled a bare, windowless CAMetalLayer with no
+# NSApplication run loop at all; it now goes through the same windowed
+# RunGTETestWindow path as the other two backends (a real, if briefly-
+# visible, window). It renders nothing — it only needs a
+# NativeRenderTargetDescriptor to build a TE context from — so it computes
+# its CPU-vs-GPU comparison in onReady and self-closes with the pass/fail
+# exit code via RequestGTETestWindowClose. No nib is needed (the window is
+# built programmatically), so metal/GPUTessTest/ carries only the Info.plist
+# bundle template.
+add_metal_test(
     NAME
     "GPUTessTest"
     SOURCES
-    "GPUTessTest/main.mm"
+    ${GTE_TEST_GPUTESSTEST_SOURCES}
+    PLIST
+    "${CMAKE_CURRENT_SOURCE_DIR}/GPUTessTest/Info.plist"
     FRAMEWORKS
+    "Cocoa"
     "Metal"
     "QuartzCore"
-    "AppKit"
 )
 
 add_metal_cli_test(

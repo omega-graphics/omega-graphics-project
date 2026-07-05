@@ -1430,6 +1430,27 @@ GEMetalCommandBuffer::~GEMetalCommandBuffer(){
     };
 
     void GEMetalCommandQueue::commitToGPUAndWait() {
+        if(commandBuffers.empty()){
+            // Nothing buffered on our side — a prior fire-and-forget
+            // commitToGPU() already flushed and cleared the list (commitToGPU
+            // unconditionally clear()s it, see above). commandBuffers.back()
+            // on an empty vector is undefined behavior: it previously read
+            // whatever garbage happened to occupy that memory and __bridge-
+            // cast it to id<MTLCommandBuffer>, which crashed
+            // ('-[__NSCFNumber addCompletedHandler:]: unrecognized selector')
+            // the first time a caller's teardown path (onClose after an
+            // earlier commitToGPU()) actually hit this on real hardware.
+            // Insert a lightweight barrier buffer on the raw queue and wait
+            // on it instead — Metal command buffers on one queue complete in
+            // submission order, so once this empty buffer completes, every
+            // buffer submitted before it (from the earlier commitToGPU())
+            // has too.
+            id<MTLCommandBuffer> barrier =
+                [NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,commandQueue.handle()) commandBuffer];
+            [barrier commit];
+            [barrier waitUntilCompleted];
+            return;
+        }
         auto lastCommandBuffer = (GEMetalCommandBuffer *)commandBuffers.back().get();
         __block dispatch_semaphore_t sem = semaphore;
         [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,lastCommandBuffer->buffer.handle()) addCompletedHandler:^(id<MTLCommandBuffer> buffer){

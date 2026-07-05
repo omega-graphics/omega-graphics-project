@@ -164,6 +164,7 @@ bool Preprocessor::isDefined(const std::string& name) const {
 std::string Preprocessor::process(const std::string& source, const std::string& currentPath) {
     requiredFeatures_ = 0;
     unsatisfiedFeatures_ = 0;
+    sourceMap_.clear();
     return processInternal(source, currentPath, 0);
 }
 
@@ -290,7 +291,7 @@ bool Preprocessor::includeDeclaresShader(const std::string& processedContent,
 std::string Preprocessor::processInternal(const std::string& source, const std::string& currentPath, unsigned includeDepth) {
     if (includeDepth > kMaxIncludeDepth) return source;
 
-    std::ostringstream out;
+    std::string out;
     std::istringstream in(source);
     std::string line;
     /// Each entry tracks whether the *enclosing* scope was already
@@ -305,25 +306,48 @@ std::string Preprocessor::processInternal(const std::string& source, const std::
     std::vector<Frame> stack;
     bool skipping = false;
 
+    /// Source-map bookkeeping (top-level buffer only). After each source line
+    /// is fully handled, `flushMap` attributes the output lines it produced:
+    /// the first to that source line, any others (an expanded `#include`'s
+    /// body) to 0 (foreign). Because the per-line handling below has many
+    /// `continue` paths, the flush for line N runs at the top of line N+1's
+    /// iteration (and once more after the loop), covering whichever branch ran.
+    const bool mapping = buildSourceMap_ && includeDepth == 0;
+    unsigned srcLine = 0;
+    size_t recordedLen = 0;
+    auto flushMap = [&](unsigned forLine) {
+        unsigned added = 0;
+        for (size_t i = recordedLen; i < out.size(); ++i) {
+            if (out[i] == '\n') ++added;
+        }
+        for (unsigned k = 0; k < added; ++k) {
+            sourceMap_.push_back(k == 0 ? forLine : 0u);
+        }
+        recordedLen = out.size();
+    };
+
     while (std::getline(in, line)) {
+        if (mapping && srcLine > 0) flushMap(srcLine);
+        ++srcLine;
         size_t start = 0;
         while (start < line.size() && (line[start] == ' ' || line[start] == '\t')) ++start;
         if (start >= line.size()) {
-            if (!skipping) out << line << "\n";
-            else if (linePreserving_) out << "\n";
+            if (!skipping) { out += line; out += "\n"; }
+            else if (linePreserving_) out += "\n";
             continue;
         }
         if (line[start] != '#') {
-            if (!skipping) out << expandMacros(line) << "\n";
-            else if (linePreserving_) out << "\n";
+            if (!skipping) { out += expandMacros(line); out += "\n"; }
+            else if (linePreserving_) out += "\n";
             continue;
         }
 
-        /// Directive line. It produces no output of its own (an `#include`
-        /// that expands content is rejected when line-preserving is on — see
-        /// `setLinePreserving`), so emit a single blank line to keep output
-        /// line numbers aligned 1:1 with the source for tooling.
-        if (linePreserving_) out << "\n";
+        /// Directive line. On its own it produces no output (so line-preserving
+        /// emits a single blank line to keep output numbers aligned with the
+        /// source). An `#include` additionally appends its expanded body below
+        /// this blank; the source map attributes the blank to this directive's
+        /// line and the expanded body to 0 (foreign).
+        if (linePreserving_) out += "\n";
 
         size_t dirStart = start + 1;
         while (dirStart < line.size() && (line[dirStart] == ' ' || line[dirStart] == '\t')) ++dirStart;
@@ -528,11 +552,12 @@ std::string Preprocessor::processInternal(const std::string& source, const std::
                           << std::endl;
                 hasErrors_ = true;
             } else {
-                out << processedInclude;
+                out += processedInclude;
             }
         }
     }
-    return out.str();
+    if (mapping && srcLine > 0) flushMap(srcLine);
+    return out;
 }
 
 } // namespace omegasl

@@ -1,3 +1,6 @@
+#include "../GTETestEntryPoint.h"
+#include "../GTETestWindow.h"
+
 #include <omegaGTE/GTEDevice.h>
 #include <omegaGTE/GECommandQueue.h>
 #include <omegaGTE/GEPipeline.h>
@@ -5,17 +8,22 @@
 #include <omegaGTE/GTEMath.h>
 #include <omegaGTE/GTEShader.h>
 
-#include <gtk/gtk.h>
-#include <gdk/gdkx.h>
-
 #include <iostream>
 #include <cassert>
-#include <cmath>
+
+// CPUTessTest — shared, backend-neutral body (GTETestWindow-CrossBackend-
+// Plan.md, Phase 4). Exercises the CPU triangulation path against a pyramid,
+// a cylinder, a cone, and a GVectorPath3D; renders nothing, so it needs only
+// a NativeRenderTargetDescriptor to build the TE context from. onReady runs
+// the checks synchronously and calls RequestGTETestWindowClose with the
+// pass/fail exit code — no user interaction needed. Vulkan-only today.
 
 static OmegaGTE::GTE gte;
-static int exitCode = 1;
+static SharedHandle<OmegaGTE::GECommandQueue> commandQueue;
+static SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
+static SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> teCtx;
 
-static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &teCtx){
+static int runTests() {
     OmegaGTE::GEViewport vp{0, 0, 800, 600, 0, 1};
     bool allPassed = true;
 
@@ -28,7 +36,7 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &te
         auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         std::cout << "  Polygons: " << result.mesh.vertexPolygons.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
-        if(result.totalVertexCount() == 0){
+        if (result.totalVertexCount() == 0) {
             std::cerr << "  FAIL: Pyramid produced 0 vertices" << std::endl;
             allPassed = false;
         } else {
@@ -46,7 +54,7 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &te
         auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         std::cout << "  Polygons: " << result.mesh.vertexPolygons.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
-        if(result.totalVertexCount() == 0){
+        if (result.totalVertexCount() == 0) {
             std::cerr << "  FAIL: Cylinder produced 0 vertices" << std::endl;
             allPassed = false;
         } else {
@@ -64,7 +72,7 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &te
         auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         std::cout << "  Polygons: " << result.mesh.vertexPolygons.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
-        if(result.totalVertexCount() == 0){
+        if (result.totalVertexCount() == 0) {
             std::cerr << "  FAIL: Cone produced 0 vertices" << std::endl;
             allPassed = false;
         } else {
@@ -83,7 +91,7 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &te
         auto result = teCtx->triangulateSync(params, OmegaGTE::GTEPolygonFrontFaceRotation::Clockwise, &vp);
         std::cout << "  Polygons: " << result.mesh.vertexPolygons.size()
                   << ", Vertices: " << result.totalVertexCount() << std::endl;
-        if(result.totalVertexCount() == 0){
+        if (result.totalVertexCount() == 0) {
             std::cerr << "  FAIL: GraphicsPath3D produced 0 vertices" << std::endl;
             allPassed = false;
         } else {
@@ -91,55 +99,46 @@ static void runTests(SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> &te
         }
     }
 
-    if(allPassed){
+    if (allPassed) {
         std::cout << "\n=== ALL CPU TESSELLATION TESTS PASSED ===" << std::endl;
-        exitCode = 0;
-    } else {
-        std::cout << "\n=== SOME CPU TESSELLATION TESTS FAILED ===" << std::endl;
-        exitCode = 1;
+        return 0;
     }
+    std::cout << "\n=== SOME CPU TESSELLATION TESTS FAILED ===" << std::endl;
+    return 1;
 }
 
-static void activate(GtkApplication *app, gpointer user_data){
-    GtkWidget *window = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(window), "CPUTessTest");
-    gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
+GTE_TEST_ENTRY_POINT {
+    (void)argc;
 
-    GtkWidget *area = gtk_drawing_area_new();
-    gtk_widget_set_size_request(area, 800, 600);
-    gtk_container_add(GTK_CONTAINER(window), area);
-    gtk_widget_show_all(window);
-    gtk_widget_realize(area);
-
-    GdkWindow *gdk_win = gtk_widget_get_window(area);
-    Display *x_display = GDK_WINDOW_XDISPLAY(gdk_win);
-    Window x_window = GDK_WINDOW_XID(gdk_win);
-
-    OmegaGTE::NativeRenderTargetDescriptor rtDesc{};
-    rtDesc.x_display = x_display;
-    rtDesc.x_window = x_window;
-    OmegaGTE::GECommandQueueDesc commandQueueDesc{};
-    commandQueueDesc.maxBufferCount = 64;
-    auto commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
-    auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc, commandQueue);
-
-    auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
-    assert(teCtx && "Failed to create TE context");
-
-    runTests(teCtx);
-
-    g_application_quit(G_APPLICATION(app));
-}
-
-int main(int argc, char *argv[]){
     gte = OmegaGTE::InitWithDefaultDevice();
     std::cout << "GTE Initialized" << std::endl;
 
-    GtkApplication *app = gtk_application_new("org.omegagraphics.CPUTessTest", G_APPLICATION_FLAGS_NONE);
-    g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
-    g_application_run(G_APPLICATION(app), argc, argv);
-    g_object_unref(app);
+    OmegaGTETests::GTETestWindowDescriptor desc;
+    desc.title = "GTE CPUTessTest";
+    desc.width = 800;
+    desc.height = 600;
 
-    OmegaGTE::Close(gte);
-    return exitCode;
-}
+    OmegaGTETests::GTETestWindowDelegate del;
+
+    del.onReady = [](const OmegaGTE::NativeRenderTargetDescriptor &nrt) {
+        OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+        commandQueueDesc.maxBufferCount = 64;
+        commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
+        renderTarget = gte.graphicsEngine->makeNativeRenderTarget(nrt, commandQueue);
+
+        teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
+        assert(teCtx && "Failed to create TE context");
+
+        int exitCode = runTests();
+        OmegaGTETests::RequestGTETestWindowClose(exitCode);
+    };
+
+    del.onClose = []() {
+        teCtx.reset();
+        renderTarget.reset();
+        commandQueue.reset();
+        OmegaGTE::Close(gte);
+    };
+
+    return OmegaGTETests::RunGTETestWindow(argc, argv, desc, del);
+};

@@ -60,6 +60,32 @@ namespace lsp {
             return r;
         }
 
+        /// Map a 1-based processed-output line back to its 1-based editor-buffer
+        /// line via the preprocessor's source map. Returns 0 when the line came
+        /// from an included header (foreign) or is out of range. An empty map
+        /// (source-map mode off) falls back to identity.
+        unsigned mapProcessedLine(const std::vector<unsigned> & smap, unsigned processedLine1) {
+            if (smap.empty()) {
+                return processedLine1;
+            }
+            if (processedLine1 == 0 || processedLine1 > smap.size()) {
+                return 0;
+            }
+            return smap[processedLine1 - 1];
+        }
+
+        /// Rewrite a Range's (0-based) lines from processed coordinates to
+        /// editor coordinates. Used only for main-file declarations, whose
+        /// lines are known to map to a real editor line.
+        Range remapRangeToEditor(const Range & r, const std::vector<unsigned> & smap) {
+            Range out = r;
+            unsigned s = mapProcessedLine(smap, r.startLine + 1);
+            unsigned e = mapProcessedLine(smap, r.endLine + 1);
+            out.startLine = s > 0 ? s - 1 : r.startLine;
+            out.endLine = e > 0 ? e - 1 : out.startLine;
+            return out;
+        }
+
         /// Spell a `TypeExpr` back into OmegaSL surface syntax:
         /// `buffer<MyVertex>`, `float4`, `T *`, `float[16][16]`.
         std::string renderTypeExpr(ast::TypeExpr * t) {
@@ -237,23 +263,44 @@ namespace lsp {
         ast::builtins::Cleanup();
     }
 
-    AnalysisResult Analyzer::analyze(const std::string & text) {
+    AnalysisResult Analyzer::analyze(const std::string & text,
+                                     const std::string & documentPath,
+                                     const std::vector<std::string> & includeDirs) {
         AnalysisResult result;
+
+        /// The document's own directory anchors relative `#include`s.
+        std::string docDir;
+        if (!documentPath.empty()) {
+            size_t slash = documentPath.find_last_of("/\\");
+            if (slash != std::string::npos) {
+                docDir = documentPath.substr(0, slash);
+            }
+        }
+        /// Include resolution is possible only with a filesystem anchor — the
+        /// document's own directory (relative includes) or an `-I` dir from the
+        /// compile database. Without either, reject `#include` loudly, exactly
+        /// as before, rather than resolve against the server's CWD by accident.
+        const bool anchored = !docDir.empty() || !includeDirs.empty();
 
         /// 1. Preprocess. A fresh instance per call keeps the sticky
         ///    `hasErrors`/`requiredFeatures` state isolated between edits.
         Preprocessor preprocessor;
         preprocessor.setBackend(hostPPBackend());
-        /// No file-system anchor for an in-editor buffer: includes can't be
-        /// resolved relative to a path we don't have, so reject them loudly
-        /// rather than silently dropping declarations (mirrors the runtime
-        /// `OmegaSLCompiler` path).
-        preprocessor.setRejectIncludes(true);
-        /// Keep output line numbers aligned 1:1 with the editor's buffer, so
-        /// diagnostics and symbol locations land on the right line even when
-        /// `#define` / `#ifdef` directives or skipped regions sit above them.
+        preprocessor.setRejectIncludes(!anchored);
+        /// Keep output line numbers aligned 1:1 with the editor's buffer for
+        /// everything the buffer itself owns, so diagnostics and symbol
+        /// locations land on the right line even when `#define` / `#ifdef`
+        /// directives or skipped regions sit above them.
         preprocessor.setLinePreserving(true);
-        std::string processed = preprocessor.process(text);
+        /// Build the output-line -> editor-line map so that, once includes
+        /// expand inline (which shifts main-file lines), diagnostics/symbols
+        /// still map back to the buffer and header-internal ones can be dropped.
+        preprocessor.setSourceMap(true);
+        for (const auto & dir : includeDirs) {
+            preprocessor.addIncludeDir(dir);
+        }
+        std::string processed = preprocessor.process(text, docDir);
+        const std::vector<unsigned> & smap = preprocessor.sourceMap();
 
         if (preprocessor.hasErrors()) {
             /// The preprocessor reports include rejections to stderr without a
@@ -311,11 +358,30 @@ namespace lsp {
             }
         }
         for (const auto & err : diagnostics.getErrors()) {
-            if (err->loc.lineStart == 0 && anyLocated) {
+            /// Unlocated recovery marker: drop when a located error exists,
+            /// else surface it at file scope (line 0). Never run it through the
+            /// source map — its line 0 is a sentinel, not a real line.
+            if (err->loc.lineStart == 0) {
+                if (anyLocated) {
+                    continue;
+                }
+                Diagnostic d;
+                d.range = rangeFromErrorLoc(err->loc);
+                std::ostringstream msg;
+                err->format(msg);
+                d.message = msg.str();
+                d.severity = Severity::Error;
+                result.diagnostics.push_back(d);
+                continue;
+            }
+            /// Located: map the processed line back to the editor buffer. A
+            /// line that maps to 0 originates inside an included header — those
+            /// belong to the header's own buffer, so drop them here.
+            if (mapProcessedLine(smap, err->loc.lineStart) == 0) {
                 continue;
             }
             Diagnostic d;
-            d.range = rangeFromErrorLoc(err->loc);
+            d.range = remapRangeToEditor(rangeFromErrorLoc(err->loc), smap);
             std::ostringstream msg;
             err->format(msg);
             d.message = msg.str();
@@ -326,10 +392,21 @@ namespace lsp {
         /// 3b. Symbols from the collected top-level declarations.
         for (auto * decl : decls) {
             Symbol sym;
-            if (buildSymbol(decl, sym)) {
-                result.index[sym.name] = sym;
-                result.symbols.push_back(std::move(sym));
+            if (!buildSymbol(decl, sym)) {
+                continue;
             }
+            /// A decl whose location maps to 0 was declared in an included
+            /// header. Keep it in the index (so hover / completion resolve
+            /// header-provided symbols — hover computes its range from the
+            /// cursor, not this loc), but keep it out of the document outline,
+            /// which lists only the buffer's own declarations.
+            if (mapProcessedLine(smap, decl->loc->lineStart) == 0) {
+                result.index[sym.name] = sym;
+                continue;
+            }
+            sym.range = remapRangeToEditor(sym.range, smap);
+            result.index[sym.name] = sym;
+            result.symbols.push_back(std::move(sym));
         }
 
         return result;

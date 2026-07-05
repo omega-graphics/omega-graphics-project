@@ -320,6 +320,42 @@ add_test(NAME omegasl_archive_roundtrip COMMAND ArchiveRoundTripTest ${ARCHIVE_F
 set_tests_properties(omegasl_archive_roundtrip PROPERTIES FIXTURES_REQUIRED ARCHIVE_FIXTURE)
 
 # =============================================================
+# 4b. Preprocessor source-map host test (LSP Phase 5.1)
+# =============================================================
+
+# Host-only test: compiles the Preprocessor (+ its Lexer dependency) directly
+# and asserts the output-line -> editor-line source map is correct once an
+# `#include` expands inline — the foundation the language server relies on to
+# keep diagnostics aligned with the buffer. Writes its own header fixture into
+# the temp dir, so it needs no external `-I` or golden file.
+add_executable(PreprocessorSourceMapTest
+    preprocessor_sourcemap_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Preprocessor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Lexer.cpp)
+target_include_directories(PreprocessorSourceMapTest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../common/include)
+target_compile_definitions(PreprocessorSourceMapTest PRIVATE ${PUBLIC_DEFS})
+target_link_libraries(PreprocessorSourceMapTest PRIVATE OmegaCommonCore)
+
+add_test(NAME omegasl_preprocessor_sourcemap
+    COMMAND PreprocessorSourceMapTest ${OMEGASL_TEST_TEMP_DIR})
+
+# --- End-to-end language-server #include resolution (LSP Phase 5.5) ---
+# Drives omegasl-lsp over stdio with scripted JSON-RPC sessions: proves a
+# relative `#include` resolves, an `-I` dir from a synthetic
+# `omegasl_commands.json` resolves a sibling-dir header, header symbols feed
+# completion but stay out of the document outline, and a malformed database is
+# ignored (the server survives). Skipped when no python3 interpreter is found.
+find_program(OMEGASL_PYTHON3 NAMES python3 python)
+if(OMEGASL_PYTHON3)
+    add_test(NAME omegasl_lsp_include_resolution
+        COMMAND ${OMEGASL_PYTHON3}
+                ${CMAKE_CURRENT_SOURCE_DIR}/lsp_include_test.py
+                $<TARGET_FILE:omegasl-lsp>)
+endif()
+
+# =============================================================
 # 5. `omegaslc --link` linker (Phase 2/3)
 # =============================================================
 

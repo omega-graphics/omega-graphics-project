@@ -64,6 +64,7 @@ namespace {
     bool g_ready = false;
     GMainLoop *g_loop = nullptr;
     const char *g_backendName = "?";
+    int g_exitCode = 0;
 
     // Latest logical size from the "layout" signal — the bare toplevel has no
     // decorations, so user resize is implemented client-side and needs the
@@ -306,7 +307,17 @@ int RunGTETestWindow(int argc,
 
     g_object_unref(surface);
 
-    return 0;
+    return g_exitCode;
+}
+
+void RequestGTETestWindowClose(int exitCode) {
+    // Safe from onReady: "layout" (where onReady fires) is dispatched from
+    // inside g_main_loop_run's event processing, so g_loop already exists and
+    // is running by the time a test-driven quit (e.g. GPUTessTest's pass/fail)
+    // can call this.
+    g_exitCode = exitCode;
+    if (g_loop)
+        g_main_loop_quit(g_loop);
 }
 
 } // namespace OmegaGTETests

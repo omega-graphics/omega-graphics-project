@@ -1,6 +1,6 @@
 # GTETestWindow Cross-Backend Plan
 
-> Status: **Phase 1 landed & verified; Phase 2 implemented (pending Mac verification); Phase 3 landed & verified on native Wayland.** Phase 1 (API + Win32 + DX 2DTest) is shipped and visually confirmed. Phase 2 (Cocoa backend + Metal 2DTest, converged onto precompiled shaders and the portable GETextureAsset for both backends, assets relocated to `assets/2DTest/`) is written but not yet built — this is a Windows host, so Metal needs a macOS build, and the DX texture path change needs a re-screenshot. Open Decisions #1/#4/#5 (Phase 1) and #2 (precompiled, Phase 2) are resolved; #3 (D3D12 ComputeTest hidden window) remains for Phase 4. Phases 3–6 are still proposals.
+> Status: **Phase 1 landed & verified; Phase 2 landed & verified on native macOS/Metal; Phase 3 landed & verified on native Wayland; Phase 4 landed (GPUTessTest verified on native Metal, the rest written pending Windows/Linux verification).** Phase 1 (API + Win32 + DX 2DTest) is shipped and visually confirmed. Phase 2 (Cocoa backend + Metal 2DTest) is now built and run on a native macOS host (see Phase 4 below for what that session verified and fixed). Phase 3 (GTK-4 + Vulkan 2DTest) is verified on native Wayland. Open Decisions #1/#4/#5 (Phase 1) and #2 (precompiled, Phase 2) are resolved; #3 (D3D12 ComputeTest hidden window) is still open — out of Phase 4's scope (ComputeTest never migrates; see Scope). Phases 5–6 are still proposals.
 
 ## Goal
 
@@ -347,7 +347,97 @@ Tests that **don't** migrate (already headless / CLI, no swap chain):
 3. Rewrite Vulkan 2DTest through the new API.
 4. Run, screenshot, confirm.
 
-### Phase 4 — Migrate the remaining GUI tests
+### Phase 4 — Migrate the remaining GUI tests ✅ Done (GPUTessTest verified on native Metal; rest written pending Windows/Linux verification)
+
+> Implemented on a native macOS host, which — for the first time in this
+> plan's history — let Phase 2's Cocoa backend actually be built and run
+> rather than only written. That surfaced two real, pre-existing bugs
+> unrelated to this migration, both fixed here because they blocked
+> verifying the migration itself:
+>
+> - **`GEMetalCommandQueue::commitToGPUAndWait()` was UB on an empty queue**
+>   (`gte/src/metal/GEMetalCommandQueue.mm`). It unconditionally read
+>   `commandBuffers.back()`; once a prior fire-and-forget `commitToGPU()` had
+>   already cleared that vector (which it always does), `.back()` on an empty
+>   vector read garbage and `__bridge`-cast it to `id<MTLCommandBuffer>` —
+>   which crashed the *first* time it ever ran on real hardware
+>   (`-[__NSCFNumber addCompletedHandler:]: unrecognized selector`), hit via
+>   2DTest's `onClose` (`commandQueue->commitToGPUAndWait()` after an earlier
+>   `onReady`-time `commitToGPU()`). Fixed by inserting a lightweight barrier
+>   command buffer on the raw `MTLCommandQueue` and waiting on *that* when
+>   `commandBuffers` is empty — Metal command buffers on one queue complete in
+>   submission order, so the barrier completing proves everything submitted
+>   before it has too.
+> - **Metal's GPU tessellation of a rect lands in the wrong quadrant vs. the
+>   CPU path** — surfaced by the new shared `GPUTessTest` actually running on
+>   Metal for the first time (it used to be a headless CLI test with no run
+>   loop at all; see below). Left unfixed — it's a bug in the triangulation
+>   engine's Metal compute path, not in this window-migration plan — but
+>   flagged as a separate follow-up rather than silently absorbed into a
+>   passing test run.
+>
+> The migration itself: `GPUTessTest` now has one shared body
+> (`gte/Tests/GPUTessTest/main.cpp`) across all three backends. It renders
+> nothing — it only needs a `NativeRenderTargetDescriptor` to build a TE
+> context from, so it runs its CPU-vs-GPU comparison synchronously in
+> `onReady` and self-closes with the pass/fail exit code. That needed an API
+> addition not anticipated by the original design: **`RequestGTETestWindow-
+> Close(int exitCode)`**, added to `GTETestWindow.h` and implemented per
+> backend:
+> - **Win32**: `PostQuitMessage(exitCode)` — safe whether called before or
+>   after the message loop starts, since it queues on the calling thread.
+> - **Cocoa**: the hard one. `[NSApp terminate:]` (the old close path) calls
+>   `exit()` from inside AppKit and never returns from `-run`, so
+>   `RunGTETestWindow` could not hand back a caller-chosen exit code. Switched
+>   to `[NSApp stop:]` + a posted dummy event (Apple's documented workaround
+>   for `-stop:` needing another event to be noticed, which matters here
+>   because a self-closing test calls it from inside
+>   `applicationDidFinishLaunching:`), with `onClose` now firing in
+>   `RunGTETestWindow` right after `-run` returns instead of from
+>   `-applicationWillTerminate:`. Also added `-applicationShouldTerminate:`
+>   (returns `NSTerminateCancel` and redirects through the same path) — AppKit
+>   registers its own Apple-Event handler for "quit" (Dock menu, Cmd+Q, an
+>   AppleScript `tell app to quit`) independent of any menu, and its default
+>   path bypasses `onClose` entirely; verified via `osascript ... to quit`
+>   against 2DTest (AppleScript reports a cosmetic "User canceled" for the
+>   `NSTerminateCancel`, but the process exits cleanly with `onClose` having
+>   run — confirmed from the log).
+> - **GTK**: `g_main_loop_quit(g_loop)` — safe because `onReady` (`"layout"`)
+>   already fires from inside `g_main_loop_run`'s own dispatch, so `g_loop` is
+>   always valid and running by the time a test can call this.
+>
+> `MeshAndRaytracingTest` (D3D12-only), `BlitTest` and `CPUTessTest`
+> (Vulkan-only) got the same shared-body treatment. `BlitTest` additionally
+> resolves Open Decision #2 for itself: its inline runtime-compiled `R"(...)"`
+> shader string is now the canonical precompiled `assets/BlitTest/shaders.
+> omegasl`, loaded via `loadShaderLibrary` like every other migrated test.
+> `meshAndRaytracing.omegasl` moved to `assets/MeshAndRaytracingTest/`
+> alongside the FBX it already shared. Metal's GPUTessTest changed from a CLI
+> test (a bare, windowless `CAMetalLayer` with no `NSApplication` run loop at
+> all — never actually exercised the Cocoa windowing path) to a real
+> `add_metal_test` bundle with a minimal `metal/GPUTessTest/Info.plist` (no
+> nib — the window is built programmatically).
+>
+> **Per developer direction, the source-of-truth per-test file lists moved
+> out of the per-backend CMakeLists.txt entirely**: `gte/Tests/CMakeLists.txt`
+> now declares `GTE_TEST_<NAME>_{SOURCES,ASSETS,SHADERS}` once per test (for
+> every migrated test, including 2DTest, applied retroactively for
+> consistency), and `directx/`, `metal/`, `vulkan/CMakeLists.txt` reference
+> those variables in their `add_d3d12_test`/`add_metal_test`/`add_vulkan_test`
+> calls instead of re-typing the same path list in up to three places.
+> Adding a backend to an existing test, or relocating a shared asset, now
+> touches that one list only.
+>
+> **Verified on native macOS**: `GPUTessTest` builds and runs correctly —
+> opens, computes the CPU/GPU comparison, self-closes via
+> `RequestGTETestWindowClose`, tears down GPU resources in dependency order,
+> and returns the right process exit code (repeatable across runs).
+> `2DTest`'s user-close and Apple-Event-quit paths were re-verified against
+> the Cocoa refactor and both now complete cleanly (previously crashed, see
+> above). D3D12 (`MeshAndRaytracingTest`) needs a Windows host; Vulkan/GTK-4
+> (`BlitTest`, `CPUTessTest`, and the Vulkan/DX sides of `GPUTessTest`) need a
+> Linux host with GTK4 — both written to the same pattern as the verified
+> Metal/Win32 code but unbuilt this session.
 
 For each of `GPUTessTest`, `MeshAndRaytracingTest`, `BlitTest`, `CPUTessTest`:
 

@@ -64,21 +64,21 @@ function(add_d3d12_test)
 
 endfunction()
 
-# 2DTest builds from the shared, backend-neutral body at
-# gte/Tests/2DTest/main.cpp. The runtime assets (test.png, the OmegaSL source)
-# are the canonical shared copies under gte/Tests/assets/2DTest/ (relocated in
-# Phase 2 when Metal began consuming them too); test.png is loaded portably via
-# GETextureAsset. The local directx/2DTest/ subfolder keeps only the Win32
-# manifest template items.
+# 2DTest builds from the shared, backend-neutral body declared once in
+# gte/Tests/CMakeLists.txt (GTE_TEST_2DTEST_*). The runtime assets (test.png,
+# the OmegaSL source) are the canonical shared copies under
+# gte/Tests/assets/2DTest/ (relocated in Phase 2 when Metal began consuming
+# them too); test.png is loaded portably via GETextureAsset. The local
+# directx/2DTest/ subfolder keeps only the Win32 manifest template items.
 add_d3d12_test(
     NAME
     "2DTest"
     SOURCES
-    "../2DTest/main.cpp"
+    ${GTE_TEST_2DTEST_SOURCES}
     ASSETS
-    "../assets/2DTest/test.png"
+    ${GTE_TEST_2DTEST_ASSETS}
     SHADERS
-    "../assets/2DTest/shaders.omegasl"
+    ${GTE_TEST_2DTEST_SHADERS}
 )
 
 add_d3d12_test(
@@ -88,29 +88,38 @@ add_d3d12_test(
     "ComputeTest/main.cpp"
 )
 
+# GPUTessTest now builds from the shared, backend-neutral body declared once
+# in gte/Tests/CMakeLists.txt (GTE_TEST_GPUTESSTEST_*, Phase 4). It renders
+# nothing; it only needs a NativeRenderTargetDescriptor to build a TE context
+# from, so it computes its CPU-vs-GPU comparison in onReady and self-closes
+# with the pass/fail exit code via RequestGTETestWindowClose.
 add_d3d12_test(
     NAME
     "GPUTessTest"
     SOURCES
-    "GPUTessTest/main.cpp"
+    ${GTE_TEST_GPUTESSTEST_SOURCES}
 )
 
-# Mesh-Shader-Plan Phases 3 / 4b (and future raytracing) visual test.
-# Phase 4b is live: the test loads `orange_tennis_racket.fbx` via
-# `GEMeshAsset` and renders each triangle through a mesh-shader
-# dispatch (one mesh threadgroup per triangle). Raytracing hooks join
-# when that phase reaches the dispatch surface. The FBX asset lives
-# under the shared `gte/tests/assets/` folder so other tests can reuse
-# it; CMake stages it next to the test exe via the ASSETS list.
+# Mesh-Shader-Plan Phases 3 / 4b (and future raytracing) visual test. Now
+# builds from the shared, backend-neutral body declared once in
+# gte/Tests/CMakeLists.txt (GTE_TEST_MESHANDRAYTRACINGTEST_*, Phase 4 of the
+# GTETestWindow cross-backend plan) — D3D12 only today (mesh shaders haven't
+# landed on Metal/Vulkan yet), but the body is ready for those backends' CMake
+# wiring when they do. Phase 4b is live: the test loads
+# `orange_tennis_racket.fbx` via `GEMeshAsset` and renders each triangle
+# through a mesh-shader dispatch (one mesh threadgroup per triangle).
+# Raytracing hooks join when that phase reaches the dispatch surface. Both the
+# FBX and the shader source are the canonical shared copies under
+# gte/Tests/assets/.
 add_d3d12_test(
     NAME
     "MeshAndRaytracingTest"
     SOURCES
-    "MeshAndRaytracingTest/main.cpp"
+    ${GTE_TEST_MESHANDRAYTRACINGTEST_SOURCES}
     ASSETS
-    "../assets/orange_tennis_racket/orange_tennis_racket.fbx"
+    ${GTE_TEST_MESHANDRAYTRACINGTEST_ASSETS}
     SHADERS
-    "MeshAndRaytracingTest/meshAndRaytracing.omegasl"
+    ${GTE_TEST_MESHANDRAYTRACINGTEST_SHADERS}
 )
 
 # Extension 8 §8.6 — runtime sampler-state binding integration test (shared,

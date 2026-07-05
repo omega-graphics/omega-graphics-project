@@ -31,6 +31,25 @@ function(add_omegasl_lib _NAME _SRC _OUTPUT)
         list(APPEND _include_flags "-I" "${_dir}")
     endforeach()
 
+    # Record this source's include search dirs for the language server's
+    # compile-command database (omegasl_commands.json — see
+    # omega_write_omegasl_compile_commands below). Absolute, forward-slash paths
+    # (CMake normalizes both), so the JSON strings never need escaping and match
+    # the absolute path omegasl-lsp derives from a document's file:// URI.
+    get_filename_component(_abs_src "${_SRC}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(_dirs_json "")
+    foreach(_dir IN LISTS _OSL_INCLUDE_DIRS)
+        get_filename_component(_abs_dir "${_dir}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        if(_dirs_json STREQUAL "")
+            set(_dirs_json "\"${_abs_dir}\"")
+        else()
+            set(_dirs_json "${_dirs_json},\"${_abs_dir}\"")
+        endif()
+    endforeach()
+    list(APPEND OMEGASL_COMPILE_COMMANDS "{\"file\":\"${_abs_src}\",\"includeDirs\":[${_dirs_json}]}")
+    set(OMEGASL_COMPILE_COMMANDS "${OMEGASL_COMPILE_COMMANDS}" CACHE INTERNAL
+        "Accumulated OmegaSL compile commands (file + include dirs), one JSON object per add_omegasl_lib call.")
+
     add_custom_target(${_NAME} DEPENDS "${_OUTPUT}")
 
     make_directory(${CMAKE_CURRENT_BINARY_DIR}/omegasl)
@@ -65,4 +84,29 @@ function(add_omegasl_linked_lib _NAME _OUTPUT)
                        COMMAND ${OMEGASLC_EXE} --link ${_OSL_SOURCES} -o ${_OUTPUT} --lib-name ${_libname}
                        DEPENDS ${_OSL_SOURCES} omegaslc)
 
+endfunction()
+
+## omega_write_omegasl_compile_commands()
+##
+## Emit `${CMAKE_BINARY_DIR}/omegasl_commands.json` from the entries every
+## `add_omegasl_lib` call accumulated into the `OMEGASL_COMPILE_COMMANDS` cache
+## list. The file is the compile-command database `omegasl-lsp` reads to resolve
+## a shader's `#include`s (each entry maps an absolute source path to its `-I`
+## include dirs). Call this ONCE, at the end of the top-level CMakeLists.txt,
+## after every add_subdirectory — so the list is fully populated when its
+## content is expanded. The accumulator is reset once per configure at the top
+## level (the cache list would otherwise persist stale entries across runs).
+function(omega_write_omegasl_compile_commands)
+    set(_json "[\n")
+    set(_first TRUE)
+    foreach(_entry IN LISTS OMEGASL_COMPILE_COMMANDS)
+        if(_first)
+            set(_json "${_json}  ${_entry}")
+            set(_first FALSE)
+        else()
+            set(_json "${_json},\n  ${_entry}")
+        endif()
+    endforeach()
+    set(_json "${_json}\n]\n")
+    file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/omegasl_commands.json" CONTENT "${_json}")
 endfunction()

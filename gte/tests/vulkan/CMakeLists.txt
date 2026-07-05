@@ -78,24 +78,25 @@ function(add_vulkan_test)
     endif()
 endfunction()
 
-# 2DTest now builds from the shared, backend-neutral body at
-# gte/tests/2DTest/main.cpp (GTETestWindow-CrossBackend-Plan.md, Phase 3). The
-# GTK-4 windowing / run-loop lives behind the omegagte_testwindow_vulkan object
-# lib; the runtime assets (test.png, the OmegaSL source) are the canonical
-# shared copies under gte/tests/assets/2DTest/ — the shader is precompiled to a
-# .omegasllib here (Open Decision #2) and test.png is loaded portably through
-# GETextureAsset (OmegaCommon::Img on Vulkan).
+# 2DTest now builds from the shared, backend-neutral body declared once in
+# gte/Tests/CMakeLists.txt (GTE_TEST_2DTEST_*, GTETestWindow-CrossBackend-
+# Plan.md Phase 3). The GTK-4 windowing / run-loop lives behind the
+# omegagte_testwindow_vulkan object lib; the runtime assets (test.png, the
+# OmegaSL source) are the canonical shared copies under
+# gte/tests/assets/2DTest/ — the shader is precompiled to a .omegasllib here
+# (Open Decision #2) and test.png is loaded portably through GETextureAsset
+# (OmegaCommon::Img on Vulkan).
 if(GTK4_FOUND)
     add_vulkan_test(
         GTK4
         NAME
         "2DTest"
         SOURCES
-        "../2DTest/main.cpp"
+        ${GTE_TEST_2DTEST_SOURCES}
         ASSETS
-        "../assets/2DTest/test.png"
+        ${GTE_TEST_2DTEST_ASSETS}
         SHADERS
-        "../assets/2DTest/shaders.omegasl")
+        ${GTE_TEST_2DTEST_SHADERS})
 else()
     message(WARNING "OmegaGTE tests: gtk4 not found — skipping the GTK-4-ported 2DTest.")
 endif()
@@ -106,23 +107,40 @@ add_vulkan_test(
     SOURCES
     "ComputeTest/main.cpp")
 
-add_vulkan_test(
-    NAME
-    "GPUTessTest"
-    SOURCES
-    "GPUTessTest/main.cpp")
+# GPUTessTest / CPUTessTest / BlitTest now build from the shared, backend-
+# neutral bodies declared once in gte/Tests/CMakeLists.txt
+# (GTE_TEST_GPUTESSTEST_* / GTE_TEST_CPUTESSTEST_* / GTE_TEST_BLITTEST_*,
+# Phase 4), through the same GTK-4 windowed path 2DTest uses.
+# GPUTessTest/CPUTessTest render nothing — they only need a
+# NativeRenderTargetDescriptor to build a TE context from — so they compute
+# their comparison in onReady and self-close with the pass/fail exit code via
+# RequestGTETestWindowClose.
+if(GTK4_FOUND)
+    add_vulkan_test(
+        GTK4
+        NAME
+        "GPUTessTest"
+        SOURCES
+        ${GTE_TEST_GPUTESSTEST_SOURCES})
 
-add_vulkan_test(
-    NAME
-    "CPUTessTest"
-    SOURCES
-    "CPUTessTest/main.cpp")
+    add_vulkan_test(
+        GTK4
+        NAME
+        "CPUTessTest"
+        SOURCES
+        ${GTE_TEST_CPUTESSTEST_SOURCES})
 
-add_vulkan_test(
-    NAME
-    "BlitTest"
-    SOURCES
-    "BlitTest/main.cpp")
+    add_vulkan_test(
+        GTK4
+        NAME
+        "BlitTest"
+        SOURCES
+        ${GTE_TEST_BLITTEST_SOURCES}
+        SHADERS
+        ${GTE_TEST_BLITTEST_SHADERS})
+else()
+    message(WARNING "OmegaGTE tests: gtk4 not found — skipping GPUTessTest/CPUTessTest/BlitTest (GTK-4 windowed).")
+endif()
 
 # Extension 8 §8.6 — runtime sampler-state binding integration test (shared,
 # backend-independent source under gte/tests/).

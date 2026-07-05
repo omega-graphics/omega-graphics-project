@@ -14,9 +14,8 @@
 // test source, invoked through the delegate callbacks:
 //   onReady  fires from -applicationDidFinishLaunching (window realized, the
 //            CAMetalLayer wired into the descriptor),
-//   onClose  fires from -applicationWillTerminate, the point the AppKit run
-//            loop tears down — matching where the old Metal test called
-//            OmegaGTE::Close(gte).
+//   onClose  fires from RunGTETestWindow right after [NSApp run] returns —
+//            matching where the old Metal test called OmegaGTE::Close(gte).
 //
 // These files are compiled with manual reference counting (no -fobjc-arc, like
 // the rest of the Metal backend), so the app delegate / window controller are
@@ -25,6 +24,41 @@
 namespace {
     const OmegaGTETests::GTETestWindowDescriptor *gDesc = nullptr;
     const OmegaGTETests::GTETestWindowDelegate *gDelegate = nullptr;
+    int gExitCode = 0;
+
+    // Ends [NSApp run] with `exitCode` as RunGTETestWindow's return value.
+    // Used both by the window's close box (windowWillClose, exitCode 0) and by
+    // RequestGTETestWindowClose (test-driven, e.g. GPUTessTest's pass/fail).
+    //
+    // Deliberately NOT [NSApp terminate:]: terminate's happy path posts
+    // NSApplicationWillTerminateNotification and then calls exit() itself
+    // inside AppKit — control never returns from -run, so RunGTETestWindow
+    // could not hand back a caller-chosen exit code. [NSApp stop:] instead
+    // marks the run loop to stop and lets -run return normally once it is
+    // noticed, so RunGTETestWindow can call onClose once and return gExitCode
+    // like every other backend.
+    //
+    // -stop:'s well-known gotcha: it only takes effect once the run loop
+    // processes another event, and does nothing at all if called before the
+    // loop has actually started spinning. Calling it from
+    // applicationDidFinishLaunching: (i.e. from onReady, for a test that
+    // wants to compute a result and exit immediately) races that check, so we
+    // post a harmless "application defined" event right after — Apple's own
+    // documented workaround — to force the loop to wake up and notice.
+    void RequestClose(int exitCode) {
+        gExitCode = exitCode;
+        [NSApp stop:nil];
+        NSEvent *wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                            location:NSMakePoint(0, 0)
+                                       modifierFlags:0
+                                           timestamp:0
+                                        windowNumber:0
+                                             context:nil
+                                             subtype:0
+                                               data1:0
+                                               data2:0];
+        [NSApp postEvent:wake atStart:YES];
+    }
 }
 
 @interface GTETestWindowController : NSWindowController <NSWindowDelegate>
@@ -81,9 +115,7 @@ namespace {
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
-    // Terminating drives the run loop down to -applicationWillTerminate:, where
-    // the test body's onClose teardown fires before the process exits.
-    [NSApp terminate:nil];
+    RequestClose(0);
 }
 
 @end
@@ -101,9 +133,15 @@ namespace {
     [NSApp activateIgnoringOtherApps:YES];
 }
 
-- (void)applicationWillTerminate:(NSNotification *)notification {
-    if (gDelegate && gDelegate->onClose)
-        gDelegate->onClose();
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    // AppKit registers its own Apple Event handler for "quit" independent of
+    // any menu (Dock "Quit", Cmd+Q, `osascript -e 'tell app ... to quit'`),
+    // and its default path calls exit() directly — bypassing RequestClose's
+    // stop-based flow and, with it, onClose. Redirect every termination
+    // request through the same path windowWillClose uses so onClose always
+    // fires and the process always returns gExitCode.
+    RequestClose(0);
+    return NSTerminateCancel;
 }
 
 @end
@@ -120,6 +158,7 @@ int RunGTETestWindow(int argc,
 
     gDesc = &desc;
     gDelegate = &delegate;
+    gExitCode = 0;
 
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
@@ -129,7 +168,17 @@ int RunGTETestWindow(int argc,
         [app run];
     }
 
-    return 0;
+    // -run has returned (via RequestClose's [NSApp stop:] path, not
+    // terminate:), so onClose fires here — once, on the GUI thread, before
+    // this function hands the exit code back to the test's main.
+    if (delegate.onClose)
+        delegate.onClose();
+
+    return gExitCode;
+}
+
+void RequestGTETestWindowClose(int exitCode) {
+    RequestClose(exitCode);
 }
 
 } // namespace OmegaGTETests

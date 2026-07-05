@@ -153,4 +153,12 @@ int RunGTETestWindow(int argc,
     return static_cast<int>(msg.wParam);
 }
 
+void RequestGTETestWindowClose(int exitCode) {
+    // Safe whether the message loop above has started yet or not:
+    // PostQuitMessage queues WM_QUIT on the calling thread, which is the same
+    // thread that will (or already does) run the PeekMessage loop, so a call
+    // from onReady (before ShowWindow) is retrieved on the loop's first pump.
+    PostQuitMessage(exitCode);
+}
+
 } // namespace OmegaGTETests

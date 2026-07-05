@@ -95,6 +95,14 @@ endif()
 
 omega_graphics_add_subdir(OmegaCommon common)
 
+# Reset the OmegaSL compile-command accumulator at the start of every configure.
+# add_omegasl_lib (defined in gte/OmegaGTE.cmake, included below) appends one
+# entry per call into this CACHE list; CACHE vars persist across configures, so
+# without this reset stale entries would pile up. omega_write_omegasl_compile_commands()
+# at the end of this file writes the accumulated list to omegasl_commands.json.
+set(OMEGASL_COMPILE_COMMANDS "" CACHE INTERNAL
+    "Accumulated OmegaSL compile commands (file + include dirs), one JSON object per add_omegasl_lib call.")
+
 omega_graphics_add_subdir(OmegaGTE gte)
 
 if(NOT OMEGA_HOST_TOOLS_ONLY)
@@ -116,3 +124,9 @@ if(NOT OMEGA_HOST_TOOLS_ONLY)
         omega_graphics_add_subdir(KREATE kreate)
     endif()
 endif()
+
+# Emit omegasl_commands.json from every add_omegasl_lib call above, for the
+# OmegaSL language server's #include resolution. Must run after all subdirs so
+# the accumulated OMEGASL_COMPILE_COMMANDS list is complete. The function is
+# defined in gte/OmegaGTE.cmake (included by the OmegaGTE subdir above).
+omega_write_omegasl_compile_commands()

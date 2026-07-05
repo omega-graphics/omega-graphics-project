@@ -62,11 +62,31 @@ public:
     /// diagnostics back onto the *original* buffer — the language server
     /// (`omegasl-lsp`) — needs the numbers to stay aligned, so it turns this
     /// on. Consumed/skipped lines are replaced by an empty line instead of
-    /// being removed. Assumes `#include` expansion is disabled
+    /// being removed. On its own this assumes `#include` expansion is disabled
     /// (`setRejectIncludes(true)`): an expanded include emits more than one
-    /// line and would break the 1:1 mapping. Default (false) leaves the
-    /// `omegaslc` output byte-identical.
+    /// line and would break the 1:1 mapping — UNLESS a source map is also being
+    /// built (`setSourceMap(true)`), which records where each output line came
+    /// from and lifts that restriction. Default (false) leaves the `omegaslc`
+    /// output byte-identical.
     void setLinePreserving(bool preserve) { linePreserving_ = preserve; }
+
+    /// Build a source-line map alongside the processed output, so a consumer
+    /// can translate an output-line number back to the editor buffer even when
+    /// `#include`s expand inline (which shifts everything below them). With
+    /// this on, `#include` may be enabled (`setRejectIncludes(false)`) while
+    /// line-preservation still holds for the *top-level* buffer: the map
+    /// records, for every output line, the 1-based top-level source line that
+    /// produced it — or 0 when the line came from included (foreign) content.
+    /// The language server uses this to keep diagnostics/symbols aligned with
+    /// the buffer and to drop header-internal diagnostics. Off by default, so
+    /// `omegaslc` is unaffected.
+    void setSourceMap(bool enable) { buildSourceMap_ = enable; }
+
+    /// The source-line map from the most-recent `process()` when
+    /// `setSourceMap(true)` was set: `sourceMap()[i]` is the 1-based top-level
+    /// source line of output line `i+1`, or 0 for included content. Empty when
+    /// source-map mode is off.
+    const std::vector<unsigned> & sourceMap() const { return sourceMap_; }
 
     /// True if any directive in the most-recently-processed source
     /// failed in a way that should abort downstream compilation
@@ -99,7 +119,12 @@ private:
     bool backendSet_ = false;
     bool rejectIncludes_ = false;
     bool linePreserving_ = false;
+    bool buildSourceMap_ = false;
     bool hasErrors_ = false;
+    /// One entry per output line of the most-recent `process()` (top-level
+    /// only): the 1-based source line that produced it, or 0 for included
+    /// content. Populated only when `buildSourceMap_` is set.
+    std::vector<unsigned> sourceMap_;
 
     std::string processInternal(const std::string& source, const std::string& currentPath, unsigned includeDepth);
     /// Resolve a quoted `#include "incPath"` to an openable file path, or

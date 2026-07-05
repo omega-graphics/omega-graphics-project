@@ -1,0 +1,54 @@
+// BlitTest shader pair — extracted from the inline runtime-compiled string
+// (GTETestWindow-CrossBackend-Plan.md, Open Decision #2: converge on
+// precompiled OmegaSL like every other test rather than runtime-string
+// compilation). Pass 1 renders a colored triangle to an offscreen texture;
+// pass 2 blits that texture onto the swapchain via a fullscreen quad.
+
+struct ColorVertex {
+    float4 pos;
+    float4 color;
+};
+
+struct ColorRaster internal {
+    float4 pos : Position;
+    float4 color : Color;
+};
+
+buffer<ColorVertex> colorBuf : 0;
+
+[in colorBuf]
+vertex ColorRaster colorVertex(uint v_id : VertexID){
+    ColorVertex v = colorBuf[v_id];
+    ColorRaster r = { v.pos, v.color };
+    return r;
+}
+
+fragment float4 colorFragment(ColorRaster r){
+    return r.color;
+}
+
+struct CopyVertex {
+    float4 pos;
+    float2 texCoord;
+};
+
+struct CopyRaster internal {
+    float4 pos : Position;
+    float2 texCoord : TexCoord;
+};
+
+buffer<CopyVertex> copyBuf : 1;
+texture2d copyTex : 2;
+static sampler2d copySampler(filter=linear);
+
+[in copyBuf]
+vertex CopyRaster copyVertexFunc(uint v_id : VertexID){
+    CopyVertex v = copyBuf[v_id];
+    CopyRaster r = { v.pos, v.texCoord };
+    return r;
+}
+
+[in copyTex, in copySampler]
+fragment float4 copyFragFunc(CopyRaster r){
+    return sample(copySampler, copyTex, r.texCoord);
+}

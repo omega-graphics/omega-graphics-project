@@ -1,3 +1,6 @@
+#include "../GTETestEntryPoint.h"
+#include "../GTETestWindow.h"
+
 #include <omegaGTE/GTEDevice.h>
 #include <omegaGTE/GECommandQueue.h>
 #include <omegaGTE/GEPipeline.h>
@@ -5,10 +8,19 @@
 #include <omegaGTE/GTEMath.h>
 #include <omegaGTE/GTEShader.h>
 
-#include <windows.h>
 #include <iostream>
 #include <cmath>
 #include <cassert>
+
+// GPUTessTest — shared, backend-neutral body (GTETestWindow-CrossBackend-Plan.md,
+// Phase 4). Compares the triangulation engine's CPU and GPU tessellation paths
+// for a single rect and reports pass/fail; it never presents anything, so it
+// needs only a NativeRenderTargetDescriptor to build the TE context from, not
+// an actual redraw. onReady runs the comparison synchronously and then calls
+// RequestGTETestWindowClose with the pass/fail exit code — the window opens
+// and closes itself with no user interaction, mirroring the original three
+// per-backend copies (a DX hidden window, a windowless Metal CAMetalLayer, and
+// a real GTK window), now unified onto one real (briefly visible) window.
 
 static bool comparePt(OmegaGTE::GPoint3D a, OmegaGTE::GPoint3D b, float tol = 0.01f) {
     return std::fabs(a.x - b.x) < tol &&
@@ -16,33 +28,12 @@ static bool comparePt(OmegaGTE::GPoint3D a, OmegaGTE::GPoint3D b, float tol = 0.
            std::fabs(a.z - b.z) < tol;
 }
 
-int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd){
-    auto gte = OmegaGTE::InitWithDefaultDevice();
-    std::cout << "GTE Initialized" << std::endl;
+static OmegaGTE::GTE gte;
+static SharedHandle<OmegaGTE::GECommandQueue> commandQueue;
+static SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
+static SharedHandle<OmegaGTE::OmegaTriangulationEngineContext> teCtx;
 
-    WNDCLASSEXA wc{};
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = DefWindowProcA;
-    wc.hInstance = hInstance;
-    wc.lpszClassName = "_GPUTessTestHidden";
-    RegisterClassExA(&wc);
-
-    HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "GPUTessTest", WS_OVERLAPPEDWINDOW,
-                                CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
-    assert(hwnd && "Failed to create window");
-
-    OmegaGTE::NativeRenderTargetDescriptor rtDesc{};
-    rtDesc.isHwnd = true;
-    rtDesc.hwnd = hwnd;
-    OmegaGTE::GECommandQueueDesc commandQueueDesc{};
-    commandQueueDesc.maxBufferCount = 64;
-    auto commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
-    auto renderTarget = gte.graphicsEngine->makeNativeRenderTarget(rtDesc, commandQueue);
-
-    auto teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
-    assert(teCtx && "Failed to create TE context");
-
+static int runComparison() {
     OmegaGTE::GEViewport vp{0, 0, 800, 600, 0, 1};
 
     auto colorVec = OmegaGTE::FVec<4>::Create();
@@ -66,25 +57,25 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     bool pass = true;
 
-    if(cpuResult.totalVertexCount() != gpuResult.totalVertexCount()){
+    if (cpuResult.totalVertexCount() != gpuResult.totalVertexCount()) {
         std::cerr << "FAIL: vertex count mismatch: CPU=" << cpuResult.totalVertexCount()
                   << " GPU=" << gpuResult.totalVertexCount() << std::endl;
         pass = false;
     }
 
-    if(pass){
+    if (pass) {
         auto &cpuMesh = cpuResult.mesh;
         auto &gpuMesh = gpuResult.mesh;
-        if(cpuMesh.vertexPolygons.size() != gpuMesh.vertexPolygons.size()){
+        if (cpuMesh.vertexPolygons.size() != gpuMesh.vertexPolygons.size()) {
             std::cerr << "FAIL: polygon count mismatch" << std::endl;
             pass = false;
         }
-        for(size_t p = 0; p < cpuMesh.vertexPolygons.size() && pass; p++){
+        for (size_t p = 0; p < cpuMesh.vertexPolygons.size() && pass; p++) {
             auto &cp = cpuMesh.vertexPolygons[p];
             auto &gp = gpuMesh.vertexPolygons[p];
-            if(!comparePt(cp.a.pt, gp.a.pt) ||
-               !comparePt(cp.b.pt, gp.b.pt) ||
-               !comparePt(cp.c.pt, gp.c.pt)){
+            if (!comparePt(cp.a.pt, gp.a.pt) ||
+                !comparePt(cp.b.pt, gp.b.pt) ||
+                !comparePt(cp.c.pt, gp.c.pt)) {
                 std::cerr << "FAIL: vertex mismatch in polygon " << p << std::endl;
                 std::cerr << "  CPU: a=(" << cp.a.pt.x << "," << cp.a.pt.y << ") "
                           << "b=(" << cp.b.pt.x << "," << cp.b.pt.y << ") "
@@ -97,15 +88,47 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         }
     }
 
-    if(pass){
+    if (pass) {
         std::cout << "PASS: GPU tessellation matches CPU tessellation for rect." << std::endl;
     } else {
         std::cout << "FAIL: GPU tessellation does not match CPU tessellation." << std::endl;
     }
 
-    DestroyWindow(hwnd);
-    UnregisterClassA(wc.lpszClassName, hInstance);
-
-    OmegaGTE::Close(gte);
     return pass ? 0 : 1;
 }
+
+GTE_TEST_ENTRY_POINT {
+    (void)argc;
+
+    gte = OmegaGTE::InitWithDefaultDevice();
+    std::cout << "GTE Initialized" << std::endl;
+
+    OmegaGTETests::GTETestWindowDescriptor desc;
+    desc.title = "GTE GPUTessTest";
+    desc.width = 800;
+    desc.height = 600;
+
+    OmegaGTETests::GTETestWindowDelegate del;
+
+    del.onReady = [](const OmegaGTE::NativeRenderTargetDescriptor &nrt) {
+        OmegaGTE::GECommandQueueDesc commandQueueDesc{};
+        commandQueueDesc.maxBufferCount = 64;
+        commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
+        renderTarget = gte.graphicsEngine->makeNativeRenderTarget(nrt, commandQueue);
+
+        teCtx = gte.triangulationEngine->createTEContextFromNativeRenderTarget(renderTarget);
+        assert(teCtx && "Failed to create TE context");
+
+        int exitCode = runComparison();
+        OmegaGTETests::RequestGTETestWindowClose(exitCode);
+    };
+
+    del.onClose = []() {
+        teCtx.reset();
+        renderTarget.reset();
+        commandQueue.reset();
+        OmegaGTE::Close(gte);
+    };
+
+    return OmegaGTETests::RunGTETestWindow(argc, argv, desc, del);
+};

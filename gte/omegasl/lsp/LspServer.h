@@ -35,6 +35,15 @@ namespace lsp {
         /// completion without re-running the compiler.
         std::map<std::string, AnalysisResult> analyses_;
 
+        /// Compile-command discovery cache: a document directory → the
+        /// `omegasl_commands.json` that governs it (empty string = none found),
+        /// so the upward search runs once per directory, not per keystroke.
+        std::map<std::string, std::string> dbPathForDir_;
+        /// Parsed compile databases, keyed by their `omegasl_commands.json`
+        /// path: absolute source file → its `-I` include directories. v1 does
+        /// not hot-reload a database that changes on disk after first load.
+        std::map<std::string, std::map<std::string, std::vector<std::string>>> dbByPath_;
+
         bool shutdownRequested_ = false;
 
         /// Read one framed message body. Returns false at EOF / stream error.
@@ -55,6 +64,13 @@ namespace lsp {
         void handleDocumentSymbol(const OmegaCommon::JSON & id, OmegaCommon::JSON & params);
         void handleHover(const OmegaCommon::JSON & id, OmegaCommon::JSON & params);
         void handleCompletion(const OmegaCommon::JSON & id, OmegaCommon::JSON & params);
+
+        /// Include search directories for a document, from the governing
+        /// `omegasl_commands.json` (discovered by walking up from the file's
+        /// directory). Empty when the document has no path or no matching
+        /// compile-command entry. Results are cached (see `dbPathForDir_` /
+        /// `dbByPath_`).
+        std::vector<std::string> includeDirsForDocument(const std::string & docPath);
 
         /// Re-analyze `uri` from the document store and publish diagnostics.
         void analyzeAndPublish(const std::string & uri);

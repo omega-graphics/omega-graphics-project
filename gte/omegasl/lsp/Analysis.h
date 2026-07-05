@@ -102,7 +102,21 @@ namespace lsp {
         /// Run the front-end over `text` and return diagnostics + symbols.
         /// `text` is the full current document contents (the server uses full
         /// text sync). Never throws; a malformed document yields diagnostics.
-        AnalysisResult analyze(const std::string & text);
+        ///
+        /// `documentPath` is the document's absolute filesystem path (decoded
+        /// from its `file://` URI), or empty when the client gave no path. Its
+        /// directory anchors relative `#include "foo.omegaslh"` resolution.
+        /// `includeDirs` are extra `-I` search directories (from a discovered
+        /// `omegasl_commands.json`). When either is available, `#include`s are
+        /// resolved and their declarations participate in analysis; diagnostics
+        /// and symbols are mapped back onto the editor buffer and any that
+        /// originate inside an included header are dropped from the main
+        /// document (header symbols still feed hover/completion via the index).
+        /// With neither, `#include` is rejected (as before), since there is no
+        /// filesystem anchor to resolve against.
+        AnalysisResult analyze(const std::string & text,
+                               const std::string & documentPath,
+                               const std::vector<std::string> & includeDirs);
     };
 
 } // namespace lsp

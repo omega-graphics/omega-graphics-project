@@ -4,6 +4,8 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <vector>
 
 namespace omegasl {
@@ -230,6 +232,140 @@ namespace lsp {
             return line.substr(s, (size_t)(e - s + 1));
         }
 
+        /// --- Document path + compile-command database ------------------------
+
+        /// Percent-decode a URI component (`%20` → space, etc.). Bytes that are
+        /// not a valid `%XX` escape pass through unchanged.
+        std::string percentDecode(const std::string & s) {
+            auto hexVal = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            std::string out;
+            out.reserve(s.size());
+            for (size_t i = 0; i < s.size(); i++) {
+                if (s[i] == '%' && i + 2 < s.size()) {
+                    int hi = hexVal(s[i + 1]);
+                    int lo = hexVal(s[i + 2]);
+                    if (hi >= 0 && lo >= 0) {
+                        out += (char)((hi << 4) | lo);
+                        i += 2;
+                        continue;
+                    }
+                }
+                out += s[i];
+            }
+            return out;
+        }
+
+        /// Convert a `file://` document URI to an absolute filesystem path.
+        /// Returns "" for a non-`file:` URI (`untitled:` etc.), which the
+        /// analyzer treats as "no anchor". Handles the empty-authority form
+        /// (`file:///path`) clients emit, a rare non-empty authority, and the
+        /// Windows drive form (`file:///C:/x` → `C:/x`).
+        std::string uriToPath(const std::string & uri) {
+            const std::string scheme = "file://";
+            if (uri.compare(0, scheme.size(), scheme) != 0) {
+                return "";
+            }
+            std::string rest = uri.substr(scheme.size());
+            /// Strip a non-empty authority (host) if present; the common
+            /// `file:///` form has an empty authority so `rest` already starts
+            /// with '/'.
+            if (!rest.empty() && rest[0] != '/') {
+                size_t slash = rest.find('/');
+                rest = (slash == std::string::npos) ? std::string() : rest.substr(slash);
+            }
+            std::string path = percentDecode(rest);
+            if (path.size() >= 3 && path[0] == '/' &&
+                (std::isalpha((unsigned char)path[1]) != 0) && path[2] == ':') {
+                path.erase(0, 1);
+            }
+            return path;
+        }
+
+        /// The parent directory of `path` (no trailing slash), or "" when there
+        /// is no separator. The parent of a top-level entry (`/a`) is `/`.
+        std::string parentDir(const std::string & path) {
+            size_t slash = path.find_last_of("/\\");
+            if (slash == std::string::npos) {
+                return "";
+            }
+            if (slash == 0) {
+                return "/";
+            }
+            return path.substr(0, slash);
+        }
+
+        /// Walk up from `startDir` looking for an `omegasl_commands.json`.
+        /// Returns its path, or "" if none is found before the filesystem root
+        /// (mirrors clang's `compile_commands.json` upward search).
+        std::string discoverCompileDb(std::string dir) {
+            while (!dir.empty()) {
+                std::string candidate = dir + "/omegasl_commands.json";
+                std::ifstream f(candidate);
+                if (f.good()) {
+                    return candidate;
+                }
+                std::string parent = parentDir(dir);
+                if (parent == dir) {
+                    break; // reached the root
+                }
+                dir = parent;
+            }
+            return std::string();
+        }
+
+        /// Parse an `omegasl_commands.json` into `absSourceFile → includeDirs`.
+        /// The schema is an array of `{ "file": <abs>, "includeDirs": [<abs>…] }`.
+        /// A malformed database is logged and ignored (never fatal) — the server
+        /// simply falls back to relative-only include resolution.
+        std::map<std::string, std::vector<std::string>> loadCompileDb(const std::string & dbPath) {
+            std::map<std::string, std::vector<std::string>> db;
+            std::ifstream f(dbPath, std::ios::binary);
+            if (!f) {
+                return db;
+            }
+            std::string content((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
+            auto parsed = OJSON::TryParse(OmegaCommon::String(content));
+            if (parsed.isErr()) {
+                std::cerr << "omegasl-lsp: ignoring malformed " << dbPath << ": "
+                          << parsed.error() << std::endl;
+                return db;
+            }
+            OJSON & root = parsed.value();
+            if (!root.isArray()) {
+                return db;
+            }
+            auto arr = root.asVector();
+            for (const OJSON & entryC : arr) {
+                OJSON & entry = const_cast<OJSON &>(entryC);
+                if (!entry.isMap()) {
+                    continue;
+                }
+                OJSON * fileF = field(entry, "file");
+                if (fileF == nullptr || !fileF->isString()) {
+                    continue;
+                }
+                std::string file(fileF->asString());
+                std::vector<std::string> dirs;
+                OJSON * dirsF = field(entry, "includeDirs");
+                if (dirsF != nullptr && dirsF->isArray()) {
+                    auto darr = dirsF->asVector();
+                    for (const OJSON & d : darr) {
+                        if (d.isString()) {
+                            dirs.emplace_back(d.asString());
+                        }
+                    }
+                }
+                db[file] = std::move(dirs);
+            }
+            return db;
+        }
+
     } // namespace
 
     LspServer::LspServer(std::istream & in, std::ostream & out, Analyzer & analyzer)
@@ -440,12 +576,45 @@ namespace lsp {
         publishDiagnostics(uri, empty);
     }
 
+    std::vector<std::string> LspServer::includeDirsForDocument(const std::string & docPath) {
+        if (docPath.empty()) {
+            return {};
+        }
+        std::string dir = parentDir(docPath);
+        /// 1. Which `omegasl_commands.json` governs this directory? Cache the
+        ///    upward search per directory so it runs once, not per keystroke.
+        std::string dbPath;
+        auto dirIt = dbPathForDir_.find(dir);
+        if (dirIt != dbPathForDir_.end()) {
+            dbPath = dirIt->second;
+        } else {
+            dbPath = discoverCompileDb(dir);
+            dbPathForDir_[dir] = dbPath;
+        }
+        if (dbPath.empty()) {
+            return {};
+        }
+        /// 2. Load + cache the database.
+        auto dbIt = dbByPath_.find(dbPath);
+        if (dbIt == dbByPath_.end()) {
+            dbIt = dbByPath_.emplace(dbPath, loadCompileDb(dbPath)).first;
+        }
+        /// 3. This document's entry (exact absolute-path match), if any.
+        auto e = dbIt->second.find(docPath);
+        if (e != dbIt->second.end()) {
+            return e->second;
+        }
+        return {};
+    }
+
     void LspServer::analyzeAndPublish(const std::string & uri) {
         auto it = documents_.find(uri);
         if (it == documents_.end()) {
             return;
         }
-        AnalysisResult result = analyzer_.analyze(it->second);
+        std::string docPath = uriToPath(uri);
+        std::vector<std::string> includeDirs = includeDirsForDocument(docPath);
+        AnalysisResult result = analyzer_.analyze(it->second, docPath, includeDirs);
         publishDiagnostics(uri, result);
         analyses_[uri] = std::move(result);
     }
@@ -591,10 +760,15 @@ namespace lsp {
             addItem(fn, kCompletionFunction, "builtin function");
         }
 
-        /// The document's own top-level declarations.
+        /// Every declaration in scope — the document's own plus any pulled in
+        /// from `#include`d headers. The symbol index (keyed by name) holds
+        /// both, whereas `symbols` is the document-outline subset (own decls
+        /// only), so completion draws from the index to offer header-provided
+        /// structs, resources, and helpers too.
         auto analysisIt = analyses_.find(uri);
         if (analysisIt != analyses_.end()) {
-            for (const auto & sym : analysisIt->second.symbols) {
+            for (const auto & entry : analysisIt->second.index) {
+                const Symbol & sym = entry.second;
                 int kind = kCompletionVariable;
                 switch (sym.kind) {
                     case SymbolKind::Struct:   kind = kCompletionStruct; break;

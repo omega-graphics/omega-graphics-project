@@ -57,6 +57,14 @@ namespace OmegaGTETests {
                          const GTETestWindowDescriptor &desc,
                          const GTETestWindowDelegate &delegate);
 
+    /// Ends the run loop and has RunGTETestWindow return `exitCode`, as if the
+    /// user had closed the window — onClose still fires first. For tests that
+    /// render (or compute) once, decide pass/fail, and exit without waiting on
+    /// user interaction (e.g. GPUTessTest / CPUTessTest), call this at the end
+    /// of onReady. Must be called on the GUI thread, after RunGTETestWindow has
+    /// been entered (i.e. from onReady or onFrame, not before).
+    void RequestGTETestWindowClose(int exitCode);
+
 } // namespace OmegaGTETests
 
 #endif // OMEGAGTE_TESTS_GTETESTWINDOW_H
