@@ -73,6 +73,15 @@ struct AQRigidBody::Impl {
     // integrator parity oracle and `AQStepBody` remain unaffected.
     FVec<3> pseudoLinear  = AQvec3(0.f, 0.f, 0.f);
     FVec<3> pseudoAngular = AQvec3(0.f, 0.f, 0.f);
+    // Angular pseudo-velocity for the JOINT split-impulse pass (Phase 4.x §13),
+    // kept SEPARATE from the contact `pseudoAngular` above. Contacts have always
+    // dropped their angular pseudo-velocity (position corrected by translation
+    // only — see the pose-apply site), and reintroducing it destabilised the
+    // settling stack. Joints, whose anchors are off-COM, must rotate to correct
+    // position, so their angular correction accumulates here and IS applied to
+    // orientation. A joint-less body leaves this 0, so contact scenes are
+    // byte-identical to the pre-§13 behaviour.
+    FVec<3> pseudoAngularJoint = AQvec3(0.f, 0.f, 0.f);
 
     // --- Phase 4 per-body state ---
     AQCCDMode ccdMode   = AQCCDMode::Off;  ///< opt-in continuous collision
@@ -693,9 +702,20 @@ void AQSpace::stepInternal(float dt) {
         auto &s = body->impl->s;
         AQStepBodyPosition(s, dt);
         // Split-impulse positional correction (Phase-3 brief §6.E). Applied
-        // after the velocity-driven position advance so the corrective shift
-        // is layered on top of the integrator's symplectic update.
+        // after the velocity-driven position advance so the corrective shift is
+        // layered on top of the integrator's symplectic update. Contacts correct
+        // by translation only (their angular pseudo-velocity stays dropped, as
+        // before). Joints additionally rotate — their off-COM anchors can't be
+        // fixed by translation alone — via the separate `pseudoAngularJoint`
+        // accumulator (Phase 4.x §13). It is world-frame (built from world-
+        // inverse-inertia); rotate it into the body frame for the exponential-map
+        // update, matching the velocity-driven orientation step.
         s.position += body->impl->pseudoLinear * dt;
+        const FVec<3> pseudoOmegaW = body->impl->pseudoAngularJoint;
+        if (OmegaGTE::dot(pseudoOmegaW, pseudoOmegaW) > 0.f) {
+            const FVec<3> pseudoOmegaBody = AQrotate(s.orientation.conjugate(), pseudoOmegaW);
+            s.orientation = AQintegrate(s.orientation, pseudoOmegaBody, dt);
+        }
 
         // Debug emission reflects the post-step state. Phase 2 anchors at the
         // world COM (position + R·comOffset); zero offset = pose origin.
@@ -1020,9 +1040,11 @@ void AQSpace::buildJointRows(float dt) {
         A.com = sa.position + AQrotate(sa.orientation, sa.comOffset);
         A.q = sa.orientation; A.invMass = sa.invMass;
         A.invI = AQworldInvInertia(sa.orientation, sa.invInertiaBody);
+        A.vel = sa.velocity; A.omega = AQrotate(sa.orientation, sa.angularVelBody);
         B.com = sb.position + AQrotate(sb.orientation, sb.comOffset);
         B.q = sb.orientation; B.invMass = sb.invMass;
         B.invI = AQworldInvInertia(sb.orientation, sb.invInertiaBody);
+        B.vel = sb.velocity; B.omega = AQrotate(sb.orientation, sb.angularVelBody);
 
         AQJointDesc desc;
         desc.type = J.type; desc.bodyA = aIdx; desc.bodyB = bIdx;
@@ -1555,8 +1577,9 @@ void AQSpace::runNarrowphaseAndSolve(float dt) {
     // position-correction pass and are applied to `s.position` in
     // `stepInternal` after the position half-step.
     for (auto &body : impl->bodies) {
-        body->impl->pseudoLinear  = AQvec3(0.f, 0.f, 0.f);
-        body->impl->pseudoAngular = AQvec3(0.f, 0.f, 0.f);
+        body->impl->pseudoLinear       = AQvec3(0.f, 0.f, 0.f);
+        body->impl->pseudoAngular      = AQvec3(0.f, 0.f, 0.f);
+        body->impl->pseudoAngularJoint = AQvec3(0.f, 0.f, 0.f);
     }
 
     // NOTE: no early-out on an empty pair list — joints may still contribute
@@ -1870,6 +1893,66 @@ void AQSpace::runNarrowphaseAndSolve(float dt) {
                     biB.pseudoAngular += invIB * OmegaGTE::cross(rB, P);
                     biA.pseudoLinear  -= P * bA.invMass;
                     biA.pseudoAngular -= invIA * OmegaGTE::cross(rA, P);
+                }
+            }
+
+            // Joint split-impulse (Phase 4.x §13): bilateral JointAxis rows
+            // correct their position error `C` as a pseudo-velocity here, exactly
+            // as contacts do above — so the velocity solve (whose `bias` is now 0
+            // for these rows) never injects the Baumgarte energy that inflated the
+            // reported joint impulse. Motors (a velocity goal), limits (one-sided,
+            // kept on Baumgarte — see AQJoint.cpp), and soft rows (spring ERP) are
+            // skipped. Angular correction accumulates into `pseudoAngularJoint`,
+            // separate from the contact pass so contact scenes stay byte-identical.
+            for (const auto &span : impl->jointRowSpans) {
+                for (std::uint32_t ri = 0; ri < span.count; ++ri) {
+                    const AQConstraintRow &row = impl->rows[span.firstRow + ri];
+                    if (row.kind != AQConstraintKind::JointAxis) continue;  // motors/limits keep Baumgarte
+                    if (row.compliance != 0.f) continue;                    // soft joint: spring handles position
+                    if (!movable(row.bodyA) && !movable(row.bodyB)) continue;
+
+                    // Bilateral: drive C → 0 → target relative velocity = −ERP·C/dt.
+                    float target = -kPositionERP * row.positionError / dt;
+                    if (target >  kMaxPosCorrectionVel) target =  kMaxPosCorrectionVel;
+                    if (target < -kMaxPosCorrectionVel) target = -kMaxPosCorrectionVel;
+
+                    AQRigidBody::Impl &biA = *impl->bodies[row.bodyA]->impl;
+                    AQRigidBody::Impl &biB = *impl->bodies[row.bodyB]->impl;
+                    const auto &bA = biA.s;
+                    const auto &bB = biB.s;
+                    const FMatrix<3,3> &invIA = invIWorld[row.bodyA];
+                    const FMatrix<3,3> &invIB = invIWorld[row.bodyB];
+
+                    if (row.isAngular) {
+                        const float relPV = OmegaGTE::dot(biB.pseudoAngularJoint - biA.pseudoAngularJoint, row.direction);
+                        const float k = OmegaGTE::dot(row.direction, invIA * row.direction)
+                                      + OmegaGTE::dot(row.direction, invIB * row.direction);
+                        if (k < 1e-12f) continue;
+                        const float lambda = (target - relPV) / k;
+                        const FVec<3> P = row.direction * lambda;
+                        biB.pseudoAngularJoint += invIB * P;
+                        biA.pseudoAngularJoint -= invIA * P;
+                    } else {
+                        const FVec<3> rA = row.rA;
+                        const FVec<3> rB = row.rB;
+                        const FVec<3> pVelA = biA.pseudoLinear + OmegaGTE::cross(biA.pseudoAngularJoint, rA);
+                        const FVec<3> pVelB = biB.pseudoLinear + OmegaGTE::cross(biB.pseudoAngularJoint, rB);
+                        const float relPV = OmegaGTE::dot(pVelB - pVelA, row.direction);
+                        const FVec<3> rAxN  = OmegaGTE::cross(rA, row.direction);
+                        const FVec<3> rBxN  = OmegaGTE::cross(rB, row.direction);
+                        const FVec<3> IArAN = invIA * rAxN;
+                        const FVec<3> IBrBN = invIB * rBxN;
+                        const float k = bA.invMass + bB.invMass
+                                      + OmegaGTE::dot(rAxN, IArAN)
+                                      + OmegaGTE::dot(rBxN, IBrBN);
+                        if (k < 1e-12f) continue;
+                        const float lambda = (target - relPV) / k;
+                        const FVec<3> P = row.direction * lambda;
+                        biB.pseudoLinear       += P * bB.invMass;
+                        biB.pseudoAngularJoint += invIB * OmegaGTE::cross(rB, P);
+                        biA.pseudoLinear       -= P * bA.invMass;
+                        biA.pseudoAngularJoint -= invIA * OmegaGTE::cross(rA, P);
+                    }
                 }
             }
         }

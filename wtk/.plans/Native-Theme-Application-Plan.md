@@ -1,8 +1,9 @@
 # Native Theme Application Plan
 
-**Status:** Tier 1 implemented (2026-06-30). Tier 2 implemented (2026-07-01,
-macOS built/verified; Windows chrome + Vulkan/D3D12 clear write-only,
-pending platform builds). Tiers 3–4 remain proposal.
+**Status:** Tier 1 implemented (2026-06-30). Tier 2 implemented + verified
+on macOS/Windows/Linux (2026-07-01). Tier 3 implemented (2026-07-01, macOS
+built; awaiting visual verification via the BasicAppTest "Theme" menu).
+Tier 4 remains proposal.
 **Scope:** Close the cross-platform asymmetry where a `UIView` with no
 explicit background color sometimes inherits the underlying OS window's
 themed surface color and sometimes renders pitch black. Define the
@@ -605,6 +606,46 @@ machinery already proposed by the Style plan.
 **Files touched:** `wtk/include/omegaWTK/UI/Application.h`,
 `wtk/src/UI/Application.cpp`, `wtk/include/omegaWTK/UI/Theme.h` (new),
 `wtk/src/UI/StyleResolver.cpp` (the cascade source for `surface`).
+
+#### What actually shipped (2026-07-01, deltas from the proposal above)
+
+- **`Theme` is header-only** (`wtk/include/omegaWTK/UI/Theme.h`) — no
+  `.cpp`, no CMake change. Open-Q2 resolved as the "variant-selector"
+  shape: a `Theme` owns two `ThemeVariant`s (`{Composition::Color
+  surface; SharedHandle<ThemeVars> vars;}`) + a name, and `variant(app)`
+  picks by appearance. `AppInst::setTheme/theme` (not a separate
+  `Application` class — same `AppInst`-is-`Application` mapping as Tiers
+  1–2).
+- **No `StyleResolver.cpp` change needed.** The plan expected the cascade
+  source for `surface` to live there, but the resolver already reads
+  `AppInst::themeVars()` for `Var{}` substitution. Tier 3 makes
+  `themeVars()` return the *active variant's* `vars` when a theme is
+  installed, so `Var{name}` resolution picks up the custom theme with
+  zero resolver edits. Surface (row 2) is handled in
+  `resolveWindowSurfaceColor` (App.cpp), consumed by the Tier 2
+  FrameBuilder hook → compositor clear.
+- **`setForcedAppearance` / `forcedAppearance` / `activeAppearance`** on
+  `AppInst`. `activeAppearance() = forcedAppearance().value_or(
+  nativeTheme().appearance)` drives both the variant pick and the row-4
+  fallback. All three theme setters (`setThemeVars`, `setTheme`,
+  `setForcedAppearance`) fan out through one private `dirtyThemeCascade()`
+  (root `applyCascadeChange`), so a swap re-resolves the cascade and
+  re-derives the surface on the next frame — the Tier 1 root-dirty path,
+  no new mechanism.
+- **Verification harness:** BasicAppTest gained a **"Theme" menu**
+  (`Toggle Custom Theme` / `Force Light` / `Force Dark` / `Follow OS`)
+  installing a demo theme with a lavender (Light) / indigo (Dark)
+  surface — unmistakably non-OS so row 2 + forcing are visible.
+- **Known limitation (Tier 4 territory).** `Label::followThemeForeground`
+  reads `nativeTheme().foreground` directly, NOT `activeAppearance()`, so
+  forcing Dark while the OS is Light does not flip label text color —
+  only the surface + custom-theme variant follow the forced bit. Binding
+  widget text/control colors to the active appearance is the UA
+  stylesheet's job (Tier 4 / Style plan Tier 3).
+
+**Verification:** macOS builds/links/signs clean. Live behavior (surface
+flips to lavender/indigo on toggle; Force Dark/Light overrides the OS)
+awaits a screenshot pass via the "Theme" menu.
 
 ### Tier 4 — UA stylesheet uses `NativeTheme` defaults
 

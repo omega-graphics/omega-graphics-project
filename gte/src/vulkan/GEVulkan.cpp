@@ -839,6 +839,14 @@ _NAMESPACE_BEGIN_
             // overwrite its contents in place — no Unmap, no re-Map.
             currentOffset = 0;
         }
+        ~GEVulkanBufferWriter() override {
+            // RAII safety net: a writer destroyed without an explicit
+            // flush() (or clearOutputBuffer()) must still release its VMA
+            // mapping, or the buffer's allocation asserts on destruction
+            // (`m_MapCount == 0`). Idempotent — clearOutputBuffer() guards
+            // on `_buffer == nullptr`, so this is a no-op when flush() ran.
+            clearOutputBuffer();
+        }
     };
 
     SharedHandle<GEBufferWriter> GEBufferWriter::Create() {
@@ -1056,6 +1064,14 @@ _NAMESPACE_BEGIN_
             _buffer = nullptr;
             mem_map = nullptr;
             currentOffset = 0;
+        }
+        ~GEVulkanBufferReader() override {
+            // RAII safety net: a reader destroyed without an explicit
+            // reset() (or clearInputBuffer()) must still release its VMA
+            // mapping, or the buffer's allocation asserts on destruction
+            // (`m_MapCount == 0`). Idempotent — clearInputBuffer() guards
+            // on `_buffer == nullptr`, so this is a no-op when reset() ran.
+            clearInputBuffer();
         }
     };
 
@@ -3598,8 +3614,17 @@ _NAMESPACE_BEGIN_
         pipeline_desc.layout = pipeline_layout;
          
 
-         VkPipeline pipeline;
+         VkPipeline pipeline = VK_NULL_HANDLE;
 
+         auto result = vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&pipeline_desc,nullptr,&pipeline);
+         if(!VK_RESULT_SUCCEEDED(result)){
+            exit(1);
+        };
+
+        // Name the pipeline only AFTER it exists. Naming an uninitialized
+        // VkPipeline handle hands garbage to the driver's
+        // vkSetDebugUtilsObjectNameEXT, which segfaults inside the NVIDIA
+        // driver when the debug layer is enabled.
         if(desc.name.size() > 0){
             VkDebugUtilsObjectNameInfoEXT nameInfoExt {VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
             nameInfoExt.pNext = nullptr;
@@ -3608,10 +3633,6 @@ _NAMESPACE_BEGIN_
             nameInfoExt.pObjectName = desc.name.data();
             vkSetDebugUtilsObjectNameEXT(device,&nameInfoExt);
         }
-         auto result = vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&pipeline_desc,nullptr,&pipeline);
-         if(!VK_RESULT_SUCCEEDED(result)){
-            exit(1);
-        };
 
         VkDescriptorSet descSet = descs.empty() ? VK_NULL_HANDLE : descs.front();
         auto tracked = std::shared_ptr<GEVulkanComputePipelineState>(new GEVulkanComputePipelineState(desc.computeFunc,

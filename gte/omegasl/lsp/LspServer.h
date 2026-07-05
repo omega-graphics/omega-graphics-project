@@ -15,8 +15,6 @@ namespace OmegaCommon { class JSON; }
 namespace omegasl {
 namespace lsp {
 
-    class Json;
-
     class LspServer {
     public:
         LspServer(std::istream & in, std::ostream & out, Analyzer & analyzer);
@@ -42,21 +40,21 @@ namespace lsp {
         /// Read one framed message body. Returns false at EOF / stream error.
         bool readMessage(std::string & body);
         /// Frame and write one JSON value to the client.
-        void writeMessage(const Json & message);
+        void writeMessage(OmegaCommon::JSON & message);
 
         /// Route a parsed message; returns true when it was `exit`.
         bool dispatch(OmegaCommon::JSON & message);
 
-        void sendResult(const Json & id, Json result);
-        void sendError(const Json & id, int code, const std::string & message);
+        void sendResult(const OmegaCommon::JSON & id, OmegaCommon::JSON result);
+        void sendError(const OmegaCommon::JSON & id, int code, const std::string & message);
 
-        void handleInitialize(const Json & id, OmegaCommon::JSON & params);
+        void handleInitialize(const OmegaCommon::JSON & id, OmegaCommon::JSON & params);
         void handleDidOpen(OmegaCommon::JSON & params);
         void handleDidChange(OmegaCommon::JSON & params);
         void handleDidClose(OmegaCommon::JSON & params);
-        void handleDocumentSymbol(const Json & id, OmegaCommon::JSON & params);
-        void handleHover(const Json & id, OmegaCommon::JSON & params);
-        void handleCompletion(const Json & id, OmegaCommon::JSON & params);
+        void handleDocumentSymbol(const OmegaCommon::JSON & id, OmegaCommon::JSON & params);
+        void handleHover(const OmegaCommon::JSON & id, OmegaCommon::JSON & params);
+        void handleCompletion(const OmegaCommon::JSON & id, OmegaCommon::JSON & params);
 
         /// Re-analyze `uri` from the document store and publish diagnostics.
         void analyzeAndPublish(const std::string & uri);

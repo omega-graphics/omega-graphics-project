@@ -6,6 +6,7 @@
 #include "../Composition/Compositor.h"
 #include "omegaWTK/UI/AppWindow.h"
 #include "omegaWTK/UI/ThemeVars.h"
+#include "omegaWTK/UI/Theme.h"
 
 #include "omega-common/assets.h"
 #include "omega-common/unicode.h"
@@ -185,10 +186,17 @@ Composition::Color AppInst::resolveWindowSurfaceColor(const AppWindow & win) con
     //   Row 3 (default): the cached OS theme's surface color.
     //   Row 4 (fallback): a hardcoded appearance-appropriate color,
     //     reached only if the theme is somehow unset.
-    // `win` is unused for now (rows 3/4 are app-scoped); it is on the
+    // `win` is unused for now (rows 2/3/4 are app-scoped); it is on the
     // signature for the per-window appearance override (Open Q1) and the
-    // row-1/row-2 refinements that read window-local state.
+    // row-1 refinement that reads window-local state.
     (void)win;
+
+    // Row 2: an installed custom Theme overrides the OS surface. The
+    // active variant is picked by the resolved appearance (forced, else
+    // OS), so a custom theme still tracks OS dark mode.
+    if(theme_ != nullptr){
+        return theme_->variant(activeAppearance()).surface;
+    }
 
     // nativeTheme_ always holds a valid ThemeDesc — a real OS query, or
     // the in-class defaults when headless — so row 3 is the effective
@@ -249,22 +257,60 @@ const OmegaCommon::AssetBundle & AppInst::getAssetBundle() const{
 // ---------------------------------------------------------------
 
 SharedHandle<ThemeVars> AppInst::themeVars() const {
+    // Tier 3: a custom Theme's active variant vars take precedence over
+    // the standalone setThemeVars(...) map, so widget StyleSheets resolve
+    // Var{name} against the installed theme. Null variant vars fall
+    // through to themeVars_ (then to "unbound" if that is null too).
+    if(theme_ != nullptr){
+        const auto & variantVars = theme_->variant(activeAppearance()).vars;
+        if(variantVars != nullptr){
+            return variantVars;
+        }
+    }
     return themeVars_;
 }
 
-void AppInst::setThemeVars(SharedHandle<ThemeVars> theme){
-    themeVars_ = std::move(theme);
-    // Multi-window note: `AppWindowManager` currently only tracks
-    // `rootWindow` — the `windows` vector / `addWindow` plumbing is
-    // declared but not populated. When that ships, this is the call
-    // site that needs to fan out across every tracked window. For
-    // now, dirtying the root window is the complete coverage.
+// Tier 3: shared "a theme input changed, re-resolve everything" fan-out.
+// Multi-window note: `AppWindowManager` currently only tracks
+// `rootWindow` — the `windows` vector / `addWindow` plumbing is declared
+// but not populated. When that ships, this is the single call site that
+// needs to fan out across every tracked window. Dirtying the root window
+// is the complete coverage today.
+void AppInst::dirtyThemeCascade(){
     if(windowManager == nullptr){
         return;
     }
     if(auto rootHandle = windowManager->getRootWindow(); rootHandle != nullptr){
         rootHandle->applyCascadeChange();
     }
+}
+
+void AppInst::setThemeVars(SharedHandle<ThemeVars> theme){
+    themeVars_ = std::move(theme);
+    dirtyThemeCascade();
+}
+
+void AppInst::setTheme(SharedHandle<Theme> theme){
+    theme_ = std::move(theme);
+    dirtyThemeCascade();
+}
+
+SharedHandle<Theme> AppInst::theme() const {
+    return theme_;
+}
+
+void AppInst::setForcedAppearance(Core::Optional<Native::ThemeAppearance> appearance){
+    forcedAppearance_ = appearance;
+    dirtyThemeCascade();
+}
+
+Core::Optional<Native::ThemeAppearance> AppInst::forcedAppearance() const {
+    return forcedAppearance_;
+}
+
+Native::ThemeAppearance AppInst::activeAppearance() const {
+    return forcedAppearance_.has_value() ? *forcedAppearance_
+                                         : nativeTheme_.appearance;
 }
 
 };

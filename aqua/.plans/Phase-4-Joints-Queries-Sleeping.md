@@ -493,6 +493,10 @@ the only per-row change vs. Phase 3 is the `effectiveMass` formula picking up
 participate; joint rows skip (position correction for bilateral joints is
 already handled by the velocity solve plus the `bias = β·error/dt` term — the
 Catto 2009 split-impulse argument is specific to one-sided contact rows).
+**[SUPERSEDED by §13, 2026-07-02:** hard bilateral `JointAxis` rows now DO enter
+the split-impulse pass; their Baumgarte `bias` was inflating the reported joint
+impulse ~15%. Limits moved to a speculative velocity constraint; motors and soft
+joints are unchanged. See §13 for the full rationale and as-shipped notes.**]**
 
 **J. Integrate.** Sleeping bodies skip cleanly (existing static-body fast path
 in `AQStepBodyVelocity`/`AQStepBodyPosition` extends one more case). Active
@@ -1432,34 +1436,60 @@ preserved and re-checked by the determinism test.
 |-------------|------------------------------|------------------------|-------|
 | `JointAxis` (hard)  | 0                    | yes, bilateral         | the core fix — the bridge's ball-socket rows |
 | `JointAxis` (soft)  | ERP bias (unchanged) | no                     | user spring; position handled by the spring |
-| `JointLimit`        | 0 (Phase 4x.3)       | yes, one-sided         | like a contact; retires limit-bounce energy |
+| `JointLimit`        | speculative gap/dt (see 13.5) | no            | **not** split-impulse — a predictive velocity limit (retires Baumgarte, prevents overshoot) |
 | `JointMotor`        | target speed (unchanged) | no                 | velocity goal, not a position error |
 
-### 13.5 Implementation phasing
+### 13.5 Implementation phasing — as shipped (2026-07-02)
 
-Small-to-moderate; each phase is independently verifiable and reversible.
+Small-to-moderate; each phase independently verifiable. Status and the two
+deviations from the original design are recorded inline.
 
-- **4x.1 — Schema plumbing (no behaviour change).** Add `positionError` to
-  `AQConstraintRow` and its GPU mirror struct; populate it in `AQbuildJointRows`
-  alongside the existing `bias`. Leave Baumgarte on. The whole suite must be
-  **bit-identical** to before (positionError is written but unread). Gate.
-- **4x.2 — CPU bilateral `JointAxis` split-impulse (the core fix).** Flip hard
-  `JointAxis` rows to `bias = 0`; add the joint loop to §F for bilateral rows.
-  Verify: bridge oracle → ≈ analytic weight on macOS/Linux **and** the joint-
-  error < 1 mm / symmetry / ends-pinned invariants still hold; `aqua_phase4_test`
-  green; `aqua_contact_test` unchanged (contacts untouched).
-- **4x.3 — CPU one-sided `JointLimit` split-impulse.** Move limit rows too, for
-  consistency and to kill limit-bounce energy. Verify the hinge-door limit case
-  in `aqua_phase4_test` (settles at the limit without overshoot/bounce).
-- **4x.4 — GPU mirror.** Port to the compute path so CPU and GPU stay
-  bit-parity: `AQComputeBackend.h/.cpp` constraint-row struct gains
-  `positionError`; `src/kernels/AQSolver.omegasl` gains the joint split-impulse
-  in its position pass with the same order and math. Verify `aqua_gpu_solver_test`
-  and the CPU/GPU cross-path determinism check. (Ties to §7.3 SoA layout;
-  `AQKernelsCommon.omegaslh` shared struct updated once.)
-- **4x.5 — Tighten oracles + doc.** Tighten the §9 bridge support-force oracle
-  (15% → ~5%), update the §6.I text and the `AQJoint.cpp` header comment, and
-  move this doc to `.plans/done/` only when 4x.1–4x.4 are all shipped.
+- **4x.1 — Schema plumbing. DONE.** Added `positionError` to `AQConstraintRow`;
+  `softParams` returns it and each `AQbuildJointRows` call site stores it.
+- **4x.2 — CPU bilateral `JointAxis` split-impulse (the core fix). DONE.** Hard
+  `JointAxis` rows now carry `bias = 0`; the §F pass grew a joint loop over
+  `jointRowSpans` (bilateral, `target = −ERP·C/dt`). Bridge oracle went from
+  ratio 1.19 → **0.996** (pure constraint force, no Baumgarte inflation); joint
+  error < 1 mm, symmetry, ends-pinned all still hold; `aqua_contact_test`
+  byte-identical.
+  - **Deviation A — angular pseudo-velocity needed a separate accumulator.** The
+    existing split-impulse pass applied only `pseudoLinear` to the pose;
+    `pseudoAngular` was computed by contacts but **dropped** (a linear-only
+    simplification). Joints correct position through off-COM anchors and MUST
+    rotate, so the pose-apply site now integrates an angular pseudo-velocity into
+    orientation. Applying the *contact* `pseudoAngular` there destabilised the
+    settling stack (peak ‖v‖ 0.0471 → 0.0503, over the 0.05 gate), so joint
+    angular correction accumulates in a **separate** `pseudoAngularJoint`
+    (per-body) that is 0 for joint-less bodies — keeping contact scenes
+    byte-identical while joints get full linear+angular correction.
+- **4x.3 — one-sided limits. DONE, but SPECULATIVE, not split-impulse.**
+  - **Deviation B.** Split-impulse limits (correcting position *after* the
+    sub-step) permitted a full sub-step of transient overshoot — the hinge-door
+    test's `overshoot < 0.01 rad` guard failed at 0.0126. Reverting limits to
+    Baumgarte still failed (0.0126): the bilateral split-impulse removed a little
+    of the Baumgarte velocity damping the point/perp rows used to supply, so the
+    door arrives at the stop marginally faster. The fix is a **speculative
+    limit**: predict the crossing from the approach velocity (new `vel`/`omega`
+    on `AQJointBodyKin`) and set the row's velocity bias to `gap/dt` so the
+    coordinate stops *exactly at* the limit — no overshoot, no Baumgarte energy.
+    Overshoot dropped to **0.00009 rad** (better than the pre-§13 baseline). This
+    is the correct physics of a hard stop and needs no position pass.
+- **4x.4 — GPU mirror. DEFERRED (not premature-ported).** The GPU path is
+  contact-only end-to-end: no kernel builds joint rows on-device, `AQSolver
+  .omegasl`'s position solve is explicitly contacts-only, and `aqua_gpu_solver
+  _test` exercises only a penetrating box. The GPU execution path is also not
+  yet wired as authoritative (Phase 5 §5g). Porting joint split-impulse into the
+  kernel now would be dead, unverifiable code. **When the GPU joint path is
+  built (5g+):** the on-device row needs `positionError`; the JointAxis velocity
+  bias must be 0; `AQSolvePositionColor` needs the bilateral joint loop with a
+  separate joint-angular accumulator; and limits need the speculative form — i.e.
+  build the GPU joint path split-impulse-native so it matches the CPU, rather
+  than porting Baumgarte first. Tracked here; cross-path determinism is not live
+  until then (CPU is authoritative).
+- **4x.5 — Tighten oracle + doc. DONE.** `aqua_phase4_test` bridge oracle
+  tightened 15% → **5%** (actual 0.4%). `AQJoint.cpp` header comment and §6.I
+  updated. This doc stays at top level (not `.plans/done/`) because 4x.4 remains
+  open as a GPU follow-up.
 
 ### 13.6 Context — the determinism build
 

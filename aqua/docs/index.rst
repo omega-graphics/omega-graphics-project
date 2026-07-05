@@ -13,3 +13,4 @@ by Omega kREATE.
   :maxdepth: 3
 
   About
+  API

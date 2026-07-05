@@ -19,22 +19,26 @@ OmegaGTE for rendering.
 Like OmegaGTE, AQUA keeps its backend hidden behind its public API. Callers
 work with ``AQSpace``, ``AQRigidBody``, and ``AQBodyDesc``; they never depend
 on how a step is actually computed. That boundary is what lets the execution
-strategy below evolve — from a CPU placeholder integrator today to GPU compute
-dispatch later — without any consumer of AQUA changing a line.
+strategy below vary — the same call runs on a GPU compute path or a CPU
+reference path depending on the device — without any consumer of AQUA changing
+a line.
 
 ----
 
 AQContext and the Command Queue
 -------------------------------
 
-``AQContext`` is the central class for every physics operation in AQUA. It is
-constructed from a single dependency — an OmegaGTE ``GECommandQueue`` — and that
-command queue is the channel through which all simulation work reaches the
-device:
+``AQContext`` is the central class for every physics operation in AQUA. The
+production factory takes an OmegaGTE graphics engine and one of its command
+queues; the command queue is the channel through which all simulation work
+reaches the device:
 
 .. code-block:: cpp
 
-   auto context = AQContext::Create(commandQueue);
+   auto context = AQContext::Create(engine, commandQueue);
+
+For tests and headless tools that have no device, ``AQContext::CreateCPUOnly()``
+builds a context that always runs the CPU reference path.
 
 Holding the command queue at the context level, rather than threading a device
 or queue through every call, means the simulation has one well-defined place to
@@ -84,12 +88,20 @@ whether the work ran on the GPU or on the CPU fallback.
 
 .. note::
 
-   **Status — early scaffold.** Today ``AQSpace`` advances bodies with a
-   placeholder semi-implicit Euler integrator on the CPU (gravity only, no
-   collision). The compute-kernel dispatch path and the production CPU solver
-   described above are the planned architecture, not the current state. See
-   ``kreate/docs/Engine-Roadmap.md`` (Phase 8) for how physics slots into the
-   engine and the build-vs-integrate decision that lives here.
+   **Status.** The architecture above is now the working engine, not a plan.
+   AQUA ships full rigid-body dynamics (linear + rotational, with an
+   implicit-gyroscopic integrator), collision shapes and a broadphase,
+   a sequential-impulse narrowphase contact solver, joints, gameplay queries
+   (raycast / shapecast / overlap), triggers, sleeping, and continuous
+   collision. Both execution substrates are real: the hot stages —
+   integration, broadphase, contact solve — run either on the GPU through
+   OmegaSL compute kernels dispatched on the ``AQContext`` command queue, or on
+   an equivalent CPU reference path, selected from device capability
+   (``AQExecPath::Auto``). The full public surface is documented in
+   :doc:`API`. What remains ahead are the non-rigid pillars — particles, cloth
+   and ropes, deformable solids, and fluids — tracked in AQUA's ``.plans/``
+   (Phases 6–10). See ``kreate/docs/Engine-Roadmap.md`` (Phase 8) for how
+   physics slots into the engine.
 
 ----
 

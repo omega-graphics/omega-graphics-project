@@ -27,6 +27,7 @@
 #include <aqua/AQBase.h>   // AQUA_NODISCARD
 #include <omega-common/utils.h>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>

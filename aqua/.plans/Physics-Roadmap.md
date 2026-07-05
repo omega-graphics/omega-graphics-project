@@ -4,8 +4,9 @@
 counterpart to **OmegaGTE** (graphics). It is consumed by **Omega kREATE** (the
 3D game engine) the same way kREATE consumes OmegaGTE for rendering.
 
-This document describes, end to end, what it will take to grow AQUA from today's
-scaffold into a complete simulator across three pillars:
+This document describes, end to end, what it takes to grow AQUA from the
+original scaffold into a complete simulator across three pillars — the Newtonian
+pillar is built (Phases 0–5); the particle and soft-body pillars are ahead:
 
 - **Newtonian physics** — rigid-body dynamics: forces, collision, constraints.
 - **Particle physics** — large populations of mass points under force fields.
@@ -36,25 +37,51 @@ Two guiding rules thread through everything below:
 
 ## 1. Where AQUA is today
 
-What exists and works:
+The entire **Newtonian pillar** is built. Phases 0–5 below have all landed —
+rigid-body dynamics, collision, the contact solver, joints/queries, and the
+compute execution substrate. What exists and works today:
 
-- **AQContext** — the central class. Holds the OmegaGTE `GECommandQueue` that all
-  physics work will be submitted through, creates and retains simulation spaces
-  (`createSpace`), and keeps simulation time with a **fixed-timestep
-  accumulator** (`advance(realDt)`), including a spiral-of-death clamp.
-- **AQSpace** — holds rigid bodies and is stepped by the context. Its integrator
-  is a **placeholder semi-implicit Euler under global gravity, with no
-  collision**. `stepInternal` is private and driven only by `AQContext`.
-- **AQRigidBody** — `position`, `velocity`, a `type` (Static / Dynamic), and an
-  inverse mass. Linear state only — no orientation, no angular velocity.
-- **Math** — `Vec3` only (add / subtract / scale). No quaternions, matrices,
-  inertia tensors, or bounding volumes yet.
-- **Execution** — **CPU only.** `src/kernels/` is an empty placeholder; compute
-  dispatch and the production CPU solver are planned, not yet built.
+- **AQContext** — the central class. Holds the OmegaGTE graphics engine +
+  `GECommandQueue` that GPU physics is dispatched through, creates and retains
+  simulation spaces (`createSpace`), and keeps simulation time with a
+  **fixed-timestep accumulator** (`advance(realDt)`), including a
+  spiral-of-death clamp. Selects the execution substrate as *data*
+  (`AQExecPath::Auto/CPU/GPU`), never a compile-time fork. An engine-less
+  `CreateCPUOnly` factory backs the pure-CPU tests and headless tools.
+- **AQSpace** — holds rigid bodies, shapes, joints, and the contact / query
+  machinery, and is stepped by the context. The integrator is the **Phase 1
+  body-frame symplectic-Lie + implicit-gyroscopic** step (no longer a
+  placeholder), followed by broadphase, narrowphase, and the constraint solve.
+  `stepInternal` is private and driven only by `AQContext`.
+- **AQRigidBody** — full linear **and** rotational state: position, orientation,
+  linear and (world-frame) angular velocity, mass + inertia (diagonal moments,
+  a full 3×3 tensor that `addBody` diagonalizes, or shape-derived), the
+  force/torque/impulse API, conserved-quantity accessors (L, E), damping,
+  gravity scale, material coefficients, activation/sleep, triggers, CCD, and
+  kinematic control. Static / Dynamic / Kinematic.
+- **Collision** — sphere / box / capsule / plane / convex-hull shapes owned and
+  instanced by the space, a fattened-AABB sort-based-grid broadphase with
+  layer/mask filtering, and a GJK/EPA + specialized-primitive narrowphase
+  producing 1–4-point manifolds.
+- **Solver** — a sequential-impulse (PGS) velocity sweep with Coulomb friction,
+  warm-started across frames, split-impulse position correction, soft
+  (Catto-compliant) constraint rows, and per-island sleeping. Five joint types
+  (distance, ball-socket, hinge, slider, fixed) with optional limits + motors.
+- **Queries** — raycast / shapecast / overlap and trigger Enter/Stay/Exit
+  events, walking the same per-step broadphase grid.
+- **Math** — AQUA-owned, `Ty`-generic (`float` production, `double` oracle):
+  quaternions, 3×3/3×1 matrices, exp/log maps, orientation integration, inertia
+  builders, transforms, and AABBs (`AQMath.h`).
+- **Execution** — **both substrates are live.** The hot stages (integration,
+  broadphase, contact solve) run on the GPU through OmegaSL compute kernels in
+  `src/kernels/` (integrate, broadphase, narrowphase, solver, probe) dispatched
+  on the `AQContext` command queue, or on the equivalent CPU reference path —
+  chosen from device capability. The D3D12 and Vulkan backends are both
+  bring-up-verified.
 
-In one sentence: **AQUA can make a handful of dynamic bodies fall under gravity
-on the CPU** — everything else (rotation, collision, constraints, particles,
-soft bodies, and GPU dispatch) is ahead of us.
+In one sentence: **AQUA is a complete rigid-body simulator on both CPU and
+GPU** — the non-rigid pillars (particles, cloth and ropes, deformable solids,
+fluids; Phases 6–10) are what remain ahead.
 
 ### What OmegaGTE already gives us to build on
 
@@ -70,36 +97,37 @@ APIs callable from AQUA's internals:
 - **`GTEDeviceFeatures`** — the capability set AQUA queries to choose the compute
   path vs. the CPU fallback.
 
-The roadmap below is mostly about **what AQUA must add on top**: the math,
-collision, solver, and constraint machinery that turn "move a point under
-gravity" into "simulate a world."
+The Newtonian phases below have already used that substrate to turn "move a
+point under gravity" into "simulate a rigid-body world." The remaining phases
+build on the same footing to add **the non-rigid pillars**: particle systems,
+Position-Based Dynamics, cloth / ropes / hair, deformable solids, and fluids.
 
 ---
 
 ## 2. What "complete" means — subsystem inventory
 
-A complete simulator is the union of these subsystems. AQUA has the first row
-partially and the rest not at all.
+A complete simulator is the union of these subsystems. Every Newtonian and
+shared row is now shipped (✓); the particle and soft-body rows are what remain.
 
 | Subsystem | Pillar | Today | Target |
 |---|---|---|---|
-| Integration & timestep | shared | Semi-implicit Euler, fixed step | Sub-stepping, warm-started, deterministic |
-| Math | shared | `Vec3` only | `Matrix` + `Quaternion` borrowed from GTE's `GTEMath.h`; AQUA-owned `Vec3`, inertia tensor, AABB, transforms |
-| Collision shapes | Newtonian | None | Sphere, box, capsule, plane, convex hull, heightfield, mesh |
-| Broadphase | shared | None | SAP / BVH / uniform grid (GPU-friendly) |
-| Narrowphase | Newtonian | None | GJK/EPA + SAT contact manifolds |
-| Contact solving | Newtonian | None | Sequential-impulse (PGS), friction, restitution, stacking |
-| Joints / constraints | Newtonian | None | Fixed, hinge, ball, slider, distance |
-| Queries | Newtonian | None | Raycast, shapecast, overlap, triggers |
-| Sleeping / islands | shared | None | Island grouping + sleep for idle bodies |
-| Continuous detection | Newtonian | None | CCD for fast/thin bodies |
+| Integration & timestep | shared | ✓ Implicit-gyroscopic body-frame step, fixed sub-stepping, warm-started, deterministic | Sub-stepping, warm-started, deterministic |
+| Math | shared | ✓ `Matrix` + `Quaternion` borrowed from GTE's `GTEMath.h`; AQUA-owned `Vec3`, inertia tensor, AABB, transforms | Same |
+| Collision shapes | Newtonian | ✓ Sphere, box, capsule, plane, convex hull | + heightfield, mesh (future) |
+| Broadphase | shared | ✓ Sort-based uniform grid (GPU-friendly) | SAP / BVH / uniform grid |
+| Narrowphase | Newtonian | ✓ GJK/EPA + specialized-primitive contact manifolds | GJK/EPA + SAT contact manifolds |
+| Contact solving | Newtonian | ✓ Sequential-impulse (PGS), friction, restitution, split-impulse, stacking | Same |
+| Joints / constraints | Newtonian | ✓ Distance, ball, hinge, slider, fixed (+ limits/motors, softness) | Fixed, hinge, ball, slider, distance |
+| Queries | Newtonian | ✓ Raycast, shapecast, overlap, triggers | Same |
+| Sleeping / islands | shared | ✓ Island grouping + per-island sleep | Same |
+| Continuous detection | Newtonian | ✓ Speculative + continuous CCD (opt-in per body) | CCD for fast/thin bodies |
 | Particle systems | Particle | None | Pools, emitters, force fields, particle↔collider collision |
 | PBD / XPBD core | shared | None | Constraint-projection solver with compliance |
 | Cloth, ropes & hair | Soft body | None | Distance + bending constraints, pinning, self-collision; strand hair (many inextensible strands, strand–strand friction) |
 | Deformable solids | Soft body | None | Volumetric soft bodies, two-way rigid coupling |
 | Fluids — liquids & gases *(optional)* | Particle | None | SPH / position-based fluids for liquids **and** compressible/smoke gas on the same particle substrate |
-| Compute execution | execution | CPU only, kernels empty | OmegaSL kernels for hot loops, CPU fallback at parity |
-| Debug & tooling | shared | None | Debug draw (contacts, AABBs, constraints), validation, loud failures |
+| Compute execution | execution | ✓ OmegaSL kernels for the hot loops (D3D12 + Vulkan verified), CPU fallback at parity | OmegaSL kernels for hot loops, CPU fallback at parity |
+| Debug & tooling | shared | ✓ Drainable debug-line stream (contacts, AABBs, joints, islands, …), NaN guards, loud failures | Debug draw, validation, loud failures |
 
 ---
 
@@ -228,11 +256,12 @@ pillar each phase serves is tagged in brackets.
 
 `AQContext` (command queue + space ownership + fixed-timestep accumulator) and
 `AQSpace` (rigid-body container + placeholder gravity integrator), with the
-backend hidden behind the public API. This is the current state.
+backend hidden behind the public API. This was the starting scaffold; Phases 1–5
+have since replaced the placeholder integrator with the full rigid-body engine.
 
 ---
 
-### Phase 1 — Dynamics & math core — [Newtonian]
+### Phase 1 — Dynamics & math core *(done)* — [Newtonian]
 
 **Goal:** Promote bodies from points to rigid bodies, and grow the math from
 "one `Vec3`" into what dynamics needs.
@@ -277,7 +306,7 @@ divergence at game-physics dt. Full detail:
 
 ---
 
-### Phase 2 — Collision shapes & broadphase — [shared]
+### Phase 2 — Collision shapes & broadphase *(done)* — [shared]
 
 **Goal:** Give bodies geometry and find the pairs that might touch.
 
@@ -317,7 +346,7 @@ Full detail: `aqua/.plans/Phase-2-Collision-Shapes-Broadphase.md` §12.
 
 ---
 
-### Phase 3 — Narrowphase & contact solving — [Newtonian]
+### Phase 3 — Narrowphase & contact solving *(done)* — [Newtonian]
 
 **Goal:** Bodies collide, respond, and come to rest.
 
@@ -416,7 +445,7 @@ where this note gets cross-referenced when the patch lands.
 
 ---
 
-### Phase 4 — Joints, queries & sleeping — [Newtonian → complete]
+### Phase 4 — Joints, queries & sleeping *(done)* — [Newtonian → complete]
 
 **Goal:** Finish the rigid-body feature set kREATE's Phase 8 needs.
 
@@ -500,7 +529,7 @@ consequences.
 
 ---
 
-### Phase 5 — Compute execution substrate — [execution]
+### Phase 5 — Compute execution substrate *(done)* — [execution]
 
 **Goal:** Make good on the compute-first promise: move the hot loops onto the
 GPU, with the CPU path retained at parity as the fallback.

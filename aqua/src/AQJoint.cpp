@@ -13,8 +13,12 @@
 //   * A LINEAR row constrains the relative velocity of the shared anchor point
 //     along `direction`; an ANGULAR row constrains the relative angular velocity
 //     along `direction` (a pure torque). The PGS sweep branches on row.isAngular.
-//   * Position error feeds a Catto/Baumgarte velocity bias (β·C/dt) rather than a
-//     split-impulse pass — joints skip split-impulse (Phase-4 brief §6.I).
+//   * Hard-constraint position error goes to the split-impulse pass, not a
+//     Baumgarte velocity bias: `softParams` returns `bias = 0` and hands `C`
+//     back in `positionError`, which `AQSpace.cpp`'s §F pseudo-velocity pass
+//     corrects (Phase 4.x §13, superseding the §6.I "joints skip split-impulse"
+//     lean — Baumgarte inflated the reported joint impulse). Soft joints keep
+//     their spring ERP bias; motors keep their target-velocity bias.
 //   * Soft constraints (Catto 2011): a non-zero AQJointSoftness translates to a
 //     CFM compliance + an ERP bias; the default (0,0) is a hard constraint whose
 //     row reduces to the Phase 3 effective-mass formula.
@@ -45,13 +49,17 @@ float kAngular(const AQJointBodyKin &A, const AQJointBodyKin &B, const FVec<3> &
     return OmegaGTE::dot(d, A.invI * d) + OmegaGTE::dot(d, B.invI * d);
 }
 
-// Hard/soft translation. For a HARD constraint (frequency 0) the effective mass
-// is 1/kRaw and the bias is the Baumgarte term βC/dt (β = 0.2, the conservative
-// Catto value). For a SOFT constraint (Catto 2011) a spring (ω_n) + damper (ζ)
-// give a CFM γ and an ERP β; the row stores the compliance (γ·dt²) so the PGS
-// CFM term recovers γ, and the effective mass folds γ in.
+// Hard/soft translation (Phase 4.x §13). For a HARD constraint (frequency 0)
+// the effective mass is 1/kRaw, the velocity `bias` is ZERO, and the position
+// error `C` is handed back to the caller in `positionError` so the split-impulse
+// pass corrects it as a pseudo-velocity — no Baumgarte velocity bias (which
+// injects energy and inflates the reported joint impulse). For a SOFT constraint
+// (Catto 2011) a spring (ω_n) + damper (ζ) give a CFM γ and an ERP β; the row
+// stores the compliance (γ·dt²) so the PGS CFM term recovers γ, and the position
+// error stays modelled by the spring's ERP `bias` (soft rows do NOT enter the
+// split-impulse pass — `positionError` is left 0 for them).
 void softParams(float kRaw, float C, float dt, const AQJointSoftness &s,
-                float &effMass, float &bias, float &compliance) {
+                float &effMass, float &bias, float &compliance, float &positionError) {
     if (s.frequency > 0.f && kRaw > 1e-12f && dt > 0.f) {
         const float m     = 1.f / kRaw;                  // effective mass
         const float k     = m * s.frequency * s.frequency;  // spring
@@ -59,14 +67,15 @@ void softParams(float kRaw, float C, float dt, const AQJointSoftness &s,
         const float denom = c + dt * k;
         const float gamma = (denom > 1e-12f) ? (1.f / (dt * denom)) : 0.f;
         const float beta  = (denom > 1e-12f) ? (dt * k / denom)     : 0.f;
-        effMass    = 1.f / (kRaw + gamma);
-        bias       = (beta / dt) * C;
-        compliance = gamma * dt * dt;
+        effMass       = 1.f / (kRaw + gamma);
+        bias          = (beta / dt) * C;
+        compliance    = gamma * dt * dt;
+        positionError = 0.f;
     } else {
-        constexpr float betaHard = 0.2f;
-        effMass    = (kRaw > 1e-12f) ? (1.f / kRaw) : 0.f;
-        bias       = (dt > 0.f) ? (betaHard / dt) * C : 0.f;
-        compliance = 0.f;
+        effMass       = (kRaw > 1e-12f) ? (1.f / kRaw) : 0.f;
+        bias          = 0.f;   // was (β/dt)·C — retired for split-impulse (§13)
+        compliance    = 0.f;
+        positionError = C;
     }
 }
 
@@ -168,14 +177,33 @@ int emitAxisLimitMotor(AQConstraintRow *out, const AQJointDesc &d,
     // it pushes up (direction = +axis). Inside [min, max] no row is emitted —
     // the axis is free.
     if (lim.enabled && em > 0.f && dt > 0.f) {
-        constexpr float betaLim = 0.2f;
-        if (coord > lim.max) {
-            const float bias = -(betaLim * (coord - lim.max)) / dt;
+        // Speculative one-sided limit (Phase 4.x §13). Instead of the old
+        // Baumgarte bias (−β·overshoot/dt), which only pushes back AFTER the
+        // coordinate has crossed — permitting a sub-step of transient
+        // overshoot and injecting energy on the way out — we predict the
+        // crossing and arrest the approach velocity so the coordinate stops
+        // exactly AT the limit. The row's `bias = gap/dt` lets the coordinate
+        // close the remaining gap this sub-step and no further (`gap` = signed
+        // distance to the limit, ≥0 inside, <0 already past → the bias then
+        // demands a separating velocity, restoring position). This is the
+        // correct physics of a hard stop (a real limit does not let the joint
+        // pass) and needs no split-impulse position pass — the constraint is
+        // purely velocity-level.
+        //
+        // `coordVel` is d(coord)/dt: relative angular velocity about the axis
+        // for a hinge, or relative anchor velocity along the axis for a slider.
+        const FVec<3> relVel = linear
+            ? (B.vel + OmegaGTE::cross(B.omega, rB)) - (A.vel + OmegaGTE::cross(A.omega, rA))
+            : B.omega - A.omega;
+        const float coordVel  = OmegaGTE::dot(relVel, axisWorld);
+        const float predicted = coord + coordVel * dt;
+        if (coord > lim.max || predicted > lim.max) {
+            const float bias = (lim.max - coord) / dt;   // gap ≥0 inside, <0 past
             if (linear) emitLinear (out[n], AQConstraintKind::JointLimit, cp, rA, rB, axisWorld * -1.f, em, bias, 0.f);
             else        emitAngular(out[n], AQConstraintKind::JointLimit,             axisWorld * -1.f, em, bias, 0.f);
             ++n;
-        } else if (coord < lim.min) {
-            const float bias = -(betaLim * (lim.min - coord)) / dt;
+        } else if (coord < lim.min || predicted < lim.min) {
+            const float bias = (coord - lim.min) / dt;   // gap ≥0 inside, <0 past
             if (linear) emitLinear (out[n], AQConstraintKind::JointLimit, cp, rA, rB, axisWorld, em, bias, 0.f);
             else        emitAngular(out[n], AQConstraintKind::JointLimit,             axisWorld, em, bias, 0.f);
             ++n;
@@ -208,9 +236,10 @@ int AQbuildJointRows(const AQJointDesc &d, const AQJointRest &rest,
     auto emitPoint3 = [&]() {
         const FVec<3> axes[3] = {EX, EY, EZ};
         for (const FVec<3> &ax : axes) {
-            float em, bias, comp;
-            softParams(kLinear(A, B, rA, rB, ax), OmegaGTE::dot(Cvec, ax), dt, d.softness, em, bias, comp);
+            float em, bias, comp, pe;
+            softParams(kLinear(A, B, rA, rB, ax), OmegaGTE::dot(Cvec, ax), dt, d.softness, em, bias, comp, pe);
             emitLinear(out[n], AQConstraintKind::JointAxis, cp, rA, rB, ax, em, bias, comp);
+            out[n].positionError = pe;
             ++n;
         }
     };
@@ -220,9 +249,10 @@ int AQbuildJointRows(const AQJointDesc &d, const AQJointRest &rest,
         const FVec<3> theta = angularErrorVec(A, B, rest);
         const FVec<3> axes[3] = {EX, EY, EZ};
         for (const FVec<3> &ax : axes) {
-            float em, bias, comp;
-            softParams(kAngular(A, B, ax), OmegaGTE::dot(theta, ax), dt, d.softness, em, bias, comp);
+            float em, bias, comp, pe;
+            softParams(kAngular(A, B, ax), OmegaGTE::dot(theta, ax), dt, d.softness, em, bias, comp, pe);
             emitAngular(out[n], AQConstraintKind::JointAxis, ax, em, bias, comp);
+            out[n].positionError = pe;
             ++n;
         }
     };
@@ -231,9 +261,10 @@ int AQbuildJointRows(const AQJointDesc &d, const AQJointRest &rest,
     case AQJointType::Distance: {
         float len = std::sqrt(OmegaGTE::dot(Cvec, Cvec));
         FVec<3> dir = (len > 1e-9f) ? Cvec * (1.f / len) : EX;
-        float em, bias, comp;
-        softParams(kLinear(A, B, rA, rB, dir), len - d.distanceTarget, dt, d.softness, em, bias, comp);
+        float em, bias, comp, pe;
+        softParams(kLinear(A, B, rA, rB, dir), len - d.distanceTarget, dt, d.softness, em, bias, comp, pe);
         emitLinear(out[n], AQConstraintKind::JointAxis, cp, rA, rB, dir, em, bias, comp);
+        out[n].positionError = pe;
         ++n;
         break;
     }
@@ -250,9 +281,10 @@ int AQbuildJointRows(const AQJointDesc &d, const AQJointRest &rest,
         perpBasis(axisA, t1, t2);
         const FVec<3> ts[2] = {t1, t2};
         for (const FVec<3> &t : ts) {
-            float em, bias, comp;
-            softParams(kAngular(A, B, t), OmegaGTE::dot(mis, t), dt, d.softness, em, bias, comp);
+            float em, bias, comp, pe;
+            softParams(kAngular(A, B, t), OmegaGTE::dot(mis, t), dt, d.softness, em, bias, comp, pe);
             emitAngular(out[n], AQConstraintKind::JointAxis, t, em, bias, comp);
+            out[n].positionError = pe;
             ++n;
         }
         // Limit + motor about the hinge axis (angular).
@@ -272,9 +304,10 @@ int AQbuildJointRows(const AQJointDesc &d, const AQJointRest &rest,
         perpBasis(axisA, t1, t2);
         const FVec<3> ts[2] = {t1, t2};
         for (const FVec<3> &t : ts) {
-            float em, bias, comp;
-            softParams(kLinear(A, B, rA, rB, t), OmegaGTE::dot(Cvec, t), dt, d.softness, em, bias, comp);
+            float em, bias, comp, pe;
+            softParams(kLinear(A, B, rA, rB, t), OmegaGTE::dot(Cvec, t), dt, d.softness, em, bias, comp, pe);
             emitLinear(out[n], AQConstraintKind::JointAxis, cp, rA, rB, t, em, bias, comp);
+            out[n].positionError = pe;
             ++n;
         }
         emitAngular3();

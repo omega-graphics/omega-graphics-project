@@ -124,14 +124,15 @@ void testBridge() {
           "end boxes stay pinned at their anchors (bridge did not collapse)");
 
     // Support-force oracle: the two end anchors carry the whole chain weight.
-    // (Approximate — the joint solver's Baumgarte position-bias adds a little
-    // impulse beyond pure weight support, so the match is within ~15%, not exact.)
+    // With split-impulse joint position correction (Phase 4.x §13) the reported
+    // impulse is the pure constraint force — no Baumgarte position-bias term
+    // inflating it — so the match is tight (was ~15% under Baumgarte).
     const float dt = 1.f / 240.f;
     const float fy = (sp->jointImpulse(jL)[1][0] + sp->jointImpulse(jR)[1][0]) / dt;
     const float weight = static_cast<float>(N) * mass * 9.81f;
     std::printf("   anchor vertical force = %.2f N, chain weight = %.2f N (ratio %.3f)\n",
                 fy, weight, fy / weight);
-    check(std::abs(fy - weight) / weight < 0.15f, "end anchors support the chain weight within 15%");
+    check(std::abs(fy - weight) / weight < 0.05f, "end anchors support the chain weight within 5%");
 }
 
 // ---------------------------------------------------------------------------

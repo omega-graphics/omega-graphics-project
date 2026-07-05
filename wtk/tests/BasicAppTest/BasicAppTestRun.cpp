@@ -1,6 +1,7 @@
 #include <omegaWTK/UI/Widget.h>
 #include <omegaWTK/UI/AppWindow.h>
 #include <omegaWTK/UI/App.h>
+#include <omegaWTK/UI/Theme.h>
 #include <omegaWTK/UI/Menu.h>
 #include <omegaWTK/UI/Notification.h>
 #include <omegaWTK/Widgets/Primatives.h>
@@ -16,6 +17,12 @@ using namespace OmegaWTK;
 
 static AppWindow *g_mainWindow = nullptr;
 static SharedHandle<NotificationCenter> nc;
+
+// Native-Theme-Application-Plan Tier 3 demo: a custom Theme with an
+// obviously non-OS surface color per variant so the "Theme" menu below
+// makes row 2 (custom surface override) + appearance forcing visible.
+static SharedHandle<Theme> g_customTheme;
+static bool g_customThemeOn = false;
 
 class TestMenuDelegate final : public MenuDelegate {
 public:
@@ -54,6 +61,41 @@ public:
     }
 };
 
+// Native-Theme-Application-Plan Tier 3 exercise. Install/clear the custom
+// theme (row 2 surface override) and pin / release the appearance
+// (setForcedAppearance). setTheme/setForcedAppearance already dirty the
+// cascade + request a frame, so the window re-clears to the new surface.
+class ThemeMenuDelegate final : public MenuDelegate {
+public:
+    void onSelectItem(unsigned itemIndex) override {
+        auto *app = AppInst::inst();
+        if (app == nullptr) return;
+        switch (itemIndex) {
+        case 0: // Toggle Custom Theme
+            g_customThemeOn = !g_customThemeOn;
+            app->setTheme(g_customThemeOn ? g_customTheme : SharedHandle<Theme>{nullptr});
+            if (nc) nc->send({"Theme", g_customThemeOn
+                ? "Custom theme ON — lavender (Light) / indigo (Dark) surface"
+                : "Custom theme OFF — OS surface"});
+            break;
+        case 1: // Force Light
+            app->setForcedAppearance(Native::ThemeAppearance::Light);
+            if (nc) nc->send({"Theme", "Forced Light appearance"});
+            break;
+        case 2: // Force Dark
+            app->setForcedAppearance(Native::ThemeAppearance::Dark);
+            if (nc) nc->send({"Theme", "Forced Dark appearance"});
+            break;
+        case 3: // Follow OS
+            app->setForcedAppearance(Core::Optional<Native::ThemeAppearance>{});
+            if (nc) nc->send({"Theme", "Following OS appearance"});
+            break;
+        default:
+            break;
+        }
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Window delegate
 // ---------------------------------------------------------------------------
@@ -85,6 +127,17 @@ int RunBasicAppTest(AppInst *app) {
     static TestMenuDelegate fileDelegate;
     static EditMenuDelegate editDelegate;
     static HelpMenuDelegate helpDelegate;
+    static ThemeMenuDelegate themeDelegate;
+
+    // Tier 3 demo theme: surfaces chosen to be unmistakably NOT the OS
+    // default (white / dark-gray) so row 2 is obvious when toggled.
+    {
+        ThemeVariant lightVariant;
+        lightVariant.surface = Composition::Color::create8Bit(0xE8, 0xE0, 0xF5, 255); // lavender
+        ThemeVariant darkVariant;
+        darkVariant.surface = Composition::Color::create8Bit(0x1A, 0x10, 0x30, 255);  // deep indigo
+        g_customTheme = Theme::Create("DemoTheme", lightVariant, darkVariant);
+    }
 
     auto menu = make<Menu>("MainMenu", std::initializer_list<SharedHandle<MenuItem>>{
         CategoricalMenu("File", {
@@ -97,6 +150,12 @@ int RunBasicAppTest(AppInst *app) {
             ButtonMenuItem("Copy"),
             ButtonMenuItem("Paste")
         }, &editDelegate),
+        CategoricalMenu("Theme", {
+            ButtonMenuItem("Toggle Custom Theme"),
+            ButtonMenuItem("Force Light"),
+            ButtonMenuItem("Force Dark"),
+            ButtonMenuItem("Follow OS")
+        }, &themeDelegate),
         CategoricalMenu("Help", {
             ButtonMenuItem("About")
         }, &helpDelegate)
