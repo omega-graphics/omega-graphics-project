@@ -247,15 +247,25 @@ struct OMEGAGTE_EXPORT TETriangulationResult {
         /// @param positionEpsilon Position quantization grid size.
         void buildIndexed(float positionEpsilon = 1e-6f);
 
+        // These CPU transforms mutate already-NDC-baked vertices: translate only
+        // rescales its delta into NDC, and rotate spins vertices in NDC space, so
+        // a rotation distorts under a non-square viewport. Superseded by GESpace,
+        // which composes a per-object model->NDC matrix in true space units.
+        OMEGA_DEPRECATED("Place the mesh in a GESpace and use its matrix transforms; TEMesh CPU transforms bake into NDC and distort under non-square viewports.")
         void translate(float x,float y,float z,const GEViewport & viewport);
+        OMEGA_DEPRECATED("Place the mesh in a GESpace and use its matrix transforms; TEMesh::rotate spins NDC-space vertices and distorts under non-square viewports.")
         void rotate(float pitch,float yaw,float roll);
+        OMEGA_DEPRECATED("Place the mesh in a GESpace and use its matrix transforms; TEMesh CPU transforms bake into NDC.")
         void scale(float w,float h,float l);
         unsigned vertexCount();
     };
     TEMesh mesh;
     unsigned totalVertexCount();
+    OMEGA_DEPRECATED("Place the result's mesh in a GESpace and use its matrix transforms; these CPU transforms bake into NDC and distort under non-square viewports.")
     void translate(float x,float y,float z,const GEViewport & viewport);
+    OMEGA_DEPRECATED("Place the result's mesh in a GESpace and use its matrix transforms; rotate spins NDC-space vertices and distorts under non-square viewports.")
     void rotate(float pitch,float yaw,float roll);
+    OMEGA_DEPRECATED("Place the result's mesh in a GESpace and use its matrix transforms; these CPU transforms bake into NDC.")
     void scale(float w,float h,float l);
 };
 /**

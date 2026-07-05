@@ -54,6 +54,14 @@
 
 #define OMEGACOMMON_NODISCARD [[nodiscard]]
 
+// Portable deprecation marker for any Omega API (types, methods, functions).
+// Expands to the C++17 `[[deprecated]]` attribute, so `msg` is shown at every
+// use site. It surfaces as a baseline compiler warning and does NOT fail the
+// build unless -Werror is explicitly enabled (see the warning-flags policy).
+// Suppress an unavoidable internal reference to a deprecated symbol with a
+// localized `#pragma clang diagnostic ignored "-Wdeprecated-declarations"`.
+#define OMEGA_DEPRECATED(msg) [[deprecated(msg)]]
+
 
 namespace OmegaCommon {
 

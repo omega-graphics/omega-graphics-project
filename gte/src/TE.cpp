@@ -2028,6 +2028,13 @@ OmegaTriangulationEngineContext::~OmegaTriangulationEngineContext(){
     }
 };
 
+// The deprecated result-level wrappers forward to the deprecated TEMesh
+// transforms; suppress the self-referential deprecation warning here (the
+// attribute still fires at external call sites). Superseded by GESpace.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
 void TETriangulationResult::translate(float x,float y,float z,const GEViewport & viewport){
     mesh.translate(x,y,z,viewport);
 };
@@ -2039,6 +2046,9 @@ void TETriangulationResult::rotate(float pitch,float yaw,float roll){
 void TETriangulationResult::scale(float w,float h,float l){
     mesh.scale(w,h,l);
 };
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 void TETriangulationResult::TEMesh::translate(float x, float y, float z,const GEViewport & viewport) {
     auto m = translationMatrix(

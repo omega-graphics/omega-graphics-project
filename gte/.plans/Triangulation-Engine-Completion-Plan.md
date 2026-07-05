@@ -454,6 +454,180 @@ Torus, Sphere, Capsule: verify correct topology (no T-junctions, no degenerate t
 
 ---
 
+## Phase 9: Params-Level Custom Viewport (Coordinate Space)
+
+### Motivation
+
+Today the coordinate translation is anchored to the render target. When the caller
+passes no viewport, every `*TEContext` falls back to `getEffectiveViewport()`, which
+reports the render target's raw drawable pixels (`{0, 0, drawableW, drawableH, 0, 1}`
+— see `MetalNativeRenderTargetTEContext::getEffectiveViewport` at `MetalTEContext.mm:190`,
+`D3D12NativeRenderTargetTEContext::getEffectiveViewport` at `D3D12TEContext.cpp:320`,
+and the Vulkan equivalents). `translateCoordsDefaultImpl` (`TE.cpp:351`) then divides
+input coordinates by that width/height to reach NDC. In other words, input units are
+implicitly **render-target pixels**.
+
+That is correct for 2D UI drawing, but wrong for a render pass that renders a scene
+whose units are *not* the window's pixel dimensions — e.g. a 3D scene drawn into a
+sub-region of a larger target, or a scene authored in an arbitrary world/logical space.
+Such a pass configures its own GPU viewport transform (`setViewport` / `RSSetViewports` /
+`vkCmdSetViewport`), and the geometry fed into it must be triangulated against *that*
+viewport's coordinate space, not the target's full pixel extent.
+
+### What already exists (and what doesn't)
+
+A `GEViewport * viewport = nullptr` argument **already exists** on `triangulateSync`,
+`triangulateAsync`, and `triangulateOnGPU` (`TE.h:304`, `:314`, `:324`). Passing a
+non-null pointer already routes through `translateCoordsDefaultImpl` with that viewport
+instead of the effective one, and `triangulateOnGPU` already forwards the resolved
+viewport into the GPU dispatch (`d3d12GpuDispatch(ep, vp, ...)`, `gpuDispatch(ep, vp, ...)`).
+
+So the capability is *partially* present. Two concrete gaps remain, and this phase closes both:
+
+1. **The viewport lives at the call site, not on the geometry request.** The coordinate
+   space a set of geometry is authored in is a property of that geometry, not of the
+   call. Threading it as a loose argument makes it easy to forget (silently reverting
+   to render-target pixels) and impossible to carry alongside a stored/queued
+   `TETriangulationParams`. This phase adds the viewport to `TETriangulationParams`.
+
+2. **`translateCoordsDefaultImpl` ignores the viewport origin.** It reads only
+   `viewport->width`/`height` (and `nearDepth`/`farDepth` for Z):
+
+   ```cpp
+   *x_result = (2.f * x / viewport->width) - 1.f;   // TE.cpp:356 — no viewport->x term
+   *y_result = 1.f - (2.f * y / viewport->height);  // TE.cpp:357 — no viewport->y term
+   ```
+
+   `GEViewport::x`/`y` (`GE.h:178`) are never subtracted, so an **offset** viewport —
+   precisely what a render pass into a sub-rect configures — maps incorrectly. Any
+   viewport not anchored at `(0,0)` produces geometry shifted by the origin. This must
+   be fixed for the sub-region render-pass case to work at all.
+
+### 9.1 Add the viewport to `TETriangulationParams`
+
+```cpp
+struct TETriangulationParams {
+    // ... existing ...
+    /// Coordinate space the geometry is authored in. When set, triangulation
+    /// maps input coordinates into NDC relative to THIS viewport (origin +
+    /// extent + depth range) instead of the render target's effective viewport.
+    /// Use for render passes whose units are not the render target's pixels
+    /// (e.g. a 3D scene drawn into a sub-region or an arbitrary world space).
+    std::optional<GEViewport> viewport;
+};
+```
+
+Matches the ADT idiom already used in this struct (`std::optional<AttachmentData>` at
+`TE.h:227`, `std::optional<IndexedData>` at `:240`, and the `std::optional<...>` LOD
+knobs proposed in Phase 6).
+
+### 9.2 Resolution order
+
+`_triangulatePriv` (`TE.cpp:371`) currently resolves the viewport as
+`viewport ? *viewport : getEffectiveViewport()`. Extend it to a single, well-defined
+precedence so the params field is canonical while the existing call argument keeps
+working:
+
+```
+params.viewport (if set)  →  call-arg viewport (if non-null)  →  getEffectiveViewport()
+```
+
+Rationale: the params field declares the geometry's own coordinate space, so if the
+author set it, it wins. The loose call argument is retained for backward compatibility
+(nothing currently passing it breaks) but is effectively demoted — a candidate for
+deprecation once callers migrate. Apply the same precedence in every `triangulateOnGPU`
+override, which today reads only the call argument (`viewport ? *viewport :
+getEffectiveViewport()`) before forwarding into the GPU dispatch.
+
+> **Decision to confirm at implementation time:** params-over-arg is the recommended
+> precedence, but if a call-site override is expected to win over a stored params
+> viewport, flip the first two terms. This is the one behavioral choice in the phase;
+> everything else is mechanical.
+
+### 9.3 Honor the viewport origin in `translateCoordsDefaultImpl`
+
+Subtract the viewport origin before the NDC divide so offset viewports map correctly:
+
+```cpp
+*x_result = (2.f * (x - viewport->x) / viewport->width)  - 1.f;
+*y_result = 1.f - (2.f * (y - viewport->y) / viewport->height);
+```
+
+Z is unchanged (`GEViewport` carries only `nearDepth`/`farDepth`, no Z origin). This is
+a behavior change **only** for viewports with a non-zero `x`/`y`; the effective
+render-target viewport is always `{0, 0, ...}`, so the default 2D path is byte-identical.
+
+### 9.4 GPU kernel parity
+
+The GPU kernels received an NDC-conversion fix in Phase 4 (`x → 2x/w - 1`, `y → 1 -
+2y/h`) but, like the CPU path, apply **no origin offset** — they read viewport width/height
+from the param buffer only. The resolved viewport already reaches the dispatch
+(`gpuDispatch`/`d3d12GpuDispatch` take `vp`), so the origin must be plumbed the same way
+the CPU fix goes in:
+
+- Ensure the param buffer carries `viewport.x`/`viewport.y` (extend the packed viewport
+  slot if it currently only holds w/h).
+- Update each `.omegasl` kernel's NDC conversion to subtract the origin:
+  `2*(coord - vp.origin)/vp.extent - 1`. Because Phase 4 consolidated all four kernels
+  into single OmegaSL sources, this is a one-place-per-kernel edit, not a per-backend one.
+- Re-verify CPU/GPU byte-identity via `GPUTessTest` with a non-`(0,0)` viewport (see 9.5).
+
+Kernels added in Phase 5 must fold the origin offset in from the start.
+
+### 9.5 Testing
+
+Add to Phase 8's `GPUTessTest`/`TECompleteTest`:
+
+- Triangulate the same primitive against (a) the default effective viewport and (b) an
+  explicit `{0,0,W,H,...}` params viewport — assert identical output (proves the params
+  path and the default path agree when spaces coincide).
+- Triangulate against an **offset** viewport (`{ox, oy, W, H, ...}`, `ox,oy != 0`) and
+  assert every output vertex is shifted by exactly the origin term versus the anchored
+  case — proves 9.3/9.4 honor the origin.
+- CPU vs GPU agreement for both the anchored and offset viewport cases.
+
+### 9.6 Local-space (un-baked) triangulation
+
+The custom-viewport work above picks *which* viewport bakes coordinates to NDC. The
+[GESpace plan](GESpace-Implementation-Plan.md) needs the opposite: geometry emitted in
+**local/space units with no NDC bake at all**, so GESpace's per-object model→NDC matrix
+owns the projection instead of double-projecting already-clip-space vertices. This lives
+in Phase 9 because it is the same `translateCoords` seam — the local-space path just makes
+the conversion an **identity pass** (emit raw input coordinates: no origin subtract, no
+divide, no Y-flip) rather than remapping to a different viewport.
+
+Expose it as either:
+
+- a `TETriangulationParams::localSpace` flag (natural companion to the `std::optional<GEViewport> viewport`
+  field from 9.1 — when set, the viewport is ignored and coordinates pass through), or
+- a dedicated entry point (`triangulateLocalSync(params, frontFaceRotation)`).
+
+Recommend the flag: it keeps one triangulation call path and composes with the params
+viewport (local-space wins over any viewport when both are set). Implementation is a short
+early-out in `translateCoords` / `translateCoordsDefaultImpl` — when local-space is
+requested, `*x_result = x; *y_result = y; *z_result = z;`.
+
+**GPU parity**: the GPU kernels must honor the same flag (skip their NDC conversion),
+plumbed through the param buffer alongside the viewport origin from 9.4. Because Phase 4
+consolidated the kernels into single OmegaSL sources, this is one guard per kernel.
+
+**Consumer**: GESpace (Phase 5 of its plan) calls this to obtain primitive geometry in
+space units. No other caller needs it today; keep the default behavior (NDC bake) unchanged.
+
+### Files
+
+| File | Change |
+|---|---|
+| `gte/include/omegaGTE/TE.h` | Add `std::optional<GEViewport> viewport` and `bool localSpace` to `TETriangulationParams` |
+| `gte/src/TE.cpp` | Viewport resolution precedence in `_triangulatePriv`; origin subtraction in `translateCoordsDefaultImpl`; local-space identity early-out |
+| `gte/src/metal/MetalTEContext.mm` | Apply resolution precedence + local-space flag in the `triangulateOnGPU` overrides |
+| `gte/src/d3d12/D3D12TEContext.cpp` | Same |
+| `gte/src/vulkan/VulkanTEContext.cpp` | Same |
+| `gte/src/shaders/triangulate_*.omegasl` | Add viewport-origin offset + local-space skip to the NDC conversion |
+| `gte/tests/` | Anchored + offset viewport tests, local-space (raw-units) test, CPU/GPU agreement (Phase 8) |
+
+---
+
 ## File Change Summary
 
 | File | Changes |
@@ -500,7 +674,9 @@ Phase 6 (LOD) ─── Per-primitive arcStep, curve tolerance, vertex budget
     │
 Phase 7 (Utilities) ─── Normal rotation, merge, bounding box
     │
+Phase 9 (Custom Viewport) ─── Params-level viewport + origin-aware coord translation
+    │
 Phase 8 (Testing) ─── Validates everything
 ```
 
-Phases 1-3 are independent of each other and can be parallelized. Phase 4 (OmegaSL migration) depends on nothing in this plan and can run in parallel with 1-3, but **must land before Phase 5** so the new kernels never get written in HLSL/GLSL/Metal. Phase 5 depends on Phase 1 (new primitives exist before writing GPU kernels) and Phase 4 (the OmegaSL pipeline exists). Phase 6 is independent. Phase 7 depends on the GEMesh plan's normals work. Phase 8 validates all prior phases.
+Phases 1-3 are independent of each other and can be parallelized. Phase 4 (OmegaSL migration) depends on nothing in this plan and can run in parallel with 1-3, but **must land before Phase 5** so the new kernels never get written in HLSL/GLSL/Metal. Phase 5 depends on Phase 1 (new primitives exist before writing GPU kernels) and Phase 4 (the OmegaSL pipeline exists). Phase 6 is independent. Phase 7 depends on the GEMesh plan's normals work. Phase 9 (custom viewport) is independent on the CPU side, but its GPU-kernel origin fix (9.4) touches the same OmegaSL sources as Phases 4/5 — sequence it after Phase 4 to avoid churn. Phase 8 validates all prior phases (Phase 9 adds the anchored/offset viewport cases described in 9.5).
