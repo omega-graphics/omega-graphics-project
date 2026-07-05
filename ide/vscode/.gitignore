@@ -3,3 +3,4 @@ out/
 syntaxes/*.json
 *.vsix
 .vscode-test/
+!scripts/**/*.js
