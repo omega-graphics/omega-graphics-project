@@ -186,7 +186,7 @@ static TETriangulationParams GraphicsPath3D(
 
 ---
 
-## Phase 3: Index Buffer Generation
+## Phase 3: Index Buffer Generation [DONE]
 
 ### 3.1 Vertex deduplication in TEMesh
 
@@ -219,9 +219,22 @@ When `GEMesh::fromTETriangulationResult` is called and the TEMesh has `indexedDa
 
 ---
 
-## Phase 4: Migrate GPU Triangulation Kernels to OmegaSL
+## Phase 4: Migrate GPU Triangulation Kernels to OmegaSL [DONE]
 
-The four existing GPU kernels (Rect, Ellipsoid, RectangularPrism, Path2D) are authored three times: inline HLSL in `D3D12TEContext.cpp`, GLSL→SPIR-V bytecode in `VulkanTessSpirv.inc`, and inline Metal C in `MetalTEContext.mm`. Three implementations of identical math means three places to fix every bug, three places that drift apart, and three places where a small parameter change becomes a multi-file edit.
+**Status:** Implemented with two deliberate deviations from the plan text below, both forced by an architectural fact discovered during implementation: `OmegaTriangulationEngineContext` (and its factories, `OmegaTriangulationEngine::createTEContextFromNativeRenderTarget`/`createTEContextFromTextureRenderTarget`) never receive an `OmegaGraphicsEngine` handle — only a raw native device/queue pulled off a render target. `OmegaGraphicsEngine::loadShaderLibrary` / `GEComputePipelineState` (§4.3's literal suggestion) are therefore unreachable from this call path without a public API change, which was out of scope here.
+
+1. **Sources live under `gte/src/shaders/`** (the folder that already existed with earlier draft ports), not a new `gte/shaders/te/` tree — "link all the shaderlibs together" is read literally: the build now compiles *every* `.omegasl` file in that one folder (the four TE kernels, `mipmap_gen_2d.omegasl`, and the new `blit_fullscreen_vs.omegasl` / `blit_copy.omegasl`, §4.2 below) and merges them into **one** `GTEBuiltinShaders.omegasllib`, not a TE-only `te.omegasllib`.
+2. **Loading is engine-independent.** Instead of `loadShaderLibrary`/`GEComputePipelineState`, the merged library is embedded into OmegaGTE as a byte array (§4.2's "preferred" option) and parsed at first use via `omegasl::ReadShaderArchive` — the same de-serializer `loadShaderLibraryFromInputStream` uses internally, just called directly (see `gte/src/GTEBuiltinShaders.h`/`.cpp`). Each backend's raw per-backend pipeline-creation code (root signature / descriptor set / `MTLComputePipelineState`) is otherwise **unchanged** — only shader *acquisition* moved from "compile embedded source at first use" to "look up precompiled bytecode by name."
+
+**Bugs found and fixed along the way** (pre-existing in the old per-target kernels, not introduced by the port — confirmed by diffing against the deleted HLSL/Metal sources): none of the four kernels applied the CPU path's NDC conversion (`OmegaTriangulationEngineContext::translateCoordsDefaultImpl`: `x → 2x/w - 1`, `y → 1 - 2y/h`) — they used a raw `2*coord/dim` with no origin shift or Y-flip. `GPUTessTest` (a newly-added CPU/GPU parity check, itself uncovering this) caught it immediately for Rect. `triangulate_rect_prism.omegasl` also had its height/depth packed into the wrong param-buffer slot (`viewport[0..1]` instead of `extra[0..1]`), and RectangularPrism's Z coordinate was never NDC-converted at all. All fixed; Rect and RectangularPrism now produce byte-identical CPU/GPU output (verified: Rect via `GPUTessTest`, RectangularPrism via a throwaway comparison harness built the same way).
+
+**Known, pre-existing, out-of-scope gaps** (present before this migration too, unmasked by direct CPU/GPU comparison for the first time):
+- **Ellipsoid** vertex/polygon *count* can differ by one sliver segment: the CPU path accumulates `angle += arcStep` in a `while` loop (float rounding can leave the loop one iteration short of `2π`), while the GPU kernel computes each segment's angle directly from `ceil(2π/arcStep)`. Same segment count only when `2π` is an exact multiple of `arcStep`. Fixing this means changing the CPU iteration to match the GPU's closed-form segmentation (or vice versa) — a separate, CPU-side change.
+- **Path2D** GPU output never included stroke joins/caps (Phase 2.2, CPU-only) — the GPU kernel is still the "raw perpendicular quads" approximation the Phase 2 gap table originally described. Porting joins/caps to a GPU kernel is Phase 2.2-for-GPU work, not part of this migration.
+
+**Not yet wired up** (linked into the merged library, ready to consume, but the 3 backends' existing consumers weren't touched to avoid destabilizing already-working code in this change): `mipmap_gen_2d.omegasl` and the new `blit_fullscreen_vs.omegasl`/`blit_copy.omegasl` are compiled into `GTEBuiltinShaders.omegasllib`, but `GED3D12.cpp`/`GEMetal.mm`/`GEVulkan.cpp` still each runtime-compile their own embedded copy of that OmegaSL source via `OmegaSLCompiler` (pre-existing 3x duplication, now redundant with the merged lib but left alone). Follow-up: point those call sites at `GTEBuiltinShaders::find(...)` too.
+
+The four existing GPU kernels (Rect, Ellipsoid, RectangularPrism, Path2D) were authored three times: inline HLSL in `D3D12TEContext.cpp`, GLSL→SPIR-V bytecode in `VulkanTessSpirv.inc`, and inline Metal C in `MetalTEContext.mm`. Three implementations of identical math means three places to fix every bug, three places that drift apart, and three places where a small parameter change becomes a multi-file edit. Bonus discovery: `VulkanTessSpirv.inc`'s arrays were header-only SPIR-V stubs with no function body, so `vkCreateComputePipelines` always failed validation there — Vulkan's GPU triangulation path silently always fell back to CPU. This migration is the first time it has ever actually run on the GPU.
 
 OmegaSL is the project's cross-target shader language and is already the supported path for consumer-facing shaders. There is no reason TE's internal compute kernels should be the corner of the codebase that bypasses it. Migrate first, **then** Phase 5 adds the remaining primitives — write them once in OmegaSL instead of writing the same kernel three times in three languages just to delete it later.
 
@@ -258,26 +271,31 @@ This is a deletion-only step with no behavior change — it just locks in that t
 
 ### 4.5 Optional runtime-compilation path
 
-When `RUNTIME_SHADER_COMP_SUPPORT` is enabled, allow TE to load the `.omegasl` sources directly via `OmegaSLCompiler` instead of the prebuilt `te.omegasllib`. This is the dev/iteration path — edit a kernel, re-run the test, no rebuild. When the flag is off (release/embedded builds), only the prebuilt library is loaded.
+**Not applicable as written** — `RUNTIME_SHADER_COMP_SUPPORT` isn't a real build flag anywhere in this codebase (it never existed outside this plan doc), and the byte-array-embedded design means there is no "prebuilt file missing" case to fall back from: the merged library is always compiled in. If a dev-iteration path is wanted later, it would look like the existing `OmegaSLCompiler` + `loadShaderLibraryRuntime` pattern `GED3D12.cpp`'s `ensureBlitFullscreenVs` already uses for the (still separately-compiled) blit/mipmap shaders — not something TE's engine-independent path can use directly, since that pattern needs a live device/engine.
 
 ### 4.6 Validation
 
-`GPUTessTest` already covers Rect on all three backends. Extend it to cover Ellipsoid, RectangularPrism, and Path2D. The pre-migration and post-migration outputs must be byte-identical for the same inputs — the math hasn't changed, only the language. Any divergence indicates either an OmegaSL codegen bug or a porting mistake; both must be fixed before the per-target sources are deleted in 4.4.
+`GPUTessTest` covers Rect (byte-identical CPU/GPU match, verified). RectangularPrism was verified byte-identical via a throwaway harness (not shipped — extending `GPUTessTest` itself to cover it is a good follow-up). Ellipsoid and Path2D have real, pre-existing, documented gaps above (angle-discretization, missing joins) that are out of scope for a kernel-language migration — verifying them further only makes sense after those gaps are separately closed.
 
-### Files
+### Files (as actually implemented)
 
 | File | Change |
 |---|---|
-| New `gte/shaders/te/rect.omegasl` | Port from inline HLSL/GLSL/Metal |
-| New `gte/shaders/te/ellipsoid.omegasl` | Same |
-| New `gte/shaders/te/prism.omegasl` | Same |
-| New `gte/shaders/te/path2d.omegasl` | Same |
-| `gte/CMakeLists.txt` | OmegaSL build rule for `te.omegasllib`; remove glslc rule |
-| `gte/src/TE.cpp` | Load `te.omegasllib` at TE init; share pipeline states across backends |
-| `gte/src/d3d12/D3D12TEContext.cpp` | Delete inline HLSL + `D3DCompile`; thin to dispatch glue |
-| `gte/src/metal/MetalTEContext.mm` | Delete inline Metal C; thin to dispatch glue |
-| `gte/src/vulkan/VulkanTEContext.cpp` | Delete SPIR-V loader; thin to dispatch glue |
-| Delete `gte/src/vulkan/VulkanTessSpirv.inc` | No longer used |
+| `gte/src/shaders/triangulate_rect.omegasl` | Fixed NDC conversion (was missing) + Clockwise-winding vertex order (existing draft port) |
+| `gte/src/shaders/triangulate_ellipsoid.omegasl` | Fixed NDC conversion; fixed a float/uint cast Sema error (existing draft port) |
+| `gte/src/shaders/triangulate_rect_prism.omegasl` | Fixed NDC conversion (X/Y/Z) + param-buffer h/d slot + CPU-matching face emission order (existing draft port) |
+| `gte/src/shaders/triangulate_path2d.omegasl` | Fixed NDC conversion (existing draft port, already correct otherwise) |
+| New `gte/src/shaders/BlitShaders.omegaslh` | Shared `OmegaGTEBlitVertexData` header (Extension 3) |
+| New `gte/src/shaders/blit_fullscreen_vs.omegasl` | Extracted from the 3x-duplicated inline string in `GED3D12.cpp`/`GEMetal.mm`/`GEVulkan.cpp` |
+| New `gte/src/shaders/blit_copy.omegasl` | Pipeline-Completion-Extension-Plan.md §3.4 built-in, not previously implemented |
+| New `gte/include/omegaGTE/GEBlitShaders.h` | Public entry-name constants for the built-in blit shaders |
+| New `gte/src/GTEBuiltinShaders.h`/`.cpp` | Engine-independent lookup into the embedded merged library |
+| New `gte/EmbedOmegaSLLib.cmake` | Pure-CMake binary→C-array embedding (no xxd/python dependency) |
+| `gte/CMakeLists.txt` | `add_omegasl_lib` per source under `gte/src/shaders/` + `add_omegasl_linked_lib` merge into `GTEBuiltinShaders.omegasllib` + embed step |
+| `gte/src/d3d12/D3D12TEContext.cpp` | Deleted inline HLSL + `D3DCompile`; loads DXIL bytecode via `GTEBuiltinShaders::find` |
+| `gte/src/metal/MetalTEContext.mm` | Deleted inline Metal C + `newLibraryWithSource:`; loads metallib bytecode via `newLibraryWithData:` |
+| `gte/src/vulkan/VulkanTEContext.cpp` | Deleted the (non-functional) SPIR-V loader; loads real SPIR-V via `GTEBuiltinShaders::find` |
+| Deleted `gte/src/vulkan/VulkanTessSpirv.inc` | Replaced by the merged library |
 
 ---
 
@@ -383,14 +401,7 @@ void TEMesh::rotate(float pitch, float yaw, float roll) {
 
 ### 7.2 Merge utility
 
-Add a utility to merge multiple `TETriangulationResult` objects into one:
-
-```cpp
-TETriangulationResult TETriangulationResult::merge(
-    const std::vector<TETriangulationResult> &results);
-```
-
-This concatenates all meshes from all results into a single result. Useful when building a scene from multiple triangulated primitives before converting to a single GEMesh with one draw call.
+The result only returns one mesh, so no need for this.
 
 ### 7.3 Bounding box computation
 

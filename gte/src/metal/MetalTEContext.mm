@@ -1,6 +1,7 @@
 #include "omegaGTE/TE.h"
 #include "GEMetalRenderTarget.h"
 #include "GEMetalTexture.h"
+#include "../GTEBuiltinShaders.h"
 
 #import <simd/simd.h>
 #import <AppKit/AppKit.h>
@@ -16,74 +17,29 @@ struct MetalTessVertex { simd_float4 pos; simd_float4 color; };
 struct MetalTessParams { simd_float4 rect; simd_float4 viewport; simd_float4 color; simd_float4 extra; };
 struct PathSeg { simd_float4 se; simd_float4 sv; simd_float4 c; simd_float4 r; };
 
-NSString *tessRectSrc = @R"(
-#include <metal_stdlib>
-using namespace metal;
-struct P{float4 r;float4 v;float4 c;float4 e;};struct V{float4 p;float4 c;};
-kernel void k(device const P*p[[buffer(0)]],device V*o[[buffer(1)]],uint t[[thread_position_in_grid]]){
-float x=p[0].r[0],y=p[0].r[1],w=p[0].r[2],h=p[0].r[3],vw=p[0].v[2],vh=p[0].v[3];float4 c=p[0].c;
-float a=(2*x)/vw,b=(2*y)/vh,d=(2*(x+w))/vw,e=(2*(y+h))/vh;V z;z.c=c;
-z.p=float4(a,b,0,1);o[0]=z;z.p=float4(a,e,0,1);o[1]=z;z.p=float4(d,b,0,1);o[2]=z;
-z.p=float4(d,e,0,1);o[3]=z;z.p=float4(a,e,0,1);o[4]=z;z.p=float4(d,b,0,1);o[5]=z;})";
-
-NSString *tessEllipSrc = @R"(
-#include <metal_stdlib>
-using namespace metal;
-struct P{float4 r;float4 v;float4 c;float4 e;};struct V{float4 p;float4 c;};
-kernel void k(device const P*p[[buffer(0)]],device V*o[[buffer(1)]],uint t[[thread_position_in_grid]]){
-float cx=p[0].r[0],cy=p[0].r[1],rx=p[0].e[0],ry=p[0].e[1],ts=p[0].e[3];
-float vw=p[0].v[2],vh=p[0].v[3];float4 c=p[0].c;float pi2=6.28318530718;
-float a0=(pi2*float(t))/ts,a1=(pi2*float(t+1))/ts;uint b=t*3;V z;z.c=c;
-z.p=float4((2*cx)/vw,(2*cy)/vh,0,1);o[b]=z;
-z.p=float4((2*(cx+rx*cos(a0)))/vw,(2*(cy+ry*sin(a0)))/vh,0,1);o[b+1]=z;
-z.p=float4((2*(cx+rx*cos(a1)))/vw,(2*(cy+ry*sin(a1)))/vh,0,1);o[b+2]=z;})";
-
-NSString *tessRPrismSrc = @R"(
-#include <metal_stdlib>
-using namespace metal;
-struct P{float4 r;float4 v;float4 c;float4 e;};struct V{float4 p;float4 c;};
-kernel void k(device const P*p[[buffer(0)]],device V*o[[buffer(1)]],uint t[[thread_position_in_grid]]){
-float x0=p[0].r[0],y0=p[0].r[1],z0=p[0].r[2],w=p[0].r[3],h=p[0].e[0],d=p[0].e[1];
-float vw=p[0].v[2],vh=p[0].v[3];float4 c=p[0].c;
-float a=(2*x0)/vw,b=(2*y0)/vh,e=(2*(x0+w))/vw,f=(2*(y0+h))/vh,g=z0,j=z0+d;
-V z;z.c=c;uint i=0;
-z.p=float4(a,b,g,1);o[i++]=z;z.p=float4(a,f,g,1);o[i++]=z;z.p=float4(e,b,g,1);o[i++]=z;
-z.p=float4(e,f,g,1);o[i++]=z;z.p=float4(a,f,g,1);o[i++]=z;z.p=float4(e,b,g,1);o[i++]=z;
-z.p=float4(a,b,j,1);o[i++]=z;z.p=float4(e,b,j,1);o[i++]=z;z.p=float4(a,f,j,1);o[i++]=z;
-z.p=float4(e,f,j,1);o[i++]=z;z.p=float4(e,b,j,1);o[i++]=z;z.p=float4(a,f,j,1);o[i++]=z;
-z.p=float4(a,b,g,1);o[i++]=z;z.p=float4(a,b,j,1);o[i++]=z;z.p=float4(a,f,g,1);o[i++]=z;
-z.p=float4(a,f,j,1);o[i++]=z;z.p=float4(a,b,j,1);o[i++]=z;z.p=float4(a,f,g,1);o[i++]=z;
-z.p=float4(e,b,g,1);o[i++]=z;z.p=float4(e,f,g,1);o[i++]=z;z.p=float4(e,b,j,1);o[i++]=z;
-z.p=float4(e,f,j,1);o[i++]=z;z.p=float4(e,f,g,1);o[i++]=z;z.p=float4(e,b,j,1);o[i++]=z;
-z.p=float4(a,b,g,1);o[i++]=z;z.p=float4(e,b,g,1);o[i++]=z;z.p=float4(a,b,j,1);o[i++]=z;
-z.p=float4(e,b,j,1);o[i++]=z;z.p=float4(e,b,g,1);o[i++]=z;z.p=float4(a,b,j,1);o[i++]=z;
-z.p=float4(a,f,g,1);o[i++]=z;z.p=float4(a,f,j,1);o[i++]=z;z.p=float4(e,f,g,1);o[i++]=z;
-z.p=float4(e,f,j,1);o[i++]=z;z.p=float4(a,f,j,1);o[i++]=z;z.p=float4(e,f,g,1);o[i++]=z;})";
-
-NSString *tessPathSrc = @R"(
-#include <metal_stdlib>
-using namespace metal;
-struct S{float4 se;float4 sv;float4 c;float4 r;};struct V{float4 p;float4 c;};
-kernel void k(device const S*s[[buffer(0)]],device V*v[[buffer(1)]],uint t[[thread_position_in_grid]]){
-float sx=s[t].se[0],sy=s[t].se[1],ex=s[t].se[2],ey=s[t].se[3];
-float sw=s[t].sv[0],vw=s[t].sv[2],vh=s[t].sv[3];float4 c=s[t].c;
-float dx=ex-sx,dy=ey-sy,l=sqrt(dx*dx+dy*dy),hw=sw*0.5;
-float nx=0,ny=0;if(l>0.0001){nx=-dy/l*hw;ny=dx/l*hw;}
-uint b=t*6;V o;o.c=c;
-o.p=float4((2*(sx+nx))/vw,(2*(sy+ny))/vh,0,1);v[b]=o;
-o.p=float4((2*(sx-nx))/vw,(2*(sy-ny))/vh,0,1);v[b+1]=o;
-o.p=float4((2*(ex+nx))/vw,(2*(ey+ny))/vh,0,1);v[b+2]=o;
-o.p=float4((2*(ex+nx))/vw,(2*(ey+ny))/vh,0,1);v[b+3]=o;
-o.p=float4((2*(sx-nx))/vw,(2*(sy-ny))/vh,0,1);v[b+4]=o;
-o.p=float4((2*(ex-nx))/vw,(2*(ey-ny))/vh,0,1);v[b+5]=o;})";
-
-id<MTLComputePipelineState> compileKernel(id<MTLDevice> dev, NSString *src) {
+// Triangulation-Engine-Completion-Plan.md Phase 4 -- the four kernels below
+// used to be hand-authored Metal C string literals compiled at first use via
+// `newLibraryWithSource:`. They are now single-sourced in OmegaSL
+// (gte/src/shaders/triangulate_*.omegasl), compiled offline into
+// GTEBuiltinShaders.omegasllib, and loaded here from the compiled metallib
+// bytes -- same `dispatch_data_create` + `newLibraryWithData:` pattern
+// GEMetal.mm's `_loadShaderFromDesc` uses for every other precompiled shader.
+id<MTLComputePipelineState> loadBuiltinKernel(id<MTLDevice> dev, const char *name) {
+    const omegasl_shader *shader = GTEBuiltinShaders::find(name);
+    if (!shader || shader->data == nullptr || shader->dataSize == 0) {
+        NSLog(@"MetalTE: builtin kernel '%s' missing from GTEBuiltinShaders", name);
+        return nil;
+    }
+    auto data = dispatch_data_create(shader->data, shader->dataSize, nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
     NSError *err = nil;
-    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:nil error:&err];
-    if (!lib) { NSLog(@"MetalTE: compile error: %@", err); return nil; }
-    id<MTLFunction> fn = [lib newFunctionWithName:@"k"];
-    if (!fn) return nil;
-    return [dev newComputePipelineStateWithFunction:fn error:&err];
+    id<MTLLibrary> lib = [dev newLibraryWithData:data error:&err];
+    dispatch_release(data);
+    if (!lib) { NSLog(@"MetalTE: newLibraryWithData failed for '%s': %@", name, err); return nil; }
+    id<MTLFunction> fn = [lib newFunctionWithName:[NSString stringWithUTF8String:name]];
+    if (!fn) { NSLog(@"MetalTE: function '%s' not found in its own library", name); return nil; }
+    id<MTLComputePipelineState> pso = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!pso) { NSLog(@"MetalTE: pipeline creation failed for '%s': %@", name, err); }
+    return pso;
 }
 
 TETriangulationResult readback(id<MTLBuffer> buf, unsigned vc,
@@ -110,10 +66,10 @@ struct Pipelines {
     bool ready = false;
     void init(id<MTLDevice> d, id<MTLCommandQueue> q) {
         if (ready) return; ready = true; dev = d; queue = q;
-        rect = compileKernel(d, tessRectSrc);
-        ellip = compileKernel(d, tessEllipSrc);
-        prism = compileKernel(d, tessRPrismSrc);
-        path = compileKernel(d, tessPathSrc);
+        rect = loadBuiltinKernel(d, GTEBuiltinShaders::TriangulateRect);
+        ellip = loadBuiltinKernel(d, GTEBuiltinShaders::TriangulateEllipsoid);
+        prism = loadBuiltinKernel(d, GTEBuiltinShaders::TriangulateRectPrism);
+        path = loadBuiltinKernel(d, GTEBuiltinShaders::TriangulatePath2D);
     }
 };
 

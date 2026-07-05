@@ -1,24 +1,19 @@
 include(CMakeParseArguments)
 
-# Cross-backend test-window runtime (GTETestWindow-CrossBackend-Plan.md, Phase
-# 1). An OBJECT library so the Win32 windowing + run-loop implementation is
-# compiled once and folded directly into each test exe — no extra link target
-# for the tests to thread through. PUBLIC_DEFS (TARGET_DIRECTX / NOMINMAX) is
-# inherited from the parent gte/CMakeLists.txt the same way the shared CLI
-# tests pick it up; the include dirs mirror what OmegaGTE's headers need.
-add_library(omegagte_testwindow_d3d12 OBJECT GTETestWindow_Win32.cpp)
-target_include_directories(omegagte_testwindow_d3d12 PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/.."
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/include")
-target_compile_definitions(omegagte_testwindow_d3d12 PRIVATE ${PUBLIC_DEFS})
+# The windowed D3D12 tests (2DTest, GPUTessTest, MeshAndRaytracingTest) are now
+# registered once, cross-platform, via add_gte_window_test in the parent
+# gte/Tests/CMakeLists.txt. This file carries only the NON-windowed CLI /
+# headless D3D12 tests.
+#
+# add_d3d12_cli_test builds a headless D3D12 test exe: like the windowed path
+# it is a WIN32 target linked through WinMainCRTStartup (GTE_TEST_ENTRY_POINT
+# expands to WinMain on D3D12) with the runtime DLLs staged next to it, but it
+# folds in no windowing object library and stages no assets/shaders — a CLI
+# test opens no swap chain.
+function(add_d3d12_cli_test)
+    cmake_parse_arguments("_ARG" "" "NAME" "SOURCES;LIBS" ${ARGN})
 
-function(add_d3d12_test)
-    cmake_parse_arguments("_ARG" "" "NAME" "SOURCES;LIBS;ASSETS;SHADERS" ${ARGN})
-
-    add_executable(${_ARG_NAME} WIN32
-        ${_ARG_SOURCES}
-        $<TARGET_OBJECTS:omegagte_testwindow_d3d12>)
+    add_executable(${_ARG_NAME} WIN32 ${_ARG_SOURCES})
     target_link_libraries(${_ARG_NAME} PRIVATE "OmegaGTE" ${_ARG_LIBS})
 
     add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
@@ -33,98 +28,19 @@ function(add_d3d12_test)
     # so it actually launches. See cmake/OmegaGraphicsSuite.cmake.
     omega_stage_runtime_dlls(${_ARG_NAME})
 
-    foreach(_asset IN LISTS _ARG_ASSETS)
-        if(NOT IS_ABSOLUTE "${_asset}")
-            set(_asset_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_asset}")
-        else()
-            set(_asset_abs "${_asset}")
-        endif()
-        get_filename_component(_asset_name "${_asset_abs}" NAME)
-        add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_asset_abs}" "$<TARGET_FILE_DIR:${_ARG_NAME}>/${_asset_name}")
-    endforeach()
-
-    foreach(_shader IN LISTS _ARG_SHADERS)
-        if(NOT IS_ABSOLUTE "${_shader}")
-            set(_shader_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_shader}")
-        else()
-            set(_shader_abs "${_shader}")
-        endif()
-        get_filename_component(_shader_basename "${_shader_abs}" NAME_WE)
-        get_filename_component(_shader_dir "${_shader_abs}" DIRECTORY)
-        set(_shader_target "${_ARG_NAME}_${_shader_basename}_Shader")
-        set(_shader_output "${CMAKE_CURRENT_BINARY_DIR}/${_shader_basename}.omegasllib")
-        add_omegasl_lib("${_shader_target}" "${_shader_abs}" "${_shader_output}"
-            INCLUDE_DIRS "${_shader_dir}")
-        add_dependencies(${_ARG_NAME} "${_shader_target}")
-    endforeach()
-
     target_link_options(${_ARG_NAME} PRIVATE /SUBSYSTEM:CONSOLE /ENTRY:WinMainCRTStartup /MANIFEST:NO)
-
 endfunction()
 
-# 2DTest builds from the shared, backend-neutral body declared once in
-# gte/Tests/CMakeLists.txt (GTE_TEST_2DTEST_*). The runtime assets (test.png,
-# the OmegaSL source) are the canonical shared copies under
-# gte/Tests/assets/2DTest/ (relocated in Phase 2 when Metal began consuming
-# them too); test.png is loaded portably via GETextureAsset. The local
-# directx/2DTest/ subfolder keeps only the Win32 manifest template items.
-add_d3d12_test(
-    NAME
-    "2DTest"
-    SOURCES
-    ${GTE_TEST_2DTEST_SOURCES}
-    ASSETS
-    ${GTE_TEST_2DTEST_ASSETS}
-    SHADERS
-    ${GTE_TEST_2DTEST_SHADERS}
-)
-
-add_d3d12_test(
+add_d3d12_cli_test(
     NAME
     "ComputeTest"
     SOURCES
     "ComputeTest/main.cpp"
 )
 
-# GPUTessTest now builds from the shared, backend-neutral body declared once
-# in gte/Tests/CMakeLists.txt (GTE_TEST_GPUTESSTEST_*, Phase 4). It renders
-# nothing; it only needs a NativeRenderTargetDescriptor to build a TE context
-# from, so it computes its CPU-vs-GPU comparison in onReady and self-closes
-# with the pass/fail exit code via RequestGTETestWindowClose.
-add_d3d12_test(
-    NAME
-    "GPUTessTest"
-    SOURCES
-    ${GTE_TEST_GPUTESSTEST_SOURCES}
-)
-
-# Mesh-Shader-Plan Phases 3 / 4b (and future raytracing) visual test. Now
-# builds from the shared, backend-neutral body declared once in
-# gte/Tests/CMakeLists.txt (GTE_TEST_MESHANDRAYTRACINGTEST_*, Phase 4 of the
-# GTETestWindow cross-backend plan) — D3D12 only today (mesh shaders haven't
-# landed on Metal/Vulkan yet), but the body is ready for those backends' CMake
-# wiring when they do. Phase 4b is live: the test loads
-# `orange_tennis_racket.fbx` via `GEMeshAsset` and renders each triangle
-# through a mesh-shader dispatch (one mesh threadgroup per triangle).
-# Raytracing hooks join when that phase reaches the dispatch surface. Both the
-# FBX and the shader source are the canonical shared copies under
-# gte/Tests/assets/.
-add_d3d12_test(
-    NAME
-    "MeshAndRaytracingTest"
-    SOURCES
-    ${GTE_TEST_MESHANDRAYTRACINGTEST_SOURCES}
-    ASSETS
-    ${GTE_TEST_MESHANDRAYTRACINGTEST_ASSETS}
-    SHADERS
-    ${GTE_TEST_MESHANDRAYTRACINGTEST_SHADERS}
-)
-
 # Extension 8 §8.6 — runtime sampler-state binding integration test (shared,
 # backend-independent source under gte/tests/).
-add_d3d12_test(
+add_d3d12_cli_test(
     NAME
     "SamplerBindTest"
     SOURCES
@@ -140,7 +56,7 @@ endif()
 
 # OmegaSL §5.2 / §12 — matrix-op GPU integration test (shared, backend-
 # independent source under gte/tests/).
-add_d3d12_test(
+add_d3d12_cli_test(
     NAME
     "MatrixOpsTest"
     SOURCES
@@ -154,7 +70,7 @@ add_test(NAME omegagte_matrix_ops COMMAND MatrixOpsTest)
 # compute commit and checks the reported GECommitCompletionInfo (status, buffer
 # count, GPU duration). With P1 wired, the D3D12 timestamp-heap path now reports
 # a real, non-zero GPU duration here on hardware that supports timestamp queries.
-add_d3d12_test(
+add_d3d12_cli_test(
     NAME
     "CommitTimingTest"
     SOURCES

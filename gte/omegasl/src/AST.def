@@ -504,6 +504,20 @@ typedef int ASTType;
 /// and stubs on MSL.
 #define ATTRIBUTE_CLIP_DISTANCE "ClipDistance"
 #define ATTRIBUTE_CULL_DISTANCE "CullDistance"
+/// §16 — tessellation patch-constant / domain semantics. TessFactor and
+/// InsideTessFactor are float scalar/array fields on the internal struct a
+/// hull's patch-constant function (`patchfn=`) returns; they carry the
+/// per-edge and per-inside tessellation amounts (tri: 3 edge + 1 inside;
+/// quad: 4 edge + 2 inside). DomainLocation is a `domain`-shader parameter
+/// semantic (float3 for tri, float2 for quad) giving the barycentric /
+/// (u,v) location the fixed-function tessellator produced. Lowering:
+/// SV_TessFactor / SV_InsideTessFactor / SV_DomainLocation (HLSL),
+/// gl_TessLevelOuter[]/Inner[] + gl_TessCoord (GLSL), the
+/// MTLTriangle/QuadTessellationFactorsHalf buffer + [[position_in_patch]]
+/// (MSL).
+#define ATTRIBUTE_TESS_FACTOR "TessFactor"
+#define ATTRIBUTE_INSIDE_TESS_FACTOR "InsideTessFactor"
+#define ATTRIBUTE_DOMAIN_LOCATION "DomainLocation"
 
 // Static Sampler Properties
 #define SAMPLER_PROP_FILTER "filter"

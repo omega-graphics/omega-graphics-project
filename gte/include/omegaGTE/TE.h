@@ -3,8 +3,9 @@
 #include <thread>
 #include <future>
 #include <mutex>
-#include <optional> 
+#include <optional>
 #include <type_traits>
+#include <cstdint>
 #include "GE.h"
 #include "GETexture.h"
 
@@ -217,13 +218,35 @@ struct OMEGAGTE_EXPORT TETriangulationResult {
             TopologyTriangle,
             TopologyTriangleStrip
         } topology = TopologyTriangle;
+        /// One triangle corner: a position plus optional per-vertex
+        /// attachment data (color / UVs / normal). Named (rather than
+        /// anonymous, as `Polygon` used to declare it) so it can also be
+        /// used standalone as `IndexedData::vertices`' element type.
+        struct OMEGAGTE_EXPORT Vertex {
+            GPoint3D pt;
+            std::optional<AttachmentData> attachment;
+        };
         struct OMEGAGTE_EXPORT Polygon {
-            struct {
-                GPoint3D pt;
-                std::optional<AttachmentData> attachment;
-            } a,b,c;
+            Vertex a,b,c;
         };
         std::vector<Polygon> vertexPolygons;
+
+        /// Deduplicated vertex/index representation of `vertexPolygons`,
+        /// populated by `buildIndexed()`. Empty until that method runs.
+        struct OMEGAGTE_EXPORT IndexedData {
+            std::vector<Vertex> vertices;
+            std::vector<uint32_t> indices;
+        };
+        std::optional<IndexedData> indexedData;
+
+        /// Deduplicate `vertexPolygons` into `indexedData`. Two corners
+        /// collapse into one vertex only when their positions match within
+        /// `positionEpsilon` AND their attachment data (color, UVs, normal)
+        /// is equal — corners that share a position but differ in normal or
+        /// UV (hard edges, UV seams) are intentionally kept distinct.
+        /// @param positionEpsilon Position quantization grid size.
+        void buildIndexed(float positionEpsilon = 1e-6f);
+
         void translate(float x,float y,float z,const GEViewport & viewport);
         void rotate(float pitch,float yaw,float roll);
         void scale(float w,float h,float l);

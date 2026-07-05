@@ -443,6 +443,66 @@ if(TARGET_METAL)
 	target_link_system_frameworks("OmegaGTE" Metal MetalKit ModelIO QuartzCore Cocoa)
 endif()
 
+# ─── Built-in OmegaSL shader library (Triangulation-Engine-Completion-Plan.md
+# Phase 4) ───
+#
+# Every internal-use OmegaSL kernel OmegaGTE ships -- the Triangulation
+# Engine's GPU triangulation kernels, the mipmap-gen box filter, and the
+# Extension-3 blit pipeline shaders -- is authored once under
+# gte/src/shaders/, compiled to its own small `.omegasllib`, then merged into
+# ONE `GTEBuiltinShaders.omegasllib` via `omegaslc --link` (the same
+# per-file-lib + shared `.omegaslh` header + linked-merge pattern AQUA's
+# AQKernels.omegasllib and OmegaWTK's compositor shader lib use).
+#
+# Unlike AQUA/WTK, the Triangulation Engine's GPU dispatch has no
+# `OmegaGraphicsEngine` handle to call `loadShaderLibrary(path)` on --
+# `OmegaTriangulationEngineContext` only ever sees a raw native device/queue
+# obtained from a render target (see GTEBuiltinShaders.h). So instead of
+# shipping the merged lib as a sibling file, it is embedded into OmegaGTE as
+# a byte array (Phase 4.2's "preferred, no runtime file dependency" option)
+# via EmbedOmegaSLLib.cmake, and parsed at first use by
+# GTEBuiltinShaders.cpp through the engine-independent
+# `omegasl::ReadShaderArchive`.
+set(GTE_BUILTIN_SHADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
+set(GTE_BUILTIN_SHADERS_HEADER "${GTE_BUILTIN_SHADERS_DIR}/BlitShaders.omegaslh")
+# blit_fullscreen_vs / blit_copy `#include "BlitShaders.omegaslh"`; the other
+# kernels don't, but passing the same INCLUDE_DIRS/EXTRA_DEPENDS to all of
+# them is harmless (an unused -I flag, a dependency edge that just never
+# fires for those sources).
+set(GTE_BUILTIN_SHADER_NAMES
+	triangulate_rect triangulate_ellipsoid triangulate_rect_prism triangulate_path2d
+	mipmap_gen_2d blit_fullscreen_vs blit_copy)
+set(GTE_BUILTIN_SHADER_LIBS)
+foreach(_gte_shader IN LISTS GTE_BUILTIN_SHADER_NAMES)
+	set(_gte_shader_src "${GTE_BUILTIN_SHADERS_DIR}/${_gte_shader}.omegasl")
+	set(_gte_shader_lib "${CMAKE_CURRENT_BINARY_DIR}/${_gte_shader}.omegasllib")
+	add_omegasl_lib("GTEBuiltinShader_${_gte_shader}" "${_gte_shader_src}" "${_gte_shader_lib}"
+		INCLUDE_DIRS "${GTE_BUILTIN_SHADERS_DIR}"
+		EXTRA_DEPENDS "${GTE_BUILTIN_SHADERS_HEADER}")
+	add_dependencies("GTEBuiltinShader_${_gte_shader}" omegaslc)
+	list(APPEND GTE_BUILTIN_SHADER_LIBS "${_gte_shader_lib}")
+endforeach()
+
+set(GTE_BUILTIN_SHADERS_LIB "${CMAKE_CURRENT_BINARY_DIR}/GTEBuiltinShaders.omegasllib")
+add_omegasl_linked_lib(GTEBuiltinShadersLib "${GTE_BUILTIN_SHADERS_LIB}"
+	SOURCES ${GTE_BUILTIN_SHADER_LIBS})
+add_dependencies(GTEBuiltinShadersLib omegaslc)
+
+set(GTE_BUILTIN_SHADERS_DATA_CPP "${CMAKE_CURRENT_BINARY_DIR}/GTEBuiltinShadersData.cpp")
+add_custom_command(OUTPUT "${GTE_BUILTIN_SHADERS_DATA_CPP}"
+	COMMAND ${CMAKE_COMMAND}
+			"-DIN=${GTE_BUILTIN_SHADERS_LIB}"
+			"-DOUT=${GTE_BUILTIN_SHADERS_DATA_CPP}"
+			"-DSYMBOL=GTEBuiltinShaders"
+			-P "${CMAKE_CURRENT_SOURCE_DIR}/EmbedOmegaSLLib.cmake"
+	DEPENDS "${GTE_BUILTIN_SHADERS_LIB}" "${CMAKE_CURRENT_SOURCE_DIR}/EmbedOmegaSLLib.cmake"
+	COMMENT "Embedding GTEBuiltinShaders.omegasllib into OmegaGTE")
+add_custom_target(GTEBuiltinShadersData DEPENDS "${GTE_BUILTIN_SHADERS_DATA_CPP}")
+add_dependencies(GTEBuiltinShadersData GTEBuiltinShadersLib)
+
+target_sources("OmegaGTE" PRIVATE "${GTE_BUILTIN_SHADERS_DATA_CPP}")
+add_dependencies("OmegaGTE" GTEBuiltinShadersData)
+
 # Tests reference $<TARGET_FILE:omegaslc>, which now resolves to the host
 # binary on cross-compile builds via the IMPORTED target above. Test driver
 # scripts that try to *run* the test binaries can't do so under cross-compile,

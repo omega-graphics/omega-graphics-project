@@ -61,20 +61,20 @@ add_omegasl_compile_test(omegasl_compile_sci_notation        sci_notation_litera
 add_omegasl_compile_test(omegasl_compile_precedence          precedence_unary_ternary.omegasl)
 add_omegasl_compile_test(omegasl_compile_const_fold          const_fold.omegasl)
 add_omegasl_compile_test(omegasl_compile_tessellation        tessellation.omegasl)
-# Tessellation is incomplete on two backends, for the same structural
-# reason (OmegaSL models a hull as one per-control-point function; both
-# backends need a *second* patch-constant computation the hull body does
-# not express):
-#   - APPLE/Metal: codegen + runtime have no tessellation pipeline, so the
-#     Metal backend rejects hull/domain stages with a clear diagnostic. The
-#     test verifies that the diagnostic fires.
-#   - DirectX/HLSL: the emitted hull entry has no `[patchconstantfunc(...)]`
-#     and no patch-constant function, so dxc rejects it ("hull entry point
-#     must have a valid patchconstantfunc attribute"). Generating the
-#     patch-constant function is unimplemented.
-# Both are marked WILL_FAIL until the respective codegen lands.
-# See OmegaSL-Reference.md bugs 3 (Metal) and 4 (HLSL).
-if(APPLE OR TARGET_DIRECTX)
+# §16 — tessellation now compiles end-to-end on Metal: a hull lowers to a
+# compute kernel (per-CP output store + a tess-factor epilogue driven by the
+# `patchfn`) and a domain lowers to a `[[patch(...)]]` post-tessellation
+# vertex (`patch_control_point<CP>` + `[[position_in_patch]]`). The generated
+# MSL is compiled by `metal` as part of this test, so on Apple it is expected
+# to PASS.
+#
+# HLSL (§16-B) and GLSL (§16-C) tessellation codegen are not yet implemented
+# — the shared `tessellation.omegasl` uses the full new surface those backends
+# cannot yet honor — so the test stays WILL_FAIL on every non-Apple backend:
+#   - DirectX/HLSL: no `[patchconstantfunc(...)]` / patch-constant function.
+#   - Vulkan/GLSL: `.tesc`/`.tese` never write gl_TessLevel*/read gl_TessCoord.
+# See OmegaSL-Reference.md bugs 3 (Metal, now resolved) and 4 (HLSL).
+if(NOT APPLE)
     set_tests_properties(omegasl_compile_tessellation PROPERTIES WILL_FAIL TRUE)
 endif()
 add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omegasl)
@@ -222,6 +222,8 @@ add_omegasl_fail_test(omegasl_invalid_early_depth            invalid_early_depth
 add_omegasl_fail_test(omegasl_invalid_interp_modifier        invalid_interp_modifier.omegasl)
 # §1.7 — clip/cull distance: non-float element + indexed form are rejected.
 add_omegasl_fail_test(omegasl_invalid_clip_cull              invalid_clip_cull.omegasl)
+# §16 — a hull must name a patch-constant function (`patchfn=`).
+add_omegasl_fail_test(omegasl_invalid_tessellation           invalid_tessellation.omegasl)
 add_omegasl_fail_test(omegasl_invalid_output_coverage_type   invalid_output_coverage_type.omegasl)
 add_omegasl_fail_test(omegasl_invalid_sample_ms              invalid_sample_ms.omegasl)
 add_omegasl_fail_test(omegasl_invalid_write_ms               invalid_write_ms.omegasl)

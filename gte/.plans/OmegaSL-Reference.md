@@ -26,7 +26,7 @@ Fix: a `metalUintCoordTypeForTexture` helper in `MetalCodeGen` looks up the text
 
 OmegaSL semantics still allow either `intN` or `uintN` for `read`/`write` coords (Sema validates both); the cast is purely a Metal-codegen concern.
 
-**3. Metal hull/domain stages are unsupported.** ~~Affects `omegasl_compile_tessellation`.~~ Held: `MetalCodeGen` now rejects hull/domain with a clean diagnostic; the test is marked `WILL_FAIL` on Apple builds.
+**3. Metal hull/domain stages are unsupported.** ~~Affects `omegasl_compile_tessellation`.~~ **RESOLVED for codegen** (Feature-Gap-Survey §16-A + §16-D). `MSLTarget` now lowers a `hull` to a compute kernel (per-CP output store + a tess-factor epilogue that runs the `patchfn` and writes `MTLTriangle/QuadTessellationFactorsHalf`) and a `domain` to a `[[patch(...)]]` post-tessellation vertex (`patch_control_point<CP>` + `[[position_in_patch]]`); the generated MSL compiles with `metal` and `omegasl_compile_tessellation` is expected-pass on Apple. Layer 2 (runtime `drawPatches` / factor-buffer binding, item below) is still open — Survey §16 Phase E.
 
 The full picture is bigger than a codegen typo. Three layers were broken:
 1. **Codegen.** `MetalCodeGen` was emitting `kernel HullOutput triHull(... vid [[vertex_id]])` for `hull` stages — Metal kernels cannot return a user struct and cannot consume `[[vertex_id]]`. The metal compiler rejected this with a confusing error that masked the deeper problem.

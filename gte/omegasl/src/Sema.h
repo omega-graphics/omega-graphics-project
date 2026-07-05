@@ -30,9 +30,16 @@ namespace omegasl {
             return (subject == ATTRIBUTE_COLOR) || (subject == ATTRIBUTE_POSITION)
                 || (subject == ATTRIBUTE_TEXCOORD) || (subject == ATTRIBUTE_DEPTH)
                 || (subject == ATTRIBUTE_OUTPUT_COVERAGE)
-                || (subject == ATTRIBUTE_CLIP_DISTANCE) || (subject == ATTRIBUTE_CULL_DISTANCE);
+                || (subject == ATTRIBUTE_CLIP_DISTANCE) || (subject == ATTRIBUTE_CULL_DISTANCE)
+                /// §16 — the patch-constant struct's factor fields.
+                || (subject == ATTRIBUTE_TESS_FACTOR) || (subject == ATTRIBUTE_INSIDE_TESS_FACTOR);
         }
-        else if(context == AttributeContext::VertexShaderArgument || context == AttributeContext::HullShaderArgument || context == AttributeContext::DomainShaderArgument){
+        else if(context == AttributeContext::DomainShaderArgument){
+            /// §16 — a `domain` shader reads VertexID (control-point index) and
+            /// the tessellator-produced DomainLocation.
+            return (subject == ATTRIBUTE_VERTEX_ID) || (subject == ATTRIBUTE_DOMAIN_LOCATION);
+        }
+        else if(context == AttributeContext::VertexShaderArgument || context == AttributeContext::HullShaderArgument){
             return (subject == ATTRIBUTE_VERTEX_ID);
         }
         else if(context == AttributeContext::ComputeShaderArgument || context == AttributeContext::MeshShaderArgument){
@@ -68,6 +75,16 @@ namespace omegasl {
         /// in this set. The FeatureScanner only *unions* `usedFeatures`, so the
         /// bit set here survives the scan and drives the portability warning.
         OmegaCommon::Vector<OmegaCommon::String> cullDistanceStructs;
+
+        /// §16 — patch-constant structs: a struct carrying `TessFactor` /
+        /// `InsideTessFactor` fields records its (edgeSlots, insideSlots)
+        /// counts here (scalar field = 1 slot, `float[N]` = N slots). A
+        /// hull's `patchfn` return struct is looked up here so the hull
+        /// SHADER_DECL can check the factor counts against its domain
+        /// (tri → 3 edge + 1 inside; quad → 4 + 2) without re-walking the
+        /// struct's fields. Same rationale as `cullDistanceStructs`: the
+        /// resolved `ast::Type` drops field-attribute metadata.
+        OmegaCommon::Map<OmegaCommon::String,std::pair<unsigned,unsigned>> patchConstantStructs;
 
         /// §3.5 — definition tracking lives on the FuncType itself
         /// (`hasDefinition`). Two overloads with the same name need

@@ -422,11 +422,40 @@ Tests that **don't** migrate (already headless / CLI, no swap chain):
 > out of the per-backend CMakeLists.txt entirely**: `gte/Tests/CMakeLists.txt`
 > now declares `GTE_TEST_<NAME>_{SOURCES,ASSETS,SHADERS}` once per test (for
 > every migrated test, including 2DTest, applied retroactively for
-> consistency), and `directx/`, `metal/`, `vulkan/CMakeLists.txt` reference
-> those variables in their `add_d3d12_test`/`add_metal_test`/`add_vulkan_test`
-> calls instead of re-typing the same path list in up to three places.
-> Adding a backend to an existing test, or relocating a shared asset, now
-> touches that one list only.
+> consistency).
+>
+> **Follow-up consolidation (developer direction): one global
+> `add_gte_window_test`.** The three per-backend window-registration helpers —
+> `add_d3d12_test`, `add_metal_test`, and the `GTK4` branch of
+> `add_vulkan_test` — are gone. In their place, `gte/Tests/CMakeLists.txt`
+> defines a single cross-platform `add_gte_window_test(NAME … SOURCES …
+> [ASSETS …] [SHADERS …] [LIBS …] [BACKENDS …] [PLIST …] [RESOURCES …]
+> [FRAMEWORKS …])` that branches on the active `TARGET_*` internally and folds
+> in one `omegagte_testwindow` OBJECT library (its source is the active
+> backend's `RunGTETestWindow` impl — `GTETestWindow_Win32.cpp` /
+> `_Cocoa.mm` / `_GTK.cpp`). Every windowed test is now registered exactly
+> ONCE, cross-platform, at the `gte/Tests` level — including the single-backend
+> ones, which pass `BACKENDS d3d12` / `BACKENDS vulkan` to skip cleanly on
+> backends they don't target (the `PLIST`/`RESOURCES` macOS-bundle items are
+> passed unconditionally and ignored off Metal). Metal-bundle mechanics
+> (framework resolution + embedding, rpaths, Info.plist) and the asset/shader
+> staging (compile `.omegasl` → `.omegasllib`, copy next to the exe /
+> `Contents/MacOS`) all live inside the one function. Because the registration
+> moved up a directory, the `GTE_TEST_*` paths dropped their leading `../`
+> (they're now relative to `gte/Tests`, not `gte/Tests/<backend>`).
+>
+> The per-backend `CMakeLists.txt` files now carry ONLY the non-windowed CLI /
+> headless tests, via `add_<backend>_cli_test` helpers — these genuinely differ
+> per backend (D3D12 WinMain subsystem + DLL staging, Metal framework rpaths,
+> Vulkan plain/GTK links) and there is no window entry left in any of them.
+> `add_metal_cli_test` already existed; `add_d3d12_test` → `add_d3d12_cli_test`
+> (object-lib injection + asset/shader staging stripped, since CLI tests open
+> no swap chain), and `add_vulkan_test` → `add_vulkan_cli_test` (its GTK-4
+> window branch removed, leaving the plain-exe path). The single `omegasllib`
+> object library replaces the three former `omegagte_testwindow_{d3d12,metal,
+> vulkan}` libs. `_GTE_TESTWINDOW_OK` gates windowed registration so a host
+> missing a hard dep (Vulkan without GTK 4) skips the windowed tests cleanly
+> instead of erroring.
 >
 > **Verified on native macOS**: `GPUTessTest` builds and runs correctly —
 > opens, computes the CPU/GPU comparison, self-closes via

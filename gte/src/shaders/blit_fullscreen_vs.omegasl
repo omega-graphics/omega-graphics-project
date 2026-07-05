@@ -1,0 +1,16 @@
+#include "BlitShaders.omegaslh"
+
+// Full-screen-triangle vertex shader shared by every Extension 3 blit
+// pipeline (Pipeline-Completion-Extension-Plan.md §3.2/§3.3). Emits one
+// triangle covering the whole viewport from the vertex ID alone -- no vertex
+// buffer needed. Previously duplicated verbatim as an embedded OmegaSL
+// string in GED3D12.cpp, GEMetal.mm, and GEVulkan.cpp; this is now the
+// single source, compiled once into GTEBuiltinShaders.omegasllib.
+vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
+    OmegaGTEBlitVertexData r;
+    float u = (float)((vid << 1) & 2);
+    float v = (float)(vid & 2);
+    r.pos = make_float4(u * 2.0 - 1.0, 1.0 - v * 2.0, 0.0, 1.0);
+    r.uv  = make_float2(u, v);
+    return r;
+}

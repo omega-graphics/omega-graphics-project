@@ -1,8 +1,8 @@
 #include "GED3D12RenderTarget.h"
 #include "GED3D12CommandQueue.h"
 #include "omegaGTE/TE.h"
+#include "../GTEBuiltinShaders.h"
 
-#include <d3dcompiler.h>
 #include <cmath>
 
 #ifndef M_PI
@@ -17,77 +17,26 @@ struct D3D12TessVertex { float pos[4]; float color[4]; };
 struct D3D12TessParams { float rect[4]; float viewport[4]; float color[4]; float extra[4]; };
 struct D3D12PathSeg { float se[4]; float sv[4]; float c[4]; float r[4]; };
 
-const char *hlslRectSrc = R"(
-struct P{float4 r;float4 v;float4 c;float4 e;};struct V{float4 p;float4 c;};
-StructuredBuffer<P> p:register(t0);RWStructuredBuffer<V> o:register(u0);
-[numthreads(1,1,1)]void CSMain(uint3 t:SV_DispatchThreadID){
-float x=p[0].r[0],y=p[0].r[1],w=p[0].r[2],h=p[0].r[3],vw=p[0].v[2],vh=p[0].v[3];float4 c=p[0].c;
-float a=(2*x)/vw,b=(2*y)/vh,d=(2*(x+w))/vw,e=(2*(y+h))/vh;V z;z.c=c;
-z.p=float4(a,b,0,1);o[0]=z;z.p=float4(a,e,0,1);o[1]=z;z.p=float4(d,b,0,1);o[2]=z;
-z.p=float4(d,e,0,1);o[3]=z;z.p=float4(a,e,0,1);o[4]=z;z.p=float4(d,b,0,1);o[5]=z;})";
-
-const char *hlslEllipSrc = R"(
-struct P{float4 r;float4 v;float4 c;float4 e;};struct V{float4 p;float4 c;};
-StructuredBuffer<P> p:register(t0);RWStructuredBuffer<V> o:register(u0);
-[numthreads(1,1,1)]void CSMain(uint3 t:SV_DispatchThreadID){
-float cx=p[0].r[0],cy=p[0].r[1],rx=p[0].e[0],ry=p[0].e[1],ts=p[0].e[3];
-float vw=p[0].v[2],vh=p[0].v[3];float4 c=p[0].c;float pi2=6.28318530718;
-float a0=(pi2*float(t.x))/ts,a1=(pi2*float(t.x+1))/ts;uint b=t.x*3;V z;z.c=c;
-z.p=float4((2*cx)/vw,(2*cy)/vh,0,1);o[b]=z;
-z.p=float4((2*(cx+rx*cos(a0)))/vw,(2*(cy+ry*sin(a0)))/vh,0,1);o[b+1]=z;
-z.p=float4((2*(cx+rx*cos(a1)))/vw,(2*(cy+ry*sin(a1)))/vh,0,1);o[b+2]=z;})";
-
-const char *hlslRPrismSrc = R"(
-struct P{float4 r;float4 v;float4 c;float4 e;};struct V{float4 p;float4 c;};
-StructuredBuffer<P> p:register(t0);RWStructuredBuffer<V> o:register(u0);
-[numthreads(1,1,1)]void CSMain(uint3 t:SV_DispatchThreadID){
-float x0=p[0].r[0],y0=p[0].r[1],z0=p[0].r[2],w=p[0].r[3],h=p[0].e[0],d=p[0].e[1];
-float vw=p[0].v[2],vh=p[0].v[3];float4 c=p[0].c;
-float a=(2*x0)/vw,b=(2*y0)/vh,e=(2*(x0+w))/vw,f=(2*(y0+h))/vh,g=z0,j=z0+d;
-V z;z.c=c;uint i=0;
-z.p=float4(a,b,g,1);o[i++]=z;z.p=float4(a,f,g,1);o[i++]=z;z.p=float4(e,b,g,1);o[i++]=z;
-z.p=float4(e,f,g,1);o[i++]=z;z.p=float4(a,f,g,1);o[i++]=z;z.p=float4(e,b,g,1);o[i++]=z;
-z.p=float4(a,b,j,1);o[i++]=z;z.p=float4(e,b,j,1);o[i++]=z;z.p=float4(a,f,j,1);o[i++]=z;
-z.p=float4(e,f,j,1);o[i++]=z;z.p=float4(e,b,j,1);o[i++]=z;z.p=float4(a,f,j,1);o[i++]=z;
-z.p=float4(a,b,g,1);o[i++]=z;z.p=float4(a,b,j,1);o[i++]=z;z.p=float4(a,f,g,1);o[i++]=z;
-z.p=float4(a,f,j,1);o[i++]=z;z.p=float4(a,b,j,1);o[i++]=z;z.p=float4(a,f,g,1);o[i++]=z;
-z.p=float4(e,b,g,1);o[i++]=z;z.p=float4(e,f,g,1);o[i++]=z;z.p=float4(e,b,j,1);o[i++]=z;
-z.p=float4(e,f,j,1);o[i++]=z;z.p=float4(e,f,g,1);o[i++]=z;z.p=float4(e,b,j,1);o[i++]=z;
-z.p=float4(a,b,g,1);o[i++]=z;z.p=float4(e,b,g,1);o[i++]=z;z.p=float4(a,b,j,1);o[i++]=z;
-z.p=float4(e,b,j,1);o[i++]=z;z.p=float4(e,b,g,1);o[i++]=z;z.p=float4(a,b,j,1);o[i++]=z;
-z.p=float4(a,f,g,1);o[i++]=z;z.p=float4(a,f,j,1);o[i++]=z;z.p=float4(e,f,g,1);o[i++]=z;
-z.p=float4(e,f,j,1);o[i++]=z;z.p=float4(a,f,j,1);o[i++]=z;z.p=float4(e,f,g,1);o[i++]=z;})";
-
-const char *hlslPathSrc = R"(
-struct S{float4 se;float4 sv;float4 c;float4 r;};struct V{float4 p;float4 c;};
-StructuredBuffer<S> s:register(t0);RWStructuredBuffer<V> v:register(u0);
-[numthreads(1,1,1)]void CSMain(uint3 t:SV_DispatchThreadID){
-float sx=s[t.x].se[0],sy=s[t.x].se[1],ex=s[t.x].se[2],ey=s[t.x].se[3];
-float sw=s[t.x].sv[0],vw=s[t.x].sv[2],vh=s[t.x].sv[3];float4 c=s[t.x].c;
-float dx=ex-sx,dy=ey-sy,l=sqrt(dx*dx+dy*dy),hw=sw*0.5;
-float nx=0,ny=0;if(l>0.0001){nx=-dy/l*hw;ny=dx/l*hw;}
-uint b=t.x*6;V o;o.c=c;
-o.p=float4((2*(sx+nx))/vw,(2*(sy+ny))/vh,0,1);v[b]=o;
-o.p=float4((2*(sx-nx))/vw,(2*(sy-ny))/vh,0,1);v[b+1]=o;
-o.p=float4((2*(ex+nx))/vw,(2*(ey+ny))/vh,0,1);v[b+2]=o;
-o.p=float4((2*(ex+nx))/vw,(2*(ey+ny))/vh,0,1);v[b+3]=o;
-o.p=float4((2*(sx-nx))/vw,(2*(sy-ny))/vh,0,1);v[b+4]=o;
-o.p=float4((2*(ex-nx))/vw,(2*(ey-ny))/vh,0,1);v[b+5]=o;})";
-
-ComPtr<ID3D12PipelineState> compileD3D12Kernel(ID3D12Device *dev, const char *src,
-                                                ID3D12RootSignature *rootSig) {
-    ComPtr<ID3DBlob> csBlob, errBlob;
-    HRESULT hr = D3DCompile(src, strlen(src), nullptr, nullptr, nullptr,
-                            "CSMain", "cs_5_0", 0, 0, &csBlob, &errBlob);
-    if (FAILED(hr)) return nullptr;
+// Triangulation-Engine-Completion-Plan.md Phase 4 -- the four kernels below
+// used to be hand-authored HLSL string literals compiled at first use via
+// D3DCompile. They are now single-sourced in OmegaSL
+// (gte/src/shaders/triangulate_*.omegasl), compiled offline into
+// GTEBuiltinShaders.omegasllib as DXIL, and loaded here directly from the
+// compiled bytecode -- no D3DCompile, no HLSL text.
+ComPtr<ID3D12PipelineState> loadBuiltinKernel(ID3D12Device *dev, const char *name,
+                                              ID3D12RootSignature *rootSig) {
+    const omegasl_shader *shader = GTEBuiltinShaders::find(name);
+    if (!shader || shader->data == nullptr || shader->dataSize == 0) {
+        return nullptr;
+    }
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC desc {};
     desc.pRootSignature = rootSig;
-    desc.CS = { csBlob->GetBufferPointer(), csBlob->GetBufferSize() };
+    desc.CS = { shader->data, shader->dataSize };
     desc.NodeMask = dev->GetNodeCount();
 
     ComPtr<ID3D12PipelineState> pso;
-    hr = dev->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso));
+    HRESULT hr = dev->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso));
     return SUCCEEDED(hr) ? pso : nullptr;
 }
 
@@ -146,10 +95,10 @@ struct D3D12TessPipelines {
         dev->CreateRootSignature(dev->GetNodeCount(), sigBlob->GetBufferPointer(),
                                  sigBlob->GetBufferSize(), IID_PPV_ARGS(&rootSig));
 
-        rect  = compileD3D12Kernel(dev.Get(), hlslRectSrc, rootSig.Get());
-        ellip = compileD3D12Kernel(dev.Get(), hlslEllipSrc, rootSig.Get());
-        prism = compileD3D12Kernel(dev.Get(), hlslRPrismSrc, rootSig.Get());
-        path  = compileD3D12Kernel(dev.Get(), hlslPathSrc, rootSig.Get());
+        rect  = loadBuiltinKernel(dev.Get(), GTEBuiltinShaders::TriangulateRect, rootSig.Get());
+        ellip = loadBuiltinKernel(dev.Get(), GTEBuiltinShaders::TriangulateEllipsoid, rootSig.Get());
+        prism = loadBuiltinKernel(dev.Get(), GTEBuiltinShaders::TriangulateRectPrism, rootSig.Get());
+        path  = loadBuiltinKernel(dev.Get(), GTEBuiltinShaders::TriangulatePath2D, rootSig.Get());
     }
 };
 

@@ -1,0 +1,14 @@
+#include "BlitShaders.omegaslh"
+
+// Built-in "blit_copy" fragment shader (Pipeline-Completion-Extension-Plan.md
+// Extension 3 §3.4) -- a straight passthrough sample of the source texture.
+// Pairs with blit_fullscreen_vs.omegasl's OmegaGTEBlitVertexData output.
+// Source texture + sampler are bound at fragment-shader resource slot 0/0,
+// matching BlitPipelineDescriptor's documented contract.
+texture2d srcTex : 0;
+static sampler2d srcSampler(filter=linear);
+
+[in srcTex, in srcSampler]
+fragment float4 blit_copy(OmegaGTEBlitVertexData r){
+    return sample(srcSampler, srcTex, r.uv);
+}

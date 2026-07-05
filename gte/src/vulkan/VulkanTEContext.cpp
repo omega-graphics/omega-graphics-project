@@ -2,6 +2,7 @@
 
 #include "omegaGTE/GTEBase.h"
 #include "omegaGTE/TE.h"
+#include "../GTEBuiltinShaders.h"
 
 #include "GEVulkanRenderTarget.h"
 #include "GEVulkanCommandQueue.h"
@@ -73,12 +74,22 @@ VulkanTessBufferPair createMappableBuffer(VmaAllocator allocator, VkDeviceSize s
     return pair;
 }
 
-#include "VulkanTessSpirv.inc"
-
-VkShaderModule createTessModule(VkDevice device, const uint32_t *spirv, size_t sizeBytes) {
+// Triangulation-Engine-Completion-Plan.md Phase 4 -- the four kernels below
+// used to be a hand-authored SPIR-V placeholder (VulkanTessSpirv.inc's arrays
+// were header-only stubs with no function body, so `vkCreateComputePipelines`
+// always failed validation and this path silently always fell back to CPU).
+// They are now single-sourced in OmegaSL (gte/src/shaders/triangulate_*.omegasl),
+// compiled offline into GTEBuiltinShaders.omegasllib as real SPIR-V, and
+// loaded here directly from the compiled bytecode -- this is GPU
+// triangulation's first genuinely working path on Vulkan.
+VkShaderModule loadBuiltinModule(VkDevice device, const char *name) {
+    const omegasl_shader *shader = GTEBuiltinShaders::find(name);
+    if (!shader || shader->data == nullptr || shader->dataSize == 0) {
+        return VK_NULL_HANDLE;
+    }
     VkShaderModuleCreateInfo info {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    info.codeSize = sizeBytes;
-    info.pCode = spirv;
+    info.codeSize = shader->dataSize;
+    info.pCode = static_cast<const uint32_t *>(shader->data);
     VkShaderModule mod = VK_NULL_HANDLE;
     vkCreateShaderModule(device, &info, nullptr, &mod);
     return mod;
@@ -137,10 +148,10 @@ struct VulkanTessPipelines {
         ready = true;
         engine = e;
 
-        VkShaderModule rectMod = createTessModule(e->device, kTessRectSpirv, sizeof(kTessRectSpirv));
-        VkShaderModule ellipMod = createTessModule(e->device, kTessEllipSpirv, sizeof(kTessEllipSpirv));
-        VkShaderModule prismMod = createTessModule(e->device, kTessRPrismSpirv, sizeof(kTessRPrismSpirv));
-        VkShaderModule pathMod = createTessModule(e->device, kTessPathSpirv, sizeof(kTessPathSpirv));
+        VkShaderModule rectMod = loadBuiltinModule(e->device, GTEBuiltinShaders::TriangulateRect);
+        VkShaderModule ellipMod = loadBuiltinModule(e->device, GTEBuiltinShaders::TriangulateEllipsoid);
+        VkShaderModule prismMod = loadBuiltinModule(e->device, GTEBuiltinShaders::TriangulateRectPrism);
+        VkShaderModule pathMod = loadBuiltinModule(e->device, GTEBuiltinShaders::TriangulatePath2D);
 
         if (rectMod && ellipMod && prismMod && pathMod) {
             rect = createTessKernel(e->device, rectMod);

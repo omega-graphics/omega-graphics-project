@@ -6,7 +6,9 @@
 #include <thread>
 #include <iostream>
 #include <cmath>
+#include <cstdint>
 #include <exception>
+#include <unordered_map>
 
 _NAMESPACE_BEGIN_
 
@@ -233,6 +235,102 @@ TETriangulationParams TETriangulationParams::GraphicsPath3D(unsigned int vectorP
 unsigned int TETriangulationResult::TEMesh::vertexCount() {
     auto polygonCount = vertexPolygons.size();
     return polygonCount * 3;
+}
+
+namespace {
+    /// Quantized identity of one `TEMesh::Vertex`, used to hash/compare
+    /// corners for `buildIndexed()`'s dedup pass. Position components are
+    /// quantized to `positionEpsilon`; attachment components (present only
+    /// when `hasAttachment`) are quantized to a fixed, finer epsilon — the
+    /// dedup goal is collapsing bit-identical shared-vertex data, not fuzzy
+    /// attribute matching.
+    struct IndexedVertexKey {
+        int64_t px = 0, py = 0, pz = 0;
+        bool hasAttachment = false;
+        int64_t c0 = 0, c1 = 0, c2 = 0, c3 = 0;
+        int64_t u2x = 0, u2y = 0;
+        int64_t u3x = 0, u3y = 0, u3z = 0;
+        int64_t nx = 0, ny = 0, nz = 0;
+
+        bool operator==(const IndexedVertexKey &o) const {
+            return px == o.px && py == o.py && pz == o.pz &&
+                   hasAttachment == o.hasAttachment &&
+                   c0 == o.c0 && c1 == o.c1 && c2 == o.c2 && c3 == o.c3 &&
+                   u2x == o.u2x && u2y == o.u2y &&
+                   u3x == o.u3x && u3y == o.u3y && u3z == o.u3z &&
+                   nx == o.nx && ny == o.ny && nz == o.nz;
+        }
+    };
+
+    struct IndexedVertexKeyHash {
+        size_t operator()(const IndexedVertexKey &k) const {
+            size_t h = 0;
+            auto mix = [&h](int64_t v) {
+                h ^= std::hash<int64_t>()(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            };
+            mix(k.px); mix(k.py); mix(k.pz); mix(k.hasAttachment ? 1 : 0);
+            mix(k.c0); mix(k.c1); mix(k.c2); mix(k.c3);
+            mix(k.u2x); mix(k.u2y);
+            mix(k.u3x); mix(k.u3y); mix(k.u3z);
+            mix(k.nx); mix(k.ny); mix(k.nz);
+            return h;
+        }
+    };
+
+    int64_t quantize(float v, float epsilon) {
+        return static_cast<int64_t>(std::llround(static_cast<double>(v) / static_cast<double>(epsilon)));
+    }
+}
+
+void TETriangulationResult::TEMesh::buildIndexed(float positionEpsilon) {
+    const float posEps = positionEpsilon > 0.f ? positionEpsilon : 1e-6f;
+    const float attachmentEps = 1e-5f;
+
+    IndexedData out;
+    std::unordered_map<IndexedVertexKey, uint32_t, IndexedVertexKeyHash> lookup;
+    out.vertices.reserve(vertexPolygons.size() * 3);
+    out.indices.reserve(vertexPolygons.size() * 3);
+
+    auto emit = [&](const Vertex &v) {
+        IndexedVertexKey key;
+        key.px = quantize(v.pt.x, posEps);
+        key.py = quantize(v.pt.y, posEps);
+        key.pz = quantize(v.pt.z, posEps);
+        key.hasAttachment = v.attachment.has_value();
+        if (key.hasAttachment) {
+            const auto &a = *v.attachment;
+            key.c0 = quantize(a.color[0][0], attachmentEps);
+            key.c1 = quantize(a.color[1][0], attachmentEps);
+            key.c2 = quantize(a.color[2][0], attachmentEps);
+            key.c3 = quantize(a.color[3][0], attachmentEps);
+            key.u2x = quantize(a.texture2Dcoord[0][0], attachmentEps);
+            key.u2y = quantize(a.texture2Dcoord[1][0], attachmentEps);
+            key.u3x = quantize(a.texture3Dcoord[0][0], attachmentEps);
+            key.u3y = quantize(a.texture3Dcoord[1][0], attachmentEps);
+            key.u3z = quantize(a.texture3Dcoord[2][0], attachmentEps);
+            key.nx = quantize(a.normal[0][0], attachmentEps);
+            key.ny = quantize(a.normal[1][0], attachmentEps);
+            key.nz = quantize(a.normal[2][0], attachmentEps);
+        }
+
+        auto found = lookup.find(key);
+        if (found != lookup.end()) {
+            out.indices.push_back(found->second);
+            return;
+        }
+        uint32_t newIndex = static_cast<uint32_t>(out.vertices.size());
+        out.vertices.push_back(v);
+        lookup.emplace(key, newIndex);
+        out.indices.push_back(newIndex);
+    };
+
+    for (auto &polygon : vertexPolygons) {
+        emit(polygon.a);
+        emit(polygon.b);
+        emit(polygon.c);
+    }
+
+    indexedData = std::move(out);
 }
 
 unsigned int TETriangulationResult::totalVertexCount() {

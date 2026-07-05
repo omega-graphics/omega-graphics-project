@@ -1,95 +1,11 @@
 include(CMakeParseArguments)
 
-# Cross-backend test-window runtime (GTETestWindow-CrossBackend-Plan.md, Phase
-# 2). OBJECT library so the Cocoa windowing + run-loop implementation is
-# compiled once and folded into each windowed (bundled) test exe. PUBLIC_DEFS
-# (TARGET_METAL) is inherited from the parent gte/CMakeLists.txt; the Cocoa /
-# Metal / QuartzCore frameworks the implementation needs are linked by each test
-# exe through add_metal_test's FRAMEWORKS list.
-add_library(omegagte_testwindow_metal OBJECT GTETestWindow_Cocoa.mm)
-target_include_directories(omegagte_testwindow_metal PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/.."
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../common/include")
-target_compile_definitions(omegagte_testwindow_metal PRIVATE ${PUBLIC_DEFS})
-
-function(add_metal_test)
-    cmake_parse_arguments("_ARG" "" "NAME;PLIST" "SOURCES;RESOURCES;FRAMEWORKS;LIBS;ASSETS;SHADERS" ${ARGN})
-    get_target_property(OMEGA_GTE_LIB "OmegaGTE" RUNTIME_OUTPUT_DIRECTORY)
-    set(OMEGA_GTE_LIB "${OMEGA_GTE_LIB}/OmegaGTE.framework")
-    message("${OMEGA_GTE_LIB}")
-    add_executable(${_ARG_NAME} MACOSX_BUNDLE
-        ${_ARG_SOURCES}
-        ${_ARG_RESOURCES}
-        $<TARGET_OBJECTS:omegagte_testwindow_metal>)
-    add_dependencies(${_ARG_NAME} "OmegaGTE")
-    
-    set(_FRAMEWORKS)
-    foreach(f ${_ARG_FRAMEWORKS})
-        find_library("__${f}" ${f})
-        list(APPEND _FRAMEWORKS "${__${f}}")
-    endforeach()
-
-    target_link_libraries(${_ARG_NAME} PRIVATE "OmegaGTE" ${_ARG_LIBS} ${_FRAMEWORKS})
-
-    set_target_properties(${_ARG_NAME} PROPERTIES
-        MACOSX_BUNDLE_INFO_PLIST ${_ARG_PLIST}
-        RESOURCE "${_ARG_RESOURCES}"
-        XCODE_EMBED_FRAMEWORKS "OmegaGTE"
-        BUILD_RPATH "@executable_path/../Frameworks/OmegaGTE.framework/Versions/0.5;@executable_path/../Frameworks"
-        INSTALL_RPATH "@executable_path/../Frameworks/OmegaGTE.framework/Versions/0.5;@executable_path/../Frameworks"
-    )
-    target_link_options(${_ARG_NAME} PRIVATE
-        "-Wl,-rpath,@executable_path/../Frameworks/OmegaGTE.framework/Versions/0.5"
-        "-Wl,-rpath,@executable_path/../Frameworks"
-    )
-
-    # Embed OmegaGTE.framework and OmegaCommon so the app bundle is self-contained (Ninja/Unix make; Xcode uses XCODE_EMBED_FRAMEWORKS)
-    set(_BUNDLE_CONTENTS "${CMAKE_CURRENT_BINARY_DIR}/${_ARG_NAME}.app/Contents")
-    set(_BUNDLE_FRAMEWORKS "${_BUNDLE_CONTENTS}/Frameworks")
-    add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${_BUNDLE_FRAMEWORKS}"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/Frameworks/OmegaGTE.framework" "${_BUNDLE_FRAMEWORKS}/OmegaGTE.framework"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/lib/libOmegaCommonCore.dylib" "${_BUNDLE_FRAMEWORKS}/libOmegaCommonCore.dylib"
-        COMMENT "Embedding OmegaGTE.framework and OmegaCommonCore into ${_ARG_NAME}.app"
-    )
-
-    # Stage runtime assets next to the bundle executable (Contents/MacOS), which
-    # is where the test resolves "./<file>" — it chdir's to getExecutableDir()
-    # at startup. $<TARGET_FILE_DIR> for a MACOSX_BUNDLE target is Contents/MacOS.
-    foreach(_asset IN LISTS _ARG_ASSETS)
-        if(NOT IS_ABSOLUTE "${_asset}")
-            set(_asset_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_asset}")
-        else()
-            set(_asset_abs "${_asset}")
-        endif()
-        get_filename_component(_asset_name "${_asset_abs}" NAME)
-        add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_asset_abs}" "$<TARGET_FILE_DIR:${_ARG_NAME}>/${_asset_name}")
-    endforeach()
-
-    # Compile each OmegaSL source to a .omegasllib and stage it next to the
-    # bundle executable. INCLUDE_DIRS points omegaslc at the shader's own
-    # directory so a shared `#include "*.omegaslh"` there resolves.
-    foreach(_shader IN LISTS _ARG_SHADERS)
-        if(NOT IS_ABSOLUTE "${_shader}")
-            set(_shader_abs "${CMAKE_CURRENT_SOURCE_DIR}/${_shader}")
-        else()
-            set(_shader_abs "${_shader}")
-        endif()
-        get_filename_component(_shader_basename "${_shader_abs}" NAME_WE)
-        get_filename_component(_shader_dir "${_shader_abs}" DIRECTORY)
-        set(_shader_target "${_ARG_NAME}_${_shader_basename}_Shader")
-        set(_shader_output "${CMAKE_CURRENT_BINARY_DIR}/${_shader_basename}.omegasllib")
-        add_omegasl_lib("${_shader_target}" "${_shader_abs}" "${_shader_output}"
-            INCLUDE_DIRS "${_shader_dir}")
-        add_dependencies(${_ARG_NAME} "${_shader_target}")
-        add_custom_command(TARGET ${_ARG_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_shader_output}" "$<TARGET_FILE_DIR:${_ARG_NAME}>/${_shader_basename}.omegasllib")
-    endforeach()
-endfunction()
+# The windowed Metal tests (2DTest, GPUTessTest) are now registered once,
+# cross-platform, via add_gte_window_test in the parent gte/Tests/CMakeLists.txt
+# (which owns the Cocoa RunGTETestWindow object library and the bundle/
+# framework-embedding logic). This file carries only the NON-windowed CLI /
+# headless Metal tests, plus the Cocoa bundle template items (Info.plist /
+# .nib) that the windowed tests still reference by path.
 
 function(add_metal_cli_test)
     cmake_parse_arguments("_ARG" "" "NAME" "SOURCES;FRAMEWORKS;LIBS" ${ARGN})
@@ -109,32 +25,6 @@ function(add_metal_cli_test)
     )
 endfunction()
 
-# 2DTest now builds from the shared, backend-neutral body declared once in
-# gte/Tests/CMakeLists.txt (GTE_TEST_2DTEST_*, Phase 2). The runtime assets
-# (test.png, the OmegaSL source) are the canonical shared copies under
-# gte/Tests/assets/2DTest/; the shader is precompiled here (Open Decision #2)
-# and staged into the bundle, and test.png is loaded portably via
-# GETextureAsset. The local 2DTest/ subfolder keeps only the Cocoa bundle
-# template items (Info.plist, the .nib/.xib).
-add_metal_test(
-    NAME
-    "2DTest"
-    SOURCES
-    ${GTE_TEST_2DTEST_SOURCES}
-    RESOURCES
-    "2DTest/English.lproj/MainMenu.xib"
-    PLIST
-    "${CMAKE_CURRENT_SOURCE_DIR}/2DTest/Info.plist"
-    ASSETS
-    ${GTE_TEST_2DTEST_ASSETS}
-    SHADERS
-    ${GTE_TEST_2DTEST_SHADERS}
-    FRAMEWORKS
-    "Cocoa"
-    "Metal"
-    "QuartzCore"
-)
-
 add_metal_cli_test(
     NAME
     "ComputeTest"
@@ -143,30 +33,6 @@ add_metal_cli_test(
     FRAMEWORKS
     "Metal"
     "Foundation"
-)
-
-# GPUTessTest now builds from the shared, backend-neutral body declared once
-# in gte/Tests/CMakeLists.txt (GTE_TEST_GPUTESSTEST_*, Phase 4). It used to be
-# a CLI test that hand-rolled a bare, windowless CAMetalLayer with no
-# NSApplication run loop at all; it now goes through the same windowed
-# RunGTETestWindow path as the other two backends (a real, if briefly-
-# visible, window). It renders nothing — it only needs a
-# NativeRenderTargetDescriptor to build a TE context from — so it computes
-# its CPU-vs-GPU comparison in onReady and self-closes with the pass/fail
-# exit code via RequestGTETestWindowClose. No nib is needed (the window is
-# built programmatically), so metal/GPUTessTest/ carries only the Info.plist
-# bundle template.
-add_metal_test(
-    NAME
-    "GPUTessTest"
-    SOURCES
-    ${GTE_TEST_GPUTESSTEST_SOURCES}
-    PLIST
-    "${CMAKE_CURRENT_SOURCE_DIR}/GPUTessTest/Info.plist"
-    FRAMEWORKS
-    "Cocoa"
-    "Metal"
-    "QuartzCore"
 )
 
 add_metal_cli_test(

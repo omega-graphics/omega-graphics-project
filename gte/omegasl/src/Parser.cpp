@@ -468,12 +468,28 @@ namespace omegasl {
                         }
                         else if(propName == "outputcontrolpoints"){
                             _s->tessDesc.outputControlPoints = std::stoul(propValue);
+                            _s->tessDesc.outputControlPointsSet = true;
+                        }
+                        /// §16 — `patchfn=<name>` names the patch-constant
+                        /// function that produces this hull's tessellation
+                        /// factors. `propValue` is the raw identifier token.
+                        else if(propName == "patchfn"){
+                            _s->tessDesc.patchFn = propValue;
                         }
 
                         t = lexer->nextTok();
                         if(t.type == TOK_COMMA){
                             t = lexer->nextTok();
                         }
+                    }
+                    /// §16 — when the descriptor omits `outputcontrolpoints`,
+                    /// normalize to the domain's natural patch size so a
+                    /// `domain(domain=quad)` emits `[[patch(quad, 4)]]` (Metal)
+                    /// / a 4-CP `OutputPatch` (HLSL) rather than the tri
+                    /// default of 3.
+                    if(!_s->tessDesc.outputControlPointsSet){
+                        _s->tessDesc.outputControlPoints =
+                            (_s->tessDesc.domain == ast::ShaderDecl::TessellationDesc::Quad) ? 4 : 3;
                     }
                 }
                 else {

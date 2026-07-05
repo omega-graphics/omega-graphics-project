@@ -567,6 +567,19 @@ namespace omegasl {
                 Partitioning partitioning = Integer;
                 OutputTopology outputTopology = TriangleCW;
                 unsigned outputControlPoints = 3;
+                /// §16 — true once the parser saw an explicit
+                /// `outputcontrolpoints=N`. When false, the parser normalizes
+                /// `outputControlPoints` to the domain's natural patch size
+                /// (tri → 3, quad → 4) so a `domain(domain=quad)` that omits
+                /// the count still emits `[[patch(quad, 4)]]`.
+                bool outputControlPointsSet = false;
+                /// §16 — name of the patch-constant function (`patchfn=<name>`
+                /// in the hull descriptor). Empty on a `domain` shader and on a
+                /// hull that omits it (Sema rejects a hull with no patchfn).
+                /// The named function returns an internal struct whose
+                /// `TessFactor`/`InsideTessFactor` fields drive the
+                /// fixed-function tessellator.
+                OmegaCommon::String patchFn;
             };
             TessellationDesc tessDesc;
             /// Mesh-stage descriptor, populated for `shaderType == Mesh` from

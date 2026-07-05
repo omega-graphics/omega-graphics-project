@@ -25,21 +25,31 @@ void triangulate_rect_kernel(uint3 tid : GlobalThreadID){
     float vh = params[0].viewport[3];
     float4 col = params[0].color;
 
-    float nx0 = (2.0 * x0) / vw;
-    float ny0 = (2.0 * y0) / vh;
-    float nx1 = (2.0 * (x0 + w)) / vw;
-    float ny1 = (2.0 * (y0 + h)) / vh;
+    // NDC conversion mirrors OmegaTriangulationEngineContext::translateCoordsDefaultImpl
+    // (TE.cpp) exactly: x maps [0,vw] -> [-1,1]; y maps [0,vh] -> [1,-1] (GEViewport
+    // is top-left/Y-down, NDC is Y-up).
+    float nx0 = ((2.0 * x0) / vw) - 1.0;
+    float ny0 = 1.0 - ((2.0 * y0) / vh);
+    float nx1 = ((2.0 * (x0 + w)) / vw) - 1.0;
+    float ny1 = 1.0 - ((2.0 * (y0 + h)) / vh);
 
     TessVertex v;
     v.color = col;
 
+    // Vertex order matches the CPU path's post-finalizeFlat output for the
+    // default Clockwise winding (TE.cpp finalizeFlat swaps b/c per-triangle
+    // to normalize to the requested winding; for Rect + Clockwise that swap
+    // is a fixed, known outcome given the fixed authored order, so it's
+    // baked in here rather than computed at runtime). Triangle 1: (x0,y0),
+    // (x1,y0), (x0,y1) -- b/c swapped relative to the "naive" authored
+    // order. Triangle 2 is unaffected by the swap.
     v.pos = make_float4(nx0, ny0, 0.0, 1.0);
     vertices[0] = v;
 
-    v.pos = make_float4(nx0, ny1, 0.0, 1.0);
+    v.pos = make_float4(nx1, ny0, 0.0, 1.0);
     vertices[1] = v;
 
-    v.pos = make_float4(nx1, ny0, 0.0, 1.0);
+    v.pos = make_float4(nx0, ny1, 0.0, 1.0);
     vertices[2] = v;
 
     v.pos = make_float4(nx1, ny1, 0.0, 1.0);

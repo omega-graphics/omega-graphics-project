@@ -1,40 +1,95 @@
+// §16 — tessellation surface: a hull names a patch-constant function
+// (`patchfn=`) that returns a struct of `TessFactor` / `InsideTessFactor`
+// factors, and a domain reads a `DomainLocation`. Covers both the tri
+// (3 edge + 1 inside) and quad (4 edge + 2 inside) domains.
+//
+// On Metal this compiles end-to-end: a hull lowers to a compute kernel
+// (per-CP output store + a tess-factor epilogue via the patchfn) and a
+// domain lowers to a `[[patch(...)]]` post-tessellation vertex consuming
+// `patch_control_point<CP>` + `[[position_in_patch]]`. HLSL (§16-B) and
+// GLSL (§16-C) codegen are not yet implemented, so this stays WILL_FAIL on
+// those backends.
 
-struct HullInput {
+struct ControlPointIn {
     float4 pos;
 };
 
-struct HullOutput {
+struct ControlPointOut {
     float4 pos;
 };
 
-struct PatchConst {
-    float edgeTess;
-    float insideTess;
+struct DomainOut internal {
+    float4 pos : Position;
 };
 
-buffer<HullInput> controlPoints : 0;
-buffer<HullOutput> hullOut : 1;
+struct TriPatchConstants internal {
+    float edges[3]  : TessFactor;
+    float inside[1] : InsideTessFactor;
+};
+
+struct QuadPatchConstants internal {
+    float edges[4]  : TessFactor;
+    float inside[2] : InsideTessFactor;
+};
+
+buffer<ControlPointIn> controlPoints : 0;
+buffer<ControlPointOut> hullOut : 1;
+
+// --- Triangle domain -------------------------------------------------------
+
+TriPatchConstants triConstants() {
+    TriPatchConstants p;
+    p.edges[0] = 1.0;
+    p.edges[1] = 1.0;
+    p.edges[2] = 1.0;
+    p.inside[0] = 1.0;
+    return p;
+}
 
 [in controlPoints, out hullOut]
-hull(domain=tri, partitioning=integer, outputtopology=triangle_cw, outputcontrolpoints=3)
-HullOutput triHull(uint vid : VertexID){
-    HullOutput o;
+hull(domain=tri, partitioning=integer, outputtopology=triangle_cw, outputcontrolpoints=3, patchfn=triConstants)
+ControlPointOut triHull(uint vid : VertexID) {
+    ControlPointOut o;
     o.pos = controlPoints[vid].pos;
     return o;
 }
 
 [in controlPoints]
 domain(domain=tri)
-HullOutput triDomain(uint vid : VertexID){
-    HullOutput o;
+DomainOut triDomain(float3 loc : DomainLocation) {
+    DomainOut o;
+    o.pos = controlPoints[0].pos * loc.x
+          + controlPoints[1].pos * loc.y
+          + controlPoints[2].pos * loc.z;
+    return o;
+}
+
+// --- Quad domain -----------------------------------------------------------
+
+QuadPatchConstants quadConstants() {
+    QuadPatchConstants p;
+    p.edges[0] = 2.0;
+    p.edges[1] = 2.0;
+    p.edges[2] = 2.0;
+    p.edges[3] = 2.0;
+    p.inside[0] = 2.0;
+    p.inside[1] = 2.0;
+    return p;
+}
+
+[in controlPoints, out hullOut]
+hull(domain=quad, partitioning=fractional_even, outputtopology=triangle_ccw, outputcontrolpoints=4, patchfn=quadConstants)
+ControlPointOut quadHull(uint vid : VertexID) {
+    ControlPointOut o;
     o.pos = controlPoints[vid].pos;
     return o;
 }
 
-[in controlPoints, out hullOut]
-hull(domain=quad, partitioning=fractional_even, outputtopology=triangle_ccw, outputcontrolpoints=4)
-HullOutput quadHull(uint vid : VertexID){
-    HullOutput o;
-    o.pos = controlPoints[vid].pos;
+[in controlPoints]
+domain(domain=quad)
+DomainOut quadDomain(float2 loc : DomainLocation) {
+    DomainOut o;
+    o.pos = controlPoints[0].pos * loc.x
+          + controlPoints[1].pos * loc.y;
     return o;
 }

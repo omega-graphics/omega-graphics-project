@@ -4014,10 +4014,14 @@ produces a tessellation pipeline that actually runs:
   patch-constant function**, so `dxc` rejects every hull shader
   (`OmegaSL-Reference.md` bug 4; `omegasl_compile_tessellation` is
   `WILL_FAIL` on `TARGET_DIRECTX`).
-- **Metal** rejects `hull`/`domain` at codegen time — `supportsStage()`
-  returns false. Metal's model is a compute kernel + post-tessellation
-  vertex, structurally different from the single D3D-style hull function
-  (`OmegaSL-Reference.md` bug 3; `WILL_FAIL` on `APPLE`).
+- **Metal** — RESOLVED for codegen (§16-A + §16-D landed). A `hull` lowers
+  to a compute kernel (per-CP output store + a tess-factor epilogue that runs
+  the `patchfn` and writes `MTLTriangle/QuadTessellationFactorsHalf`), and a
+  `domain` lowers to a `[[patch(...)]]` post-tessellation vertex consuming
+  `patch_control_point<CP>` + `[[position_in_patch]]`. The generated MSL
+  compiles with `metal`; `omegasl_compile_tessellation` is expected-pass on
+  `APPLE`. Runtime pipeline plumbing (`drawPatches`, factor-buffer binding) is
+  still Phase E. (was `OmegaSL-Reference.md` bug 3.)
 - **GLSL** emits `.tesc`/`.tese` skeletons (`layout(vertices=N) out`, the
   `layout(domain,spacing,winding) in`, and a `gl_Position` return route)
   but never writes `gl_TessLevelOuter/Inner[]` or reads `gl_TessCoord`, so
@@ -4142,6 +4146,102 @@ the shader-map writer rather than leaking the split into the public
 `omegasl_shader` API. Remove the `supportsStage()` rejection once it
 compiles.
 
+#### Phase A + D implementation detail (this pass — Metal codegen only)
+
+Scope of this pass (confirmed by Alex): land the shared front-end (Phase A)
+and Metal codegen (Phase D) **only** — no runtime pipeline plumbing (Phase E
+is a follow-up). The verification bar is: the generated MSL compiles with the
+real `metal` compiler (`xcrun -sdk macosx metal`), driven by the existing
+`omegasl_compile_tessellation` ctest (flip its `APPLE` `WILL_FAIL` off).
+HLSL/GLSL stay `WILL_FAIL` (Phases B/C unimplemented); the non-Apple non-DX
+config is *added* to the `WILL_FAIL` set because the rewritten test file now
+uses the full new surface that GLSL cannot yet honor.
+
+**Phase A — front-end surface (backend-agnostic).**
+
+* `AST.def`: three new attribute macros — `ATTRIBUTE_TESS_FACTOR "TessFactor"`,
+  `ATTRIBUTE_INSIDE_TESS_FACTOR "InsideTessFactor"`,
+  `ATTRIBUTE_DOMAIN_LOCATION "DomainLocation"`.
+* `AST.h`: `TessellationDesc::patchFn` (`OmegaCommon::String`, empty ⇒ none).
+* `Parser.cpp` (`KW_HULL` arm): parse `patchfn=<ident>` into
+  `tessDesc.patchFn`, alongside the existing `domain/partitioning/
+  outputtopology/outputcontrolpoints` props.
+* `Sema.h` (`isValidAttributeInContext`): allow `TessFactor` /
+  `InsideTessFactor` as `StructField` semantics; allow `DomainLocation` as a
+  `DomainShaderArgument` param semantic.
+* `Sema.cpp` (SHADER_DECL, hull arm): a hull **must** name a `patchfn`; the
+  named function must exist and return an `internal` struct whose only
+  attributed fields are `TessFactor`/`InsideTessFactor`; edge/inside factor
+  counts must match the domain (tri → 3 edge + 1 inside; quad → 4 + 2). The
+  hull must have exactly **one** `out` buffer resource (the per-CP output
+  store target on Metal). A `DomainLocation` param's rank must match the
+  domain (`float3` tri / `float2` quad). First-cut restriction: the patchfn
+  takes **zero parameters** (multi-arg patchfn — passing control points /
+  a uniform — is a follow-up); Sema enforces the zero-arg rule.
+
+**Phase D — Metal lowering model: per-control-point dispatch (INTERIM).**
+
+> **Superseded target (Alex, 2026-07-05): per-*patch* dispatch.** The final
+> Metal design dispatches the hull/factor kernel **one thread per patch**, so
+> the dispatch aligns with the per-patch tessellation config the shader
+> declares (domain / control-point count / partitioning), read by the runtime
+> from the tessellation descriptor serialized into the `.omegasllib` metadata.
+> The per-control-point shape below is the **interim** cut that compiles and
+> is `metal`-verified today; moving to per-patch dispatch is Phase-E work and
+> requires a **codegen revision in lockstep** (it is *not* runtime-only) —
+> see "Phase E — Metal per-patch dispatch" below. The per-CP kernel would
+> produce wrong results if dispatched per-patch (its `thread_position_in_grid`
+> is a control-point index, not a patch index), so codegen and dispatch must
+> change together.
+
+Each of the two OmegaSL decls emits exactly one MSL entry point (no shader-map
+stage-expansion is needed for codegen; the runtime-facing "two entries for one
+pair" metadata is a Phase E concern):
+
+* **`hull` → `[[kernel]]`**, dispatched one thread per output control point
+  across all patches. `[[thread_position_in_grid]]` is the hull's `VertexID`
+  param = global control-point index (matches the pre-existing hull→kernel
+  mapping and the `uint vid : VertexID` idiom).
+  * The per-CP hull body is emitted verbatim, except a trailing
+    `return <expr>;` is rewritten to `<outBuffer>[<vidParam>] = <expr>;`
+    (the single `out` buffer resource is the store target).
+  * A **synthesized** factor-buffer param is appended after the user
+    resources/params: `device <FactorT>* __osl_tess_factors [[buffer(K)]]`,
+    K = next free MSL buffer slot. `<FactorT>` is
+    `MTLTriangleTessellationFactorsHalf` (tri) /
+    `MTLQuadTessellationFactorsHalf` (quad) — the exact spelling is
+    verified against the `metal` compiler before commit.
+  * Factor epilogue, guarded so only the first CP of each patch writes:
+    `if ((vid % N) == 0u) { auto __pc = <patchfn>(); __osl_tess_factors[vid / N]
+    .edgeTessellationFactor[i] = half(__pc.<edgeField>[i]); …
+    .insideTessellationFactor[j] = half(__pc.<insideField>[j]); }`
+    (quad inside is a 2-array; tri inside is scalar
+    `insideTessellationFactor`).
+* **`domain` → `[[patch(triangle|quad, N)]] vertex`** (the existing arm, now
+  reached):
+  * Each `[in]` buffer resource whose element is the control-point struct is
+    emitted as `patch_control_point<CP> <name> [[stage_in]]` instead of
+    `constant CP*` — the body's `name[i]` subscript then reads a control
+    point. (Selected by: domain stage + `In` buffer.)
+  * The `DomainLocation` param → `float3/float2 <name> [[position_in_patch]]`.
+  * Return value routes to the rasterizer output struct exactly like a
+    vertex shader.
+
+**supportsStage**: drop the Hull/Domain rejection in `MSLTarget::supportsStage`.
+
+**Test**: rewrite `gte/omegasl/tests/tessellation.omegasl` to the new surface
+(patchfn + `TessFactor`/`InsideTessFactor`/`DomainLocation`), covering tri and
+quad. `CMakeLists.txt`: remove `APPLE` from the tessellation `WILL_FAIL` gate,
+add the non-Apple-non-DX config to it (GLSL Phase C pending). A negative test
+(`invalid_tessellation.omegasl`) covers: hull with no patchfn, wrong factor
+count, `DomainLocation` rank mismatch.
+
+**Deferred to Phase E (runtime) / follow-ups**: multi-arg patchfn, per-patch
+user varyings, the `omegasl_shader` tessellation metadata + the two-entry-point
+runtime binding, any real tessellated draw, and — per Alex — **switching the
+Metal factor kernel from the interim per-CP shape to per-patch dispatch driven
+by that metadata** (codegen + runtime together; see the Phase E Metal note).
+
 ### Phase E — runtime: pipeline plumbing + public API
 
 Public API (`GEPipeline.h` / `GERenderTarget.h` / `omegasl.h`):
@@ -4170,6 +4270,36 @@ Per backend (`makeRenderPipelineState`):
   `tessellationOutputWindingOrder` ← outputtopology, `maxTessellationFactor`),
   and `drawPatches`.
 
+**Phase E — Metal per-patch dispatch (decision: Alex, 2026-07-05).** The hull
+kernel is dispatched **one thread per patch** (grid = patch count), configured
+from the tessellation descriptor read out of the `.omegasllib` metadata, so the
+dispatch matches what the shader declared rather than a codegen assumption. This
+supersedes the interim per-control-point kernel from Phase D and is **not
+runtime-only** — it needs a paired Metal-codegen change:
+
+- **Metadata (`omegasl_shader`)**: serialize the `TessellationDesc` (domain,
+  partitioning, output topology, `outputControlPoints`, and the hull↔patchfn /
+  hull↔domain linkage) into a new `omegasl_tessellation_desc` on the hull's
+  `omegasl_shader` record, written by the shader-map writer and read at pipeline
+  build / dispatch time. Today the descriptor is AST-only.
+- **Codegen change** (`MSLTarget.cpp`): re-shape the hull kernel so
+  `[[thread_position_in_grid]]` is the **patch id**, wrap the per-CP body in a
+  `for (uint __cp = 0; __cp < N; ++__cp)` loop with the `VertexID` param bound
+  to `patchId * N + __cp` (global CP index), and write the tess factors
+  **unconditionally** (once per thread = once per patch), dropping the
+  `vid % N == 0` guard. The current per-CP kernel (`inHullShader` return→store +
+  guarded epilogue in `emitShaderEntryHeader`/`emitShaderEntryBody`/
+  `tryEmitReturnDecl`) is what gets revised.
+- **Runtime** (`GEMetal.mm`): dispatch the kernel with `threadsPerGrid = patch
+  count` (from the draw's patch count) using the metadata's control-point count,
+  then `drawPatches`. The factor buffer is `MTL{Triangle,Quad}TessellationFactorsHalf`
+  sized to the patch count.
+
+Rationale: per-patch dispatch has no wasted threads (the interim per-CP shape
+runs N threads per patch but only 1 writes factors), and the granularity then
+mirrors the fixed-function tessellator's per-patch factor model and HLSL's
+separate per-patch patch-constant function.
+
 ### Phase F — feature-flag honesty + re-enable
 
 Until Phase E lands per backend, **stop advertising**
@@ -4185,10 +4315,11 @@ off per backend in lockstep.
 
 | # | Task | Where | Effort | Blocks | Status |
 |---|------|-------|--------|--------|--------|
-| 16-A | `patchfn=` descriptor + `TessFactor`/`InsideTessFactor`/`DomainLocation` semantics + Sema | `Parser.cpp` (KW_HULL), `Sema.cpp` attribute tables, `AST.h` | medium | B, C, D | open |
+| 16-A | `patchfn=` descriptor + `TessFactor`/`InsideTessFactor`/`DomainLocation` semantics + Sema | `Parser.cpp` (KW_HULL), `Sema.cpp` attribute tables, `AST.h`, `AST.def`, `Sema.h` | medium | B, C, D | **DONE** |
 | 16-B | HLSL patch-constant fn + `[patchconstantfunc]` + patch types | `HLSLTarget.cpp` | medium | E2 | open |
 | 16-C | GLSL tess-level writes + `gl_TessCoord` read | `GLSLTarget.cpp` | medium | E3 | open |
-| 16-D | Metal kernel + post-tess vertex split + shader-map stage expansion | `MSLTarget.cpp`, shader-map writer | large | E4 | open |
+| 16-D | Metal kernel (per-CP store + factor epilogue) + post-tess vertex (`patch_control_point`/`position_in_patch`) | `MSLTarget.cpp`, `Target.h` | large | E4 | **DONE (codegen, interim per-CP)** — `metal`-verified; `omegasl_compile_tessellation` flipped to expected-pass on `APPLE`. Dispatch shape to be revised to **per-patch** in Phase E (16-E4a) per Alex — the per-CP kernel is the interim cut. |
+| 16-E4a | **Metal per-patch dispatch**: serialize `omegasl_tessellation_desc` into `omegasl_shader`; re-shape hull kernel to thread=patch id (CP loop + unconditional factor write); dispatch `threadsPerGrid = patchCount` | `MSLTarget.cpp` (codegen), shader-map writer, `GEMetal.mm` (runtime) | medium | — | open (decision Alex 2026-07-05) |
 | 16-E1 | Public API: descriptor fields, patch topology, `drawPatches`, `omegasl_tessellation_desc` | `GEPipeline.h`, `GERenderTarget.h`, `omegasl.h` | medium | E2–E4 | open |
 | 16-E2 | D3D12 HS/DS pipeline + patch topology | `GED3D12.cpp` | medium | — | open |
 | 16-E3 | Vulkan tess stages + tess state + device-feature enable | `GEVulkan.cpp` | medium | — | open |

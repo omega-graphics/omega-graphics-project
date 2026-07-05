@@ -1,0 +1,25 @@
+// §16 — negative test: a `hull` shader must name a patch-constant function
+// via `patchfn=<name>`. This hull omits it, so Sema rejects it before any
+// backend codegen runs (the error is backend-agnostic). Other §16 diagnostics
+// — wrong TessFactor/InsideTessFactor slot counts for the domain, a
+// DomainLocation rank mismatch, and a non-factor field in a patch-constant
+// struct — are exercised by the compiler's own Sema paths.
+
+struct ControlPointIn {
+    float4 pos;
+};
+
+struct ControlPointOut {
+    float4 pos;
+};
+
+buffer<ControlPointIn> controlPoints : 0;
+buffer<ControlPointOut> hullOut : 1;
+
+[in controlPoints, out hullOut]
+hull(domain=tri, partitioning=integer, outputtopology=triangle_cw, outputcontrolpoints=3)
+ControlPointOut triHull(uint vid : VertexID) {
+    ControlPointOut o;
+    o.pos = controlPoints[vid].pos;
+    return o;
+}

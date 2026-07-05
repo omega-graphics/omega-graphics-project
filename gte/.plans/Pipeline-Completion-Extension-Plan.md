@@ -995,13 +995,15 @@ The engine should ship a small set of pre-compiled blit fragment shaders for com
 
 | Shader | Purpose |
 |---|---|
-| `blit_copy` | Passthrough (same as hardware copy, but allows format conversion) [DONE]  | 
+| `blit_copy` | Passthrough (same as hardware copy, but allows format conversion) [DONE — source landed 2026-07-05, see below] |
 | `blit_linear` | Bilinear filtered downsample/upsample |
 | `blit_srgb_encode` | Linear → sRGB conversion |
 | `blit_srgb_decode` | sRGB → Linear conversion |
 | `blit_tonemap_reinhard` | HDR → SDR via Reinhard tone mapping |
 
 These would be OmegaSL sources compiled at build time and bundled with the engine.
+
+**`blit_copy` status (landed alongside Triangulation-Engine-Completion-Plan.md Phase 4):** the `[DONE]` tag above pre-dated an actual shipped source — nothing under this name existed in the tree until now. It's implemented as `gte/src/shaders/blit_copy.omegasl` (paired with the also-newly-extracted `gte/src/shaders/blit_fullscreen_vs.omegasl` and the shared `gte/src/shaders/BlitShaders.omegaslh` header for `OmegaGTEBlitVertexData`), compiled into the same merged `GTEBuiltinShaders.omegasllib` the TE GPU kernels ship in, with entry-name constants in the public `gte/include/omegaGTE/GEBlitShaders.h`. **Follow-up still open:** `GED3D12.cpp`/`GEMetal.mm`/`GEVulkan.cpp` don't yet look these up from the merged library — the fullscreen VS is still each backend's own separately-runtime-compiled copy of the same source (pre-existing 3x duplication, now redundant but untouched to avoid destabilizing the working blit pipeline). `blit_linear`/`blit_srgb_encode`/`blit_srgb_decode`/`blit_tonemap_reinhard` remain unimplemented.
 
 ---
 

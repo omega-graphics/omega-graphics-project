@@ -1,0 +1,16 @@
+// Shared declarations for the engine's built-in blit pipeline shaders
+// (Pipeline-Completion-Extension-Plan.md, Extension 3). This is a header
+// (no shader entry points -- see OmegaSL-Linker-And-Headers-Plan.md, which
+// rejects `.omegaslh` files that declare one) included by every blit
+// vertex/fragment source under gte/src/shaders/.
+//
+// `OmegaGTEBlitVertexData` is the fixed rasterizer-stage contract:
+// `blitWithPipeline()` always runs the engine's full-screen-triangle vertex
+// shader (blit_fullscreen_vs.omegasl) ahead of the caller-supplied fragment
+// shader, and every fragment shader -- built-in or user-authored -- consumes
+// this exact struct shape (see BlitPipelineDescriptor doxygen in
+// GEPipeline.h).
+struct OmegaGTEBlitVertexData internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};

@@ -678,6 +678,14 @@ namespace omegasl {
         /// default `lhs = rhs` emission. Falls through for any other
         /// `=` (and for non-`=` ops).
         bool tryEmitBinaryExpr(CodeGen &cg, ast::BinaryExpr *expr, std::ostream &out) override;
+
+        /// §16 — hull-kernel `return` rewrite. A hull lowers to a compute
+        /// kernel: its per-control-point `return <expr>;` is not a real
+        /// return but a store into the per-CP output buffer
+        /// (`<hullOut>[<vid>] = <expr>`). Active only inside a hull shader
+        /// (`inHullShader`); every other stage falls through to the default
+        /// `return <expr>` emission.
+        bool tryEmitReturnDecl(CodeGen &cg, ast::ReturnDecl *decl) override;
     private:
         MetalCodeOpts &opts;
         std::map<std::string, std::string> generatedStructs;
@@ -714,6 +722,26 @@ namespace omegasl {
         ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
         unsigned meshMaxVertices = 0;
         unsigned meshMaxPrimitives = 0;
+
+        /// §16 — tessellation hull-kernel state. Set by
+        /// `emitShaderEntryHeader` for a `hull` shader, consumed by
+        /// `tryEmitReturnDecl` (return→store) and `emitShaderEntryBody`
+        /// (the tess-factor epilogue). `inHullShader == false` ⇒ not a hull
+        /// ⇒ every hook falls through to its normal path.
+        bool inHullShader = false;
+        OmegaCommon::String hullOutBufferName;   /// the single `out` buffer (store target)
+        OmegaCommon::String hullVidName;         /// the VertexID param = global control-point index
+        OmegaCommon::String hullPatchFnName;     /// patchfn called once per patch for the factors
+        unsigned hullControlPoints = 3;          /// N — per-patch output control-point count
+        bool hullDomainIsTri = true;             /// tri (3 edge + 1 inside) vs quad (4 + 2)
+        /// Factor-struct field names + array-ness, resolved from the
+        /// patchfn's return struct so the epilogue can spell
+        /// `__pc.<field>[i]`. A scalar factor field is written with no
+        /// subscript.
+        OmegaCommon::String hullEdgeFieldName;
+        OmegaCommon::String hullInsideFieldName;
+        bool hullEdgeIsArray = false;
+        bool hullInsideIsArray = false;
     };
 
     struct GLSLTarget final : Target {

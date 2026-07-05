@@ -39,8 +39,11 @@ _NAMESPACE_BEGIN_
     };
 
     /// @brief Index element type. `None` means the mesh has no index buffer.
-    /// Phase 2 builders only emit `None`; index generation lands with
-    /// MeshAsset (Phase 3.2).
+    /// `buildMeshFromTriangulation` emits `UInt32` when the source TEMesh
+    /// has been deduplicated via `TEMesh::buildIndexed()` (see
+    /// Triangulation-Engine-Completion-Plan Phase 3); `UInt16` is not yet
+    /// supported there (no 16-bit `GEBufferWriter` path). MeshAsset loaders
+    /// still only emit `None`.
     enum class GEMeshIndexType : uint8_t {
         None,
         UInt16,
@@ -87,16 +90,21 @@ _NAMESPACE_BEGIN_
     OMEGAGTE_EXPORT size_t geMeshStrideFor(uint32_t attributes);
 
     /// @brief Build a GEMesh from a TETriangulationResult.
-    /// Flattens every TEMesh's vertexPolygons into a single contiguous
-    /// vertex buffer with the layout described by `desc`. Attributes that
-    /// are requested but not present on a vertex's AttachmentData are
-    /// written as zero (warning logged once).
-    /// @param engine Graphics engine used to allocate the vertex buffer.
+    /// When `desc.indexType == None`, flattens `vertexPolygons` into a
+    /// single contiguous, non-indexed vertex buffer (one entry per triangle
+    /// corner; shared vertices duplicated). When `desc.indexType ==
+    /// UInt32`, builds the vertex buffer from the deduplicated
+    /// `result.mesh.indexedData` instead — the caller must have already
+    /// called `TEMesh::buildIndexed()` on the source mesh, or this returns
+    /// null with an error log. `UInt16` is not yet supported (no 16-bit
+    /// `GEBufferWriter` path). Attributes that are requested but not present
+    /// on a vertex's AttachmentData are written as zero (warning logged once).
+    /// @param engine Graphics engine used to allocate the vertex (and, for
+    ///               indexed output, index) buffer.
     /// @param result Triangulation output to flatten.
-    /// @param desc Vertex layout, topology, and index-type intent. This
-    ///             phase only supports `indexType == None` and
-    ///             `topology == Triangle`; other values produce a null
-    ///             return and an error log.
+    /// @param desc Vertex layout, topology, and index-type intent. Only
+    ///             `topology == Triangle` is supported; other values produce
+    ///             a null return and an error log.
     /// @param diffuseTexture Optional texture to seed `textureBindings`
     ///                       with. Pass the same SharedHandle that lives
     ///                       on the source `TETriangulationParams::Attachment`.

@@ -2979,6 +2979,18 @@ namespace omegasl {
                 /// shader's output struct carries the attribute.
                 uint64_t structImplicitBits = 0;
 
+                /// §16 — tessellation-factor slot tally for a patch-constant
+                /// struct. A scalar factor field counts as one slot; a
+                /// `float[N]` field counts as N. `factorAttrSeen` /
+                /// `nonFactorAttrSeen` enforce that a patch-constant struct is
+                /// factor-only (mixing `TessFactor` with `Position`/`Color`/…
+                /// is rejected — the tessellator's per-patch output carries
+                /// only factors in this first cut).
+                unsigned tessEdgeSlots = 0;
+                unsigned tessInsideSlots = 0;
+                bool factorAttrSeen = false;
+                bool nonFactorAttrSeen = false;
+
                 for(auto & f : _decl->fields){
                     if(field_types.find(f.name) != field_types.end()){
                         auto e = std::make_unique<DuplicateDeclaration>(f.name); e->loc = _decl->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
@@ -3089,12 +3101,49 @@ namespace omegasl {
                                 structImplicitBits |= OMEGASL_FEATURE_BIT_CULL_DISTANCE;
                             }
                         }
+                        else if(f.attributeName.value() == ATTRIBUTE_TESS_FACTOR
+                                || f.attributeName.value() == ATTRIBUTE_INSIDE_TESS_FACTOR){
+                            /// §16 — a patch-constant factor field: a `float`
+                            /// scalar (one slot) or a `float[N]` array (N slots).
+                            /// No index (the array carries all slots, mirroring
+                            /// ClipDistance); at most one array dimension.
+                            if(field_ty != ast::builtins::float_type){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + f.attributeName.value() + "` requires a `float` scalar or array field, not `" + field_ty->name + "`");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            if(f.attributeIndex.has_value()){
+                                auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + f.attributeName.value() + "` does not take an index — use a float array (e.g. `float edges[3] : TessFactor`)");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            if(f.typeExpr->arrayDims.size() > 1){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + f.attributeName.value() + "` field may have at most one array dimension");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            unsigned slots = f.typeExpr->arrayDims.empty() ? 1u : f.typeExpr->arrayDims[0];
+                            if(f.attributeName.value() == ATTRIBUTE_TESS_FACTOR) tessEdgeSlots += slots;
+                            else tessInsideSlots += slots;
+                        }
                         else if(f.attributeIndex.has_value()){
                             /// Only `Color(N)` accepts an index today.
                             auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + f.attributeName.value() + "` does not take an index");
                             e->loc = _decl->loc.value_or(ErrorLoc{});
                             diagnostics->addError(std::move(e));
                             return false;
+                        }
+
+                        /// §16 — classify for the patch-constant purity check
+                        /// below (a factor struct carries only factor fields).
+                        if(f.attributeName.value() == ATTRIBUTE_TESS_FACTOR
+                           || f.attributeName.value() == ATTRIBUTE_INSIDE_TESS_FACTOR){
+                            factorAttrSeen = true;
+                        } else {
+                            nonFactorAttrSeen = true;
                         }
                     }
 
@@ -3134,6 +3183,19 @@ namespace omegasl {
                 /// `usedFeatures`, so flagging it from Sema survives the scan.
                 if(structImplicitBits & OMEGASL_FEATURE_BIT_CULL_DISTANCE){
                     currentContext->cullDistanceStructs.push_back(_decl->name);
+                }
+                /// §16 — record a patch-constant struct (edge, inside) slot
+                /// counts so a hull's `patchfn` return can be checked against
+                /// its domain. A factor struct must be factor-only.
+                if(factorAttrSeen){
+                    if(nonFactorAttrSeen){
+                        auto e = std::make_unique<InvalidAttribute>(std::string("Patch-constant struct `") + _decl->name + "` may carry only `TessFactor`/`InsideTessFactor` fields.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    currentContext->patchConstantStructs.insert(
+                        std::make_pair(_decl->name, std::make_pair(tessEdgeSlots, tessInsideSlots)));
                 }
                 break;
             }
@@ -3671,6 +3733,20 @@ namespace omegasl {
                                 return false;
                             }
                         }
+                        /// §16 — `DomainLocation` rank must match the domain:
+                        /// `float3` (barycentric) for tri, `float2` (u,v) for
+                        /// quad. Only valid on a `domain` shader (the attribute
+                        /// context table already gates that).
+                        if(p.attributeName.value() == ATTRIBUTE_DOMAIN_LOCATION){
+                            bool isTri = _decl->tessDesc.domain == ast::ShaderDecl::TessellationDesc::Triangle;
+                            ast::Type *want = isTri ? ast::builtins::float3_type : ast::builtins::float2_type;
+                            if(p_type != want){
+                                auto e = std::make_unique<TypeError>(std::string("Attribute `") + ATTRIBUTE_DOMAIN_LOCATION + "` requires a `" + want->name + "` parameter for a " + (isTri ? "tri" : "quad") + " domain, not `" + p_type->name + "`");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                        }
                     }
                     /// §3.6 — same const+out/inout contradiction guard as the
                     /// FuncDecl path. A shader param is realistically only
@@ -3685,6 +3761,70 @@ namespace omegasl {
                     currentContext->variableMap.insert(std::make_pair(p.name,
                         SemContext::VarBinding{ p.typeExpr, p.isConst }));
                     paramIndex += 1;
+                }
+
+                /// §16 — hull-stage structural validation. A hull produces two
+                /// outputs: per-control-point data (its body) and per-patch
+                /// tessellation factors (a companion `patchfn`). Validate that
+                /// pairing here so a malformed tessellation surface fails with a
+                /// precise message rather than a downstream codegen surprise.
+                if(shaderType == ast::ShaderDecl::Hull){
+                    auto &td = _decl->tessDesc;
+                    /// (a) a hull must name a patch-constant function.
+                    if(td.patchFn.empty()){
+                        auto e = std::make_unique<TypeError>(std::string("Hull shader `") + _decl->name + "` must name a patch-constant function via `patchfn=<name>` in its descriptor.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    /// (b) the patchfn must resolve to a declared function.
+                    auto *pcFunc = resolveFuncTypeWithName(td.patchFn);
+                    if(pcFunc == nullptr){
+                        auto e = std::make_unique<UndeclaredIdentifier>(td.patchFn);
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    /// (c) first cut: the patchfn takes no parameters (passing
+                    /// control points / a uniform is a follow-up).
+                    if(!pcFunc->paramTypes.empty()){
+                        auto e = std::make_unique<TypeError>(std::string("Patch-constant function `") + td.patchFn + "` must take no parameters (this first cut).");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    /// (d) its return struct must be a patch-constant struct whose
+                    /// factor counts match the domain (tri → 3 edge + 1 inside;
+                    /// quad → 4 + 2).
+                    auto pcIt = currentContext->patchConstantStructs.find(pcFunc->returnType->name);
+                    if(pcIt == currentContext->patchConstantStructs.end()){
+                        auto e = std::make_unique<TypeError>(std::string("Patch-constant function `") + td.patchFn + "` must return an internal struct with `TessFactor`/`InsideTessFactor` fields, not `" + pcFunc->returnType->name + "`.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    bool isTri = td.domain == ast::ShaderDecl::TessellationDesc::Triangle;
+                    unsigned wantEdge = isTri ? 3u : 4u;
+                    unsigned wantInside = isTri ? 1u : 2u;
+                    if(pcIt->second.first != wantEdge || pcIt->second.second != wantInside){
+                        auto e = std::make_unique<TypeError>(std::string("Patch-constant struct `") + pcFunc->returnType->name + "` must have " + std::to_string(wantEdge) + " TessFactor + " + std::to_string(wantInside) + " InsideTessFactor slot(s) for a " + (isTri ? "tri" : "quad") + " domain (found " + std::to_string(pcIt->second.first) + " + " + std::to_string(pcIt->second.second) + ").");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    /// (e) the Metal lowering stores per-CP hull output into a
+                    /// single `out` buffer (the store target for the rewritten
+                    /// `return`), so require exactly one.
+                    unsigned outCount = 0;
+                    for(auto &r : _decl->resourceMap){
+                        if(r.access == ast::ShaderDecl::ResourceMapDesc::Out) ++outCount;
+                    }
+                    if(outCount != 1){
+                        auto e = std::make_unique<TypeError>(std::string("Hull shader `") + _decl->name + "` must declare exactly one `out` buffer for its per-control-point output (found " + std::to_string(outCount) + ").");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
                 }
 
                 /// Mesh-stage structural validation. A `mesh` shader emits a
