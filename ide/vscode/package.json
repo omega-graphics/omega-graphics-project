@@ -13,7 +13,7 @@
     },
     "publisher": "unpublished",
     "engines": {
-        "vscode": "^1.75.0"
+        "vscode": "^1.91.0"
     },
     "main": "./out/extension.js",
     "activationEvents": [
@@ -51,13 +51,19 @@
                 },
                 "omegasl.lspServerArgs": {
                     "type": "array",
-                    "items": { "type": "string" },
+                    "items": {
+                        "type": "string"
+                    },
                     "default": [],
                     "description": "Extra command-line arguments passed to omegasl-lsp."
                 },
                 "omegasl.trace.server": {
                     "type": "string",
-                    "enum": ["off", "messages", "verbose"],
+                    "enum": [
+                        "off",
+                        "messages",
+                        "verbose"
+                    ],
                     "default": "off",
                     "description": "Trace LSP communication between VSCode and omegasl-lsp."
                 }
@@ -65,17 +71,26 @@
         }
     },
     "scripts": {
-        "compile": "tsc -p ./",
-        "watch": "tsc -watch -p ./",
+        "build:grammar": "node ./scripts/build-grammar.js",
+        "precompile": "npm run build:grammar",
+        "compile": "rollup -c",
+        "watch": "rollup -c -w",
+        "prevscode:prepublish": "npm run build:grammar",
         "vscode:prepublish": "npm run compile",
         "publish": "vsce package"
     },
     "dependencies": {
-        "vscode-languageclient": "^9.0.1"
+        "vscode-languageclient": "^10.1.0"
     },
     "devDependencies": {
+        "@rollup/plugin-commonjs": "^29.0.3",
+        "@rollup/plugin-json": "^6.1.0",
+        "@rollup/plugin-node-resolve": "^16.0.3",
+        "@rollup/plugin-typescript": "^12.3.0",
         "@types/node": "^18.0.0",
         "@types/vscode": "^1.75.0",
+        "rollup": "^4.62.2",
+        "tslib": "^2.8.1",
         "typescript": "^5.3.0",
         "vsce": "^2.15.0"
     }

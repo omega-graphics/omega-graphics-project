@@ -8,14 +8,14 @@ import {
 } from "vscode-languageclient/node";
 
 let client: LanguageClient | undefined;
-let output: vscode.OutputChannel | undefined;
+let output: vscode.LogOutputChannel | undefined;
 
 const CONFIG_SECTION = "omegasl";
 const LANGUAGE_ID = "omegasl";
 
 function log(message: string) {
     if (!output) {
-        output = vscode.window.createOutputChannel("OmegaSL");
+        output = vscode.window.createOutputChannel("OmegaSL", { log: true });
     }
     output.appendLine(message);
 }
@@ -83,7 +83,7 @@ async function applyConfig(): Promise<void> {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-    output = vscode.window.createOutputChannel("OmegaSL");
+    output = vscode.window.createOutputChannel("OmegaSL", { log: true });
     context.subscriptions.push(output);
 
     context.subscriptions.push(

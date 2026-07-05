@@ -1,9 +1,11 @@
 .vscode/**
 .vscode-test/**
 src/**
+scripts/**
 node_modules/**
 out/test/**
 **/*.map
 **/*.ts
 tsconfig.json
+rollup.config.mjs
 .gitignore
