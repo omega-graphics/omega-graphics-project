@@ -4421,7 +4421,7 @@ off per backend in lockstep.
 | 16-E1 | Public API: descriptor fields, patch topology, `drawPatches`, `omegasl_tessellation_desc` | `GEPipeline.h`, `GERenderTarget.h`, `omegasl.h` | medium | E2–E4 | **PARTIAL** 2026-07-05 — DONE: `omegasl_tessellation_desc` (struct in `omegasl.h`; serialized in `ShaderArchive.cpp` read+write for HULL/DOMAIN; populated by `fillTessellationDesc` in `Target.h`, called from `MSLTarget.cpp` hull+domain arms); `RenderPipelineDescriptor::hullFunc/domainFunc/patchControlPoints`; `PrimitiveTopologyCategory::Patch`. TODO: `GECommandBuffer::PolygonType::Patch` + `drawPatches` command (blocked on the E4 draw-model plumbing below). |
 | 16-E2 | D3D12 HS/DS pipeline + patch topology | `GED3D12.cpp` | medium | — | open |
 | 16-E3 | Vulkan tess stages + tess state + device-feature enable | `GEVulkan.cpp` | medium | — | open |
-| 16-E4 | Metal `startTessRenderPass` + tessellation pipeline + `drawPatches` | `GEMetal.mm`, `GERenderTarget.h` | large | — | open — the standalone hull-compute dispatch + factor write is verified (16-E4a / `TessellationDispatchTest`); still to do: the dedicated **`startTessRenderPass`** command (per Alex 2026-07-05, supersedes "auto inside `drawPatches`" — runs the hull dispatch on a compute encoder then defers the render encoder until it finishes, non-blocking; plain `startRenderPass` rejects tessellation pipelines), the engine-owned hullOut + factor buffers, the `MTLRenderPipelineDescriptor` tessellation properties, and `PolygonType::Patch` + the `drawPatches` command on `GECommandBuffer`. See the "Tessellation render pass" note under Phase E. |
+| 16-E4 | Metal `startTessRenderPass` + tessellation pipeline + `drawPatches` | `GEMetal.mm`, `GEMetalCommandQueue.*`, `GEMetalPipeline.h`, `GERenderTarget.h` | large | — | **DONE (Metal)** 2026-07-06 — `startTessRenderPass` (deferred: records the descriptor, opens no encoder) + `drawPatches` (opens a compute encoder for the hull dispatch → engine-owned Private hullOut + factor buffers, ends it, then opens the render encoder via the stored descriptor, sets the half tess-factor buffer + `hullOut` as the per-patch-control-point stage-in, `[rp drawPatches:...]`). `makeRenderPipelineState` builds a `MTLComputePipelineState` from the hull + a render pipeline from domain/fragment with `MTLRenderPipelineDescriptor` tess state (partition/winding/half-factor + `MTLVertexStepFunctionPerPatchControlPoint` stage-in). Plain `startRenderPass` rejects tessellation pipelines. **RUNTIME-VERIFIED on real Metal** under the API + GPU validation layer: `TessellationDrawTest` draws one triangle patch to a texture → center pixel green (0,255,0,255). Metal now advertises `GTEDEVICE_FEATURE_TESSELLATION_SHADER` (Metal's slice of 16-F). |
 | 16-F | Feature-flag honesty gate + per-backend re-enable | `GED3D12.cpp`, `GEVulkan.cpp`, `GEMetal.mm`, tests `CMakeLists.txt` | small | — | open |
 
 ### Tests
@@ -4437,9 +4437,12 @@ off per backend in lockstep.
   bits 0x3C00 / 0x4000). Metal-only: only Metal models a hull as a compute
   dispatch with an intermediate factor buffer; on D3D12/Vulkan the hull runs
   inside the draw pipeline (verified via `drawPatches` when 16-E2/E3 land).
-- A runtime tessellated-draw smoke test (one triangle patch subdivided) via
-  `drawPatches`, per backend that completes Phase E — still open (needs the
-  16-E4 auto-`drawPatches` render command).
+- **`gte/tests/tessellation_draw_test.cpp`** (`omegagte_tessellation_draw`,
+  Metal) — DONE + passing 2026-07-06. Full `startTessRenderPass` + `drawPatches`
+  path: a hull/domain/fragment pipeline draws one triangle patch to an offscreen
+  RGBA8 texture; the center pixel is read back and asserted green (the shaded
+  patch) vs the black clear. Passes under the Metal API + GPU validation layer.
+  D3D12/Vulkan tessellated-draw tests land with their Phase-E runtime.
 
 ### Out of scope (follow-ups)
 
@@ -4451,3 +4454,64 @@ off per backend in lockstep.
   factors.
 - **Isoline domains** and quad `gl_TessCoord.z` handling beyond tri/quad.
 - **Tessellation × geometry stage (§9)** and tessellation × instancing.
+
+#### Cross-backend visual parity (opened 2026-07-06)
+
+The domain math + factor *values* are identical across MSL/HLSL/GLSL (same
+OmegaSL source). Divergence can only come from how each API's fixed-function
+tessellator interprets factors + parameterizes the domain. With **uniform**
+factors and a position-only domain (both current tests), all three agree. With
+**non-uniform per-edge factors** they may not, and this is unverified — the
+D3D12/Vulkan runtime is still pass-2, so no empirical three-way comparison
+exists yet. Two follow-ups:
+
+- **Cross-backend tessellation conformance test.** Once the D3D12/Vulkan
+  runtime lands (16-E2/E3), add a test that draws the SAME patch with
+  **non-uniform** per-edge factors (e.g. `edges = {8,1,1}`) and compares the
+  tessellated vertex output (or a pixel readback) across backends. This is what
+  actually proves/disproves parity rather than arguing it from the specs.
+- **Normalize tessellator conventions in codegen** if that test diverges. Two
+  known mismatch sources, both because OmegaSL currently passes the shader's
+  `edges[i]` / `DomainLocation` straight through without remapping:
+  1. **Per-edge factor → physical-edge mapping.** Metal + HLSL share the D3D11
+     tessellator's edge numbering; Vulkan/GLSL uses the OpenGL convention, which
+     differs. `edges[0]` can refine a *different* physical edge on GLSL. Fix:
+     remap the edge index when emitting `gl_TessLevelOuter[]` in `GLSLTarget.cpp`
+     so `edges[i]` means the same edge on all three.
+  2. **Domain-coordinate orientation.** The quad `[0,1]²` domain UV can be
+     **v-flipped** between the GL lineage (Vulkan `gl_TessCoord`) and the D3D
+     lineage (Metal `[[position_in_patch]]` / HLSL `SV_DomainLocation`). Fix:
+     flip `gl_TessCoord` (`.y`, and the tri barycentric assignment) in the
+     `.tese` so `DomainLocation` is backend-independent.
+  The right layer is codegen — keep the developer-facing OmegaSL semantics
+  backend-independent rather than pushing the difference onto shader authors.
+
+- **Vulkan front-face / cull-mode normalization (general render parity, NOT
+  tessellation-specific).** CONFIRMED mechanism (Alex, 2026-07-06): the Vulkan
+  backend sets a **negative-height viewport** in
+  `GEVulkanCommandBuffer::setViewports` (`GEVulkanCommandQueue.cpp:1433`) to flip
+  NDC-Y so `y=+1` maps to the framebuffer top, matching Metal/D3D12 — NDC coords
+  themselves get no special treatment (universal). That negative-height flip
+  **reverses the apparent triangle winding** the rasterizer sees, so a
+  front-face/cull setup that culls correctly on D3D/Metal culls the *wrong* faces
+  on Vulkan. Because the Y-flip lives in the viewport (not a projection matrix),
+  the correct fix is in the **Vulkan pipeline setup**: reverse the cull mode
+  (Front↔Back) — or, equivalently, flip the declared front-face winding — so the
+  same `RasterCullMode` culls the same physical faces on every backend. **No test
+  exercises this yet** — every current render pipeline uses `RasterCullMode::None`
+  (the `setViewports` comment already notes the winding reversal is "harmless"
+  precisely because of that), so it is latent until a test (e.g. a tessellated
+  closed mesh) turns culling on, at which point it is crucial.
+
+#### Metal `startTessRenderPass` / `drawPatches` first-cut constraints (2026-07-06)
+
+- **Caller-supplied control-point layout.** The Metal tess pipeline requires
+  `RenderPipelineDescriptor::vertexInputDescriptor` to describe the
+  control-point struct (Metal's `patch_control_point` stage-in needs the field
+  layout, which is not in the shader's serialized reflection). A
+  reflection-derived default would remove that caller burden.
+- **Domain/fragment resource binding in the deferred pass.** `drawPatches`
+  currently binds only the input control-point buffer + built-ins; domain /
+  fragment resources (textures, uniforms) beyond the stage-in are not yet
+  routed through the deferred render encoder. Fine for a constant-shaded patch;
+  a real material needs the bind path wired into `startTessRenderPass`.

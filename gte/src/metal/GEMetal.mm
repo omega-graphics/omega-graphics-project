@@ -113,11 +113,14 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
         // ── Shader stages ──────────────────────────────────────
         // GEOMETRY_SHADER: Metal has no geometry stage.
-        // TESSELLATION_SHADER: not advertised. Metal has no D3D-style
-        // hull stage, and the Metal codegen + runtime do not yet
-        // implement the compute-kernel-for-factors + post-tessellation-
-        // vertex pipeline that Apple's tessellation model requires.
-        // See OmegaSL-Reference.md bug 3.
+        // TESSELLATION_SHADER (§16 Phase E, Metal): advertised. The Metal
+        // codegen (per-patch hull→compute kernel + post-tessellation domain
+        // vertex) and runtime (startTessRenderPass / drawPatches: a per-patch
+        // factor-compute dispatch feeding the fixed-function tessellator via
+        // MTLRenderPipelineDescriptor tessellation state) are implemented. This
+        // is Metal's slice of the Phase F "feature-flag honesty" re-enable;
+        // D3D12/Vulkan stay gated until their runtime lands.
+        features.flags |= GTEDEVICE_FEATURE_TESSELLATION_SHADER;
         if(apple7){
             features.flags |= GTEDEVICE_FEATURE_MESH_SHADER;
             features.flags |= GTEDEVICE_FEATURE_VARIABLE_RATE_SHADING;
@@ -1377,7 +1380,182 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             return std::shared_ptr<GENativeRenderTarget>(new GEMetalNativeRenderTarget(std::move(presentQueue),desc.metalLayer,desc.pixelFormat));
         };
 
+        /// §16 Phase E — build a tessellation render pipeline: a compute
+        /// pipeline from the hull kernel (dispatched per-patch by `drawPatches`)
+        /// plus a render pipeline whose vertex stage is the domain
+        /// (post-tessellation vertex) and whose `MTLRenderPipelineDescriptor`
+        /// carries the tessellation state (partition / winding / factor format)
+        /// and a per-patch-control-point stage-in vertex descriptor.
+        SharedHandle<GERenderPipelineState> makeTessellationRenderPipelineState(RenderPipelineDescriptor &desc){
+            if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_TESSELLATION_SHADER)){
+                DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeRenderPipelineState: device does not advertise "
+                             "GTEDEVICE_FEATURE_TESSELLATION_SHADER ('" << desc.name << "')");
+                return nullptr;
+            }
+            if(!_checkPipelineShader(desc.hullFunc,"hull",desc.name) ||
+               !_checkPipelineShader(desc.domainFunc,"domain",desc.name) ||
+               !_checkPipelineShader(desc.fragmentFunc,"fragment",desc.name)){
+                return nullptr;
+            }
+            if(desc.vertexInputDescriptor.attributes.empty() || desc.vertexInputDescriptor.bufferLayouts.empty()){
+                DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeRenderPipelineState: a tessellation pipeline requires a "
+                             "vertexInputDescriptor describing the control-point layout ('" << desc.name << "')");
+                return nullptr;
+            }
+            metalDevice.assertExists();
+            id<MTLDevice> dev = NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle());
+
+            /// Tessellation config is declared on the HULL (the domain decl only
+            /// carries `domain=`; partitioning / winding / control-point count
+            /// live on the hull).
+            const omegasl_tessellation_desc & td = desc.hullFunc->internal.tessellationDesc;
+
+            /// 1. Hull → compute pipeline (the per-patch factor / control-point kernel).
+            auto *hullShader = (GEMetalShader *)desc.hullFunc.get();
+            hullShader->function.assertExists();
+            MTLComputePipelineDescriptor *cpd = [[MTLComputePipelineDescriptor alloc] init];
+            if(desc.name.size() > 0) cpd.label = ns_string_from_str_ref(desc.name);
+            const auto & hullTg = desc.hullFunc->internal.threadgroupDesc;
+            unsigned hullTgSize = hullTg.x > 0 ? hullTg.x : 1u;
+            cpd.maxTotalThreadsPerThreadgroup = hullTgSize * (hullTg.y>0?hullTg.y:1u) * (hullTg.z>0?hullTg.z:1u);
+            cpd.computeFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,hullShader->function.handle());
+            NSError *computeErr = nil;
+            id<MTLComputePipelineState> hullCps = [dev newComputePipelineStateWithDescriptor:cpd
+                                                                                    options:MTLPipelineOptionNone
+                                                                                 reflection:nil
+                                                                                      error:&computeErr];
+            if(hullCps == nil){
+                DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeRenderPipelineState: failed to build hull compute pipeline ('"
+                             << desc.name << "')");
+                return nullptr;
+            }
+
+            /// 2. Domain (vertex) + fragment → render pipeline with tess state.
+            MTLRenderPipelineDescriptor *pipelineDesc = [[MTLRenderPipelineDescriptor alloc] init];
+            if(desc.name.size() > 0) pipelineDesc.label = ns_string_from_str_ref(desc.name);
+            auto *domainShader = (GEMetalShader *)desc.domainFunc.get();
+            auto *fragmentShader = (GEMetalShader *)desc.fragmentFunc.get();
+            domainShader->function.assertExists();
+            fragmentShader->function.assertExists();
+            pipelineDesc.vertexFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,domainShader->function.handle());
+            pipelineDesc.fragmentFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,fragmentShader->function.handle());
+
+            /// Control-point stage-in vertex descriptor. The domain reads its
+            /// control points via `patch_control_point<CP> [[stage_in]]`, so the
+            /// layout step function must be PerPatchControlPoint; the CP field
+            /// layout comes from the caller's vertexInputDescriptor.
+            MTLVertexDescriptor *vd = [[MTLVertexDescriptor alloc] init];
+            for(unsigned i = 0; i < desc.vertexInputDescriptor.bufferLayouts.size(); ++i){
+                const auto & bl = desc.vertexInputDescriptor.bufferLayouts[i];
+                vd.layouts[i].stride = bl.stride;
+                vd.layouts[i].stepFunction = MTLVertexStepFunctionPerPatchControlPoint;
+                vd.layouts[i].stepRate = 1;
+            }
+            for(const auto & a : desc.vertexInputDescriptor.attributes){
+                vd.attributes[a.shaderLocation].format = convertVertexFormatToMTL(a.format);
+                vd.attributes[a.shaderLocation].offset = a.offset;
+                vd.attributes[a.shaderLocation].bufferIndex = a.bufferIndex;
+            }
+            pipelineDesc.vertexDescriptor = vd;
+            const unsigned cpBufferIndex = desc.vertexInputDescriptor.attributes[0].bufferIndex;
+            const unsigned cpStride = (cpBufferIndex < desc.vertexInputDescriptor.bufferLayouts.size())
+                                        ? desc.vertexInputDescriptor.bufferLayouts[cpBufferIndex].stride
+                                        : desc.vertexInputDescriptor.bufferLayouts[0].stride;
+
+            /// Tessellation state (per-patch half factors, no CP index buffer).
+            pipelineDesc.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
+            pipelineDesc.tessellationControlPointIndexType = MTLTessellationControlPointIndexTypeNone;
+            pipelineDesc.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionPerPatch;
+            pipelineDesc.tessellationOutputWindingOrder =
+                (td.output_topology == 1 /*TriangleCCW*/) ? MTLWindingCounterClockwise : MTLWindingClockwise;
+            switch(td.partitioning){
+                case 1: pipelineDesc.tessellationPartitionMode = MTLTessellationPartitionModeFractionalEven; break;
+                case 2: pipelineDesc.tessellationPartitionMode = MTLTessellationPartitionModeFractionalOdd; break;
+                default: pipelineDesc.tessellationPartitionMode = MTLTessellationPartitionModeInteger; break;
+            }
+            pipelineDesc.maxTessellationFactor = 16;
+
+            /// Color attachments + blend — same shape as the graphics path.
+            {
+                const unsigned attachmentCount = desc.colorPixelFormats.empty() ? 1u : (unsigned)desc.colorPixelFormats.size();
+                for(unsigned i = 0; i < attachmentCount; ++i){
+                    const PixelFormat pf = desc.colorPixelFormats.empty() ? PixelFormat::RGBA8Unorm : desc.colorPixelFormats[i];
+                    MTLRenderPipelineColorAttachmentDescriptor *ca = pipelineDesc.colorAttachments[i];
+                    ca.pixelFormat = pixelFormatToMTLPixelFormat(pf, true);
+                    if(i < desc.colorBlendDescriptors.size()){
+                        const auto & b = desc.colorBlendDescriptors[i];
+                        ca.blendingEnabled             = b.blendEnabled ? YES : NO;
+                        ca.rgbBlendOperation           = convertBlendOperationMTL(b.colorOp);
+                        ca.alphaBlendOperation         = convertBlendOperationMTL(b.alphaOp);
+                        ca.sourceRGBBlendFactor        = convertBlendFactorMTL(b.srcColorFactor);
+                        ca.destinationRGBBlendFactor   = convertBlendFactorMTL(b.destColorFactor);
+                        ca.sourceAlphaBlendFactor      = convertBlendFactorMTL(b.srcAlphaFactor);
+                        ca.destinationAlphaBlendFactor = convertBlendFactorMTL(b.destAlphaFactor);
+                        ca.writeMask                   = convertColorWriteMaskMTL(b.writeMask);
+                    } else {
+                        ca.blendingEnabled = NO;
+                        ca.writeMask = MTLColorWriteMaskAll;
+                    }
+                }
+            }
+            if(desc.rasterSampleCount > 0) pipelineDesc.rasterSampleCount = desc.rasterSampleCount;
+
+            /// Depth-stencil state (depth-enable / compare / write subset; the
+            /// factor kernel + tessellator do not touch depth). Full stencil
+            /// parity for tess pipelines is a follow-up.
+            bool hasDepthStencilState = desc.depthAndStencilDesc.enableDepth || desc.depthAndStencilDesc.enableStencil;
+            NSSmartPtr depthStencilState = NSObjectHandle{nullptr};
+            if(hasDepthStencilState){
+                MTLDepthStencilDescriptor *dsDesc = [[MTLDepthStencilDescriptor alloc] init];
+                dsDesc.depthWriteEnabled = (desc.depthAndStencilDesc.enableDepth
+                                            && desc.depthAndStencilDesc.writeAmount == DepthWriteAmount::All) ? YES : NO;
+                dsDesc.depthCompareFunction = desc.depthAndStencilDesc.enableDepth
+                                                ? convertCompareFunc(desc.depthAndStencilDesc.depthOperation)
+                                                : MTLCompareFunctionAlways;
+                depthStencilState = NSObjectHandle{NSOBJECT_CPP_BRIDGE [dev newDepthStencilStateWithDescriptor:dsDesc]};
+            }
+
+            NSError *renderErr = nil;
+            id<MTLRenderPipelineState> rps = [dev newRenderPipelineStateWithDescriptor:pipelineDesc error:&renderErr];
+            if(rps == nil){
+                DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeRenderPipelineState: failed to build tessellation render pipeline ('"
+                             << desc.name << "'): "
+                             << (renderErr ? renderErr.localizedDescription.UTF8String : "unknown"));
+                return nullptr;
+            }
+
+            MTLCullMode cullMode = desc.cullMode == RasterCullMode::Front ? MTLCullModeFront
+                                  : desc.cullMode == RasterCullMode::Back ? MTLCullModeBack : MTLCullModeNone;
+            MTLTriangleFillMode fillMode = desc.triangleFillMode == TriangleFillMode::Wireframe
+                                            ? MTLTriangleFillModeLines : MTLTriangleFillModeFill;
+            MTLWinding winding = desc.polygonFrontFaceRotation == GTEPolygonFrontFaceRotation::Clockwise
+                                    ? MTLWindingClockwise : MTLWindingCounterClockwise;
+            GEMetalRasterizerState rasterizerState {winding,cullMode,fillMode,
+                desc.depthAndStencilDesc.depthBias,desc.depthAndStencilDesc.slopeScale,desc.depthAndStencilDesc.depthClamp};
+
+            NSSmartPtr rpsHandle = NSObjectHandle{NSOBJECT_CPP_BRIDGE rps};
+            auto *state = new GEMetalRenderPipelineState(desc.domainFunc, desc.fragmentFunc, rpsHandle,
+                                                         hasDepthStencilState, depthStencilState, rasterizerState);
+            state->isTessellation = true;
+            state->hullComputePipelineState = NSObjectHandle{NSOBJECT_CPP_BRIDGE hullCps};
+            state->tessControlPointCount = td.output_control_points;
+            state->tessFactorStructSize = (td.domain == 1 /*quad*/) ? 12u : 8u;
+            state->controlPointStride = cpStride;
+            state->cpStageInBufferIndex = cpBufferIndex;
+            state->hullThreadgroupSize = hullTgSize;
+            DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Tessellation render pipeline created: '" << desc.name << "'");
+            return std::shared_ptr<GERenderPipelineState>(state);
+        }
+
         SharedHandle<GERenderPipelineState> makeRenderPipelineState(RenderPipelineDescriptor &desc) override{
+            /// §16 Phase E — tessellation pipeline. When both hull + domain are
+            /// supplied, the domain replaces the vertex stage (post-tessellation
+            /// vertex) and the hull is compiled to a SEPARATE compute pipeline
+            /// dispatched by `drawPatches` before the draw. Handled here, ahead
+            /// of the vertex/fragment path, because `vertexFunc` is absent.
+            if(desc.hullFunc && desc.domainFunc){
+                return makeTessellationRenderPipelineState(desc);
+            }
             if(!_checkPipelineShader(desc.vertexFunc,"vertex",desc.name) ||
                !_checkPipelineShader(desc.fragmentFunc,"fragment",desc.name)){
                 return nullptr;

@@ -36,6 +36,28 @@ public:
     /// flag before issuing `drawMeshThreadgroups:`. Matches the
     /// `isMesh` flag on the D3D12 sibling at GED3D12Pipeline.h:27.
     bool isMesh = false;
+    /// §16 Phase E — tessellation-pipeline variant. When true, `vertexShader`
+    /// holds the DOMAIN (post-tessellation vertex) shader and the fields below
+    /// carry the hull compute stage + tessellation config the deferred
+    /// `startTessRenderPass` / `drawPatches` path needs. Set by
+    /// `makeRenderPipelineState` when `hullFunc` + `domainFunc` are supplied.
+    bool isTessellation = false;
+    /// Compute pipeline built from the hull kernel; dispatched one thread per
+    /// patch to produce the post-hull control points + tessellation factors.
+    NSSmartPtr hullComputePipelineState = NSObjectHandle{nullptr};
+    /// Control points per patch (== hull `outputcontrolpoints`).
+    unsigned tessControlPointCount = 0;
+    /// Byte size of one `MTL{Triangle,Quad}TessellationFactorsHalf` (8 / 12).
+    unsigned tessFactorStructSize = 0;
+    /// Byte stride of one control point (drives the engine-owned post-hull
+    /// control-point buffer size), from the pipeline's vertex input layout.
+    unsigned controlPointStride = 0;
+    /// Vertex-descriptor buffer index the domain's `patch_control_point`
+    /// stage-in is bound to (the post-hull control-point buffer slot).
+    unsigned cpStageInBufferIndex = 0;
+    /// Threads-per-threadgroup for the hull dispatch (from the hull's
+    /// serialized `threadgroupDesc`).
+    unsigned hullThreadgroupSize = 32;
     GEMetalRenderPipelineState(SharedHandle<GTEShader> & _vertexShader,
                                SharedHandle<GTEShader> & _fragmentShader,
                                NSSmartPtr & renderPipelineState,bool hasDepthStencilState,

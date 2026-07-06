@@ -29,6 +29,16 @@ _NAMESPACE_BEGIN_
         id<MTLBuffer> pendingIndexBuffer = nil;
         MTLIndexType pendingIndexType = MTLIndexTypeUInt32;
 
+        /// §16 Phase E — deferred tessellation render pass. `startTessRenderPass`
+        /// records the descriptor and defers the render encoder; `drawPatches`
+        /// runs the hull compute dispatch into engine-owned intermediate buffers
+        /// (created, bound to both encoders, then released — Metal retains them
+        /// for the command buffer's GPU lifetime), then opens the render encoder
+        /// for the fixed-function tessellator + domain/fragment draw. Cleared by
+        /// `finishRenderPass`.
+        bool inTessRenderPass = false;
+        GERenderPassDescriptor tessRenderPassDesc {};
+
         friend class GEMetalCommandQueue;
         unsigned getResourceLocalIndexFromGlobalIndex(unsigned _id,omegasl_shader & shader);
 
@@ -92,6 +102,8 @@ _NAMESPACE_BEGIN_
         void dispatchRays(unsigned int x, unsigned int y, unsigned int z) override;
         
         void startRenderPass(const GERenderPassDescriptor &desc) override;
+        void startTessRenderPass(const GERenderPassDescriptor &desc) override;
+        void drawPatches(unsigned patchCount, SharedHandle<GEBuffer> & controlPointBuffer, size_t startPatch) override;
         void setVertexBuffer(SharedHandle<GEBuffer> &buffer) override;
         void setRenderPipelineState(SharedHandle<GERenderPipelineState> &pipelineState) override;
         void bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned id) override;

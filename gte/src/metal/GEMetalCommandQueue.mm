@@ -487,6 +487,21 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
 
     }
 
+    void GEMetalCommandBuffer::startTessRenderPass(const GERenderPassDescriptor & desc){
+        buffer.assertExists();
+        /// §16 Phase E — deferred tessellation pass. Record the descriptor but
+        /// open NO encoder yet: the hull/factor compute dispatch has to be
+        /// encoded before the render encoder exists (Metal cannot run compute
+        /// inside a render encoder), and both need the pipeline + control points
+        /// that arrive after this call. `drawPatches` does the dispatch, then
+        /// opens the render encoder via the stored descriptor. The ordering is
+        /// enforced by Metal's hazard tracking on the intermediate buffers, so
+        /// the render work waits for the dispatch on the GPU without a CPU stall.
+        tessRenderPassDesc = desc;
+        inTessRenderPass = true;
+        DEBUG_TRACE(DEBUG_DOMAIN_RENDERTGT, "TessRenderPass begin (deferred)");
+    };
+
     void GEMetalCommandBuffer::startRenderPass(const GERenderPassDescriptor & desc){
         buffer.assertExists();
         MTLRenderPassDescriptor *renderPassDesc = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -684,6 +699,24 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         auto *ps = (GEMetalRenderPipelineState *)pipelineState.get();
         ps->renderPipelineState.assertExists();
         DEBUG_TRACE(DEBUG_DOMAIN_PIPELINE, "PSO set");
+        /// §16 Phase E — in a deferred tessellation pass the render encoder does
+        /// not exist yet (it opens in `drawPatches`, after the hull dispatch), so
+        /// just record the pipeline; `drawPatches` applies it to the encoder it
+        /// opens. Binding a tessellation pipeline in a plain `startRenderPass`
+        /// (rp already open) falls through to the normal apply below, which is
+        /// wrong for tessellation — reject it so the caller uses
+        /// `startTessRenderPass`.
+        if(inTessRenderPass && rp == nil){
+            renderPipelineState = ps;
+            return;
+        }
+        if(ps->isTessellation){
+            DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE,
+                "setRenderPipelineState: a tessellation pipeline must be used inside a "
+                "startTessRenderPass scope, not a plain startRenderPass");
+            assert(false && "tessellation pipeline bound outside startTessRenderPass");
+            return;
+        }
         [rp setRenderPipelineState:NSOBJECT_OBJC_BRIDGE(id<MTLRenderPipelineState>,ps->renderPipelineState.handle())];
         
         [rp setFrontFacingWinding:ps->rasterizerState.winding];
@@ -947,6 +980,76 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         [rp drawPrimitives:metalPrimitiveTypeForPolygonType(polygonType) vertexStart:startIdx vertexCount:vertexCount];
     };
 
+    void GEMetalCommandBuffer::drawPatches(unsigned patchCount, SharedHandle<GEBuffer> & controlPointBuffer, size_t startPatch){
+        metalRequireOrReturn(inTessRenderPass, DEBUG_DOMAIN_QUEUE,
+                     "drawPatches: called outside a startTessRenderPass scope");
+        metalRequireOrReturn(rp == nil && cp == nil, DEBUG_DOMAIN_QUEUE,
+                     "drawPatches: an encoder is already open in this tessellation pass");
+        metalRequireOrReturn(renderPipelineState != nullptr && renderPipelineState->isTessellation, DEBUG_DOMAIN_QUEUE,
+                     "drawPatches: no tessellation pipeline bound (set a hull+domain pipeline first)");
+        if(patchCount == 0) return;
+
+        auto *ps = renderPipelineState;
+        id<MTLCommandBuffer> mtlCmd = NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle());
+        id<MTLDevice> dev = mtlCmd.device;
+
+        const unsigned N = ps->tessControlPointCount;
+        const NSUInteger hullOutLen = (NSUInteger)ps->controlPointStride * (NSUInteger)N * (NSUInteger)patchCount;
+        const NSUInteger factorLen  = (NSUInteger)ps->tessFactorStructSize * (NSUInteger)patchCount;
+
+        /// Engine-owned intermediate buffers (Private / GPU-only). Created +1,
+        /// bound to both encoders (Metal retains them for the command buffer's
+        /// GPU lifetime), then released — freed after completion.
+        id<MTLBuffer> hullOut = [dev newBufferWithLength:hullOutLen options:MTLResourceStorageModePrivate];
+        id<MTLBuffer> factors = [dev newBufferWithLength:factorLen options:MTLResourceStorageModePrivate];
+
+        auto *cpBuf = (GEMetalBuffer *)controlPointBuffer.get();
+        cpBuf->metalBuffer.assertExists();
+        id<MTLBuffer> inputCP = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,cpBuf->metalBuffer.handle());
+
+        /// 1. Hull / factor compute dispatch — one thread per patch. Writes the
+        /// post-hull control points (hullOut, slot 1) and the tessellation
+        /// factors (factors, the synthesized slot 2); reads the caller's input
+        /// control points (slot 0).
+        id<MTLComputeCommandEncoder> tessCp = [mtlCmd computeCommandEncoder];
+        [tessCp setComputePipelineState:NSOBJECT_OBJC_BRIDGE(id<MTLComputePipelineState>,ps->hullComputePipelineState.handle())];
+        [tessCp setBuffer:inputCP offset:0 atIndex:0];
+        [tessCp setBuffer:hullOut offset:0 atIndex:1];
+        [tessCp setBuffer:factors offset:0 atIndex:2];
+        NSUInteger tg = ps->hullThreadgroupSize > 0 ? ps->hullThreadgroupSize : 1;
+        if(tg > patchCount) tg = patchCount;
+        [tessCp dispatchThreads:MTLSizeMake(patchCount,1,1) threadsPerThreadgroup:MTLSizeMake(tg,1,1)];
+        [tessCp endEncoding];
+
+        /// 2. Render encoder — opened here (deferred). Metal serializes it behind
+        /// the compute dispatch via the Private-buffer hazards, so this waits for
+        /// the factors on the GPU without a CPU stall. `startRenderPass` builds
+        /// the attachment/load-store setup from the stored descriptor and sets
+        /// `rp`; then apply the recorded tessellation pipeline, bind the factor
+        /// + post-hull control-point buffers, and drawPatches.
+        startRenderPass(tessRenderPassDesc);
+        [rp setRenderPipelineState:NSOBJECT_OBJC_BRIDGE(id<MTLRenderPipelineState>,ps->renderPipelineState.handle())];
+        [rp setFrontFacingWinding:ps->rasterizerState.winding];
+        [rp setCullMode:ps->rasterizerState.cullMode];
+        [rp setTriangleFillMode:ps->rasterizerState.fillMode];
+        if(ps->hasDepthStencilState){
+            [rp setDepthStencilState:NSOBJECT_OBJC_BRIDGE(id<MTLDepthStencilState>,ps->depthStencilState.handle())];
+            [rp setDepthBias:ps->rasterizerState.depthBias slopeScale:ps->rasterizerState.slopeScale clamp:ps->rasterizerState.depthClamp];
+        }
+        [rp setTessellationFactorBuffer:factors offset:0 instanceStride:0];
+        [rp setVertexBuffer:hullOut offset:0 atIndex:ps->cpStageInBufferIndex];
+        [rp drawPatches:N
+             patchStart:startPatch
+             patchCount:patchCount
+       patchIndexBuffer:nil
+ patchIndexBufferOffset:0
+          instanceCount:1
+           baseInstance:0];
+
+        [hullOut release];
+        [factors release];
+    };
+
     void GEMetalCommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType){
         auto *metalBuffer = (GEMetalBuffer *)buffer.get();
         pendingIndexBuffer = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>, metalBuffer->metalBuffer.handle());
@@ -1036,6 +1139,11 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         renderPipelineState = nullptr;
         [rp endEncoding];
         rp = nil;
+        /// §16 Phase E — clear any deferred-tessellation state (harmless no-op
+        /// for a plain render pass). The intermediate buffers were already
+        /// released in `drawPatches`; Metal holds its own references until the
+        /// command buffer completes.
+        inTessRenderPass = false;
     };
 
     void GEMetalCommandBuffer::startComputePass(const GEComputePassDescriptor & desc){

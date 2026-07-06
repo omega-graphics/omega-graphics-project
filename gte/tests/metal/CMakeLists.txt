@@ -119,6 +119,24 @@ target_link_options("TessellationDispatchTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_tessellation_dispatch COMMAND TessellationDispatchTest)
 
+# OmegaSL §16 Phase E — tessellated-draw integration test (shared source under
+# gte/tests/). Drives startTessRenderPass + drawPatches: a hull/domain/fragment
+# pipeline draws one triangle patch to an offscreen texture and the center pixel
+# is read back to confirm the tessellator + domain + fragment stages rasterized.
+# Metal-only today (see TessellationDispatchTest note).
+add_metal_cli_test(
+    NAME
+    "TessellationDrawTest"
+    SOURCES
+    "../tessellation_draw_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("TessellationDrawTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_tessellation_draw COMMAND TessellationDrawTest)
+
 # OmegaSL §5.3 — integer / bitfield-op GPU integration test (shared, backend-
 # independent source under gte/tests/). Proves the firstbit normalization
 # (countbits / reversebits / firstbithigh / firstbitlow) agrees with the host

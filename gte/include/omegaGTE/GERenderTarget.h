@@ -82,7 +82,10 @@ _NAMESPACE_BEGIN_
             TriangleStrip,
             Line,
             LineStrip,
-            Point
+            Point,
+            /// §16 Phase E — a control-point patch list, consumed by
+            /// `drawPatches` inside a `startTessRenderPass` scope.
+            Patch
         };
 
         /// @brief Index element type for indexed draw calls.
@@ -95,6 +98,35 @@ _NAMESPACE_BEGIN_
          Render Pass
          */
         virtual void startRenderPass(const GERenderPassDescriptor & desc) = 0;
+
+        /**
+         @brief Start a tessellation render pass (§16 Phase E).
+         @paragraph A tessellated draw MUST be started with this entry point,
+         not @c startRenderPass — a plain render pass does not support the
+         hull/domain (tessellation) stages and rejects a tessellation pipeline
+         (built with @c RenderPipelineDescriptor::hullFunc / @c domainFunc).
+         @paragraph The pass is *deferred*: the engine first runs the hull /
+         patch-constant stage (on Metal, a compute dispatch, one thread per
+         patch, that writes the per-control-point output + the tessellation
+         factor buffer) and only then opens the render encoder — WITHOUT
+         blocking the CPU. The compute→render ordering is enforced by the GPU's
+         own buffer-hazard tracking on the engine-owned control-point / factor
+         buffers, so the draw is scheduled behind the dispatch asynchronously.
+         @paragraph Bind the tessellation pipeline via @c setRenderPipelineState,
+         then issue @c drawPatches; the engine owns the intermediate
+         control-point + factor buffers. Close the pass with
+         @c finishRenderPass. On D3D12 / Vulkan (where HS/DS run inside the
+         graphics pipeline) this is a variant of @c startRenderPass that permits
+         the tessellation pipeline + patch topology; the dedicated entry point
+         keeps the "plain @c startRenderPass rejects tessellation" contract
+         uniform across backends.
+         @paragraph Feature-gated behind @c GTEDEVICE_FEATURE_TESSELLATION_SHADER;
+         a no-op + diagnostic on a device that lacks it (matching the mesh /
+         raytracing pattern). The default base implementation is that no-op —
+         backends that support tessellation override it.
+         */
+        virtual void startTessRenderPass(const GERenderPassDescriptor & desc) { (void)desc; }
+
         virtual void setRenderPipelineState(SharedHandle<GERenderPipelineState> & pipelineState) = 0;
         //
         virtual void setVertexBuffer(SharedHandle<GEBuffer> & buffer) = 0;
@@ -138,6 +170,30 @@ _NAMESPACE_BEGIN_
         virtual void setScissorRects(std::vector<GEScissorRect> scissorRects) = 0;
 
         virtual void drawPolygons(PolygonType polygonType,unsigned vertexCount,size_t startIdx) = 0;
+
+        /**
+         @brief Draw tessellation patches (§16 Phase E). Must be called inside a
+         @c startTessRenderPass scope with a tessellation pipeline bound.
+         @paragraph Runs the hull / patch-constant stage over @p patchCount
+         patches (each of @c patchControlPoints control points, read from
+         @p controlPointBuffer) to produce per-patch tessellation factors + the
+         post-hull control points, then feeds the fixed-function tessellator and
+         the domain / fragment stages. The engine allocates and owns the
+         intermediate factor + post-hull-control-point buffers.
+         @param patchCount        Number of patches to draw.
+         @param controlPointBuffer Input control points for the hull stage
+                                   (bound at the hull's control-point buffer
+                                   slot); its element layout must match the
+                                   pipeline's control-point struct.
+         @param startPatch        Index of the first patch to draw.
+         @paragraph Default base implementation is a no-op + diagnostic; backends
+         that support tessellation override it.
+         */
+        virtual void drawPatches(unsigned patchCount,
+                                 SharedHandle<GEBuffer> & controlPointBuffer,
+                                 size_t startPatch = 0) {
+            (void)patchCount; (void)controlPointBuffer; (void)startPatch;
+        }
 
         virtual void setIndexBuffer(SharedHandle<GEBuffer> & buffer, IndexType indexType) = 0;
         virtual void drawIndexedPolygons(PolygonType polygonType,
