@@ -3814,13 +3814,19 @@ namespace omegasl {
                     }
                     /// (e) the Metal lowering stores per-CP hull output into a
                     /// single `out` buffer (the store target for the rewritten
-                    /// `return`), so require exactly one.
+                    /// `return`), so allow at most one. §16 Phase G: the
+                    /// standard vertex→hull→domain dataflow writes the per-CP
+                    /// output to `gl_out[]` (GLSL) / the return (HLSL) instead,
+                    /// so a hull that consumes a control-point-array parameter
+                    /// needs no `out` buffer — hence "at most one," not
+                    /// "exactly one." (Metal's interim path still declares one;
+                    /// its migration to the CP-array model is a follow-up.)
                     unsigned outCount = 0;
                     for(auto &r : _decl->resourceMap){
                         if(r.access == ast::ShaderDecl::ResourceMapDesc::Out) ++outCount;
                     }
-                    if(outCount != 1){
-                        auto e = std::make_unique<TypeError>(std::string("Hull shader `") + _decl->name + "` must declare exactly one `out` buffer for its per-control-point output (found " + std::to_string(outCount) + ").");
+                    if(outCount > 1){
+                        auto e = std::make_unique<TypeError>(std::string("Hull shader `") + _decl->name + "` may declare at most one `out` buffer for its per-control-point output (found " + std::to_string(outCount) + ").");
                         e->loc = _decl->loc.value_or(ErrorLoc{});
                         diagnostics->addError(std::move(e));
                         return false;

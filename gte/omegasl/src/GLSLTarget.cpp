@@ -115,8 +115,12 @@ namespace omegasl {
             case ast::ShaderDecl::Fragment: shader_kind = shaderc_glsl_fragment_shader; break;
             case ast::ShaderDecl::Compute:  shader_kind = shaderc_glsl_compute_shader; break;
             case ast::ShaderDecl::Mesh:     shader_kind = shaderc_glsl_mesh_shader;    break;
-            case ast::ShaderDecl::Hull:
-            case ast::ShaderDecl::Domain:   break;
+            /// §16 Phase G — a hull compiles as a `.tesc` (tessellation control)
+            /// and a domain as a `.tese` (tessellation evaluation). Without the
+            /// right kind shaderc treats the source as compute and produces
+            /// invalid bytecode (the loader then rejects the module).
+            case ast::ShaderDecl::Hull:     shader_kind = shaderc_glsl_tess_control_shader;    break;
+            case ast::ShaderDecl::Domain:   shader_kind = shaderc_glsl_tess_evaluation_shader; break;
         }
 
         auto options = shaderc_compile_options_initialize();
@@ -475,6 +479,7 @@ namespace omegasl {
         meshVertsParamName.clear();
         meshIndicesParamName.clear();
         meshVertsStructDecl = nullptr;
+        controlPointArrayParams.clear();
         if (_decl->shaderType == ast::ShaderDecl::Mesh) {
             for (auto &p : _decl->params) {
                 if (p.meshOutput == ast::AttributedFieldDecl::Vertices) {
@@ -731,11 +736,33 @@ namespace omegasl {
                                     << (isTri ? "" : ".xy") << ";" << std::endl;
                     }
                 } else {
-                    out << "layout(location = ";
-                    out << arg_idx << ") in ";
-                    writeTypeName(cg.typeResolver->resolveTypeWithExpr(arg.typeExpr),
-                                  arg.typeExpr->pointer, out);
-                    out << " " << arg.name << " ;" << std::endl;
+                    /// §16 Phase G — a hull/domain control-point-array input
+                    /// (`CP cp[N]`, element = an internal struct) is the
+                    /// post-vertex patch, which in GLSL rides the built-in
+                    /// `gl_in[]` array. It gets NO `layout(location=N) in`
+                    /// varying; instead record it so `emitMemberExpr` can
+                    /// rewrite `cp[i].<field>` onto `gl_in[i].gl_Position`
+                    /// (Position) at body-emission time. Only on the
+                    /// tessellation stages (vertex reads its input by
+                    /// VertexID, not a patch array).
+                    bool isCPArray = false;
+                    if ((_decl->shaderType == ast::ShaderDecl::Hull
+                         || _decl->shaderType == ast::ShaderDecl::Domain)
+                        && !arg.typeExpr->arrayDims.empty()) {
+                        auto pred = [&](ast::StructDecl *d) { return d->name == arg.typeExpr->name; };
+                        auto it = std::find_if(internalStructs.begin(), internalStructs.end(), pred);
+                        if (it != internalStructs.end()) {
+                            controlPointArrayParams.push_back(std::make_pair(arg.name, *it));
+                            isCPArray = true;
+                        }
+                    }
+                    if (!isCPArray) {
+                        out << "layout(location = ";
+                        out << arg_idx << ") in ";
+                        writeTypeName(cg.typeResolver->resolveTypeWithExpr(arg.typeExpr),
+                                      arg.typeExpr->pointer, out);
+                        out << " " << arg.name << " ;" << std::endl;
+                    }
                 }
             }
         } else {
@@ -867,7 +894,16 @@ namespace omegasl {
                             });
                     }
                     if (isInternalStructReturn) {
-                        out << "return;" << std::endl;
+                        /// The per-CP / per-vertex position was already routed
+                        /// to its builtin by the member-expr writes. A hull's
+                        /// tess-factor epilogue (`if (gl_InvocationID == 0) …`)
+                        /// still has to run *after* this point, so a hull emits
+                        /// no mid-body `return;` (it would make the epilogue
+                        /// unreachable); a domain has no epilogue, so a bare
+                        /// `return;` is correct there.
+                        if (_decl->shaderType != ast::ShaderDecl::Hull) {
+                            out << "return;" << std::endl;
+                        }
                     } else {
                         OmegaCommon::String posField;
                         auto retTypeName = _decl->returnType->name;
@@ -987,6 +1023,7 @@ namespace omegasl {
         meshVertsStructDecl = nullptr;
         meshMaxVertices = 0;
         meshMaxPrimitives = 0;
+        controlPointArrayParams.clear();
     }
 
     void GLSLTarget::writeInternalFieldRef(const ast::AttributedFieldDecl &field,
@@ -999,14 +1036,18 @@ namespace omegasl {
         const auto &attr = field.attributeName.value();
         if (attr == ATTRIBUTE_POSITION) {
             /// A `Position`-semantic field maps to the stage's position
-            /// builtin. Vertex/Hull/Domain *write* it through `gl_Position`
-            /// (clip space). A fragment shader *reads* it as the
-            /// interpolated window-space coordinate, which in GLSL is the
-            /// read-only `gl_FragCoord` builtin — `gl_Position` does not
-            /// exist in the fragment stage. This mirrors HLSL `SV_Position`
-            /// and Metal `[[position]]`, where the same semantic is
-            /// reinterpreted per stage by the downstream compiler.
+            /// builtin. Vertex/Domain *write* it through `gl_Position`
+            /// (clip space). A Hull (tessellation-control) writes its
+            /// per-output-control-point position into the built-in
+            /// `gl_out[gl_InvocationID].gl_Position` array member — there is
+            /// no bare `gl_Position` in a `.tesc`. A fragment shader *reads*
+            /// it as the interpolated window-space coordinate, which in GLSL
+            /// is the read-only `gl_FragCoord` builtin — `gl_Position` does
+            /// not exist in the fragment stage. This mirrors HLSL
+            /// `SV_Position` and Metal `[[position]]`, where the same
+            /// semantic is reinterpreted per stage by the downstream compiler.
             out << (currentShaderType == ast::ShaderDecl::Fragment ? "gl_FragCoord"
+                    : currentShaderType == ast::ShaderDecl::Hull   ? "gl_out[gl_InvocationID].gl_Position"
                                                                    : "gl_Position");
         } else if (attr == ATTRIBUTE_COLOR && field.attributeIndex.has_value()) {
             out << "_outColor" << field.attributeIndex.value();
@@ -1049,6 +1090,40 @@ namespace omegasl {
                 for (auto &f : it->second->fields) {
                     if (f.name == expr->rhs_id) {
                         writeInternalFieldRef(f, it->second->name, out);
+                        return;
+                    }
+                }
+            }
+        }
+        /// §16 Phase G — tessellation control-point-array read: `cp[i].field`
+        /// on a hull/domain reads the built-in `gl_in[]` patch array. A
+        /// `Position`-semantic field maps to `gl_in[i].gl_Position`; any other
+        /// field maps to its per-field `in` varying array `<struct>_<field>[i]`
+        /// (Position-only patches — the current tests — never hit that arm).
+        /// Detect the shape: LHS is INDEX_EXPR whose base identifier is a
+        /// recorded control-point-array parameter.
+        if (expr->lhs->type == INDEX_EXPR && !controlPointArrayParams.empty()) {
+            auto *_idx_expr = (ast::IndexExpr *)expr->lhs;
+            if (_idx_expr->lhs->type == ID_EXPR) {
+                auto *_id_expr = (ast::IdExpr *)_idx_expr->lhs;
+                auto cpIt = std::find_if(controlPointArrayParams.begin(), controlPointArrayParams.end(),
+                                         [&](std::pair<OmegaCommon::String, ast::StructDecl *> &p) {
+                                             return p.first == _id_expr->id;
+                                         });
+                if (cpIt != controlPointArrayParams.end()) {
+                    for (auto &f : cpIt->second->fields) {
+                        if (f.name != expr->rhs_id) continue;
+                        bool isPosition = f.attributeName.has_value()
+                            && f.attributeName.value() == ATTRIBUTE_POSITION;
+                        if (isPosition) {
+                            out << "gl_in[";
+                            cg.generateExpr(_idx_expr->idx_expr);
+                            out << "].gl_Position";
+                        } else {
+                            out << cpIt->second->name << "_" << f.name << "[";
+                            cg.generateExpr(_idx_expr->idx_expr);
+                            out << "]";
+                        }
                         return;
                     }
                 }

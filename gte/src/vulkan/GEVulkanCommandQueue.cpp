@@ -801,8 +801,34 @@ _NAMESPACE_BEGIN_
                      << " deferred=1");
     };
 
+    void GEVulkanCommandBuffer::startTessRenderPass(const GERenderPassDescriptor &desc){
+        /// §16 Phase G — on Vulkan the HS/DS execute inside the one graphics
+        /// pipeline, so a tessellated draw needs no separate compute pre-pass
+        /// (unlike Metal). This is exactly the normal render-pass setup plus a
+        /// flag that (a) allows `drawPatches` and (b) is what makes plain
+        /// `startRenderPass` and this one differ: a tessellation pipeline may
+        /// only be bound inside a tess pass. The compatibility render pass a
+        /// tessellation pipeline was built against is byte-identical to the
+        /// plain one (tessellation doesn't touch the render pass), so reusing
+        /// `startRenderPass` keeps them compatible by construction.
+        startRenderPass(desc);
+        tessPassActive = true;
+    };
+
     void GEVulkanCommandBuffer::setRenderPipelineState(SharedHandle<GERenderPipelineState> &pipelineState){
         auto vulkanPipeline = (GEVulkanRenderPipelineState *)pipelineState.get();
+        /// §16 Phase G — a tessellation pipeline may only be bound inside a
+        /// `startTessRenderPass` scope; binding one in a plain render pass is a
+        /// caller-contract violation (there is no tessellator hooked up). Refuse
+        /// to bind rather than hand the driver a patch-topology draw with no
+        /// tess pass. Symmetrically, a plain pipeline inside a tess pass is also
+        /// wrong.
+        if(vulkanPipeline->isTess && !tessPassActive){
+            std::cerr << "setRenderPipelineState: a tessellation pipeline must be bound inside "
+                         "startTessRenderPass, not startRenderPass." << std::endl;
+            assert(false && "tessellation pipeline bound outside a tess render pass");
+            return;
+        }
         VkPipeline state = vulkanPipeline->pipeline;
 
         vkCmdBindPipeline(commandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,state);
@@ -1315,6 +1341,41 @@ _NAMESPACE_BEGIN_
                      << " vertexCount=" << vertexCount << " startIdx=" << startIdx);
     };
 
+    void GEVulkanCommandBuffer::drawPatches(unsigned patchCount,
+                                            SharedHandle<GEBuffer> & controlPointBuffer,
+                                            size_t startPatch){
+        /// §16 Phase G — must be inside a tess pass with a tessellation
+        /// pipeline bound.
+        if(!tessPassActive || renderPipelineState == nullptr || !renderPipelineState->isTess){
+            std::cerr << "drawPatches: no tessellation pipeline bound in a startTessRenderPass scope." << std::endl;
+            assert(false && "drawPatches outside a tessellation pass");
+            return;
+        }
+        /// The `vertex(tess=true)` stage reads its per-control-point input from
+        /// the control-point storage buffer (`buffer<CP> : 0` → std430 SSBO),
+        /// indexed by `VertexID`. Bind it at the vertex stage's control-point
+        /// slot (0) so `controlPoints[gl_VertexIndex]` resolves; the descriptor
+        /// bind is deferred to the draw below (as for every other draw).
+        bindResourceAtVertexShader(controlPointBuffer, 0);
+
+        if(activeRenderPass == VK_NULL_HANDLE){ return; }  // see drawPolygons rationale
+        beginRenderPassIfDeferred();
+        bindDescriptorSetsIfPending();
+
+        /// The pipeline's input assembly is a static PATCH_LIST with
+        /// `patchControlPoints` control points per patch; the vertex stage runs
+        /// once per control point, so the draw covers `patchCount * N` vertices
+        /// and the tessellator groups them into `patchCount` patches.
+        const uint32_t n = renderPipelineState->patchControlPoints
+                               ? renderPipelineState->patchControlPoints : 1u;
+        const uint32_t vertexCount = patchCount * n;
+        const uint32_t firstVertex = (uint32_t)startPatch * n;
+        vkCmdDraw(commandBuffer, vertexCount, 1, firstVertex, 0);
+        DEBUG_STREAM("[GEVulkan_RP] drawPatches: patchCount=" << patchCount
+                     << " controlPoints=" << n << " vertexCount=" << vertexCount
+                     << " firstVertex=" << firstVertex);
+    };
+
     void GEVulkanCommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType){
         auto vkBuffer = ((GEVulkanBuffer *)buffer.get());
         trackBuffer(buffer);
@@ -1477,6 +1538,7 @@ _NAMESPACE_BEGIN_
         activeFramebuffer = VK_NULL_HANDLE;
         activeRenderPass = VK_NULL_HANDLE;
         renderPipelineState = nullptr;
+        tessPassActive = false;  // §16 Phase G — close any tess pass scope.
         DEBUG_STREAM("[GEVulkan_RP] finishRenderPass: hadActiveRP=" << (hadActiveRP ? 1 : 0)
                      << " enteredDeferred=" << (wasDeferred ? 1 : 0));
     };

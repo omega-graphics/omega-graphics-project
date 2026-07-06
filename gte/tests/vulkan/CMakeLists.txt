@@ -62,6 +62,20 @@ add_vulkan_cli_test(
     "../mesh_shader_test.cpp")
 add_test(NAME omegagte_mesh_shader COMMAND MeshShaderTest)
 
+# OmegaSL §16 Phase G — tessellated-draw integration test on the mandatory
+# vertex-stage model (`vertex(tess=true)`). Exercises the full chain:
+# OmegaSL → GLSL → shaderc → SPIR-V → VkGraphicsPipeline (vertex + tess-control
+# + tess-evaluation + fragment stages) → startTessRenderPass / drawPatches →
+# texture readback. Skips cleanly (exit 0) if the device does not advertise
+# tessellation support. Backend-independent source; Metal/D3D12 can register it
+# once their vertex-stage tessellation runtime lands.
+add_vulkan_cli_test(
+    NAME
+    "TessellationVtxDrawTest"
+    SOURCES
+    "../tessellation_vtx_draw_test.cpp")
+add_test(NAME omegagte_tessellation_vtx_draw COMMAND TessellationVtxDrawTest)
+
 # CommandQueue-Typed-Pool Phase 2 — pure-CPU unit test for the queue-family
 # picker. Pulls in the in-tree VulkanQueueFamilies translation unit
 # directly so no GPU device is required. Deterministic and fast.

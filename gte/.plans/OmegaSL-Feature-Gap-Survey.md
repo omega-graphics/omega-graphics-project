@@ -4409,6 +4409,90 @@ converts the current load-then-crash into the clean per-shader rejection
 pair completes; the `omegasl_compile_tessellation` `WILL_FAIL` markings come
 off per backend in lockstep.
 
+### Phase G — mandatory vertex stage for tessellation (`vertex(tess=true)`) [design — Alex, 2026-07-06]
+
+**Why.** The interim tessellation model (§16.0 → Phase D/E) has **no vertex
+stage**: the hull reads its control points directly from an SSBO indexed by
+`VertexID`, and Metal's runtime lowers the hull to a compute dispatch. That
+works for Metal — but a **Vulkan/D3D12 graphics tessellation pipeline requires
+a vertex stage** feeding the tessellation-control stage. A pipeline with only
+`tesc`/`tese`/`fragment` and no `VK_SHADER_STAGE_VERTEX_BIT` is invalid. So the
+Vulkan runtime (16-E3) cannot be built on the SSBO-only model.
+
+**Decision (Alex, 2026-07-06).** Require a vertex stage for a tessellation
+pipeline **everywhere**, authored as a new stage descriptor
+`vertex(tess=true)`. `tess` defaults to `false`, so a bare `vertex` is
+byte-identical to today. The vertex stage reads the raw input vertices and
+**outputs a control-point struct that the hull consumes** — the standard
+`vertex → hull → domain → fragment` dataflow (D3D11/GL/Vulkan all model it this
+way). This supersedes the SSBO-only hull input.
+
+Per backend (target model):
+
+| Backend | `vertex(tess=true)` lowers to | hull input |
+|---------|-------------------------------|-----------|
+| Vulkan / D3D12 | the real vertex stage (`.vert` / VS) feeding the tessellator | tesc reads `gl_in[]` / HS reads `InputPatch` |
+| Metal (**deferred**) | a **compute** pass that runs *before* the hull compute, writing a per-vertex control-point buffer the hull compute reads | hull compute reads that buffer |
+
+**Scope this session (Alex): Vulkan-first.** Land the shared front-end, the
+GLSL codegen for the standard dataflow, the Vulkan runtime, and a
+Vulkan-runnable tess draw test. **Metal keeps its current landed path** (SSBO
+hull-compute, no vertex stage) until a follow-up migrates it to the
+compute-before-hull model — so this pass must not break Metal's existing
+`omegasl_compile_tessellation` / `TessellationDispatchTest` / `TessellationDrawTest`.
+D3D12 vertex-stage wiring is a follow-up too. Because only Vulkan compiles/runs
+on the Linux host, Metal/HLSL codegen for the *new* surface is out of scope
+here; their `omegasl_compile_tessellation` gate stays `WILL_FAIL` until reworked.
+
+**Data-flow / control-point model (recorded).**
+
+- The `vertex(tess=true)` stage reads control points through the **standard
+  OmegaSL vertex-input path** (vertex attributes described by
+  `RenderPipelineDescriptor::vertexInputDescriptor`, indexed by `VertexID`),
+  and returns the control-point struct — exactly like a normal vertex shader,
+  just tagged for tessellation.
+- The hull's input becomes a **control-point array parameter** (`CP cp[N]`,
+  N = `outputcontrolpoints`) in place of the old `uint vid : VertexID` + `[in]`
+  SSBO. `cp[i]` is the i-th post-vertex control point. GLSL maps it to
+  `gl_in[i]`; the hull's `[out]` per-CP buffer stays (unused on GLSL, per §16-C).
+- `drawPatches(patchCount, controlPointBuffer, startPatch)` binds
+  `controlPointBuffer` as **vertex buffer 0** on Vulkan and issues
+  `vkCmdDraw(patchCount * N, …)` under `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`.
+
+#### Sub-phases
+
+- **G.1 — front-end (shared).** Parser: `vertex(tess=true)` in the `KW_VERTEX`
+  arm (one-token peek/putback, mirroring `fragment(early_depth)`); reject any
+  other token inside the parens. AST: `ShaderDecl::tessVertex` (`bool`, default
+  `false`). Sema: the hull input model gains the `CP cp[N]` array-parameter
+  form; a tessellation pipeline (hull present) requires a `vertex(tess=true)`
+  companion. Keep the old hull `uint vid : VertexID` form accepted so Metal's
+  current shaders still compile (additive, not a hard cutover) — the mandatory
+  rule is enforced only where the runtime needs it, until Metal migrates.
+- **G.2 — GLSL codegen.** Emit `.vert` from `vertex(tess=true)` (reads
+  attributes by `gl_VertexIndex`, writes `gl_Position` + CP-struct varyings);
+  rework the `.tesc` hull input from the SSBO read to `gl_in[i]`; carry the
+  control-point struct's non-Position fields as vert→tesc→tese varyings.
+  Verify with `shaderc`/`glslc` (`vertex`/`tesscontrol`/`tesseval`).
+- **G.3 — Vulkan runtime (16-E3 + 16-E4-Vulkan).** `makeRenderPipelineState`:
+  when `hullFunc && domainFunc`, build a 4-stage pipeline (VS = `vertexFunc`,
+  tesc = `hullFunc`, tese = `domainFunc`, fragment), set
+  `pTessellationState.patchControlPoints`, `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`;
+  map `OMEGASL_SHADER_HULL/DOMAIN` → tess-control/eval stage flags in
+  `createPipelineLayoutFromShaderDescs` (both switches). `GEVulkanCommandBuffer`:
+  override `startTessRenderPass` (a `startRenderPass` variant that permits the
+  tess pipeline + patch topology — no compute pre-pass on Vulkan) and
+  `drawPatches` (bind CP buffer as vertex buffer, `vkCmdDraw(patchCount*N)` with
+  patch topology). Plain `startRenderPass` rejects a tess pipeline (uniform
+  contract). `tessellationShader` is already enabled at device creation
+  (features2 copies all core feats) — no device change needed.
+- **G.4 — feature honesty (16-F, Vulkan slice).** Once G.3 runs, Vulkan may keep
+  advertising `GTEDEVICE_FEATURE_TESSELLATION_SHADER`; before that it should not
+  claim it. (D3D12 stays gated off until its Phase-E lands.)
+- **G.5 — test.** A `vertex(tess=true)` tessellation shader + a Vulkan-runnable
+  draw test (one triangle patch → offscreen RGBA8 → center pixel green), built
+  and run against the warm `./build`.
+
 ### Task table
 
 | # | Task | Where | Effort | Blocks | Status |
@@ -4420,9 +4504,14 @@ off per backend in lockstep.
 | 16-E4a | **Metal per-patch dispatch**: serialize `omegasl_tessellation_desc` into `omegasl_shader`; re-shape hull kernel to thread=patch id (CP loop + unconditional factor write); dispatch `threadsPerGrid = patchCount` | `MSLTarget.cpp` (codegen), shader-map writer, `GEMetal.mm` (runtime) | medium | — | **CODEGEN + DISPATCH VERIFIED** 2026-07-05 — hull kernel re-shaped to per-patch (`__osl_patch_id [[thread_position_in_grid]]` → `for(__osl_cp<N)` binding `vid = patchId*N+cp` → unconditional factor write to `__osl_tess_factors[__osl_patch_id]`). Also gave the hull a valid `threadgroupDesc` (32×1×1, serialized in `ShaderArchive.cpp`) so it builds as a `MTLComputePipelineState` and dispatches. **RUNTIME-VERIFIED on real Metal**: `TessellationDispatchTest` dispatches triHull+quadHull as compute kernels (one thread per patch), the synthesized factor buffer binds at the fall-through slot (id 2 → Metal buffer 2), and the readback confirms per-CP output echo + factor half-bits (1.0=0x3C00 tri / 2.0=0x4000 quad). The auto-`drawPatches` render command (16-E4, compute-then-render encoder + tess render pipeline) is still open. |
 | 16-E1 | Public API: descriptor fields, patch topology, `drawPatches`, `omegasl_tessellation_desc` | `GEPipeline.h`, `GERenderTarget.h`, `omegasl.h` | medium | E2–E4 | **PARTIAL** 2026-07-05 — DONE: `omegasl_tessellation_desc` (struct in `omegasl.h`; serialized in `ShaderArchive.cpp` read+write for HULL/DOMAIN; populated by `fillTessellationDesc` in `Target.h`, called from `MSLTarget.cpp` hull+domain arms); `RenderPipelineDescriptor::hullFunc/domainFunc/patchControlPoints`; `PrimitiveTopologyCategory::Patch`. TODO: `GECommandBuffer::PolygonType::Patch` + `drawPatches` command (blocked on the E4 draw-model plumbing below). |
 | 16-E2 | D3D12 HS/DS pipeline + patch topology | `GED3D12.cpp` | medium | — | open |
-| 16-E3 | Vulkan tess stages + tess state + device-feature enable | `GEVulkan.cpp` | medium | — | open |
+| 16-E3 | Vulkan tess stages + tess state + device-feature enable | `GEVulkan.cpp` | medium | — | **DONE** 2026-07-06 — subsumed by Phase G (16-G3), which requires the `vertex(tess=true)` stage. `tessellationShader` was already enabled at device creation. |
 | 16-E4 | Metal `startTessRenderPass` + tessellation pipeline + `drawPatches` | `GEMetal.mm`, `GEMetalCommandQueue.*`, `GEMetalPipeline.h`, `GERenderTarget.h` | large | — | **DONE (Metal)** 2026-07-06 — `startTessRenderPass` (deferred: records the descriptor, opens no encoder) + `drawPatches` (opens a compute encoder for the hull dispatch → engine-owned Private hullOut + factor buffers, ends it, then opens the render encoder via the stored descriptor, sets the half tess-factor buffer + `hullOut` as the per-patch-control-point stage-in, `[rp drawPatches:...]`). `makeRenderPipelineState` builds a `MTLComputePipelineState` from the hull + a render pipeline from domain/fragment with `MTLRenderPipelineDescriptor` tess state (partition/winding/half-factor + `MTLVertexStepFunctionPerPatchControlPoint` stage-in). Plain `startRenderPass` rejects tessellation pipelines. **RUNTIME-VERIFIED on real Metal** under the API + GPU validation layer: `TessellationDrawTest` draws one triangle patch to a texture → center pixel green (0,255,0,255). Metal now advertises `GTEDEVICE_FEATURE_TESSELLATION_SHADER` (Metal's slice of 16-F). |
 | 16-F | Feature-flag honesty gate + per-backend re-enable | `GED3D12.cpp`, `GEVulkan.cpp`, `GEMetal.mm`, tests `CMakeLists.txt` | small | — | open |
+| 16-G1 | Front-end: `vertex(tess=true)` descriptor + `tessVertex` AST + hull `CP cp[N]` input + Sema (Phase G.1) | `Parser.cpp` (KW_VERTEX), `AST.h`, `Sema.cpp` | medium | G2–G3 | **DONE** 2026-07-06 — `vertex(tess=true)` parses (peek/putback like `fragment(early_depth)`); `ShaderDecl::tessVertex`. Array function params (`cp[N]`) already parsed + indexable in Sema, so the hull/domain CP-array input type-checks with no new Sema rule; hull `out`-buffer requirement relaxed "exactly one"→"at most one" (the store buffer is Metal-only; GLSL/HLSL write `gl_out[]`/return). |
+| 16-G2 | GLSL codegen: emit `.vert`, tesc reads `gl_in[]`, hull writes `gl_out[]`, tess-level epilogue reachable (Phase G.2) | `GLSLTarget.cpp`, `Target.h` | medium | G3 | **DONE** 2026-07-06 — `glslc`/`shaderc`-verified (vert/tesc/tese/frag). A hull/domain CP-array param (`controlPointArrayParams`) is suppressed as a `layout(location) in` varying and `cp[i].<Pos>` rewrites to `gl_in[i].gl_Position`; `writeInternalFieldRef` routes hull Position → `gl_out[gl_InvocationID].gl_Position`; the hull's internal-struct `return` emits no mid-body `return;` so the factor epilogue stays reachable. **Also fixed the runtime `compileShaderRuntime` shaderc kind: Hull→`tess_control`, Domain→`tess_evaluation` (was defaulting to compute → invalid SPIR-V).** Non-Position CP varyings deferred (tests are Position-only). |
+| 16-G3 | Vulkan runtime: 4-stage tess pipeline + tess state + PATCH_LIST + HULL/DOMAIN stage flags; `startTessRenderPass` + `drawPatches` (Phase G.3, = 16-E3 + Vulkan slice of 16-E4) | `GEVulkan.cpp`, `GEVulkanCommandQueue.cpp/.h`, `GEVulkanPipeline.h` | large | G5 | **DONE** 2026-07-06 — **RUNTIME-VERIFIED under VVL.** `makeRenderPipelineState` builds vertex+tesc+tese+fragment with `pTessellationState.patchControlPoints` (from the serialized `omegasl_tessellation_desc`) + static `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`; HULL/DOMAIN → tess-control/eval stage flags in both `createPipelineLayoutFromShaderDescs` switches; `isTess`/`patchControlPoints` on the PSO. `startTessRenderPass` (thin `startRenderPass` variant + `tessPassActive`), `drawPatches` (binds control points as the VS SSBO at slot 0, `vkCmdDraw(patchCount*N)`), plain `startRenderPass`/`setRenderPipelineState` reject a tess pipeline, `finishRenderPass` clears the flag. `tessellationShader` is enabled implicitly at device creation (features2 copies all core feats) — no device change. |
+| 16-G4 | Feature honesty: Vulkan advertises `TESSELLATION_SHADER` only once G3 runs (Vulkan slice of 16-F) | `GEVulkan.cpp` | small | — | **DONE** (no-op) 2026-07-06 — Vulkan already advertised it when the GPU reports `tessellationShader`; with G3 the runtime now honors it, so the advertisement is honest and no change is needed. D3D12 stays dishonest until its Phase-E lands (still open). |
+| 16-G5 | `vertex(tess=true)` tess shader + Vulkan-runnable tess draw test | `gte/tests/tessellation_vtx_draw_test.cpp`, `gte/tests/vulkan/CMakeLists.txt` | medium | — | **DONE** 2026-07-06 — `omegagte_tessellation_vtx_draw` (backend-independent source, registered under Vulkan) draws one triangle patch to a 64² RGBA8 texture via `startTessRenderPass`/`drawPatches`; center pixel reads back green (0,255,0,255) under the Vulkan validation layer with zero VVL errors. Skips cleanly if the device lacks tessellation. Full omegasl suite (136/136) + Vulkan runtime suite (9/9) green. Metal/D3D12 can register the same source once their vertex-stage runtime lands. |
 
 ### Tests
 

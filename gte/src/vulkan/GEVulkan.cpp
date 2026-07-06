@@ -2817,6 +2817,11 @@ _NAMESPACE_BEGIN_
                         VkShaderStageFlags stage = VK_SHADER_STAGE_COMPUTE_BIT;
                         if(s.type == OMEGASL_SHADER_VERTEX){ stage = VK_SHADER_STAGE_VERTEX_BIT; }
                         else if(s.type == OMEGASL_SHADER_FRAGMENT){ stage = VK_SHADER_STAGE_FRAGMENT_BIT; }
+                        /// §16 Phase G — tessellation stages. A hull is the
+                        /// tessellation-control stage; a domain is the
+                        /// tessellation-evaluation stage. Both are core Vulkan.
+                        else if(s.type == OMEGASL_SHADER_HULL){ stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT; }
+                        else if(s.type == OMEGASL_SHADER_DOMAIN){ stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT; }
                     #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
                         else if(s.type == OMEGASL_SHADER_MESH){ stage = VK_SHADER_STAGE_MESH_BIT_EXT; }
                     #endif
@@ -2849,6 +2854,14 @@ _NAMESPACE_BEGIN_
             }
             else if(s.type == OMEGASL_SHADER_FRAGMENT){
                 shaderStageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            }
+            /// §16 Phase G — a hull/domain descriptor binding must be visible
+            /// to the tessellation-control / -evaluation stage that uses it.
+            else if(s.type == OMEGASL_SHADER_HULL){
+                shaderStageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+            }
+            else if(s.type == OMEGASL_SHADER_DOMAIN){
+                shaderStageFlags = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
             }
         #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
             /// Phase 4a — descriptor-set bindings used by the mesh stage
@@ -3190,7 +3203,42 @@ _NAMESPACE_BEGIN_
             return nullptr;
         }
 
-        omegasl_shader shaders[] = {desc.vertexFunc->internal,desc.fragmentFunc->internal};
+        /// §16 Phase G — a tessellation pipeline is one that carries both a
+        /// hull and a domain stage. On Vulkan the HS/DS run inside the one
+        /// graphics pipeline (vertex → tess-control → tess-evaluation →
+        /// fragment), so the vertex stage — authored as `vertex(tess=true)` —
+        /// is required exactly as for a plain pipeline; the checks above cover
+        /// it. Feature-gate on `GTEDEVICE_FEATURE_TESSELLATION_SHADER` (matching
+        /// the mesh / raytracing pattern) so a device that cannot honor it
+        /// returns nullptr with a diagnostic rather than tripping a driver
+        /// assert later.
+        const bool isTess = (bool)desc.hullFunc && (bool)desc.domainFunc;
+        if(isTess){
+            if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_TESSELLATION_SHADER)){
+                DEBUG_STREAM("makeRenderPipelineState: device does not advertise "
+                             "GTEDEVICE_FEATURE_TESSELLATION_SHADER ('" << desc.name << "')");
+                return nullptr;
+            }
+            if(!_checkPipelineShader(desc.hullFunc,"hull",desc.name) ||
+               !_checkPipelineShader(desc.domainFunc,"domain",desc.name)){
+                return nullptr;
+            }
+        }
+
+        /// Shader-descriptor set for the pipeline layout. A plain pipeline
+        /// unions {vertex, fragment}; a tessellation pipeline additionally
+        /// exposes {hull, domain} so their descriptor bindings land in the
+        /// layout with the right stage flags (see the two stage-flag switches
+        /// in `createPipelineLayoutFromShaderDescs`).
+        omegasl_shader shaders[4] = {desc.vertexFunc->internal, desc.fragmentFunc->internal};
+        unsigned shaderCount = 2;
+        if(isTess){
+            shaders[0] = desc.vertexFunc->internal;
+            shaders[1] = desc.hullFunc->internal;
+            shaders[2] = desc.domainFunc->internal;
+            shaders[3] = desc.fragmentFunc->internal;
+            shaderCount = 4;
+        }
 
         OmegaCommon::Vector<VkDescriptorSetLayout> descLayouts;
 
@@ -3198,7 +3246,7 @@ _NAMESPACE_BEGIN_
         VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
         OmegaCommon::Vector<VkSampler> immutableSamplers;
 
-        VkPipelineLayout layout = createPipelineLayoutFromShaderDescs(2,shaders,&descriptorPool,descs,descLayouts,immutableSamplers);
+        VkPipelineLayout layout = createPipelineLayoutFromShaderDescs(shaderCount,shaders,&descriptorPool,descs,descLayouts,immutableSamplers);
         if(layout == VK_NULL_HANDLE){
             for(auto & descLayout : descLayouts){
                 if(descLayout != VK_NULL_HANDLE){
@@ -3330,7 +3378,13 @@ _NAMESPACE_BEGIN_
 
         VkPipelineInputAssemblyStateCreateInfo inputAssemblyState {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         inputAssemblyState.primitiveRestartEnable = VK_FALSE;
-        switch(desc.primitiveTopologyCategory){
+        if(isTess){
+            /// §16 Phase G — the tessellator consumes control-point patches;
+            /// the input assembler must feed it a patch list. The per-patch
+            /// control-point count is set on `pTessellationState` below.
+            inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+        }
+        else switch(desc.primitiveTopologyCategory){
             case PrimitiveTopologyCategory::Line:
                 inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
                 break;
@@ -3472,7 +3526,12 @@ _NAMESPACE_BEGIN_
                 VK_DYNAMIC_STATE_VIEWPORT,
                 VK_DYNAMIC_STATE_SCISSOR,
                 VK_DYNAMIC_STATE_STENCIL_REFERENCE};
-        if(hasExtendedDynamicState){
+        /// §16 Phase G — a tessellation pipeline keeps its topology static at
+        /// `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`; `drawPatches` never rebinds it
+        /// (and dynamic topology would let a caller feed a non-patch topology
+        /// into the tessellator, which is invalid). Only plain pipelines opt
+        /// into dynamic topology.
+        if(hasExtendedDynamicState && !isTess){
             dynamicStates.push_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT);
         }
         dynamicState.dynamicStateCount = dynamicStates.size();
@@ -3499,8 +3558,42 @@ _NAMESPACE_BEGIN_
         fragmentStage.module = fragmentShader->shaderModule;
         fragmentStage.pName = "main";
         fragmentStage.pSpecializationInfo = nullptr;
-        
-        VkPipelineShaderStageCreateInfo stages[] = {vertexStage,fragmentStage};
+
+        /// §16 Phase G — tessellation stages. When present, the pipeline runs
+        /// vertex → tess-control (hull) → tess-evaluation (domain) → fragment;
+        /// `pTessellationState.patchControlPoints` matches the hull's
+        /// `outputcontrolpoints` (read from the serialized tessellation
+        /// descriptor, falling back to the descriptor's convenience field).
+        VkPipelineShaderStageCreateInfo tessControlStage {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        VkPipelineShaderStageCreateInfo tessEvalStage {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        VkPipelineTessellationStateCreateInfo tessState {VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO};
+        uint32_t patchControlPoints = 0;
+        VkPipelineShaderStageCreateInfo stages[4] = {vertexStage,fragmentStage};
+        uint32_t stageCount = 2;
+        if(isTess){
+            auto *hullShader = (GTEVulkanShader *)desc.hullFunc.get();
+            tessControlStage.stage  = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+            tessControlStage.module = hullShader->shaderModule;
+            tessControlStage.pName  = "main";
+            auto *domainShader = (GTEVulkanShader *)desc.domainFunc.get();
+            tessEvalStage.stage  = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+            tessEvalStage.module = domainShader->shaderModule;
+            tessEvalStage.pName  = "main";
+
+            /// The hull's serialized descriptor is authoritative for the
+            /// per-patch control-point count; the API-surface field is a
+            /// fallback / validation value.
+            patchControlPoints = desc.hullFunc->internal.tessellationDesc.output_control_points;
+            if(patchControlPoints == 0){ patchControlPoints = desc.patchControlPoints; }
+            if(patchControlPoints == 0){ patchControlPoints = 3; }
+            tessState.patchControlPoints = patchControlPoints;
+
+            stages[0] = vertexStage;
+            stages[1] = tessControlStage;
+            stages[2] = tessEvalStage;
+            stages[3] = fragmentStage;
+            stageCount = 4;
+        }
 
         VkPipelineDepthStencilStateCreateInfo depthStencilStateDesc {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
 
@@ -3531,7 +3624,10 @@ _NAMESPACE_BEGIN_
         depthStencilStateDesc.back.passOp = convertStencilOp(desc.depthAndStencilDesc.backFaceStencil.pass);
         
         createInfo.pStages = stages;
-        createInfo.stageCount = 2;
+        createInfo.stageCount = stageCount;
+        if(isTess){
+            createInfo.pTessellationState = &tessState;
+        }
         createInfo.pDynamicState = &dynamicState;
         createInfo.pRasterizationState = &rasterState;
         createInfo.pVertexInputState = &vertexInputState;
@@ -3580,6 +3676,10 @@ _NAMESPACE_BEGIN_
                                                                                    descs,
                                                                                    descLayouts,
                                                                                    immutableSamplers));
+        /// §16 Phase G — record tessellation state so `drawPatches` can size
+        /// its draw and `startRenderPass` can reject the pipeline.
+        result->isTess = isTess;
+        result->patchControlPoints = patchControlPoints;
         trackResource(result);
         return result;
     };

@@ -40,6 +40,16 @@ public:
     /// asserts on this flag before issuing `vkCmdDrawMeshTasksEXT`.
     bool isMesh = false;
 
+    /// §16 Phase G — tessellation-pipeline flag + per-patch control-point
+    /// count. Set by `makeRenderPipelineState` after construction when the
+    /// descriptor carried `hullFunc`/`domainFunc`. `GEVulkanCommandBuffer::
+    /// drawPatches` reads `patchControlPoints` to compute the draw's vertex
+    /// count (`patchCount * patchControlPoints`), and `startRenderPass`
+    /// rejects a pipeline whose `isTess` is true (a tessellated draw must go
+    /// through `startTessRenderPass`).
+    bool isTess = false;
+    uint32_t patchControlPoints = 0;
+
     GEVulkanRenderPipelineState(SharedHandle<GTEShader> & vertexShader,
                                 SharedHandle<GTEShader> & fragmentShader,
                                 GEVulkanEngine *parentEngine,

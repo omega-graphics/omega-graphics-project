@@ -621,6 +621,17 @@ namespace omegasl {
             /// Purely source-level: no runtime descriptor and no feature
             /// gate (every backend supports it).
             bool earlyDepthStencil = false;
+            /// §16 Phase G — set by the parser when a `vertex(tess=true)`
+            /// descriptor is present; only ever true on a Vertex shader (the
+            /// parser accepts the descriptor only in the `vertex` arm). Marks
+            /// this vertex stage as the tessellation-pipeline vertex stage: it
+            /// reads the raw input vertices and outputs a control-point struct
+            /// the hull consumes. A tessellation pipeline (a hull/domain pair)
+            /// requires such a vertex stage on every backend — Vulkan/D3D12
+            /// lower it to the real vertex stage that feeds the tessellator,
+            /// Metal (follow-up) to a compute pass before the hull compute.
+            /// Default `false` ⇒ a bare `vertex` is byte-identical to before.
+            bool tessVertex = false;
         };
 
         struct Expr : public Stmt {

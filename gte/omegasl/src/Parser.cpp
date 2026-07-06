@@ -388,6 +388,59 @@ namespace omegasl {
             if(t.str == KW_VERTEX){
                 auto _s = (ast::ShaderDecl *)node;
                 _s->shaderType = ast::ShaderDecl::Vertex;
+                /// §16 Phase G — optional `vertex(tess=true)` descriptor. Peek
+                /// one token: if it's `(`, parse `tess=<true|false>` and leave
+                /// `t` on the closing `)` so the shared advance below moves past
+                /// it to the return type (matching fragment/compute/hull). If
+                /// the peeked token isn't `(`, put it back so the shared advance
+                /// re-reads it — keeping the plain-`vertex` path byte-identical.
+                Tok la = lexer->nextTok();
+                if(la.type == TOK_LPAREN){
+                    t = lexer->nextTok();
+                    if(t.type != TOK_ID || t.str != "tess"){
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected `tess` in vertex descriptor, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        delete _s;
+                        return nullptr;
+                    }
+                    t = lexer->nextTok();
+                    if(t.type != TOK_OP || t.str != OP_EQUAL){
+                        auto e = std::make_unique<UnexpectedToken>("Expected `=` after `tess` in vertex descriptor");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        delete _s;
+                        return nullptr;
+                    }
+                    t = lexer->nextTok();
+                    if(t.type == TOK_ID && t.str == "true"){
+                        _s->tessVertex = true;
+                    }
+                    else if(t.type == TOK_ID && t.str == "false"){
+                        _s->tessVertex = false;
+                    }
+                    else {
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected `true` or `false` for `tess`, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        delete _s;
+                        return nullptr;
+                    }
+                    t = lexer->nextTok();
+                    if(t.type != TOK_RPAREN){
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected `)` after vertex descriptor, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        delete _s;
+                        return nullptr;
+                    }
+                    /// `t` is now the `)`; the shared advance moves to the return type.
+                }
+                else {
+                    /// No descriptor — un-consume the peeked token. `t` stays on
+                    /// `vertex`; the shared advance reads `la` back as the return type.
+                    lexer->putBack(la);
+                }
             }
             else if(t.str == KW_FRAGMENT){
                 auto _s = (ast::ShaderDecl *)node;

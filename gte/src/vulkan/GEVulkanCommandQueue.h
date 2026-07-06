@@ -134,6 +134,12 @@ _NAMESPACE_BEGIN_
         bool inBlitPass = false;
         bool inComputePass = false;
 
+        /// §16 Phase G — true between `startTessRenderPass` and
+        /// `finishRenderPass`. Gates `drawPatches` (only valid in a tess pass)
+        /// and lets `startRenderPass`/`setRenderPipelineState` keep the "plain
+        /// render pass rejects a tessellation pipeline" contract.
+        bool tessPassActive = false;
+
         VkIndexType pendingIndexType = VK_INDEX_TYPE_UINT32;
 
         void applyTopologyIfDynamic(RenderPassDrawPolygonType polygonType);
@@ -161,6 +167,14 @@ _NAMESPACE_BEGIN_
 
         void startRenderPass(const GERenderPassDescriptor &desc) override;
 
+        /// §16 Phase G — tessellation render pass. On Vulkan the HS/DS run
+        /// inside the one graphics pipeline, so this is a thin variant of
+        /// `startRenderPass` that permits a tessellation pipeline + patch
+        /// topology (there is no separate compute pre-pass, unlike Metal). It
+        /// sets `tessPassActive` so `drawPatches` is allowed and a
+        /// non-tessellation pipeline is rejected.
+        void startTessRenderPass(const GERenderPassDescriptor &desc) override;
+
         void setRenderPipelineState(SharedHandle<GERenderPipelineState> &pipelineState) override;
 
         void setScissorRects(std::vector<GEScissorRect> scissorRects) override;
@@ -186,6 +200,16 @@ _NAMESPACE_BEGIN_
         void setVertexBuffer(SharedHandle<GEBuffer> &buffer) override;
 
         void drawPolygons(RenderPassDrawPolygonType polygonType, unsigned vertexCount, size_t startIdx) override;
+
+        /// §16 Phase G — draw tessellation patches. Binds the input control
+        /// points as vertex buffer 0 and issues a patch-list draw of
+        /// `patchCount * patchControlPoints` vertices (the vertex stage runs
+        /// per control point, the tessellator groups them into patches). Must
+        /// be inside a `startTessRenderPass` scope with a tessellation
+        /// pipeline bound.
+        void drawPatches(unsigned patchCount,
+                         SharedHandle<GEBuffer> & controlPointBuffer,
+                         size_t startPatch = 0) override;
 
         void setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType) override;
 

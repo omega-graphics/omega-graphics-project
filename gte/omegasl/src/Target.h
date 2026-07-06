@@ -893,6 +893,20 @@ namespace omegasl {
         ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
         unsigned meshMaxVertices = 0;
         unsigned meshMaxPrimitives = 0;
+
+        /// §16 Phase G — tessellation control-point-array inputs. A hull /
+        /// domain stage takes the post-vertex control points as an array
+        /// parameter (`CP cp[N]`, element = an `internal` struct); in the
+        /// standard GLSL tessellation model those map to the built-in
+        /// `gl_in[]` array, not to a `layout(location=N) in` varying. Each
+        /// entry pairs the parameter name with its element struct decl.
+        /// Populated in `emitShaderEntryHeader` (so the param's varying is
+        /// suppressed), consulted by `emitMemberExpr` to rewrite
+        /// `cp[i].<field>` onto `gl_in[i].gl_Position` (Position) / a
+        /// per-field `in` varying array (other fields), and cleared at the
+        /// end of `emitShaderEntryBody`. Empty ⇒ "no CP-array inputs," which
+        /// is what every non-tessellation entry sees.
+        OmegaCommon::Vector<std::pair<OmegaCommon::String, ast::StructDecl *>> controlPointArrayParams;
     private:
         GLSLCodeOpts &opts;
         unsigned binding = 0;
