@@ -213,6 +213,22 @@ namespace omegasl {
 
         auto _t = cg.typeResolver->resolveTypeWithExpr(res_desc->typeExpr);
 
+        /// §16 — a hull/domain control-point buffer is not a bound resource in
+        /// HLSL: the hull's `[in]` buffer becomes an `InputPatch<CP, N>` param
+        /// and the domain's an `OutputPatch<CP, N>` param (injected in
+        /// `emitShaderEntryHeader`), while the hull's `[out]` buffer is dropped
+        /// entirely — a hull emits its per-CP output through its `return`, not a
+        /// UAV. So skip the file-scope `register(...)` global for any
+        /// `buffer<T>` on a hull/domain. (Uniforms/textures still bind normally.)
+        if (shader && (shader->shaderType == ast::ShaderDecl::Hull
+                       || shader->shaderType == ast::ShaderDecl::Domain)
+            && _t == ast::builtins::buffer_type) {
+            layoutDesc.type = OMEGASL_SHADER_BUFFER_DESC;
+            layoutDesc.gpu_relative_loc = 0;
+            layoutDesc.location = res_desc->registerNumber;
+            return;
+        }
+
         bool isTResource = false, isSResource = false, isBResource = false;
 
         if (_t == ast::builtins::buffer_type) {
@@ -1011,9 +1027,59 @@ namespace omegasl {
                 }
             }
         }
+        /// §16 — tessellation control-point structs need HLSL semantics on
+        /// every field (`InputPatch`/`OutputPatch` element types and the hull's
+        /// return type are shader I/O). OmegaSL's control-point structs are
+        /// plain (no field attributes), so re-emit them with positional
+        /// `TEXCOORD<N>` semantics. Collected structs: the hull's / domain's
+        /// `[in]` control-point buffer element, plus the hull's return type
+        /// (its per-CP output).
+        std::set<OmegaCommon::String> cpStructNames;
+        if (_decl->shaderType == ast::ShaderDecl::Hull
+            || _decl->shaderType == ast::ShaderDecl::Domain) {
+            for (auto &r : _decl->resourceMap) {
+                if (r.access != ast::ShaderDecl::ResourceMapDesc::In) continue;
+                auto it = cg.resourceStore.find(r.name);
+                if (it == cg.resourceStore.end()) continue;
+                auto *rd = *it;
+                auto rtype = cg.typeResolver->resolveTypeWithExpr(rd->typeExpr);
+                if (rtype == ast::builtins::buffer_type && !rd->typeExpr->args.empty()) {
+                    cpStructNames.insert(rd->typeExpr->args[0]->name);
+                }
+            }
+            if (_decl->shaderType == ast::ShaderDecl::Hull) {
+                cpStructNames.insert(_decl->returnType->name);
+            }
+        }
+
         OmegaCommon::Vector<OmegaCommon::String> struct_names;
         cg.typeResolver->getStructsInFuncDecl(_decl, struct_names);
         for (auto &s : struct_names) {
+            if (cpStructNames.find(s) != cpStructNames.end()) {
+                auto sit = structDeclMap.find(s);
+                if (sit != structDeclMap.end()) {
+                    auto *sd = sit->second;
+                    out << "struct " << sd->name << "{" << std::endl;
+                    unsigned texIdx = 0;
+                    for (auto &f : sd->fields) {
+                        out << "    ";
+                        cg.writeTypeExpr(f.typeExpr, out);
+                        out << " " << f.name;
+                        cg.writeDeclTypeSuffix(f.typeExpr, out);
+                        out << ":";
+                        /// Honor a real semantic if the field carries one;
+                        /// otherwise synthesize a positional TEXCOORD.
+                        if (f.attributeName.has_value()) {
+                            writeAttribute(f.attributeName.value(), f.attributeIndex, out);
+                        } else {
+                            out << "TEXCOORD" << texIdx++;
+                        }
+                        out << ";" << std::endl;
+                    }
+                    out << "};" << std::endl << std::endl;
+                    continue;
+                }
+            }
             if (meshVertsStruct && meshVertsStruct->name == s) {
                 /// Inline re-emit: same shape as `emitStructDecl`, but the
                 /// `Color(N)`/`TexCoord(N)` cases lower to inter-stage
@@ -1155,6 +1221,11 @@ namespace omegasl {
                                                                                       : "line";
             out << "[outputtopology(\"" << topoStr << "\")]" << std::endl;
             out << "[outputcontrolpoints(" << td.outputControlPoints << ")]" << std::endl;
+            /// §16 — name the patch-constant function (the OmegaSL `patchfn`,
+            /// emitted as an ordinary user function). Its return-struct fields
+            /// carry `SV_TessFactor`/`SV_InsideTessFactor`, so `dxc` accepts the
+            /// hull entry (resolving OmegaSL-Reference.md bug 4).
+            out << "[patchconstantfunc(\"" << cg.spellUserFuncName(td.patchFn) << "\")]" << std::endl;
         } else if (_decl->shaderType == ast::ShaderDecl::Domain) {
             auto &td = _decl->tessDesc;
             out << "[domain(\""
@@ -1172,10 +1243,39 @@ namespace omegasl {
                       _decl->returnType->pointer, out);
         out << " " << _decl->name;
         out << "(";
+
+        /// §16 — inject the tessellation control-point parameter. The hull's
+        /// `[in]` buffer becomes `InputPatch<CP, N>` and the domain's becomes
+        /// `const OutputPatch<CP, N>`; the body's `name[i]` then indexes a
+        /// per-patch control point. (These buffers were skipped as file-scope
+        /// resources in `emitResourceBinding`.) `firstParam` tracks whether a
+        /// leading comma is needed before the user params that follow.
+        bool firstParam = true;
+        if (_decl->shaderType == ast::ShaderDecl::Hull
+            || _decl->shaderType == ast::ShaderDecl::Domain) {
+            for (auto &r : _decl->resourceMap) {
+                if (r.access != ast::ShaderDecl::ResourceMapDesc::In) continue;
+                auto it = cg.resourceStore.find(r.name);
+                if (it == cg.resourceStore.end()) continue;
+                auto *rd = *it;
+                auto rtype = cg.typeResolver->resolveTypeWithExpr(rd->typeExpr);
+                if (rtype != ast::builtins::buffer_type || rd->typeExpr->args.empty()) continue;
+                const bool isHull = _decl->shaderType == ast::ShaderDecl::Hull;
+                out << (isHull ? "InputPatch<" : "const OutputPatch<");
+                writeTypeName(cg.typeResolver->resolveTypeWithExpr(rd->typeExpr->args[0]),
+                              rd->typeExpr->args[0]->pointer, out);
+                out << ", " << _decl->tessDesc.outputControlPoints << "> ";
+                writeIdentifier(rd->name, out);
+                firstParam = false;
+                break;
+            }
+        }
+
         for (auto p_it = _decl->params.begin(); p_it != _decl->params.end(); p_it++) {
-            if (p_it != _decl->params.begin()) {
+            if (!firstParam) {
                 out << ",";
             }
+            firstParam = false;
 
             /// §2b — mesh-stage `out vertices` / `out indices` qualifiers.
             /// SM 6.5 puts these prefixes directly on the parameter
@@ -1220,7 +1320,15 @@ namespace omegasl {
                     shaderDesc.computeShaderParamsDesc.useThreadGroupID = true;
                 }
                 out << ":";
-                writeAttribute(p_it->attributeName.value(), p_it->attributeIndex, out);
+                /// §16 — a hull's `VertexID` is the output control-point index
+                /// (`SV_OutputControlPointID`), not `SV_VertexID`. The domain's
+                /// `DomainLocation` → `SV_DomainLocation` via `writeAttribute`.
+                if (_decl->shaderType == ast::ShaderDecl::Hull
+                    && p_it->attributeName.value() == ATTRIBUTE_VERTEX_ID) {
+                    out << "SV_OutputControlPointID";
+                } else {
+                    writeAttribute(p_it->attributeName.value(), p_it->attributeIndex, out);
+                }
             }
         }
         out << ")";
@@ -1543,6 +1651,14 @@ namespace omegasl {
             out << "SV_ClipDistance";
         } else if (attributeName == ATTRIBUTE_CULL_DISTANCE) {
             out << "SV_CullDistance";
+        } else if (attributeName == ATTRIBUTE_TESS_FACTOR) {
+            /// §16 — patch-constant factor fields.
+            out << "SV_TessFactor";
+        } else if (attributeName == ATTRIBUTE_INSIDE_TESS_FACTOR) {
+            out << "SV_InsideTessFactor";
+        } else if (attributeName == ATTRIBUTE_DOMAIN_LOCATION) {
+            /// §16 — domain-shader tessellator location parameter.
+            out << "SV_DomainLocation";
         } else if (attributeName == ATTRIBUTE_GLOBALTHREAD_ID) {
             out << "SV_DispatchThreadID";
         } else if (attributeName == ATTRIBUTE_LOCALTHREAD_ID) {

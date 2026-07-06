@@ -2,6 +2,7 @@
 #define OMEGAWTK_UI_VIEWIMPL_H
 
 #include "omegaWTK/UI/View.h"
+#include "omegaWTK/Native/NativeWindow.h"   // §2.3a C1: full CursorShape def for cursorShape_
 #include "../Composition/backend/ResourceFactory.h"
 #include "AnimationScheduler.h"   // Phase 4.4: allocateNodeId()
 
@@ -157,6 +158,13 @@ struct View::Impl {
     View::FocusPolicy policy_ = View::FocusPolicy::NoFocus;
     FocusReason lastReason_ = FocusReason::Other;
     bool focused_ = false;
+    /// §2.3a C1: declarative cursor shape for this view. Unset (the
+    /// default) means "no opinion" — the hover dispatcher's ancestor walk
+    /// skips this view and inherits the nearest set shape (ultimately
+    /// `CursorShape::Arrow`). `View::setCursorShape` engages it; the
+    /// dispatcher reads it via friend access during hover resolution, the
+    /// same way M1 reads `parent_ptr`.
+    Core::Optional<Native::CursorShape> cursorShape_ {};
     /// §2.3a F2: the `WidgetTreeHost` this View is attached to, or null
     /// when detached. Propagated down the subtree by
     /// `View::setTreeHostRecurse` (from `Widget::setTreeHostRecurse` and

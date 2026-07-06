@@ -46,7 +46,7 @@ Future work (not done here):
 
 Re-advertise `GTEDEVICE_FEATURE_TESSELLATION_SHADER` only when all three of these land.
 
-**4. HLSL hull stages emit no patch-constant function.** Affects `omegasl_compile_tessellation` on `TARGET_DIRECTX`. Surfaced by running the full suite on Windows with `dxc` present; previously the DirectX side of this test was assumed to compile but had never been verified against `dxc`.
+**4. HLSL hull stages emit no patch-constant function.** ~~Affects `omegasl_compile_tessellation` on `TARGET_DIRECTX`.~~ **RESOLVED** (Feature-Gap-Survey §16-A + §16-B). The hull entry now carries `[patchconstantfunc("<patchfn>")]` naming the OmegaSL `patchfn` (emitted as an ordinary function whose return struct carries `SV_TessFactor`/`SV_InsideTessFactor`), plus `InputPatch<CP,N>` + `SV_OutputControlPointID`; the domain takes `const OutputPatch<CP,N>` + `SV_DomainLocation`. Control-point buffers move from file-scope `register(...)` globals into those patch params (hull `[out]` buffer dropped). Verified against `dxc` (`hs_6_0`/`ds_6_0`); `omegasl_compile_tessellation` is expected-pass on `TARGET_DIRECTX`. Original diagnosis below.
 
 A DirectX hull shader entry **requires** a `[patchconstantfunc("fn")]` attribute naming a *patch-constant function* that outputs `SV_TessFactor` / `SV_InsideTessFactor` (the per-patch tessellation amounts). `HLSLTarget::emitShaderEntryHeader` emits the per-control-point decorators (`[domain]` / `[partitioning]` / `[outputtopology]` / `[outputcontrolpoints]`) but neither the attribute nor the function, so `dxc` rejects every hull shader:
 

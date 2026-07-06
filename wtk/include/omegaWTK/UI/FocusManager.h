@@ -18,8 +18,9 @@
  adds pre-order tree traversal (`focusNext` / `focusPrevious`, driven by
  Tab / Shift-Tab interception in `WidgetTreeHost::dispatchInputEvent`). F5
  adds the restoration stack (`pushRestorationPoint` / `popAndRestore`) for
- Modal / Popover / ContextMenu dismiss. Tab-order overrides (`setTabOrder`,
- F6) layer on in a later phase.
+ Modal / Popover / ContextMenu dismiss. F6 adds `setTabOrder`, the
+ Qt-style override that relocates a view to immediately follow another in
+ traversal. The Focus block (steps 1–6 + mouse-click focus) is complete.
  */
 
 #include "omegaWTK/Core/Core.h"
@@ -160,10 +161,49 @@ namespace OmegaWTK {
         /// holder dereferences freed memory. F5 does not lift that.
         void popAndRestore();
 
+        /// §2.3a F6: override the natural (pre-order) tab traversal so `b`
+        /// is reached immediately after `a`, regardless of where the two
+        /// sit in the View tree. This is the Qt `QWidget::setTabOrder`
+        /// contract, and it composes: `setTabOrder(a, b)` then
+        /// `setTabOrder(b, c)` yields the chain a → b → c. `b` is pulled
+        /// out of its natural position and relocated to just after `a`;
+        /// `focusNext` from `a` lands on `b`, and `focusPrevious` from `b`
+        /// lands on `a`.
+        ///
+        /// The override is stored as a raw `a → b` link and applied lazily
+        /// at traversal time (`buildTraversalOrder`), so it only takes
+        /// effect while *both* views are live and tab-focusable in the
+        /// current tree — a link naming a detached / non-tab-focusable view
+        /// is ignored, and the pointers are only ever compared, never
+        /// dereferenced (same non-owning discipline as F5). A no-op /
+        /// nonsensical call (`a == nullptr`, `b == nullptr`, or `a == b`)
+        /// is dropped. Re-calling with the same `a` replaces its previous
+        /// target (last writer wins). There is no `clearTabOrder`: the
+        /// links are pointer-keyed and inert when their views leave the
+        /// tree, so stale entries never affect traversal (they do linger
+        /// in the map — acceptable given WTK has no weak-view tracking; the
+        /// same lifetime caveat as F5's restoration stack).
+        void setTabOrder(View * a, View * b);
+
     private:
+        /// §2.3a F4 / F6: build the effective tab-traversal order into
+        /// `out`. Collects the tab-focusable views under `root_` in
+        /// pre-order (the F4 natural order), then, when any F6 overrides
+        /// are live, relocates each override target to immediately follow
+        /// its anchor (following chains, guarding cycles, and appending any
+        /// view a broken override would otherwise strand). With no
+        /// overrides registered this is exactly the F4 pre-order list.
+        void buildTraversalOrder(OmegaCommon::Vector<View *> & out) const;
+
         /// §2.3a F4: root of the traversal subtree (non-owning; the widget
         /// tree owns the views). Null until `setRoot` is called.
         View * root_ = nullptr;
+        /// §2.3a F6: explicit tab-order links (`a → b`, non-owning). Keyed
+        /// by anchor; a given anchor has at most one successor (last call
+        /// wins). Consulted only by `buildTraversalOrder`, which ignores
+        /// links whose endpoints are not both live + tab-focusable, so a
+        /// dangling entry is inert rather than unsafe.
+        OmegaCommon::MapVec<View *, View *> tabOrderNext_;
         /// §2.3a F5: LIFO stack of captured focus holders (non-owning View
         /// pointers, `nullptr` entries allowed). `pushRestorationPoint`
         /// appends `currentlyFocused_`; `popAndRestore` consumes the back.

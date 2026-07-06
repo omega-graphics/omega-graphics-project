@@ -72,6 +72,17 @@ class AppWindowDelegate;
         /// frameBuilder()->beginFrame()/endFrame() so the window-level
         /// composition session has a single owner.
         FrameBuilder * frameBuilder() const;
+
+        /// §2.3a C1: commit a resolved cursor shape to the single
+        /// per-window OS cursor sink (`NativeWindow::setCursorShape`).
+        /// **Friend-only, and deliberately not on the public surface:**
+        /// per §2.2 the cursor is *not* exposed on `AppWindow` because the
+        /// virtual hover dispatcher (`WidgetTreeHost`) must be the sole
+        /// writer. App code and Views never call this — a View declares
+        /// its shape with `View::setCursorShape` and the dispatcher
+        /// resolves the topmost hovered view's effective shape and commits
+        /// it here. No-op if the native window is not yet realized.
+        void commitCursorShape(Native::CursorShape shape);
     public:
         OMEGACOMMON_CLASS("OmegaWTK.AppWindow")
 

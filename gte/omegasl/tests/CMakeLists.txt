@@ -61,22 +61,19 @@ add_omegasl_compile_test(omegasl_compile_sci_notation        sci_notation_litera
 add_omegasl_compile_test(omegasl_compile_precedence          precedence_unary_ternary.omegasl)
 add_omegasl_compile_test(omegasl_compile_const_fold          const_fold.omegasl)
 add_omegasl_compile_test(omegasl_compile_tessellation        tessellation.omegasl)
-# §16 — tessellation now compiles end-to-end on Metal: a hull lowers to a
-# compute kernel (per-CP output store + a tess-factor epilogue driven by the
-# `patchfn`) and a domain lowers to a `[[patch(...)]]` post-tessellation
-# vertex (`patch_control_point<CP>` + `[[position_in_patch]]`). The generated
-# MSL is compiled by `metal` as part of this test, so on Apple it is expected
-# to PASS.
-#
-# HLSL (§16-B) and GLSL (§16-C) tessellation codegen are not yet implemented
-# — the shared `tessellation.omegasl` uses the full new surface those backends
-# cannot yet honor — so the test stays WILL_FAIL on every non-Apple backend:
-#   - DirectX/HLSL: no `[patchconstantfunc(...)]` / patch-constant function.
-#   - Vulkan/GLSL: `.tesc`/`.tese` never write gl_TessLevel*/read gl_TessCoord.
-# See OmegaSL-Reference.md bugs 3 (Metal, now resolved) and 4 (HLSL).
-if(NOT APPLE)
-    set_tests_properties(omegasl_compile_tessellation PROPERTIES WILL_FAIL TRUE)
-endif()
+# §16 — tessellation now compiles end-to-end on ALL THREE backends, so this
+# test is expected-PASS everywhere (no WILL_FAIL):
+#   - Metal (§16-D): hull → compute kernel (per-CP store + patchfn factor
+#     epilogue), domain → `[[patch(...)]]` post-tess vertex; compiled by `metal`.
+#   - HLSL (§16-B): hull → control-point entry + `[patchconstantfunc]` naming
+#     the patchfn (`SV_TessFactor`/`SV_InsideTessFactor`), `InputPatch<CP,N>` /
+#     `SV_OutputControlPointID`; domain → `OutputPatch<CP,N>` /
+#     `SV_DomainLocation`; compiled by `dxc`.
+#   - GLSL (§16-C): `.tesc` writes `gl_out[]` + `gl_TessLevelOuter/Inner[]`
+#     (from the patchfn, guarded on `gl_InvocationID == 0`); `.tese` reads
+#     `gl_TessCoord` for the DomainLocation; compiled by `glslc`.
+# The patch-constant struct is emitted as a plain data struct on every backend.
+# OmegaSL-Reference.md bugs 3 (Metal) and 4 (HLSL) are both resolved.
 add_omegasl_compile_test(omegasl_compile_math_builtins       math_builtins.omegasl)
 add_omegasl_compile_test(omegasl_compile_matrix_ops          matrix_ops.omegasl)
 add_omegasl_compile_test(omegasl_compile_matrix_index        matrix_index.omegasl)

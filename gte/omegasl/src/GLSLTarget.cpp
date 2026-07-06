@@ -236,9 +236,27 @@ namespace omegasl {
         }
     }
 
+    /// §16 — a patch-constant struct (an `internal` struct carrying
+    /// `TessFactor`/`InsideTessFactor` fields) is the value a hull's `patchfn`
+    /// returns to drive `gl_TessLevelOuter/Inner[]`. It is *not* an inter-stage
+    /// varying, so GLSL must treat it as a plain data struct: emit the `struct`,
+    /// don't destructure it into `<struct>_<field>` `out` varyings, and don't
+    /// reroute its field references. Detected by the presence of a factor field.
+    static bool isPatchConstantStruct(ast::StructDecl *d) {
+        if (!d->internal) return false;
+        for (auto &f : d->fields) {
+            if (f.attributeName.has_value()
+                && (f.attributeName.value() == ATTRIBUTE_TESS_FACTOR
+                    || f.attributeName.value() == ATTRIBUTE_INSIDE_TESS_FACTOR)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void GLSLTarget::emitStructDecl(CodeGen &cg, ast::StructDecl *_decl) {
         std::ostringstream out;
-        if (_decl->internal) {
+        if (_decl->internal && !isPatchConstantStruct(_decl)) {
             internalStructs.push_back(_decl);
         } else {
             out << "struct " << _decl->name << " {" << std::endl;
@@ -700,6 +718,17 @@ namespace omegasl {
                             extra_stmts << " " << arg.name << " = gl_VertexIndex;" << std::endl;
                         }
                         shader_entry.vertexShaderInputDesc.useVertexID = true;
+                    } else if (arg.attributeName.value() == ATTRIBUTE_DOMAIN_LOCATION) {
+                        /// §16 — the tessellator location. `gl_TessCoord` is
+                        /// always a `vec3`; a tri domain takes it whole
+                        /// (barycentric), a quad domain takes `.xy` (u,v).
+                        for (unsigned i = 0; i < cg.indentLevel; i++) extra_stmts << "    ";
+                        writeTypeName(cg.typeResolver->resolveTypeWithExpr(arg.typeExpr),
+                                      arg.typeExpr->pointer, extra_stmts);
+                        const bool isTri = _decl->tessDesc.domain
+                                           == ast::ShaderDecl::TessellationDesc::Triangle;
+                        extra_stmts << " " << arg.name << " = gl_TessCoord"
+                                    << (isTri ? "" : ".xy") << ";" << std::endl;
                     }
                 } else {
                     out << "layout(location = ";
@@ -821,33 +850,51 @@ namespace omegasl {
                     out << ";" << std::endl;
                 } else if (_return_stmt->expr && (_decl->shaderType == ast::ShaderDecl::Hull
                                                   || _decl->shaderType == ast::ShaderDecl::Domain)) {
-                    /// Hull/Domain: main() is void in GLSL — assign Position
-                    /// field to gl_Position output.
-                    OmegaCommon::String posField;
-                    auto retTypeName = _decl->returnType->name;
-                    auto structIt = structDeclMap.find(retTypeName);
-                    if (structIt != structDeclMap.end()) {
-                        for (auto &f : structIt->second->fields) {
-                            if (f.attributeName.has_value()
-                                && f.attributeName.value() == ATTRIBUTE_POSITION) {
-                                posField = f.name;
-                                break;
+                    /// Hull/Domain: main() is void in GLSL. When the returned
+                    /// value is an `internal`-struct local (e.g. a domain's
+                    /// `DomainOut` whose `Position` field already routed to
+                    /// gl_Position via member-expr rewriting), the write has
+                    /// already happened — emit a bare `return`. Otherwise (a
+                    /// plain hull-output struct), assign its Position field to
+                    /// the stage's position output (`gl_out[…]` / `gl_Position`).
+                    bool isInternalStructReturn = false;
+                    if (_return_stmt->expr->type == ID_EXPR) {
+                        auto *idExpr = (ast::IdExpr *)_return_stmt->expr;
+                        isInternalStructReturn = std::any_of(
+                            internalStructVarMap.begin(), internalStructVarMap.end(),
+                            [&](std::pair<OmegaCommon::String, ast::StructDecl *> &p) {
+                                return p.first == idExpr->id;
+                            });
+                    }
+                    if (isInternalStructReturn) {
+                        out << "return;" << std::endl;
+                    } else {
+                        OmegaCommon::String posField;
+                        auto retTypeName = _decl->returnType->name;
+                        auto structIt = structDeclMap.find(retTypeName);
+                        if (structIt != structDeclMap.end()) {
+                            for (auto &f : structIt->second->fields) {
+                                if (f.attributeName.has_value()
+                                    && f.attributeName.value() == ATTRIBUTE_POSITION) {
+                                    posField = f.name;
+                                    break;
+                                }
+                            }
+                            if (posField.empty() && structIt->second->fields.size() == 1) {
+                                posField = structIt->second->fields[0].name;
                             }
                         }
-                        if (posField.empty() && structIt->second->fields.size() == 1) {
-                            posField = structIt->second->fields[0].name;
+                        if (_decl->shaderType == ast::ShaderDecl::Hull) {
+                            out << "gl_out[gl_InvocationID].gl_Position = ";
+                        } else {
+                            out << "gl_Position = ";
                         }
+                        cg.generateExpr(_return_stmt->expr);
+                        if (!posField.empty()) {
+                            out << "." << posField;
+                        }
+                        out << ";" << std::endl;
                     }
-                    if (_decl->shaderType == ast::ShaderDecl::Hull) {
-                        out << "gl_out[gl_InvocationID].gl_Position = ";
-                    } else {
-                        out << "gl_Position = ";
-                    }
-                    cg.generateExpr(_return_stmt->expr);
-                    if (!posField.empty()) {
-                        out << "." << posField;
-                    }
-                    out << ";" << std::endl;
                 } else if (_return_stmt->expr) {
                     /// If returning an internal struct variable, emit bare
                     /// return since fields were already assigned via
@@ -883,6 +930,50 @@ namespace omegasl {
                 out << ";" << std::endl;
             }
         }
+        /// §16 — hull tess-factor epilogue. The patchfn runs once per patch
+        /// (guarded on `gl_InvocationID == 0`) and its factor fields drive the
+        /// `gl_TessLevelOuter[]` / `gl_TessLevelInner[]` builtin arrays:
+        ///   tri  — Outer[0..2] from edges, Inner[0] from inside (1 slot)
+        ///   quad — Outer[0..3] from edges, Inner[0..1] from inside (2 slots)
+        if (_decl->shaderType == ast::ShaderDecl::Hull) {
+            OmegaCommon::String patchStructName, edgeField, insideField;
+            bool edgeArr = false, insideArr = false;
+            for (auto *fd : cg.userFuncDecls) {
+                if (fd->name != _decl->tessDesc.patchFn) continue;
+                patchStructName = fd->returnType->name;
+                auto sit = structDeclMap.find(patchStructName);
+                if (sit != structDeclMap.end()) {
+                    for (auto &f : sit->second->fields) {
+                        if (!f.attributeName.has_value()) continue;
+                        if (f.attributeName.value() == ATTRIBUTE_TESS_FACTOR) {
+                            edgeField = f.name;
+                            edgeArr = !f.typeExpr->arrayDims.empty();
+                        } else if (f.attributeName.value() == ATTRIBUTE_INSIDE_TESS_FACTOR) {
+                            insideField = f.name;
+                            insideArr = !f.typeExpr->arrayDims.empty();
+                        }
+                    }
+                }
+                break;
+            }
+            const bool isTri = _decl->tessDesc.domain
+                               == ast::ShaderDecl::TessellationDesc::Triangle;
+            const unsigned edgeCount = isTri ? 3u : 4u;
+            out << "    if (gl_InvocationID == 0) {" << std::endl;
+            out << "        " << patchStructName << " osl_pc = "
+                << cg.spellUserFuncName(_decl->tessDesc.patchFn) << "();" << std::endl;
+            for (unsigned i = 0; i < edgeCount; i++) {
+                out << "        gl_TessLevelOuter[" << i << "] = osl_pc." << edgeField
+                    << (edgeArr ? ("[" + std::to_string(i) + "]") : "") << ";" << std::endl;
+            }
+            const unsigned insideCount = isTri ? 1u : 2u;
+            for (unsigned j = 0; j < insideCount; j++) {
+                out << "        gl_TessLevelInner[" << j << "] = osl_pc." << insideField
+                    << (insideArr ? ("[" + std::to_string(j) + "]") : "") << ";" << std::endl;
+            }
+            out << "    }" << std::endl;
+        }
+
         cg.indentLevel -= 1;
         out << "}" << std::endl;
 

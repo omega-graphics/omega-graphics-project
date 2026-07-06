@@ -129,7 +129,7 @@ bool viewInSubtree(View * root, View * target){
 
 bool FocusManager::focusNext(){
     OmegaCommon::Vector<View *> order;
-    collectTabFocusable(root_, order);
+    buildTraversalOrder(order);
     if(order.empty()){
         return false;
     }
@@ -153,7 +153,7 @@ bool FocusManager::focusNext(){
 
 bool FocusManager::focusPrevious(){
     OmegaCommon::Vector<View *> order;
-    collectTabFocusable(root_, order);
+    buildTraversalOrder(order);
     if(order.empty()){
         return false;
     }
@@ -202,6 +202,84 @@ void FocusManager::popAndRestore(){
     // valid non-null saved is re-focused with FocusReason::Popup so the
     // focus ring returns if it had been tab-focused before.
     setFocus(saved, FocusReason::Popup);
+}
+
+void FocusManager::setTabOrder(View * a, View * b){
+    // Drop nonsensical links: a null endpoint has nothing to relocate,
+    // and "b immediately after itself" is meaningless. Everything else is
+    // stored verbatim (last writer wins per anchor) and validated lazily
+    // at traversal time — see buildTraversalOrder.
+    if(a == nullptr || b == nullptr || a == b){
+        return;
+    }
+    tabOrderNext_[a] = b;
+}
+
+void FocusManager::buildTraversalOrder(OmegaCommon::Vector<View *> & out) const {
+    // Start from the F4 natural order: tab-focusable views under root_ in
+    // pre-order (DOM tab-order).
+    OmegaCommon::Vector<View *> natural;
+    collectTabFocusable(root_, natural);
+
+    // Fast path: with no F6 overrides registered, the effective order is
+    // exactly the natural order (byte-for-byte the F4 behavior).
+    if(tabOrderNext_.empty()){
+        out = natural;
+        return;
+    }
+
+    // Membership set of the current natural order. Every override is
+    // pointer-compared against this — a link whose anchor or target is not
+    // a live, tab-focusable node in the current tree is simply ignored, so
+    // stale / dangling links are inert (never dereferenced).
+    OmegaCommon::SetHash<View *> naturalSet(natural.begin(), natural.end());
+
+    // Project the stored links onto the live set: `nextOf[a] = b` and mark
+    // `b` as claimed (it will be emitted as part of a's chain, not at its
+    // own natural position). A target is only claimed when BOTH endpoints
+    // are live, which guarantees every claimed view is reachable from a
+    // chain head below — the sole exception is a pure cycle, caught by the
+    // final safety net.
+    OmegaCommon::MapVec<View *, View *> nextOf;
+    OmegaCommon::SetHash<View *> claimed;
+    for(const auto & link : tabOrderNext_){
+        View * a = link.first;
+        View * b = link.second;
+        if(naturalSet.count(a) != 0 && naturalSet.count(b) != 0){
+            nextOf[a] = b;
+            claimed.insert(b);
+        }
+    }
+
+    // Emit in natural order, but each time a non-claimed view (a chain
+    // head) is reached, follow its override chain to completion before
+    // moving on — this is what pulls `b` up to immediately after `a`.
+    // `visited` guards against cycles and double-emission.
+    OmegaCommon::SetHash<View *> visited;
+    out.clear();
+    for(View * head : natural){
+        if(claimed.count(head) != 0){
+            continue;   // relocated: emitted via its anchor's chain
+        }
+        View * cur = head;
+        while(cur != nullptr && visited.count(cur) == 0){
+            visited.insert(cur);
+            out.push_back(cur);
+            auto it = nextOf.find(cur);
+            cur = (it != nextOf.end()) ? it->second : nullptr;
+        }
+    }
+
+    // Safety net: any tab-focusable view still unvisited is trapped in a
+    // pure override cycle (e.g. setTabOrder(a,b) + setTabOrder(b,a) with
+    // both live), which has no chain head. Append it in natural order so a
+    // pathological override can never make a focusable view unreachable.
+    for(View * v : natural){
+        if(visited.count(v) == 0){
+            visited.insert(v);
+            out.push_back(v);
+        }
+    }
 }
 
 }

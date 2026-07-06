@@ -821,6 +821,27 @@ namespace OmegaWTK {
                 hoveredView_->emit(Native::NativeEventPtr(
                     new NativeEvent(NativeEvent::CursorEnter,enterParams)));
             }
+
+            // §2.3a C1: commit the effective cursor shape for the new
+            // topmost hovered view to the single OS cursor sink. Resolve by
+            // walking up from the hit target to the nearest ancestor that
+            // declared a shape (CSS / Qt cursor inheritance); fall back to
+            // Arrow when nothing in the chain set one, or when the cursor is
+            // over the window background (target == nullptr, so the walk
+            // does not run). The dispatcher is the sole writer of the OS
+            // cursor (§2.2) — Views only declare via View::setCursorShape.
+            // Uses friend access to View::Impl (cursorShape_ / parent_ptr),
+            // the same seam M1's click-focus parent walk uses just below.
+            if(ownerWindow_ != nullptr){
+                Native::CursorShape shape = Native::CursorShape::Arrow;
+                for(View * v = target; v != nullptr; v = v->impl_->parent_ptr){
+                    if(v->impl_->cursorShape_.has_value()){
+                        shape = *v->impl_->cursorShape_;
+                        break;
+                    }
+                }
+                ownerWindow_->commitCursorShape(shape);
+            }
         }
 
         // Widget-View-Paint-Lifecycle-Plan Tier D / D6.4 (2026-06-03):

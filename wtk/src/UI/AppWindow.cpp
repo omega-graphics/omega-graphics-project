@@ -516,6 +516,17 @@ void AppWindow::minimize(){ impl_->nativeWindow->minimize(); }
 void AppWindow::maximize(){ impl_->nativeWindow->maximize(); }
 void AppWindow::restore(){ impl_->nativeWindow->restore(); }
 void AppWindow::toggleFullscreen(){ impl_->nativeWindow->toggleFullscreen(); }
+
+void AppWindow::commitCursorShape(Native::CursorShape shape){
+    // §2.3a C1: forward the dispatcher-resolved shape to the OS cursor
+    // sink. Guard the native window like the other early-lifecycle
+    // pass-throughs — a hover event could in principle arrive before the
+    // window is fully wired.
+    if(impl_ == nullptr || impl_->nativeWindow == nullptr){
+        return;
+    }
+    impl_->nativeWindow->setCursorShape(shape);
+}
 bool AppWindow::isNativeReady() const {
     // NativeWindow-Ready-Signal-Plan §3.5(A) pass-through. Returns the
     // base interface's default (true) if there is no NativeWindow, so

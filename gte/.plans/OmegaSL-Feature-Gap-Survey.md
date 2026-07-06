@@ -4009,11 +4009,16 @@ outputcontrolpoints) all exist, resource maps bind, and every backend's
 `emitShaderEntryHeader` has a hull/domain arm — but none of the three
 produces a tessellation pipeline that actually runs:
 
-- **HLSL** emits the per-control-point decorators (`[domain]`,
-  `[partitioning]`, `[outputtopology]`, `[outputcontrolpoints]`) but **no
-  patch-constant function**, so `dxc` rejects every hull shader
-  (`OmegaSL-Reference.md` bug 4; `omegasl_compile_tessellation` is
-  `WILL_FAIL` on `TARGET_DIRECTX`).
+- **HLSL** — RESOLVED for codegen (§16-A + §16-B landed). The hull entry now
+  carries `[patchconstantfunc("<patchfn>")]` naming the patchfn (emitted as an
+  ordinary function whose return struct fields carry `SV_TessFactor` /
+  `SV_InsideTessFactor`), takes `InputPatch<CP, N>` + `uint : SV_OutputControlPointID`,
+  and the domain takes `const OutputPatch<CP, N>` + `float3/2 : SV_DomainLocation`.
+  Control-point buffers are lifted out of the file-scope `register(...)` set
+  into those patch params (the hull `[out]` buffer is dropped — the hull emits
+  its per-CP output via `return`). The generated HLSL compiles with `dxc`;
+  `omegasl_compile_tessellation` is expected-pass on `TARGET_DIRECTX`. (was
+  `OmegaSL-Reference.md` bug 4.)
 - **Metal** — RESOLVED for codegen (§16-A + §16-D landed). A `hull` lowers
   to a compute kernel (per-CP output store + a tess-factor epilogue that runs
   the `patchfn` and writes `MTLTriangle/QuadTessellationFactorsHalf`), and a
@@ -4022,11 +4027,16 @@ produces a tessellation pipeline that actually runs:
   compiles with `metal`; `omegasl_compile_tessellation` is expected-pass on
   `APPLE`. Runtime pipeline plumbing (`drawPatches`, factor-buffer binding) is
   still Phase E. (was `OmegaSL-Reference.md` bug 3.)
-- **GLSL** emits `.tesc`/`.tese` skeletons (`layout(vertices=N) out`, the
-  `layout(domain,spacing,winding) in`, and a `gl_Position` return route)
-  but never writes `gl_TessLevelOuter/Inner[]` or reads `gl_TessCoord`, so
-  the generated shader is incomplete and has not been verified against
-  `glslc`.
+- **GLSL** — RESOLVED for codegen (§16-A + §16-C landed). The `.tesc` now
+  emits `layout(vertices=N) out`, writes `gl_out[gl_InvocationID].gl_Position`,
+  and — guarded on `if (gl_InvocationID == 0)` — writes
+  `gl_TessLevelOuter/Inner[]` from the patchfn (called as a plain function).
+  The `.tese` emits `layout(domain,spacing,winding) in` and binds the
+  `DomainLocation` param to `gl_TessCoord` (`.xy` for quad). The patch-constant
+  struct is emitted as a **plain data struct** (not destructured into
+  inter-stage varyings — the fix that unbroke the skeleton). Verified against
+  `glslc` (`tesscontrol`/`tesseval`); `omegasl_compile_tessellation` is
+  expected-pass on the Vulkan/GLSL backend.
 - **Runtime** has *zero* tessellation plumbing on all three backends.
   `RenderPipelineDescriptor` exposes only `vertexFunc` / `fragmentFunc`
   (`GEPipeline.h`); there is no patch primitive topology, no `drawPatches`,
@@ -4114,7 +4124,7 @@ returning an internal struct whose only attributed fields are
 the domain. No codegen yet — Phase A is purely the front-end contract that
 B–D lower.
 
-### Phase B — HLSL codegen → `dxc`-valid (resolves bug 4)
+### Phase B — HLSL codegen → `dxc`-valid (resolves bug 4) [DONE 2026-07-05]
 
 Emit the patch-constant function (its return-struct fields tagged
 `SV_TessFactor`/`SV_InsideTessFactor`), add `[patchconstantfunc("…")]` to
@@ -4124,13 +4134,62 @@ the hull entry, give the hull an `SV_OutputControlPointID` param and an
 `omegasl_compile_tessellation` to expected-pass on `TARGET_DIRECTX`
 (§16-F).
 
-### Phase C — GLSL codegen → `glslc`-valid
+**Landed (`HLSLTarget.cpp`), `dxc`-verified (`hs_6_0`/`ds_6_0`).** Unlike
+Metal, the HLSL hull keeps its `return <expr>;` (per-CP output flows through
+the return, not a store), so no return-rewrite was needed. Details:
+- `writeAttribute`: `TessFactor`→`SV_TessFactor`, `InsideTessFactor`→
+  `SV_InsideTessFactor`, `DomainLocation`→`SV_DomainLocation`. The patchfn is
+  emitted as a normal user function; `[patchconstantfunc("…")]` names its
+  mangled `osl_user_…` spelling (`spellUserFuncName`). A **zero-arg** patch-
+  constant function and a **domain with no patch-constant input param** are
+  both accepted by `dxc` (verified) — so the OmegaSL surface maps 1:1.
+- `emitResourceBinding`: a hull/domain `buffer<T>` is **not** a file-scope
+  `register(...)` global — the hull `[in]`/domain `[in]` buffer is injected in
+  `emitShaderEntryHeader` as an `InputPatch<CP,N>` / `const OutputPatch<CP,N>`
+  parameter, and the hull `[out]` buffer is dropped.
+- `emitShaderUsedStructs`: control-point structs (the `[in]` buffer element
+  and the hull's return struct) are plain in OmegaSL, but HLSL requires
+  semantics on `InputPatch`/`OutputPatch`/return I/O — so they are re-emitted
+  with positional `TEXCOORD<N>` semantics (mesh-vertex re-emit is the
+  precedent). A hull's `VertexID` param → `SV_OutputControlPointID`.
+- Uses the same `tessellation.omegasl` (tri+quad); `dxc` compiles all four
+  hull/domain entries. `omegasl_compile_tessellation` gate is now
+  `NOT APPLE AND NOT TARGET_DIRECTX` (Metal + DirectX pass, GLSL pending).
+
+### Phase C — GLSL codegen → `glslc`-valid [DONE 2026-07-05]
 
 In the `.tesc`: write per-CP output to the `out` control-point array and,
 under `if (gl_InvocationID == 0)`, emit the patch-constant fn's body into
 `gl_TessLevelOuter/Inner[]` (plus any `patch out` user fields). In the
 `.tese`: bind `gl_TessCoord` to the `DomainLocation` param and read the
 per-CP `in[]` array. Verify against `glslc`; add a compile/golden test.
+
+**Landed (`GLSLTarget.cpp`), `glslc`-verified (`tesscontrol`/`tesseval`).**
+The existing skeleton was broken (it destructured the patch-constant struct
+into `out` varyings, mangled the patchfn body, wrote no tess levels, and left
+`gl_TessCoord`/the return unwired). Fixes:
+- **Patch-constant struct as plain data** — `isPatchConstantStruct` (internal +
+  a `TessFactor`/`InsideTessFactor` field) is kept OUT of `internalStructs`, so
+  it emits as a plain `struct`, its locals aren't added to
+  `internalStructVarMap`, and its field refs aren't rerouted to varyings. This
+  was the root cause of the mangled skeleton.
+- **Tess-level writes** — a hull-body epilogue emits
+  `if (gl_InvocationID == 0) { <PatchStruct> osl_pc = <patchfn>();
+  gl_TessLevelOuter[i] = osl_pc.<edge>[i]; gl_TessLevelInner[j] =
+  osl_pc.<inside>[…]; }` (tri: 3 outer + 1 inner scalar; quad: 4 + 2).
+- **DomainLocation → `gl_TessCoord`** — the param bridge (which only handled
+  `VertexID`) now maps `DomainLocation` to `gl_TessCoord` (whole for tri,
+  `.xy` for quad).
+- **Return** — a hull/domain `return <internalStructVar>` (e.g. the domain's
+  `DomainOut` whose `Position` already routed to `gl_Position`) now emits a
+  bare `return;` instead of a dangling `gl_Position = o.pos` on the suppressed
+  local.
+- Control points stay SSBOs (`buffer<CP>` → `layout(std430) buffer`), matching
+  OmegaSL's buffer model; the hull's `[out]` buffer emits as an (unused) SSBO.
+  Correct per-patch SSBO indexing is a Phase-E runtime concern, same as the
+  Metal per-patch-dispatch decision.
+- Identifier note: the epilogue local is `osl_pc` (not `__osl_pc`) — GLSL
+  reserves `__` (double-underscore) identifiers, which `glslc` warns on.
 
 ### Phase D — Metal codegen: kernel + post-tessellation vertex (resolves bug 3)
 
@@ -4316,8 +4375,8 @@ off per backend in lockstep.
 | # | Task | Where | Effort | Blocks | Status |
 |---|------|-------|--------|--------|--------|
 | 16-A | `patchfn=` descriptor + `TessFactor`/`InsideTessFactor`/`DomainLocation` semantics + Sema | `Parser.cpp` (KW_HULL), `Sema.cpp` attribute tables, `AST.h`, `AST.def`, `Sema.h` | medium | B, C, D | **DONE** |
-| 16-B | HLSL patch-constant fn + `[patchconstantfunc]` + patch types | `HLSLTarget.cpp` | medium | E2 | open |
-| 16-C | GLSL tess-level writes + `gl_TessCoord` read | `GLSLTarget.cpp` | medium | E3 | open |
+| 16-B | HLSL patch-constant fn + `[patchconstantfunc]` + patch types | `HLSLTarget.cpp` | medium | E2 | **DONE** — `dxc`-verified (`hs_6_0`/`ds_6_0`); `omegasl_compile_tessellation` expected-pass on `TARGET_DIRECTX`. No return-rewrite (hull returns per-CP output directly). |
+| 16-C | GLSL tess-level writes + `gl_TessCoord` read (+ patch-constant struct as plain data) | `GLSLTarget.cpp` | medium | E3 | **DONE** — `glslc`-verified (`tesscontrol`/`tesseval`); `omegasl_compile_tessellation` now expected-pass on all three backends (WILL_FAIL gate removed). |
 | 16-D | Metal kernel (per-CP store + factor epilogue) + post-tess vertex (`patch_control_point`/`position_in_patch`) | `MSLTarget.cpp`, `Target.h` | large | E4 | **DONE (codegen, interim per-CP)** — `metal`-verified; `omegasl_compile_tessellation` flipped to expected-pass on `APPLE`. Dispatch shape to be revised to **per-patch** in Phase E (16-E4a) per Alex — the per-CP kernel is the interim cut. |
 | 16-E4a | **Metal per-patch dispatch**: serialize `omegasl_tessellation_desc` into `omegasl_shader`; re-shape hull kernel to thread=patch id (CP loop + unconditional factor write); dispatch `threadsPerGrid = patchCount` | `MSLTarget.cpp` (codegen), shader-map writer, `GEMetal.mm` (runtime) | medium | — | open (decision Alex 2026-07-05) |
 | 16-E1 | Public API: descriptor fields, patch topology, `drawPatches`, `omegasl_tessellation_desc` | `GEPipeline.h`, `GERenderTarget.h`, `omegasl.h` | medium | E2–E4 | open |

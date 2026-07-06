@@ -443,6 +443,21 @@ FocusReason View::lastFocusReason() const{
     return impl_->lastReason_;
 }
 
+void View::setCursorShape(Native::CursorShape shape){
+    // §2.3a C1: declarative only — record the shape. The hover dispatcher
+    // (WidgetTreeHost) reads it during hover resolution and commits to the
+    // OS cursor sink; the View never touches the cursor itself. No dirty
+    // bit: the cursor is not a painted property.
+    impl_->cursorShape_ = shape;
+}
+
+Native::CursorShape View::cursorShape() const{
+    // The view's own declared shape, or Arrow when unset. This does NOT
+    // resolve up the ancestor chain — inheritance is applied by the
+    // dispatcher at hover time (see WidgetTreeHost::dispatchInputEvent).
+    return impl_->cursorShape_.value_or(Native::CursorShape::Arrow);
+}
+
 void View::applyLayoutDelta(const LayoutDelta & delta,
                             const LayoutTransitionSpec & spec){
     // Phase 4.4 (Anim Tier B): the per-View layout tween. Pre-4.4 this

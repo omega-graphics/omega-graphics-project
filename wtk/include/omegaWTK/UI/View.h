@@ -37,6 +37,13 @@ namespace OmegaWTK {
     namespace Native {
         class NativeEvent;
         typedef SharedHandle<NativeEvent> NativeEventPtr;
+        // §2.3a C1: opaque-enum forward declaration (fixed underlying
+        // type, so this is a complete type for by-value use) — lets
+        // `View::setCursorShape` name it without View.h pulling in the
+        // heavy `NativeWindow.h` (and its X11 `CursorShape` macro dance).
+        // The full definition lives in NativeWindow.h; ViewImpl.h /
+        // View.Core.cpp include it where the enumerators are needed.
+        enum class CursorShape : int;
     }
 
 
@@ -503,6 +510,26 @@ namespace OmegaWTK {
         /// Why focus last changed on this view. Read by a widget's
         /// `rebuildStyle()` hook (F2+) to gate focus-ring rendering.
         FocusReason lastFocusReason() const;
+
+        /// §2.3a C1: declarative per-view cursor shape — "while the cursor
+        /// is over me, show this." Like focus and (later) tooltips, the
+        /// View only *declares* the shape; it never touches the OS cursor.
+        /// The virtual hover dispatcher in `WidgetTreeHost` resolves the
+        /// topmost hovered view's effective shape — walking up to the
+        /// nearest ancestor that set one (CSS / Qt cursor inheritance) —
+        /// and commits it to the single per-window OS cursor sink
+        /// (`NativeWindow::setCursorShape`, via `AppWindow`).
+        ///
+        /// A view with no shape set (the default) is transparent to the
+        /// walk: its subtree inherits the nearest ancestor's shape, and
+        /// `CursorShape::Arrow` is the ultimate fallback when nothing in
+        /// the chain set one. Calling `setCursorShape` makes this view
+        /// authoritative for its subtree's cursor. The getter returns the
+        /// view's own declared shape, or `Arrow` when unset (it does *not*
+        /// resolve up the ancestor chain — that resolution is the
+        /// dispatcher's job at hover time).
+        void setCursorShape(Native::CursorShape shape);
+        Native::CursorShape cursorShape() const;
 
         /// Phase 4.7.0: the polymorphic Paint-pass hook. Per-node:
         /// emits THIS view's draw ops into `pc.displayList` and reads
