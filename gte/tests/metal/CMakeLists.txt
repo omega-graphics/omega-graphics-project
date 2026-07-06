@@ -99,6 +99,26 @@ target_link_options("MatrixOpsTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_matrix_ops COMMAND MatrixOpsTest)
 
+# OmegaSL §16 Phase E — tessellation hull-dispatch GPU integration test (shared,
+# backend-independent source under gte/tests/). Metal-only today: only Metal
+# models a `hull` as a compute dispatch with an intermediate factor buffer (on
+# D3D12/Vulkan tessellation runs inside the draw pipeline, verified via
+# drawPatches in the D3D12/Vulkan pass). Dispatches triHull + quadHull over one
+# patch each and reads back the per-control-point output + the tessellation-
+# factor half bits (1.0 == 0x3C00 tri, 2.0 == 0x4000 quad).
+add_metal_cli_test(
+    NAME
+    "TessellationDispatchTest"
+    SOURCES
+    "../tessellation_dispatch_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("TessellationDispatchTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_tessellation_dispatch COMMAND TessellationDispatchTest)
+
 # OmegaSL §5.3 — integer / bitfield-op GPU integration test (shared, backend-
 # independent source under gte/tests/). Proves the firstbit normalization
 # (countbits / reversebits / firstbithigh / firstbitlow) agrees with the host

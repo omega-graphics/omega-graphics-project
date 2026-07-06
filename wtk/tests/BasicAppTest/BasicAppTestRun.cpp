@@ -300,6 +300,11 @@ int RunBasicAppTest(AppInst *app) {
             nc->send({"BasicAppTest", "Button clicked — default 150ms hover transition."});
         }
     });
+    // §2.3a C1 demo: a clickable control shows the pointing-hand cursor on
+    // hover. Set on the Button's root view; the hover dispatcher's
+    // ancestor walk applies it even when the hit lands on the button's
+    // inner label view.
+    clickMe->viewRef().setCursorShape(Native::CursorShape::PointingHand);
     buttonRow->addChild(clickMe);
 
     // Slow 400 ms hover transition with a custom accent color.
@@ -314,6 +319,7 @@ int RunBasicAppTest(AppInst *app) {
             nc->send({"BasicAppTest", "Slow-hover button clicked — 400ms transition."});
         }
     });
+    slowHover->viewRef().setCursorShape(Native::CursorShape::PointingHand);
     buttonRow->addChild(slowHover);
 
     // Snap (no transition) — instant state change for comparison.
@@ -322,6 +328,7 @@ int RunBasicAppTest(AppInst *app) {
     snapProps.hoverTransitionDuration = 0.f;
     auto snapBtn = make<Button>(
         Composition::Rect{{0, 0}, 80.f, 32.f}, snapProps);
+    snapBtn->viewRef().setCursorShape(Native::CursorShape::PointingHand);
     buttonRow->addChild(snapBtn);
 
     // Disabled — dimmed at 0.4 alpha, never enters hover/pressed.
@@ -330,6 +337,9 @@ int RunBasicAppTest(AppInst *app) {
     disabledProps.enabled = false;
     auto disabledBtn = make<Button>(
         Composition::Rect{{0, 0}, 100.f, 32.f}, disabledProps);
+    // A disabled control shows the not-allowed cursor — a second shape so
+    // the demo also exercises moving between distinct cursors.
+    disabledBtn->viewRef().setCursorShape(Native::CursorShape::NotAllowed);
     buttonRow->addChild(disabledBtn);
 
     StackSlot buttonRowSlot;

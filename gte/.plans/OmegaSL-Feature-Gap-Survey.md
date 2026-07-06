@@ -4305,13 +4305,49 @@ by that metadata** (codegen + runtime together; see the Phase E Metal note).
 
 Public API (`GEPipeline.h` / `GERenderTarget.h` / `omegasl.h`):
 - `RenderPipelineDescriptor`: add `hullFunc` / `domainFunc` and
-  `uint32_t patchControlPoints`.
-- `PrimitiveTopologyCategory`: add `Patch`; `PolygonType`: add a patch
+  `uint32_t patchControlPoints`. **[DONE 2026-07-05]**
+- `PrimitiveTopologyCategory`: add `Patch` **[DONE]**; `PolygonType`: add a patch
   topology + a `drawPatches(controlPointCount, …)` command on
   `GECommandBuffer`.
 - Serialize `TessellationDesc` into `omegasl_shader` (a new
   `omegasl_tessellation_desc`) so the runtime can read
   partitioning / winding / control-point count — it is AST-only today.
+  **[DONE 2026-07-05]**
+
+**Tessellation render pass — a dedicated `startTessRenderPass` (decision: Alex,
+2026-07-05, supersedes "auto inside `drawPatches`").** A tessellated draw is
+started with a **new** command-buffer entry point, `startTessRenderPass`, NOT the
+regular `startRenderPass`. This makes the two-stage structure (hull/factor
+compute → fixed-function tessellator + domain/fragment draw) explicit at the API
+boundary instead of hiding encoder gymnastics inside `drawPatches`:
+
+- **`startRenderPass` does not support tessellation stages.** Binding a
+  tessellation pipeline (one with `hullFunc` / `domainFunc`) inside a plain
+  render pass is a caller-contract violation (surface it via `DEBUG_CRITICAL` +
+  assert, like the existing pipeline-kind guards). A plain render pass stays a
+  single render encoder with no compute pre-pass — byte-identical to today.
+- **`startTessRenderPass` opens a deferred tessellation pass.** The engine runs
+  the hull/factor **compute dispatch first** (one thread per patch, writing the
+  per-control-point output + the `MTL{Triangle,Quad}TessellationFactorsHalf`
+  factor buffer) and **defers the render encoder until that compute kernel has
+  finished — without halting the engine.** The deferral is ordered by the GPU's
+  own dependency tracking (Metal: the render encoder is created after the
+  compute encoder ends on the same command buffer, and the factor / control-point
+  buffers carry the hazard so the driver serializes them; the CPU never blocks on
+  the dispatch). This is why a dedicated entry point is cleaner than the earlier
+  "suspend and re-open the render encoder inside `startRenderPass`" idea — there
+  is no encoder to suspend, and the ordering is a normal compute-before-render
+  sequence the backend already knows how to schedule asynchronously.
+- The engine owns the internal hull-output + factor buffers (sized from the
+  patch count + the `omegasl_tessellation_desc` control-point count); the caller
+  binds only its input control points and issues `drawPatches` inside the tess
+  pass. `finishRenderPass` closes it.
+- Non-Metal backends map the same surface onto their native model: D3D12 / Vulkan
+  run HS/DS inside the one graphics pipeline, so `startTessRenderPass` there is a
+  thin variant of `startRenderPass` that permits the tessellation pipeline and
+  patch topology (no separate compute pre-pass) — but keeping the dedicated
+  entry point keeps the "plain `startRenderPass` rejects tessellation" contract
+  uniform across all three backends.
 
 Per backend (`makeRenderPipelineState`):
 - **D3D12** (`GED3D12.cpp:1438`): set `.HS`/`.DS`, build the root signature
@@ -4323,11 +4359,14 @@ Per backend (`makeRenderPipelineState`):
   `VkPipelineTessellationStateCreateInfo.patchControlPoints`,
   `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`, and **enable** the `tessellationShader`
   device feature at device creation (currently only probed).
-- **Metal** (`GEMetal.mm:1209`): a factor-compute dispatch before the draw,
+- **Metal** (`GEMetal.mm:1209`): `startTessRenderPass` runs the hull/factor
+  compute dispatch on a compute encoder, then (deferred, non-blocking — see the
+  `startTessRenderPass` note above) opens the render encoder with the
   `MTLRenderPipelineDescriptor` tessellation properties
   (`tessellationFactorBuffer`, `tessellationPartitionMode` ← partitioning,
-  `tessellationOutputWindingOrder` ← outputtopology, `maxTessellationFactor`),
-  and `drawPatches`.
+  `tessellationOutputWindingOrder` ← outputtopology, `maxTessellationFactor`)
+  and issues `drawPatches`. The standalone hull dispatch + factor write this
+  builds on is already verified (16-E4a / `TessellationDispatchTest`).
 
 **Phase E — Metal per-patch dispatch (decision: Alex, 2026-07-05).** The hull
 kernel is dispatched **one thread per patch** (grid = patch count), configured
@@ -4378,11 +4417,11 @@ off per backend in lockstep.
 | 16-B | HLSL patch-constant fn + `[patchconstantfunc]` + patch types | `HLSLTarget.cpp` | medium | E2 | **DONE** — `dxc`-verified (`hs_6_0`/`ds_6_0`); `omegasl_compile_tessellation` expected-pass on `TARGET_DIRECTX`. No return-rewrite (hull returns per-CP output directly). |
 | 16-C | GLSL tess-level writes + `gl_TessCoord` read (+ patch-constant struct as plain data) | `GLSLTarget.cpp` | medium | E3 | **DONE** — `glslc`-verified (`tesscontrol`/`tesseval`); `omegasl_compile_tessellation` now expected-pass on all three backends (WILL_FAIL gate removed). |
 | 16-D | Metal kernel (per-CP store + factor epilogue) + post-tess vertex (`patch_control_point`/`position_in_patch`) | `MSLTarget.cpp`, `Target.h` | large | E4 | **DONE (codegen, interim per-CP)** — `metal`-verified; `omegasl_compile_tessellation` flipped to expected-pass on `APPLE`. Dispatch shape to be revised to **per-patch** in Phase E (16-E4a) per Alex — the per-CP kernel is the interim cut. |
-| 16-E4a | **Metal per-patch dispatch**: serialize `omegasl_tessellation_desc` into `omegasl_shader`; re-shape hull kernel to thread=patch id (CP loop + unconditional factor write); dispatch `threadsPerGrid = patchCount` | `MSLTarget.cpp` (codegen), shader-map writer, `GEMetal.mm` (runtime) | medium | — | open (decision Alex 2026-07-05) |
-| 16-E1 | Public API: descriptor fields, patch topology, `drawPatches`, `omegasl_tessellation_desc` | `GEPipeline.h`, `GERenderTarget.h`, `omegasl.h` | medium | E2–E4 | open |
+| 16-E4a | **Metal per-patch dispatch**: serialize `omegasl_tessellation_desc` into `omegasl_shader`; re-shape hull kernel to thread=patch id (CP loop + unconditional factor write); dispatch `threadsPerGrid = patchCount` | `MSLTarget.cpp` (codegen), shader-map writer, `GEMetal.mm` (runtime) | medium | — | **CODEGEN + DISPATCH VERIFIED** 2026-07-05 — hull kernel re-shaped to per-patch (`__osl_patch_id [[thread_position_in_grid]]` → `for(__osl_cp<N)` binding `vid = patchId*N+cp` → unconditional factor write to `__osl_tess_factors[__osl_patch_id]`). Also gave the hull a valid `threadgroupDesc` (32×1×1, serialized in `ShaderArchive.cpp`) so it builds as a `MTLComputePipelineState` and dispatches. **RUNTIME-VERIFIED on real Metal**: `TessellationDispatchTest` dispatches triHull+quadHull as compute kernels (one thread per patch), the synthesized factor buffer binds at the fall-through slot (id 2 → Metal buffer 2), and the readback confirms per-CP output echo + factor half-bits (1.0=0x3C00 tri / 2.0=0x4000 quad). The auto-`drawPatches` render command (16-E4, compute-then-render encoder + tess render pipeline) is still open. |
+| 16-E1 | Public API: descriptor fields, patch topology, `drawPatches`, `omegasl_tessellation_desc` | `GEPipeline.h`, `GERenderTarget.h`, `omegasl.h` | medium | E2–E4 | **PARTIAL** 2026-07-05 — DONE: `omegasl_tessellation_desc` (struct in `omegasl.h`; serialized in `ShaderArchive.cpp` read+write for HULL/DOMAIN; populated by `fillTessellationDesc` in `Target.h`, called from `MSLTarget.cpp` hull+domain arms); `RenderPipelineDescriptor::hullFunc/domainFunc/patchControlPoints`; `PrimitiveTopologyCategory::Patch`. TODO: `GECommandBuffer::PolygonType::Patch` + `drawPatches` command (blocked on the E4 draw-model plumbing below). |
 | 16-E2 | D3D12 HS/DS pipeline + patch topology | `GED3D12.cpp` | medium | — | open |
 | 16-E3 | Vulkan tess stages + tess state + device-feature enable | `GEVulkan.cpp` | medium | — | open |
-| 16-E4 | Metal factor-compute pass + tessellation pipeline + `drawPatches` | `GEMetal.mm` | large | — | open |
+| 16-E4 | Metal `startTessRenderPass` + tessellation pipeline + `drawPatches` | `GEMetal.mm`, `GERenderTarget.h` | large | — | open — the standalone hull-compute dispatch + factor write is verified (16-E4a / `TessellationDispatchTest`); still to do: the dedicated **`startTessRenderPass`** command (per Alex 2026-07-05, supersedes "auto inside `drawPatches`" — runs the hull dispatch on a compute encoder then defers the render encoder until it finishes, non-blocking; plain `startRenderPass` rejects tessellation pipelines), the engine-owned hullOut + factor buffers, the `MTLRenderPipelineDescriptor` tessellation properties, and `PolygonType::Patch` + the `drawPatches` command on `GECommandBuffer`. See the "Tessellation render pass" note under Phase E. |
 | 16-F | Feature-flag honesty gate + per-backend re-enable | `GED3D12.cpp`, `GEVulkan.cpp`, `GEMetal.mm`, tests `CMakeLists.txt` | small | — | open |
 
 ### Tests
@@ -4390,8 +4429,17 @@ off per backend in lockstep.
 - Per-backend golden / compile tests as each codegen phase lands; flip
   `omegasl_compile_tessellation` from `WILL_FAIL` to expected-pass per
   backend (§16-F).
-- A runtime tessellated-draw smoke test (one triangle patch subdivided)
-  behind the existing GPU-test harness, per backend that completes Phase E.
+- **`gte/tests/tessellation_dispatch_test.cpp`** (`omegagte_tessellation_dispatch`,
+  registered under `gte/tests/metal/CMakeLists.txt`) — Metal runtime hull-dispatch
+  test, DONE + passing 2026-07-05. Runtime-compiles a tri+quad hull/domain shader,
+  dispatches each hull as a compute kernel over one patch, and reads back the
+  per-control-point output (echo check) + the tessellation-factor buffer (half
+  bits 0x3C00 / 0x4000). Metal-only: only Metal models a hull as a compute
+  dispatch with an intermediate factor buffer; on D3D12/Vulkan the hull runs
+  inside the draw pipeline (verified via `drawPatches` when 16-E2/E3 land).
+- A runtime tessellated-draw smoke test (one triangle patch subdivided) via
+  `drawPatches`, per backend that completes Phase E — still open (needs the
+  16-E4 auto-`drawPatches` render command).
 
 ### Out of scope (follow-ups)
 

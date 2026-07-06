@@ -153,13 +153,36 @@ _NAMESPACE_BEGIN_
     enum class PrimitiveTopologyCategory : uint8_t {
         Triangle,
         Line,
-        Point
+        Point,
+        /// §16 Phase E — a tessellation-patch pipeline. Drives D3D12's
+        /// `D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH`; Metal / Vulkan pick the
+        /// control-point patch topology up at draw time from `drawPatches`.
+        Patch
     };
 
     struct  OMEGAGTE_EXPORT RenderPipelineDescriptor {
         OmegaCommon::String name;
         SharedHandle<GTEShader> vertexFunc;
         SharedHandle<GTEShader> fragmentFunc;
+        /// §16 Phase E — optional tessellation stages. When both @c hullFunc
+        /// and @c domainFunc are set, this is a tessellation pipeline: the hull
+        /// (an OmegaSL `hull` stage) runs as a compute pre-pass that computes
+        /// per-patch tessellation factors + per-control-point output, and the
+        /// domain (an OmegaSL `domain` stage) becomes the post-tessellation
+        /// vertex function in place of @c vertexFunc. Leave both null for a
+        /// normal vertex/fragment pipeline; @c vertexFunc is then required as
+        /// before. Feature-gated behind @c GTEDEVICE_FEATURE_TESSELLATION_SHADER
+        /// — @c makeRenderPipelineState returns @c nullptr with a diagnostic on
+        /// a device that does not advertise it.
+        SharedHandle<GTEShader> hullFunc;
+        SharedHandle<GTEShader> domainFunc;
+        /// Control points per input patch. Must match the hull's
+        /// `outputcontrolpoints`. Only consulted when @c hullFunc /
+        /// @c domainFunc are set; 0 otherwise. The runtime also reads the
+        /// authoritative count from the hull's serialized
+        /// `omegasl_tessellation_desc`, so this is a convenience / validation
+        /// value at the API surface.
+        uint32_t patchControlPoints = 0;
         /// Pixel formats of the color attachments this pipeline writes to.
         /// Index `i` corresponds to color attachment `i`. Empty vector is
         /// treated as a single default-format attachment.

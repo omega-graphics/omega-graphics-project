@@ -558,6 +558,19 @@ which 6.6.2 already handles. The work is purely in
 
 ### 6.7 Text rendering: MSDF glyph atlases
 
+> **Partially superseded — read this first.** The **MSDF atlas + shader**
+> side of §6.7 (per-font `GlyphAtlas`, `msdfTextFragment`, the `TextRun`
+> render path in `emitTextSubRun`) is current and shipped on all three
+> platforms. But the **layout / shaping** side described below
+> (`GlyphRun::shape()`, per-platform `PangoLayout` / `CTFramesetter` /
+> `IDWriteTextLayout` layout, the "Linux-first, DWrite/CoreText stubbed"
+> rollout) was **replaced** by WTK's own
+> [`TextLayoutEngine`](Text-Layout-Engine-Plan.md) — layout, line breaking,
+> bidi, and canvas-space glyph positioning are now WTK-owned and universal
+> across platforms; the platform APIs are kept only for font discovery,
+> outline extraction, shaping, and fallback. Treat the shaping/layout
+> details in §6.7.2 below as historical.
+
 **Implementation chunks (Linux-first vertical slice).** Section 6.7 is
 landing in four chunks against the Pango/FT (Linux) backend. DWrite
 and Core Text get stub `rasterizeGlyphMSDF` callbacks that return false

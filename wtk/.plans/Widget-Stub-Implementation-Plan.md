@@ -511,7 +511,7 @@ Each sub-phase is independently buildable and visually verifiable.
 | Follow-up                         | Depends on                                                        |
 |-----------------------------------|-------------------------------------------------------------------|
 | SVG tint / recolor                | per-path fill override in the parsed `Composition::DisplayList`    |
-| Image tint-multiply               | a raster tint path in the compositor                              |
+| Image / raster icon tint (recolor + multiply, color + gradient) | **Composition-Extension-Plan Phase 12** (`BitmapTint`, Mask/Multiply). `ImageIcon` uses `Mask` `ColorTint` for recolor |
 | `IconRegistry` semantic-name lookup | becomes a **factory** returning `SharedHandle<Icon>` (a concrete subclass) for a name + rect, loaded from an asset manifest — not the old value-returning `resolve` (the `IconSource` union it returned no longer exists) |
 
 ### Verification

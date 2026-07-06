@@ -263,6 +263,30 @@ bool ReadShaderArchive(std::istream &in, OmegaSLShaderArchive &out, std::string 
                 err = "could not read mesh descriptor" + at;
                 return false;
             }
+        } else if (rec.type == OMEGASL_SHADER_HULL && !isStub) {
+            /// §16 Phase E — a hull lowers to a compute kernel (Metal), so it
+            /// carries a threadgroup size (dispatched one thread per patch) in
+            /// addition to the tessellation descriptor. Order mirrors the writer.
+            if (!readValue(in, rec.threadgroupDesc.x) ||
+                !readValue(in, rec.threadgroupDesc.y) ||
+                !readValue(in, rec.threadgroupDesc.z) ||
+                !readValue(in, rec.tessellationDesc.domain) ||
+                !readValue(in, rec.tessellationDesc.partitioning) ||
+                !readValue(in, rec.tessellationDesc.output_topology) ||
+                !readValue(in, rec.tessellationDesc.output_control_points)) {
+                err = "could not read hull descriptor" + at;
+                return false;
+            }
+        } else if (rec.type == OMEGASL_SHADER_DOMAIN && !isStub) {
+            /// §16 Phase E — tessellation descriptor (no threadgroup size: the
+            /// domain is a post-tessellation vertex stage, not a kernel).
+            if (!readValue(in, rec.tessellationDesc.domain) ||
+                !readValue(in, rec.tessellationDesc.partitioning) ||
+                !readValue(in, rec.tessellationDesc.output_topology) ||
+                !readValue(in, rec.tessellationDesc.output_control_points)) {
+                err = "could not read domain descriptor" + at;
+                return false;
+            }
         }
 
         /// Per-shader required-feature bitfield — always present, even when 0.
@@ -370,6 +394,22 @@ bool WriteShaderArchive(std::ostream &out, const OmegaSLShaderArchive &lib, std:
                 writeValue(out, shader.meshDesc.max_vertices);
                 writeValue(out, shader.meshDesc.max_primitives);
                 writeValue(out, shader.meshDesc.topology);
+            } else if (shader.type == OMEGASL_SHADER_HULL) {
+                /// §16 Phase E — hull threadgroup size (dispatched one thread per
+                /// patch) + tessellation descriptor (reader mirrors this order).
+                writeValue(out, shader.threadgroupDesc.x);
+                writeValue(out, shader.threadgroupDesc.y);
+                writeValue(out, shader.threadgroupDesc.z);
+                writeValue(out, shader.tessellationDesc.domain);
+                writeValue(out, shader.tessellationDesc.partitioning);
+                writeValue(out, shader.tessellationDesc.output_topology);
+                writeValue(out, shader.tessellationDesc.output_control_points);
+            } else if (shader.type == OMEGASL_SHADER_DOMAIN) {
+                /// §16 Phase E — tessellation descriptor only (reader mirrors this).
+                writeValue(out, shader.tessellationDesc.domain);
+                writeValue(out, shader.tessellationDesc.partitioning);
+                writeValue(out, shader.tessellationDesc.output_topology);
+                writeValue(out, shader.tessellationDesc.output_control_points);
             }
         }
 

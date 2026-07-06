@@ -10,6 +10,9 @@
 We may have to add FP4 and FP8 operations to make this usable as a ML suitable language.
 (Lower to NVPTX, ROCm, Intel, Metal)
 
+> Designed out in **Appendix A.10** (FP8 / FP4 narrow-float types + Buffer IO,
+> MLIR-lowered). The lowering-to-native targets above are the A.10.4 MLIR path.
+
 ## Goal
 
 Run **one** OmegaSL compute kernel across **multiple discrete GPUs** at once.
@@ -442,6 +445,10 @@ cross-vendor charter — no new GPU dependency:
 - **A.2** subgroup / warp operations (OmegaSL surface only).
 - **A.3** cooperative-matrix / tensor-core intrinsics (new OmegaSL type + builtins).
 - **A.4** multi-GPU collectives on the base plan's lane model (backend-neutral).
+- **A.10** FP8 / FP4 narrow-float types + Buffer IO (MLIR-lowered) — the ML
+  element-type companion to A.3, and the concrete design for the FP4/FP8 item in
+  **User IDeas**. Its storage/Buffer-IO half ships without MLIR; its
+  arithmetic/`coopmatrix` half is the scoped MLIR use (see A.10.8 vs. A.7).
 - **A.9** distributed **GEMM** — the capstone workload built on A.3 (the
   tensor-core primitive) + A.4 (cross-lane data sharing). Not a new
   language/runtime primitive; it is the headline application that proves the three
@@ -478,6 +485,11 @@ GEMM/conv, large reductions). Tensor cores are portably reachable today:
 Proposed OmegaSL surface (sketch — needs the full lexer→Sema→3×codegen pass that
 every OmegaSL type addition takes, plus a `cooperative_matrix` feature bit added
 to `omegasl.h` and `GTEDeviceFeatures`):
+
+The element dtype starts at `float16` (below); the **FP8 / FP4 narrow-float
+element types** that make this an ML-grade GEMM path (`coopmatrix<fp8_e4m3,
+…>` with fp32 accumulate, and MXFP4) are added in **A.10**, which lowers them
+through MLIR — A.3 gains those dtypes once A.10.3 lands.
 
 ```omegasl
 // element type + shape + matrix-use (a/b/accumulator), like WMMA fragments
@@ -543,6 +555,13 @@ fallback.
   each vendor's neutral fallback. Linux
   + `OMEGA_BUILD_ML` only; host ring stays the fallback. Do not start before A2
   (it has nothing to accelerate until the collectives API exists).
+- **Phase A4.5 — FP8 / FP4 narrow-float types + Buffer IO (A.10).** The storage
+  + host Buffer IO half (A10.1) is independent — it can land any time after the
+  §Ext-9 FP16 work as its narrow-type sibling, no MLIR. The MLIR-lowered
+  arithmetic + `coopmatrix` narrow dtypes (A10.2–A10.4) depend on **A3**
+  (`coopmatrix`) and stand up the scoped MLIR seam; they feed the fp8 path of the
+  A5 GEMM. Build-gate the MLIR dep (A.10.7 Q2). Mark D3D12 (SM6.9) / Metal
+  (Metal 4) codegens **compile/run-unverified off-platform**.
 - **Phase A5 — Distributed GEMM (capstone, the later phase).** The portable GEMM
   workload (A.9): a single-device tiled GEMM kernel on `coopmatrix`, then fanned
   out across lanes (scatter `A` row-panels, broadcast `B`, gather `C`). Depends on
@@ -740,12 +759,17 @@ general native *execution* backend below stays deferred.)
   whatever transport it has, so it does not need any of them. The *fabrics* they
   ride are **not** out of scope — A.6's per-vendor backends ride NVLink / xGMI /
   Xe Link transparently when present; only the collective libraries are declined.
-- **MLIR codegen** — a compiler-back-half re-architecture (large LLVM/MLIR build
-  dep). Its real leverage is enabling a native NVPTX/ROCDL backend and
-  `linalg`→MMA GEMM lowering; not needed for any A.2–A.4 or the A.9 GEMM work,
+- **MLIR codegen (full back-half)** — a compiler-back-half re-architecture (large
+  LLVM/MLIR build dep). Its real leverage is enabling a native NVPTX/ROCDL backend
+  and `linalg`→MMA GEMM lowering; not needed for any A.2–A.4 or the A.9 GEMM work,
   which all ship with hand-written codegen (A.9's GEMM is authored directly on the
   A.3 `coopmatrix` primitive, not lowered through MLIR). Revisit only if a native
   backend or first-class GEMM throughput is greenlit.
+  **Update (A.10):** a **scoped** slice of MLIR — narrow-float (FP8/FP4) type +
+  convert + `coopmatrix`-element lowering to SPIR-V — is now **in scope** via
+  A.10, because FP8/FP4 for ML GEMM is exactly the "first-class GEMM throughput"
+  trigger named above. Only the **full native *execution* backend** stays
+  deferred here; see A.10.8 for the reconciliation.
 
 ## A.8 Open Decisions (developer's call)
 
@@ -934,3 +958,304 @@ Mixed precision follows `coopmatrix`: fp16/bf16 inputs with an fp32 accumulator
   the tiled GEMM is the foundation those would later build on.
 - Cross-shard dependencies beyond the GEMM panel exchange described above (the
   base plan's halo/stencil non-goal still holds for everything else).
+
+---
+
+## A.10 OmegaSL extension — FP8 / FP4 narrow-float types + Buffer IO (MLIR-lowered)
+
+> **Status — committed direction (developer's call), phases not yet
+> implemented.** This is the concrete design for the "add FP4 and FP8
+> operations to make this usable as an ML language" item recorded in **User
+> IDeas** at the top of this plan. It is the *element-type* companion to A.3
+> (cooperative matrix): A.3 supplies the tensor-core `coop_mma`; A.10 supplies
+> the sub-8-bit element types those ops — and the ML buffer traffic around them
+> — actually run on. Modern training/inference has moved to 8-bit (FP8) and
+> 4-bit (FP4/MXFP4) datatypes for weights, activations, and GEMM inputs, so an
+> ML-suitable OmegaSL needs them as first-class types, not hand-packed `uint`s.
+
+### A.10.0 The two halves — and where MLIR is actually required
+
+The feature splits cleanly into two layers with **different dependency
+profiles**, and it matters to separate them:
+
+1. **Storage + host Buffer IO (no MLIR).** The bytes of an FP8 / FP4 value and
+   the CPU float32↔narrow conversions are pure, small bit-manipulation — the
+   *exact* shape as the FP16 host converter proposed in
+   `Pipeline-Completion-Extension-Plan.md §Ext-9` (`floatToHalfBits` /
+   `halfBitsToFloat` in `gte/src/BufferIO.h`). This half needs **no MLIR** and,
+   per the base plan's "language vs. runtime" rule ("all OmegaSL language
+   features … always built"), ships in every build.
+2. **Shader-side arithmetic + `coopmatrix` element types (MLIR-lowered).** This
+   is the half the developer flagged as needing MLIR. Native sub-8-bit float
+   support in the three shading languages is **new, uneven, and semantically
+   fiddly** (finite-only E4M3, saturating conversions, and — for FP4 — the
+   *microscaling* block-scale semantics). Emitting correct, identical numerics
+   by hand across HLSL / MSL / GLSL (and, for a future native path, NVPTX /
+   ROCDL) is where MLIR's already-upstream narrow-float type system and
+   conversion lowerings pay for themselves. See A.10.4.
+
+**Shepherd note (surfaced for the developer's call).** The developer's
+instruction was "for this we'll have to lower into MLIR." That is right for
+half 2; half 1 (Buffer IO / host conversion) does **not** strictly need it. Two
+ways to resolve, recorded as an open decision (A.10.7 Q1): keep half 1
+hand-written (no build dep, mirrors §Ext-9) and use MLIR only for half 2; or
+route the host conversions through the *same* MLIR-generated numerics too, so
+CPU-packed FP8/FP4 is bit-identical to the GPU's by construction (one source of
+truth, at the cost of pulling the MLIR dep into the host path). Recommendation:
+**hand-written host conversions, MLIR for the shader/codegen half** — but the
+numeric reference tables must be shared so the two agree (verified by the A.10.6
+cross-check test).
+
+### A.10.1 Format scope
+
+Adopt the **OCP Microscaling (MX) / FP8 formats** — the industry-converged set,
+which is also what every backend below is standardizing on:
+
+| OmegaSL type | Format | Bits (S/E/M) | Notes |
+|---|---|---|---|
+| `fp8_e4m3` | OCP E4M3FN | 1/4/3 | finite-only (no ±inf; one NaN); the weights/activations default |
+| `fp8_e5m2` | OCP E5M2 | 1/5/2 | wider range, IEEE-like specials; the gradients default |
+| `fp4_e2m1` | OCP E2M1 | 1/2/1 | 4-bit; only meaningful **block-scaled** (MXFP4) |
+| *(scale)* `e8m0` | OCP E8M0 scale | 8/0/0 | shared exponent for an MX block of 32 elements |
+
+**Sub-byte + microscaling is the real wrinkle (not present in §Ext-9's FP16).**
+FP4 is 4 bits — not byte-addressable — and is only numerically useful as
+**MXFP4**: a block of 32 `fp4_e2m1` elements sharing one `e8m0` scale byte. So
+"an FP4 buffer" is really a packed block format (32× 4-bit + 1 scale byte per
+block = 17 bytes / 32 elements), *not* a flat array of addressable scalars.
+FP8 is byte-addressable and behaves like §Ext-9's FP16 (one byte per element);
+its MX variant (MXFP8, block of 32 + scale) is the block-scaled option. This
+asymmetry drives the Buffer IO API shape in A.10.3.
+
+### A.10.2 Backend support (why the numerics are hard by hand)
+
+| Backend | FP8 | FP4 / MX | Path |
+|---|---|---|---|
+| **Vulkan / SPIR-V** | `VK_EXT_shader_float8` (`Float8EXT`, E4M3/E5M2); coop-matrix FP8 via `VK_KHR_cooperative_matrix` | emerging — `VK_NV_cooperative_matrix2` / MX work, not yet universal | SPIR-V dialect out of MLIR |
+| **D3D12 / HLSL** | SM 6.9 preview native FP8 (`float8_e4m3` / `_e5m2`) + cooperative vectors | SM 6.9 low-precision / MX direction | DXIL — hand codegen or MLIR→DXIL (immature) |
+| **Metal** | Metal 4 (2025) tensor types + MPS FP8; MSL scalar FP8 support limited/emerging — **verify on-platform** | Metal 4 low-precision tensor path; FP4 **verify** | MSL — hand codegen from MLIR-defined numerics |
+| **NVPTX / ROCDL** (future native, A.7) | `__nv_fp8_*`, ROCm `__hip_fp8_*` | Blackwell `__nv_fp4_e2m1` + MXFP; CDNA MX | LLVM dialect out of MLIR |
+
+The point of the table: **no single backend expresses all of this uniformly
+today**, and the formats carry non-obvious semantics (E4M3's finite-only range,
+saturating vs. wrapping conversion, MX block scaling). Hand-writing three-plus
+divergent, individually-immature codegens for a moving target is exactly the
+case where a shared MLIR representation with upstream lowerings is worth the
+build-dependency cost — which is the developer's reasoning for requiring it here.
+
+### A.10.3 Buffer IO ops (host-side, mirrors §Ext-9)
+
+**Data-type enumerators** — append at the tail of `omegasl_data_type`
+(`gte/include/omegasl.h`), same tail-append discipline as §Ext-9's
+`OMEGASL_HALF*`:
+
+```cpp
+    // §A.10 — FP8 (byte-addressable) narrow floats for host buffer R/W.
+    OMEGASL_FP8_E4M3,
+    OMEGASL_FP8_E5M2,
+    OMEGASL_FP8_E4M3_2, OMEGASL_FP8_E4M3_4,   // vec2/vec4 (2 / 4 bytes)
+    OMEGASL_FP8_E5M2_2, OMEGASL_FP8_E5M2_4,
+    // §A.10 — MX block-scaled types. A single enumerator names a *block*, not a
+    // scalar, because the element is sub-byte / scale-shared (see A.10.1).
+    OMEGASL_MXFP8_BLOCK32,   // 32× fp8 + e8m0 scale
+    OMEGASL_MXFP4_BLOCK32    // 32× fp4_e2m1 + e8m0 scale (17 bytes)
+```
+
+**`GEBufferWriter` / `GEBufferReader`** (`gte/include/omegaGTE/GTEShader.h`) —
+the host works in float32; the writer converts and packs, the reader unpacks and
+widens, exactly like `writeHalf*` / `getHalf*`:
+
+```cpp
+// Byte-addressable FP8 — direct analogs of the §Ext-9 half ops.
+virtual void writeFP8E4M3(float & v) = 0;   virtual void getFP8E4M3(float & v) = 0;
+virtual void writeFP8E5M2(float & v) = 0;   virtual void getFP8E5M2(float & v) = 0;
+// (+ the vec2/vec4 forms on FVec<2>/FVec<4>, symmetric with §Ext-9.)
+
+// MX block-scaled — the API takes a *span of 32 floats* (a block), computes the
+// shared e8m0 scale, quantizes each element, and packs block+scale. The reader
+// dequantizes a block back to 32 floats. Sub-byte FP4 has no per-scalar op.
+virtual void writeMXFP8Block(const float * vals32) = 0;  // 32 floats -> block
+virtual void writeMXFP4Block(const float * vals32) = 0;
+virtual void getMXFP8Block(float * out32) = 0;
+virtual void getMXFP4Block(float * out32) = 0;
+```
+
+**Shared conversion in `gte/src/BufferIO.h`** — add the narrow-float bit
+converters next to §Ext-9's `floatToHalfBits`:
+
+```cpp
+uint8_t floatToFP8E4M3Bits(float) noexcept;  float fp8E4M3BitsToFloat(uint8_t) noexcept;
+uint8_t floatToFP8E5M2Bits(float) noexcept;  float fp8E5M2BitsToFloat(uint8_t) noexcept;
+// MX: pick the block's e8m0 scale (max-abs → power-of-two exponent), then
+// quantize each element to fp4_e2m1 / fp8 relative to that scale. Two 4-bit
+// elements pack per byte for MXFP4.
+struct MXBlock8 { uint8_t scale; uint8_t elems[32]; };
+struct MXBlock4 { uint8_t scale; uint8_t elems[16]; }; // 2 fp4 per byte
+```
+
+Saturating, round-to-nearest-even conversion is specified (matches the GPU/OCP
+convert semantics) so CPU-packed data is bit-identical to a shader's convert —
+same determinism contract §Ext-9 sets for FP16. **The numeric tables here are
+the same ones MLIR uses for the shader path (A.10.4)** — shared, not
+re-derived, so the two never drift.
+
+`std140ScalarVec` / `memberBaseAlignment` / `structStride` in `BufferIO.h` gain
+the FP8 scalar/vector cases (component size 1: fp8→{1,1}, fp8x2→{2,2},
+fp8x4→{4,4}); MX blocks are treated as opaque fixed-size aggregates (align 1,
+size 17/32-block) since a shader reads them through a block accessor, not as a
+struct member. FP8 storage in a real GPU buffer needs `VK_KHR_8bit_storage`
+(Vulkan) / SM6.2+ (D3D12) — a shader-side feature gate (A.10.5), not a host-
+writer concern; the writer only moves bytes.
+
+### A.10.4 OmegaSL language surface + MLIR lowering (the codegen half)
+
+**Types + builtins** (new value category, like A.3's `coopmatrix` — full
+lexer→Sema→codegen pass):
+
+```omegasl
+fp8_e4m3 x;                       // scalar narrow float
+fp8_e5m2 g;
+float y = float(x);               // widen (native or MLIR-lowered convert)
+fp8_e4m3 z = fp8_e4m3(y);         // narrow (saturating RNE)
+
+// MX block-scaled value — a block of 32 with a shared scale, the ML storage unit
+mxfp4 block = mx_load(inputA, /*blockIndex*/i);
+float e = mx_get(block, k);       // dequant element k
+
+// coopmatrix element dtype now includes the narrow floats (A.3 gains these):
+coopmatrix<fp8_e4m3, 16, 16, MatrixA> a;
+coopmatrix<fp8_e4m3, 16, 16, MatrixB> b;
+coopmatrix<float32,  16, 16, Accumulator> acc;   // fp8-in / fp32-accumulate
+acc = coop_mma(a, b, acc);
+```
+
+**Why MLIR, concretely.** OmegaSL's front end (lexer/Sema, unchanged in shape)
+lowers these types and the convert/`coop_mma` ops into an MLIR module using the
+**upstream builtin narrow-float types** (`f8E4M3FN`, `f8E5M2`, `f4E2M1FN`,
+`f8E8M0FNU` for the scale) and the `arith` conversion ops. From there the
+existing upstream lowerings carry each backend:
+
+- MLIR **SPIR-V dialect** → SPIR-V with `Float8EXT` / cooperative-matrix (Vulkan).
+- MLIR **LLVM dialect** → NVPTX / ROCDL for the future native backend (A.7) —
+  which is *precisely* the leverage A.7 said MLIR was for.
+- HLSL (DXIL) and MSL: emit from the same MLIR module via a thin OmegaSL-owned
+  printer where a native SPIR-V/LLVM target doesn't apply — the MLIR module is
+  still the single semantic source, so the three text backends agree.
+
+This is a **scoped** use of MLIR — narrow-float type + convert + coop-matrix
+lowering — **not** the full "compiler-back-half re-architecture" A.7 defers. See
+A.10.8 for the explicit reconciliation with A.7.
+
+### A.10.5 Feature bits
+
+Append at the tail of `omegasl_shader_feature_flags` (`omegasl.h`; next free is
+`1ull << 16`), masked by the loader against `GTEDeviceFeatures` exactly like
+`OMEGASL_FEATURE_BIT_FLOAT16`:
+
+```cpp
+    OMEGASL_FEATURE_BIT_FP8 = 1ull << 16,   // fp8_e4m3 / fp8_e5m2 arithmetic + coopmatrix
+    OMEGASL_FEATURE_BIT_FP4 = 1ull << 17    // fp4_e2m1 / MXFP4 block ops
+```
+
+A shader using `fp8_*` / `fp4_*` `#requires(FP8)` / `#requires(FP4)`; on a
+device lacking the bit the loader rejects the pipeline with the standard
+diagnostic (the §14.3 sentinel path). The **host Buffer IO ops are
+unconditional** — they only pack bytes; the gate is on the *shader* that reads
+them, mirroring §Ext-9's FP16 rule.
+
+### A.10.6 Phasing
+
+- **Phase A10.1 — Storage + Buffer IO (no MLIR, always built).** `omegasl.h`
+  enumerators + feature bits; `BufferIO.h` FP8/MX converters + layout cases; the
+  `writeFP8*`/`getFP8*` + `writeMX*Block`/`getMX*Block` ops on all three backend
+  writers/readers. Verifiable host-side + on the Vulkan compute host. Depends on
+  nothing; can land immediately after §Ext-9's FP16 work as its narrow-type
+  sibling.
+- **Phase A10.2 — MLIR front-end seam.** Stand up the OmegaSL-AST→MLIR lowering
+  for scalar `fp8_*` types + convert ops (widen/narrow), lowered to SPIR-V
+  (Vulkan) first. Build-gate the MLIR dependency (A.10.7 Q2). This is the
+  architecture-sized phase.
+- **Phase A10.3 — `coopmatrix` narrow dtypes.** Extend A.3's `coopmatrix` to
+  accept `fp8_e4m3` / `fp8_e5m2` element types (fp8-in / fp32-accumulate — the
+  tensor-core sweet spot), lowered through the A10.2 MLIR path. Unlocks the A.9
+  GEMM fp8 path.
+- **Phase A10.4 — MXFP4 block type + `mx_load`/`mx_get`/`coop_mma` on MXFP4.**
+  The 4-bit, block-scaled path — heaviest numerics; lands last. Its Buffer IO
+  (A10.1's `MX*Block` ops) is already in place to feed it.
+
+Sequence relative to the rest of the track: **A10.1 can precede everything**
+(it's just types + host IO). A10.2–A10.4 depend on A.3 (`coopmatrix`) landing
+and slot alongside/after **Phase A3** in A.5.
+
+### A.10.7 Open decisions
+
+1. **Host conversions via MLIR too, or hand-written?** (See the shepherd note in
+   A.10.0.) Recommendation: hand-written in `BufferIO.h` (no host build dep,
+   mirrors §Ext-9), with the numeric reference tables **shared** with the MLIR
+   path so they can't drift. The A.10.6 cross-check test is the guard.
+
+   <!-- ALEX: answer here -->
+
+2. **MLIR build-dependency gating.** MLIR/LLVM is a large build dep. The base
+   plan's rule is "OmegaSL language features are always built" — but that
+   predates a feature that needs MLIR. Options: (a) a new default-OFF
+   `OMEGA_OMEGASL_MLIR` CMake option — narrow-float *arithmetic/coopmatrix* is
+   available only in MLIR-enabled builds, while storage + Buffer IO (A10.1,
+   no MLIR) is always built; or (b) accept MLIR as a hard `omegaslc` dependency
+   so the language stays uniformly available. (a) preserves lean consumer builds
+   and keeps single-device fp8 *storage* everywhere; (b) is simpler but heavies
+   every build. Recommendation: **(a)**.
+
+   <!-- ALEX: answer here -->
+
+3. **Metal FP8/FP4 reality check.** "Metal has some support" — confirm on a
+   Metal 4 device what MSL actually exposes (scalar `fp8`? only tensor/MPS FP8?
+   any FP4?) before committing the Metal codegen shape. If MSL lacks scalar FP8,
+   Metal takes the `#requires(FP8)` header-stub + pipeline-reject path (like
+   several §14.3 features) until it does. **Off-platform — verify on-device.**
+
+   <!-- ALEX: answer here -->
+
+4. **bf16 alongside?** bfloat16 (`OMEGASL_BF16` / `bf16`) is the other ML dtype
+   and is *easier* than fp8 (byte-pair truncation of fp32, wide native support:
+   MSL `bfloat`, SPIR-V `BFloat16`, HLSL SM6.x). Fold it into A10.1's storage +
+   Buffer IO as a low-cost companion, or keep this section fp8/fp4-only per the
+   User IDeas? Recommendation: **include bf16 storage/IO** — it's nearly free and
+   ML callers expect it.
+
+   <!-- ALEX: answer here -->
+
+### A.10.8 Reconciliation with A.7 (MLIR was deferred)
+
+A.7 lists **MLIR codegen** as *deferred*, on the reasoning that "its real
+leverage is enabling a native NVPTX/ROCDL backend and `linalg`→MMA GEMM
+lowering; not needed for any A.2–A.4 or the A.9 GEMM work, which all ship with
+hand-written codegen." A.10 **partially pulls MLIR forward** — and does so
+consistently with that reasoning, not against it:
+
+- A.7 defers the **full** MLIR back-half (native execution backend + `linalg`
+  GEMM lowering). A.10 uses a **scoped** slice: narrow-float *type + convert +
+  coopmatrix element* lowering to SPIR-V (and, when A.7's native backend is
+  greenlit, LLVM/NVPTX). It does not require the `linalg`/native-backend
+  machinery A.7 parks.
+- A.7 said to "revisit only if a native backend or first-class GEMM throughput
+  is greenlit." FP8/FP4 for ML GEMM (A.9) **is** that throughput driver — so
+  A.10 is the trigger A.7 anticipated, not a surprise reversal.
+- **Action:** when A.10.2 lands, update A.7's MLIR bullet to note the scoped
+  narrow-float lowering is now in scope (via A.10), leaving only the full native
+  *execution* backend deferred — so the two sections don't read as contradictory
+  (same discipline A.6 applied to the P2P item it pulled out of A.7).
+
+### A.10.9 Verification status (per repo convention)
+
+- **A10.1 storage + Buffer IO:** host converters unit-testable on any platform
+  (round-trip fp8/mxfp4 known-value tables, incl. the FP8 cross-check vs. the
+  MLIR numerics); FP8 GPU round-trip compile/run-verifiable on the Linux
+  **Vulkan** host (`VK_KHR_8bit_storage` + `VK_EXT_shader_float8`).
+- **A10.2–A10.4 MLIR / arithmetic / coopmatrix:** Vulkan/SPIR-V path
+  compile/run-verifiable here once the MLIR seam builds; **D3D12 (SM6.9) and
+  Metal (Metal 4) codegens compile/run-unverified off-platform**, and Metal is
+  additionally gated on the A.10.7 Q3 device check.
+- **MXFP4 numerics:** validate the block quantize/dequantize against a reference
+  (e.g. an OCP MX reference implementation) to the format's defined tolerance —
+  the block scale + sub-byte packing is where a silent bug would hide.

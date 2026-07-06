@@ -621,7 +621,6 @@ using namespace metal;
         hullEdgeFieldName.clear();
         hullInsideFieldName.clear();
         hullEdgeIsArray = hullInsideIsArray = false;
-        bool hullSynthesizedVid = false;
         if (_decl->shaderType == ast::ShaderDecl::Hull) {
             inHullShader = true;
             auto &td = _decl->tessDesc;
@@ -636,7 +635,7 @@ using namespace metal;
                     hullVidName = p.name; break;
                 }
             }
-            if (hullVidName.empty()) { hullVidName = "__osl_cpid"; hullSynthesizedVid = true; }
+            if (hullVidName.empty()) { hullVidName = "__osl_cpid"; }
             /// Resolve the patchfn's return struct → the factor field names
             /// the epilogue reads (`__pc.<edge>[i]` / `__pc.<inside>[j]`).
             for (auto *fd : cg.userFuncDecls) {
@@ -678,11 +677,22 @@ using namespace metal;
         } else if (_decl->shaderType == ast::ShaderDecl::Hull) {
             out << "kernel";
             shadermap_entry.type = OMEGASL_SHADER_HULL;
+            fillTessellationDesc(_decl->tessDesc, shadermap_entry.tessellationDesc);
+            /// §16 Phase E — the hull lowers to a compute kernel dispatched one
+            /// thread per patch. Give it a valid (non-zero) threadgroup size so
+            /// the runtime's `makeComputePipelineState`
+            /// (`maxTotalThreadsPerThreadgroup`) and `dispatchThreads`
+            /// (`threadsPerThreadgroup`) are well-formed. 32×1×1 is safe on every
+            /// Metal GPU; tuning per-patch dispatch occupancy is a follow-up.
+            shadermap_entry.threadgroupDesc.x = 32;
+            shadermap_entry.threadgroupDesc.y = 1;
+            shadermap_entry.threadgroupDesc.z = 1;
         } else if (_decl->shaderType == ast::ShaderDecl::Domain) {
             auto &td = _decl->tessDesc;
             out << "[[patch(" << (td.domain == ast::ShaderDecl::TessellationDesc::Triangle ? "triangle" : "quad")
                 << ", " << td.outputControlPoints << ")]] vertex";
             shadermap_entry.type = OMEGASL_SHADER_DOMAIN;
+            fillTessellationDesc(td, shadermap_entry.tessellationDesc);
         } else if (_decl->shaderType == ast::ShaderDecl::Mesh) {
             /// §2c — `[[mesh]]` is the function-attribute spelling, not
             /// a stage keyword. Stamp the threadgroup + mesh metadata
@@ -739,9 +749,19 @@ using namespace metal;
         /// §2c — count visible params (mesh-output ones are suppressed)
         /// so we know whether the param list is non-empty and needs
         /// the leading comma after the resource block.
+        /// §16 per-patch dispatch — a hull's `VertexID` param is NOT a kernel
+        /// parameter: it is the global control-point index, derived per-patch
+        /// from `__osl_patch_id` inside a control-point loop (see
+        /// `emitShaderEntryBody`). Exclude it from the visible-param count so
+        /// the leading comma after the resource block is correct, and skip it
+        /// in the emit loop below.
+        auto isHullVid = [&](const ast::AttributedFieldDecl &p) {
+            return inHullShader && p.attributeName.has_value()
+                   && p.attributeName.value() == ATTRIBUTE_VERTEX_ID;
+        };
         unsigned visibleParams = 0;
         for (auto &p : _decl->params) {
-            if (p.meshOutput == ast::AttributedFieldDecl::NotMeshOutput) ++visibleParams;
+            if (p.meshOutput == ast::AttributedFieldDecl::NotMeshOutput && !isHullVid(p)) ++visibleParams;
         }
         if (visibleParams > 0
             && (!(_decl->resourceMap.empty()) || meshHandleEmitted)) {
@@ -754,6 +774,10 @@ using namespace metal;
             /// §2c — `out vertices` / `out indices` have no presence in
             /// the MSL signature (they route through the mesh handle).
             if (p.meshOutput != ast::AttributedFieldDecl::NotMeshOutput) {
+                continue;
+            }
+            /// §16 — hull VertexID becomes a per-patch loop local, not a param.
+            if (isHullVid(p)) {
                 continue;
             }
             if (!firstParam) {
@@ -775,16 +799,12 @@ using namespace metal;
 
             if (p.attributeName.has_value()) {
                 const auto &an = p.attributeName.value();
-                /// §16 — a hull's `VertexID` is the global control-point
-                /// index driving the compute-kernel dispatch, so it lowers to
-                /// `[[thread_position_in_grid]]` (Metal kernels have no
-                /// `[[vertex_id]]`). A `domain`'s `DomainLocation` lowers to
-                /// `[[position_in_patch]]`. Both are handled before the
-                /// generic `writeAttribute` path (which would emit
-                /// `[[vertex_id]]` / nothing respectively).
-                if (inHullShader && an == ATTRIBUTE_VERTEX_ID) {
-                    out << "[[thread_position_in_grid]]";
-                } else if (_decl->shaderType == ast::ShaderDecl::Domain && an == ATTRIBUTE_DOMAIN_LOCATION) {
+                /// §16 — a `domain`'s `DomainLocation` lowers to
+                /// `[[position_in_patch]]`, handled before the generic
+                /// `writeAttribute` path (which would emit nothing). (A hull's
+                /// `VertexID` never reaches here — it is skipped above and
+                /// re-materialized as a per-patch control-point loop local.)
+                if (_decl->shaderType == ast::ShaderDecl::Domain && an == ATTRIBUTE_DOMAIN_LOCATION) {
                     out << "[[position_in_patch]]";
                 } else {
                     if (an == ATTRIBUTE_VERTEX_ID) {
@@ -801,18 +821,17 @@ using namespace metal;
             }
         }
 
-        /// §16 — append the synthesized tessellation-factor buffer to a hull
-        /// kernel: `device MTL{Triangle,Quad}TessellationFactorsHalf*
-        /// __osl_tess_factors [[buffer(N)]]` at the next free buffer slot
-        /// (`bufferCount`, advanced by the resource loop). If the hull
-        /// declared no `VertexID` param, also synthesize the control-point
-        /// index (`uint __osl_cpid [[thread_position_in_grid]]`) the
-        /// return-store / epilogue index through. A hull always has ≥2 buffer
-        /// resources, so a leading comma is always correct here.
+        /// §16 per-patch dispatch — the hull kernel runs one thread per patch.
+        /// Append (a) the patch-id grid param `uint __osl_patch_id
+        /// [[thread_position_in_grid]]` (the global control-point index the body
+        /// consumes is derived from it in a loop, see `emitShaderEntryBody`) and
+        /// (b) the synthesized tessellation-factor buffer `device
+        /// MTL{Triangle,Quad}TessellationFactorsHalf* __osl_tess_factors
+        /// [[buffer(N)]]` at the next free buffer slot (`bufferCount`, advanced
+        /// by the resource loop). A hull always has ≥2 buffer resources, so a
+        /// leading comma is always correct here.
         if (inHullShader) {
-            if (hullSynthesizedVid) {
-                out << ", uint " << hullVidName << " [[thread_position_in_grid]]";
-            }
+            out << ", uint __osl_patch_id [[thread_position_in_grid]]";
             out << ", device "
                 << (hullDomainIsTri ? "MTLTriangleTessellationFactorsHalf" : "MTLQuadTessellationFactorsHalf")
                 << "* __osl_tess_factors [[buffer(" << bufferCount << ")]]";
@@ -876,8 +895,32 @@ using namespace metal;
         /// `emitStatementLine` owns indentation, the trailing `;`, and the
         /// block-statement check, so the output is byte-identical when nothing
         /// is queued.
-        for (auto stmt : _decl->block->body) {
-            cg.emitStatementLine(stmt);
+        ///
+        /// §16 per-patch dispatch — for a hull, the kernel runs once per patch
+        /// (`__osl_patch_id`). Wrap the per-control-point body in a loop over
+        /// the patch's control points, declaring the hull's VertexID local
+        /// (global CP index = `patchId * N + cp`) so `controlPoints[vid]` and
+        /// the `return`→`hullOut[vid] = …` store (see `tryEmitReturnDecl`)
+        /// address the right control point.
+        if (inHullShader) {
+            auto indent = [&](unsigned lvl){ for (unsigned i = 0; i < lvl; i++) out << "    "; };
+            indent(cg.indentLevel);
+            out << "for (uint __osl_cp = 0u; __osl_cp < " << hullControlPoints
+                << "u; ++__osl_cp) {" << std::endl;
+            cg.indentLevel += 1;
+            indent(cg.indentLevel);
+            out << "uint " << hullVidName << " = __osl_patch_id * " << hullControlPoints
+                << "u + __osl_cp;" << std::endl;
+            for (auto stmt : _decl->block->body) {
+                cg.emitStatementLine(stmt);
+            }
+            cg.indentLevel -= 1;
+            indent(cg.indentLevel);
+            out << "}" << std::endl;
+        } else {
+            for (auto stmt : _decl->block->body) {
+                cg.emitStatementLine(stmt);
+            }
         }
 
         /// §2c — mesh body epilogue: per-vertex flush loop. Writes every
@@ -903,10 +946,11 @@ using namespace metal;
             out << "}" << std::endl;
         }
 
-        /// §16 — hull tess-factor epilogue. After the per-control-point body
-        /// (whose `return` became a store), the first control point of each
-        /// patch runs the patchfn once and writes the per-patch factors into
-        /// the synthesized factor buffer. The MSL factor structs are:
+        /// §16 per-patch tess-factor write. The kernel runs once per patch
+        /// (thread = `__osl_patch_id`), so after the control-point loop it runs
+        /// the patchfn once and writes this patch's factors into the
+        /// synthesized factor buffer — unconditionally, no `vid % N == 0` guard
+        /// (that was the interim per-CP shape). The MSL factor structs are:
         ///   tri  — `half edgeTessellationFactor[3]; half insideTessellationFactor;`
         ///   quad — `half edgeTessellationFactor[4]; half insideTessellationFactor[2];`
         /// Edge factors are always an array field in OmegaSL (Sema requires
@@ -915,29 +959,23 @@ using namespace metal;
             auto indent = [&](unsigned lvl){ for (unsigned i = 0; i < lvl; i++) out << "    "; };
             unsigned edgeCount = hullDomainIsTri ? 3u : 4u;
             indent(cg.indentLevel);
-            out << "if ((" << hullVidName << " % " << hullControlPoints << "u) == 0u) {" << std::endl;
-            indent(cg.indentLevel + 1);
-            out << "uint __osl_pid = " << hullVidName << " / " << hullControlPoints << "u;" << std::endl;
-            indent(cg.indentLevel + 1);
             out << "auto __pc = " << cg.spellUserFuncName(hullPatchFnName) << "();" << std::endl;
             for (unsigned i = 0; i < edgeCount; i++) {
-                indent(cg.indentLevel + 1);
-                out << "__osl_tess_factors[__osl_pid].edgeTessellationFactor[" << i << "] = half(__pc."
+                indent(cg.indentLevel);
+                out << "__osl_tess_factors[__osl_patch_id].edgeTessellationFactor[" << i << "] = half(__pc."
                     << hullEdgeFieldName << (hullEdgeIsArray ? ("[" + std::to_string(i) + "]") : "") << ");" << std::endl;
             }
             if (hullDomainIsTri) {
-                indent(cg.indentLevel + 1);
-                out << "__osl_tess_factors[__osl_pid].insideTessellationFactor = half(__pc."
+                indent(cg.indentLevel);
+                out << "__osl_tess_factors[__osl_patch_id].insideTessellationFactor = half(__pc."
                     << hullInsideFieldName << (hullInsideIsArray ? "[0]" : "") << ");" << std::endl;
             } else {
                 for (unsigned j = 0; j < 2u; j++) {
-                    indent(cg.indentLevel + 1);
-                    out << "__osl_tess_factors[__osl_pid].insideTessellationFactor[" << j << "] = half(__pc."
+                    indent(cg.indentLevel);
+                    out << "__osl_tess_factors[__osl_patch_id].insideTessellationFactor[" << j << "] = half(__pc."
                         << hullInsideFieldName << (hullInsideIsArray ? ("[" + std::to_string(j) + "]") : "") << ");" << std::endl;
                 }
             }
-            indent(cg.indentLevel);
-            out << "}" << std::endl;
         }
 
         cg.indentLevel -= 1;

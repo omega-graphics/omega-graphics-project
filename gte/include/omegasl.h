@@ -326,6 +326,27 @@ struct omegasl_mesh_shader_desc {
     int topology = 0;
 };
 
+/// §16 Phase E — tessellation descriptor. Serialized onto the `omegasl_shader`
+/// record of a `hull` (and mirrored onto its paired `domain`) so the runtime
+/// can build a tessellation pipeline without re-parsing the shader: the
+/// factor-kernel dispatch grid, the render pipeline's partition / winding mode,
+/// and the per-patch control-point count all come from here (it is AST-only in
+/// `ast::ShaderDecl::TessellationDesc` before this). The three `int` fields
+/// mirror that AST enum's numeric values exactly:
+///   domain:          0 = triangle, 1 = quad
+///   partitioning:    0 = integer, 1 = fractional_even, 2 = fractional_odd
+///   output_topology: 0 = triangle_cw, 1 = triangle_ccw, 2 = line
+/// Appended at the tail of the shader struct so the numeric value of the
+/// pre-existing fields is preserved; only written / read for
+/// `OMEGASL_SHADER_HULL` and `OMEGASL_SHADER_DOMAIN` entries (see the
+/// ShaderArchive writer/reader).
+struct omegasl_tessellation_desc {
+    int domain = 0;
+    int partitioning = 0;
+    int output_topology = 0;
+    unsigned output_control_points = 3;
+};
+
 
 struct omegasl_shader {
     omegasl_shader_type type;
@@ -334,6 +355,8 @@ struct omegasl_shader {
     omegasl_compute_shader_params_desc computeShaderParamsDesc;
     omegasl_compute_shader_threadgroup_desc threadgroupDesc;
     omegasl_mesh_shader_desc meshDesc;
+    /// §16 Phase E — populated only for hull/domain entries (see above).
+    omegasl_tessellation_desc tessellationDesc;
     omegasl_shader_layout_desc *pLayout;
     unsigned nLayout;
     void *data;

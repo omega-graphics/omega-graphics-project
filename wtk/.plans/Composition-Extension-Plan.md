@@ -1422,6 +1422,430 @@ macOS host.
 
 ---
 
+## Phase 12 — Bitmap tinting (Color & Gradient)
+
+**Goal:** Tint a raster bitmap at draw time by a solid **Color** or a
+**Gradient**, under one of two blend semantics — **Multiply** (modulate:
+`result = texel × tint`) or **Mask** (recolor: `rgb = tint.rgb`,
+`coverage = texel.a × tint.a`). Applies to both the standalone bitmap
+draw (`DrawOp::Bitmap`, the `Image`/`ImageIcon` path) and the Phase 8
+bitmap **brush** (a shape *filled* with a tinted bitmap).
+
+Like Phases 8–11 this is **op-type-agnostic** — it lives in the bitmap
+payload, `RenderTarget.cpp`'s bitmap dispatch, and the bitmap fragment
+shader, all reading payloads, so it is independent of the compositor op
+wrapper. **No new `DrawOp` variant** — the tint rides the existing
+`DrawOp::Bitmap` payload and (Phase 8) the `Brush` payload.
+
+### Current state — solid-Color *multiply* already ships
+
+This phase is an **extension of an existing path**, not greenfield.
+Solid-color multiply tint on the standalone bitmap op is already wired
+end-to-end:
+
+- `DrawOp::Bitmap` carries `Core::Optional<Composition::Color> tintColor`
+  ([DisplayList.h:211](../include/omegaWTK/Composition/DisplayList.h:211))
+  with a constructor overload that accepts it
+  ([DisplayList.h:330](../include/omegaWTK/Composition/DisplayList.h:330)).
+- The backend resolves it to an RGBA tint and forwards it to
+  `emitBitmapPrimitive`
+  ([RenderTarget.cpp:2046](../src/Composition/backend/RenderTarget.cpp:2046)).
+- `bitmapFragment` multiplies component-wise, `result = c * tint`, with
+  identity `(1,1,1,1)` collapsing to passthrough × opacity
+  ([compositor.omegasl:115](../src/Composition/backend/shaders/compositor.omegasl:115)).
+
+So **Color + Multiply is done.** What's missing, and what this phase
+adds: the **Mask (recolor)** blend semantic, the **Gradient** tint
+source, and carrying both through the Phase 8 bitmap **brush**.
+
+### 12.1 Tint model — `BitmapTint`
+
+Replace the bare `Core::Optional<Composition::Color> tintColor` on the
+bitmap payload with a richer descriptor. It lives in `Brush.h` (next to
+`Gradient`, which it references) so both the `DrawOp::Bitmap` payload and
+the Phase 8 `BitmapBrush` share one type:
+
+```cpp
+struct OMEGAWTK_EXPORT BitmapTint {
+    enum class Source : uint8_t { Color, Gradient };
+    enum class Mode   : uint8_t {
+        Multiply,   // result = texel × tint          (dim / modulate — today's path)
+        Mask        // rgb = tint.rgb; a = texel.a × tint.a   (recolor)
+    };
+
+    Source source = Source::Color;
+    Mode   mode   = Mode::Multiply;
+    Color    color {};       // used when source == Color
+    Gradient gradient {};    // used when source == Gradient (shape-local coords)
+
+    // Back-compat: an existing call site passing a Color still means
+    // "solid multiply". Keeps the ~2 in-tree tintColor sites compiling
+    // through the migration.
+    BitmapTint() = default;
+    BitmapTint(const Color & c) : source(Source::Color), mode(Mode::Multiply), color(c) {}
+
+    static BitmapTint ColorTint(const Color & c, Mode m = Mode::Multiply);
+    static BitmapTint GradientTint(const Gradient & g, Mode m = Mode::Multiply);
+};
+```
+
+The bitmap payload field becomes `Core::Optional<BitmapTint> tint`
+(absent ⇒ identity passthrough). The existing `Color`-typed constructor
+overloads on `DrawOp::Bitmap` keep working via the implicit
+`BitmapTint(const Color&)`.
+
+**Gradient coordinate space.** The gradient is evaluated in the bitmap's
+**dest-rect-local** space (`[0,0]`..`[1,1]` across the drawn quad), the
+same shape-relative convention as Phase 2.1 / 9.2 gradient geometry — so
+a vertically-tinted icon is `GradientTint(Gradient::Linear({...}, 0,0, 0,1))`.
+
+### 12.2 Mask (recolor) semantic — standalone op
+
+Add the `Mode::Mask` arm to `bitmapFragment`. The fragment already has
+the sampled texel `c` and the resolved `tint`; branch on a `tintMode`
+uniform:
+
+```
+// c = sample(...); tint = resolved rgba (color or gradient — see 12.3)
+if (tintMode == 0 /*Multiply*/) {
+    result = c * tint;                       // existing path
+} else /*Mask*/ {
+    result.rgb = tint.rgb;                   // recolor
+    result.a   = c.a * tint.a;               // source alpha is the coverage mask
+}
+```
+
+Extend `OmegaWTKBitmapDrawParams` (currently just `float4 tintColor`,
+[compositor.omegasl:97](../src/Composition/backend/shaders/compositor.omegasl:97))
+with `uint tintMode` and `uint tintSource`. `emitBitmapPrimitive`
+([RenderTarget.cpp:1044](../src/Composition/backend/RenderTarget.cpp:1044))
+writes them from the resolved `BitmapTint`.
+
+*Why Mask matters:* multiplying an arbitrarily-colored icon by a tint
+darkens it, it does not recolor it (only a *white* source recolors under
+multiply). Mask makes recolor work for any source — this is the semantic
+the deferred `ImageIcon` tint (Widget-Stub-Implementation-Plan Phase 2B)
+needs.
+
+### 12.3 Gradient tint source — standalone op (soft dep on Phase 9.3)
+
+When `source == Gradient`, the per-fragment tint color is evaluated from
+the gradient instead of read from a constant. This **reuses the Phase 9.3
+SDF-native analytic gradient evaluator** rather than the compute-shader
+texture path — the same way `GradientGlass` (Phase 11.5 step 3) reuses
+it. `ColorTint` ships without 9.3; `GradientTint` is gated on it.
+
+- **Shader:** give the bitmap fragment a `local` varying (0..1 across the
+  dest quad), distinct from the texture `uv` (which differs under
+  sub-rect sampling). The CPU authors it at quad-build time (corners
+  `0,0 / 1,0 / 0,1 / 1,1`). Extend `OmegaWTKBitmapDrawParams` with the
+  gradient stop array + geometry (`LinearDef`/`RadialDef`) + spread,
+  reusing the 9.3 uniform layout, and call the shared gradient-eval
+  helper (from `compositor_sdf.omegaslh`, introduced in 9.3 / 11.3) to
+  produce `tint` at `local`. Mask/Multiply then apply exactly as 12.2.
+- **Backend:** `emitBitmapPrimitive` marshals the gradient stops/geometry
+  into `bitmapParams` when `source == Gradient` — same marshalling the
+  9.3 SDF-native path performs, factored into a shared helper.
+
+If Phase 9.3 has not landed, `GradientTint` can fall back to the Phase 1
+gradient **texture** (rasterize the gradient into a texture, sample it in
+`bitmapFragment` and use it as the tint) — but the SDF-native evaluator
+is preferred and is the target here.
+
+### 12.4 Bitmap-brush tint (Phase 8 extension)
+
+Once Phase 8 (`Brush::Type::Bitmap`) lands, a shape *filled* with a
+bitmap gets the same `BitmapTint` field on the brush. The brush's
+fill fragment (SDF-native for simple primitives; tessellation + texture
+for vector paths, per Phase 8.2) applies the identical Multiply/Mask +
+Color/Gradient logic, with the gradient evaluated in the shape's local
+space. This is purely additive to Phase 8's dispatch arm — no new plumbing
+beyond threading `BitmapTint` into the brush payload and the fill shader.
+
+*Relation to Phase 10.* MSDF `ScalableImage` already carries a solid
+"base tint" (§10.2) applied as `tint × coverage`; a **gradient** base
+tint there is a natural follow-up that reuses this phase's gradient-eval
+call (coverage × evaluated-gradient) — noted, not in scope for Phase 12.
+
+### 12.5 Consumers
+
+- **`Image` widget** — a `Multiply` `ColorTint` dims/modulates a
+  full-color image; passthrough when unset (today's behavior).
+- **`ImageIcon`** (Widget-Stub Phase 2B, tint deferred there) — a `Mask`
+  `ColorTint` recolors the icon to `IconProps.tintColor`; a
+  `GradientTint` gives a gradient-colored icon. This phase is the
+  "raster tint path in the compositor" that Phase 2B's follow-up table
+  points to.
+
+### 12.6 Test
+
+A RootWidget / `ImageRenderTest` scene, validated through the
+window-scoped `DisplayList` path:
+
+- The same source bitmap drawn four ways: no tint, `Multiply` color,
+  `Mask` color (recolor — use a non-white source so it's distinguishable
+  from multiply), and a `GradientTint` (linear, `Mask`).
+- Confirm `Mask` preserves the source's alpha silhouette while replacing
+  rgb; confirm `Multiply` darkens toward the tint; confirm the gradient
+  tint varies across the dest rect in local space.
+- (Phase 8-gated) a `RoundedRect` filled with a `Mask`-tinted bitmap
+  brush, confirming the tint composes with corner radius + border in one
+  draw.
+
+Visual verification is mandatory (AGENTS.md §Visual Debugging) — hand a
+screenshot to the user.
+
+### Files touched
+
+- `wtk/include/omegaWTK/Composition/Brush.h` — `BitmapTint`
+  (`Source` / `Mode`, factories); referenced by the bitmap payload and
+  (Phase 8) `BitmapBrush`.
+- `wtk/src/Composition/Brush.cpp` — `BitmapTint` factory impls.
+- `wtk/include/omegaWTK/Composition/DisplayList.h` — bitmap payload
+  `tintColor` → `Core::Optional<BitmapTint> tint`; migrate the
+  `Color`-taking `DrawOp::Bitmap` ctor overloads to the implicit
+  `BitmapTint(Color)`.
+- `wtk/src/Composition/backend/RenderTarget.cpp` — resolve `BitmapTint`
+  at the bitmap dispatch site ([~2046](../src/Composition/backend/RenderTarget.cpp:2046));
+  `emitBitmapPrimitive` writes `tintMode` / `tintSource` and (gradient)
+  marshals stops/geometry via the shared 9.3 helper; authors the `local`
+  quad varying.
+- `wtk/src/Composition/backend/shaders/compositor.omegasl` — extend
+  `OmegaWTKBitmapDrawParams` (`tintMode`, `tintSource`, gradient params)
+  and `OmegaWTKBitmapVertex`/`RasterData` (`local` varying); Mask arm +
+  gradient-eval call in `bitmapFragment` (via `compositor_sdf.omegaslh`).
+- `wtk/src/Composition/backend/shaders/compositor_sdf.omegaslh` — reuse
+  the 9.3 / 11.3 shared gradient-eval helper (no new helper if 9.3 landed).
+
+### Dependencies / sequencing
+
+- **Color + Multiply:** independent — the path already ships; only the
+  `BitmapTint` model refactor (12.1) touches it.
+- **Mask mode (12.2):** independent of gradients; small shader + uniform
+  change.
+- **Gradient tint (12.3):** soft dep on **Phase 9.3** (SDF-native
+  gradient evaluator); texture-path fallback if 9.3 is not yet in.
+- **Brush tint (12.4):** hard dep on **Phase 8** (bitmap brushes).
+- Op-type-agnostic — independent of the compositor op wrapper.
+
+---
+
+## Phase 13 — Gradient text
+
+**Goal:** Fill text with a **Gradient** instead of a solid color. Promoted
+from Phase 7 Future now that its prerequisite has landed: **universal
+cross-platform MSDF glyph rendering** — msdfgen + WTK's own
+[`TextLayoutEngine`](done/Text-Layout-Engine-Plan.md) (shipped, all three
+platforms; the platform APIs are used only for font discovery, outline
+extraction, shaping, and fallback). With every glyph rendered as an MSDF
+coverage mask, gradient fill on glyphs is a **uniform-evaluation
+problem** — identical in shape to the SDF-native gradient (Phase 9.3), the
+bitmap gradient tint (Phase 12), and `GradientGlass` (Phase 11): evaluate
+the gradient color per-fragment and mask it by the coverage the primitive
+already computes.
+
+> **Note on sources.** `Direct-To-Drawable-And-SDF-Plan.md` §6.7 (the old
+> `GlyphRun::shape()` / per-platform-atlas description) is **superseded**
+> by the WTK-owned `TextLayoutEngine`; this phase is written against the
+> shipped engine, not that stale section.
+
+Like Phases 8–12 this is **op-type-agnostic** — it lives in the text-run
+payload, `RenderTarget.cpp`'s `emitTextSubRun`, and `msdfTextFragment`,
+all reading payloads. **No new `DrawOp` variant** — text already emits
+`DrawOp::TextRun`; the gradient rides its existing payload.
+
+### Current state — coverage mask, constant-color fill
+
+The shipped text path is one constant away from gradient text.
+`Canvas::drawText` runs `TextLayoutEngine::layout(...)` →
+`Font::ensureGlyphsResident(...)` → emits a `DrawOp::TextRun`; the backend
+then:
+
+- `LayoutResult` gives per-glyph **canvas-space** positions
+  (`ShapedGlyph{ glyphId, resolvedFont, canvasX, canvasY }`) plus
+  `lineBaselines` ([TextLayoutEngine.h:34](../include/omegaWTK/Composition/TextLayoutEngine.h:34)).
+- `DrawOp::TextRun` carries `{ subRuns, rect, Composition::Color color }`
+  ([DisplayList.h:199](../include/omegaWTK/Composition/DisplayList.h:199))
+  — one sub-run per resolved atlas (fallback faces get their own).
+- `emitTextSubRun` ([RenderTarget.cpp:1268](../src/Composition/backend/RenderTarget.cpp:1268))
+  authors one 6-vertex quad per resident glyph from the Skia-style
+  `AtlasGlyph` metrics (`fLeft`/`fTop`/`fWidth`/`fHeight`,
+  [GlyphAtlas.h:74](../src/Composition/backend/GlyphAtlas.h:74)):
+  `minX = penX + fLeft`, `minY = penY - fTop`, etc. — into `v_buffer_text`
+  (slot 12), fill color in `textParams` (slot 13).
+- `msdfTextFragment` computes coverage from the median MSDF distance
+  (`smoothstep(0.5±aa)`) and emits `rgb = textColor.rgb`,
+  `a = textColor.a × coverage`
+  ([compositor.omegasl:176](../src/Composition/backend/shaders/compositor.omegasl:176)).
+  Its params struct already reserves an `outlineParamsReserved` slot
+  ([compositor.omegasl:159](../src/Composition/backend/shaders/compositor.omegasl:159))
+  — deliberate uniform room for exactly this class of extension.
+
+So the *coverage* is done; only the *fill* is a constant. Gradient text
+replaces that constant with an analytic gradient evaluation.
+
+### 13.1 Coordinate space — run-relative, not glyph-relative (the decision that matters)
+
+A gradient across text must span the **text run's bounding rect**, not
+each glyph quad. If the gradient parameter were computed in per-glyph
+local space, every letter would show the *entire* gradient and look
+identical — the classic wrong result. Instead, each glyph vertex carries
+its position in **run-local gradient space** (`[0,0]`..`[1,1]` across the
+gradient rect), and the fragment evaluates the gradient there.
+
+- **Default gradient rect = the `TextRun`'s bounding rect**
+  (`textRunParams.rect`), so the gradient flows continuously across the
+  whole string — **across line breaks and across sub-runs** (fallback
+  faces), because every sub-run and every line
+  (`LayoutResult::lineBaselines`) is positioned in one canvas-space frame
+  and shares the same run rect. This is the SVG / CSS
+  `background-clip: text` behavior callers expect.
+- **Optional explicit gradient box.** A caller that wants the text
+  gradient to align with a sibling shape's gradient (e.g. a panel and its
+  title sharing one gradient) can supply an explicit rect; the glyph
+  local coords are then computed against that box instead. Shape-relative
+  `[0,1]` gradient geometry (Phase 2.1 / 9.2) makes both cases the same
+  evaluation.
+
+`emitTextSubRun` already positions each glyph quad from the layout
+engine's canvas-space coords (`ShapedGlyph::canvasX/canvasY` folded into
+the pen position, plus the `AtlasGlyph` `fLeft/fTop`), so it computes each
+vertex's coord *relative to the gradient box* at quad-author time — no new
+CPU state, just an extra varying. (The run-local coord is
+canvas-convention-agnostic: it is a normalized `[0,1]` position within the
+gradient box, so the Y-down-today / bottom-left-origin-eventually note on
+`ShapedGlyph::canvasY` is a one-place flip that does not reach the shader.)
+
+### 13.2 Fill model — `TextFill`
+
+Generalize the text run's `Composition::Color color` to a fill that is
+either a color or a gradient, mirroring Phase 12's `BitmapTint` and the
+glass `Tint`:
+
+```cpp
+struct OMEGAWTK_EXPORT TextFill {
+    enum class Source : uint8_t { Color, Gradient };
+    Source   source = Source::Color;
+    Color    color {};      // Source::Color (today's path)
+    Gradient gradient {};   // Source::Gradient (run-relative coords, §13.1)
+    Core::Optional<Composition::Rect> gradientBox {}; // unset ⇒ run bbox
+
+    TextFill() = default;
+    TextFill(const Color & c) : source(Source::Color), color(c) {}   // back-compat
+    static TextFill GradientFill(const Gradient & g,
+                                 Core::Optional<Composition::Rect> box = {});
+};
+```
+
+The `TextRun` payload's `color` field becomes a `TextFill fill` (the
+implicit `TextFill(Color)` keeps existing emit sites compiling). Authoring
+hook on `StyleSheet`: a `textGradient(tag, gradient)` beside the existing
+`textColor(tag, color)`, so UIView text elements opt in without a new
+draw API.
+
+### 13.3 Shader — evaluate the gradient, mask by coverage (MSDF path)
+
+- **Vertex/varying:** add a `local` field to `OmegaWTKTextVertex` /
+  `OmegaWTKTextRasterData` (the glyph vertex's run-local coord, §13.1),
+  distinct from the atlas `uv`.
+- **Params:** extend `OmegaWTKTextDrawParams` — repurpose the reserved
+  slot — with `uint fillSource` and the gradient stops / geometry /
+  spread, reusing the **Phase 9.3** uniform layout.
+- **Fragment:** in `msdfTextFragment`, compute `coverage` as today, then
+  `fill = (fillSource == Gradient) ? evalGradient(raster.local) :
+  textColor` via the shared `compositor_sdf.omegaslh` gradient evaluator
+  (from 9.3 / 11.3), and emit `rgb = fill.rgb`, `a = fill.a × coverage`.
+  Solid color is the `fillSource == Color` branch — byte-identical to
+  today.
+
+`emitTextSubRun` marshals the gradient stops/geometry into `textParams`
+when `fill.source == Gradient` (same helper Phase 12 / 9.3 use) and writes
+the `local` coord per vertex.
+
+### 13.4 Bitmap-fallback path — gradient text via Phase 12 reuse
+
+MSDF is the path for **every platform** now (msdfgen + the WTK layout
+engine on macOS, Windows, and Linux alike), so §13.3 is the primary
+route universally. The bitmap fallback is the **narrow per-font case**:
+`Font::Mode::BitmapFallback` for faces whose outlines can't be extracted
+(bitmap-only fonts, some color-emoji faces), decided per font at
+construction — *not* a whole-platform gap. `emitTextSubRun` already
+branches on `subRun.resolvedFont->mode()`
+([RenderTarget.cpp:1319](../src/Composition/backend/RenderTarget.cpp:1319)),
+so a Latin-MSDF string with a color-emoji fallback sub-run mixes both in
+one `TextRun`.
+
+Gradient fill on the fallback glyph is **not** a new mechanism — it is
+exactly **Phase 12's bitmap gradient tint in `Mask` mode**, with the
+gradient evaluated in the same run-local space (§13.1): the glyph
+bitmap's alpha is the coverage mask, the gradient supplies rgb. So
+`TextFill::Gradient` on a fallback sub-run lowers to a
+`BitmapTint::GradientTint(g, Mode::Mask)` on the fallback glyph quad,
+keeping the gradient continuous with the MSDF sub-runs beside it.
+Solid-color fallback already works.
+
+### 13.5 Free once authored: gradient outline / glow
+
+Because §13.3 evaluates a gradient against run-local coords and the MSDF
+band gives outline/glow for free (the `dist > 0` band outside the glyph
+silhouette — the same `outlineParamsReserved` slot already sits on the
+text params), a **gradient outline** or **gradient glow** is the same
+evaluator applied to the outline coverage band instead of the fill band —
+noted as a natural follow-up, not in scope for Phase 13.
+
+### 13.6 Test
+
+A RootWidget / `TextCompositorTest` scene, validated through the
+window-scoped `DisplayList` path:
+
+- A multi-word, multi-line string with a linear `TextFill::Gradient` —
+  confirm the gradient flows continuously across words **and line
+  breaks** (run-bbox space), not restarting per glyph.
+- A radial gradient fill centered on the run.
+- A mixed-script string (Latin + CJK) so a fallback sub-run participates
+  — confirm the gradient is continuous across the MSDF and fallback
+  sub-runs (§13.4).
+- Solid-color text unchanged (regression).
+
+Visual verification is mandatory (AGENTS.md §Visual Debugging) — the
+"gradient restarts per glyph" failure passes a coverage check but is
+obviously wrong on screen; hand a screenshot to the user.
+
+### Files touched
+
+- `wtk/include/omegaWTK/Composition/Brush.h` / `Brush.cpp` — `TextFill`
+  (`Source`, `GradientFill` factory).
+- `wtk/include/omegaWTK/Composition/DisplayList.h` — `TextRun` payload
+  `Composition::Color color` → `TextFill fill`; migrate emit sites via
+  the implicit `TextFill(Color)`.
+- `wtk/include/omegaWTK/UI/UIView.h` / StyleSheet — `textGradient(tag,
+  gradient)` authoring hook beside `textColor`.
+- `wtk/src/Composition/backend/RenderTarget.cpp` — `emitTextSubRun`
+  authors the per-vertex run-local `local` coord + marshals gradient
+  stops/geometry into `textParams` (shared 9.3 helper); fallback sub-run
+  lowers `TextFill::Gradient` to a Phase 12 `Mask` gradient tint.
+- `wtk/src/Composition/backend/shaders/compositor.omegasl` — `local`
+  varying on `OmegaWTKTextVertex`/`RasterData`; extend
+  `OmegaWTKTextDrawParams` (`fillSource` + gradient params, reusing the
+  reserved slot); gradient-eval branch in `msdfTextFragment` via
+  `compositor_sdf.omegaslh`.
+
+### Dependencies / sequencing
+
+- **Hard dep on the shipped WTK text stack** — `TextLayoutEngine`
+  ([done/Text-Layout-Engine-Plan.md](done/Text-Layout-Engine-Plan.md)) +
+  universal msdfgen MSDF glyph rendering, which provide the coverage mask
+  and `TextRun` path this phase fills. Already in on all three platforms.
+- **Soft dep on Phase 9.3** (SDF-native gradient evaluator + shared
+  `compositor_sdf.omegaslh` helper); texture-path fallback if 9.3 is not
+  yet in, same as Phase 12.
+- **Fallback gradient text (13.4) depends on Phase 12** (bitmap gradient
+  tint, `Mask` mode), only for the narrow `BitmapFallback`-mode faces.
+  MSDF-path gradient text (13.3) — the universal path — does not.
+- Op-type-agnostic — independent of the compositor op wrapper.
+
+---
+
 ## Phase 7 — Future
 
 These items are deferred. They are listed to confirm the Phase 0–6 designs are forward-compatible.
@@ -1432,8 +1856,8 @@ These items are deferred. They are listed to confirm the Phase 0–6 designs are
 | `GradientSpace::Window` (gradient coords in window space, not shape-local) | `DisplayList` transform ops | Without transforms, "window space" is just "shape space + offset" |
 | Pattern brush (image/texture tiling) | — | **Promoted to Phase 8 (bitmap brushes).** |
 | `BlendMode` on the relevant `DrawOp` / `PushEffect` scope | `DrawOp` blend fields | Extend fragment shader with blend equations. Note: SDF pipeline already has alpha-over blending enabled; color / texture pipelines stay opaque-write |
-| Gradient text | Phase 1 gradient pipeline + MSDF text | After Direct-To-Drawable-And-SDF-Plan §6.7 lands MSDF text, gradient fill on glyphs becomes a uniform-evaluation problem (same as SDF-native gradients above) |
-| Image scale modes (aspect-fit/fill, tiling, source rect) | — | Direct-To-Drawable-And-SDF-Plan §6.6 owns this — moves bitmap to a hardcoded quad with sampler / mipmap upgrade and adds tint / source rect / nine-slice |
+| Gradient text | — | **Promoted to Phase 13** — MSDF text (§6.7) has landed, so gradient fill on glyphs is now a uniform-evaluation problem (same shape as SDF-native gradients / Phase 12 bitmap tint) |
+| Image scale modes (aspect-fit/fill, tiling, source rect) | — | **DONE** — Direct-To-Drawable-And-SDF-Plan §6.6 landed (hardcoded quad + sampler/mipmap upgrade, source-rect sampling, nine-slice, color tint) |
 | Text draw options (maxLines, truncation, underline) | — | Text layout engine changes |
 | Implicit `FrameBuilder` `TextLayout` cache (LRU keyed on text+font+rect+color+layoutDesc) | Phase 6 | Lets third-party draw callers (no UIView spec wiring) get caching without holding handles. Skipped in Phase 6 because key construction is fiddly (UniString hash, Color tolerance, Rect equality) |
 | `TextLayout` VRAM cap with LRU eviction | Phase 6 | Bounds resident GPU texture memory if a UIView retains many transient layouts |
@@ -1466,6 +1890,21 @@ Phase 11: Glass brushes (Brush::Type::Glass; closed, refraction-first; no new Dr
         backdrop/frame, a safety drop for weak/older GPUs via explicit setting
         or frame-budget watchdog — NOT the integrated/discrete bit);
         soft dep on Phase 9.3 (SDF-native gradient eval) for GradientGlass
+
+Phase 12: Bitmap tinting (Color & Gradient; Multiply / Mask; no new DrawOp)
+    └─→ extends the shipped solid-color multiply on DrawOp::Bitmap: adds the
+        Mask (recolor) semantic + Gradient tint source (reuses Phase 9.3 eval),
+        and threads BitmapTint through the Phase 8 bitmap brush. Satisfies the
+        Widget-Stub ImageIcon raster-tint follow-up.
+        soft dep on 9.3 (gradient tint); hard dep on Phase 8 (brush tint)
+
+Phase 13: Gradient text (TextFill Color|Gradient; no new DrawOp)
+    └─→ fills the MSDF glyph coverage with an analytic gradient in run-relative
+        space (continuous across glyphs / lines / fallback sub-runs); reuses
+        Phase 9.3 eval + compositor_sdf.omegaslh. MSDF is universal cross-platform
+        (msdfgen + WTK TextLayoutEngine, all 3 platforms); the narrow per-font
+        BitmapFallback faces get gradient text via Phase 12 Mask gradient tint.
+        hard dep on shipped WTK text stack; soft dep on 9.3; fallback (13.4) dep on Phase 12
 
 Phase 4: Color improvements (independent — can run in parallel with any phase) [DONE]
 
@@ -1517,6 +1956,15 @@ call and a GPU upload from each frame.
 | `wtk/include/omegaWTK/Composition/Brush.h` / `Brush.cpp` | 8, 10 | **Phase 10:** `ScalableImage` source; `Brush::Type::Bitmap` MSDF dispatch arm (shape assets only) |
 | `wtk/src/UI/FrameBuilder.{h,cpp}` (Phase 10) | 10 | `ScalableImage` standalone-image entry (direct nine-slice replacement); `NineSliceInsets` / nine-slice image path marked legacy / raster fallback |
 | `wtk/src/Composition/backend/shaders/compositor.omegasl` (Phase 10) | 10 | MSDF arm in `sdfFragment` (compose-with-shape: intersect MSDF coverage with corner radius / border) and `bitmapFragment` (standalone), reusing the `msdfTextFragment` median → `smoothstep` reconstruction |
+| `wtk/include/omegaWTK/Composition/DisplayList.h` | 12 | Bitmap payload `tintColor` → `Core::Optional<BitmapTint> tint`; migrate the `Color`-taking `DrawOp::Bitmap` ctors to the implicit `BitmapTint(Color)` |
+| `wtk/include/omegaWTK/Composition/Brush.h` / `Brush.cpp` (Phase 12) | 12 | **New** `BitmapTint` (`Source` Color/Gradient, `Mode` Multiply/Mask, factories); shared by the bitmap payload and the Phase 8 `BitmapBrush` |
+| `wtk/src/Composition/backend/RenderTarget.cpp` (Phase 12) | 12 | Resolve `BitmapTint` at the bitmap dispatch (~2046); `emitBitmapPrimitive` writes `tintMode`/`tintSource` + authors the `local` quad varying + marshals gradient stops/geometry (shared 9.3 helper) |
+| `wtk/src/Composition/backend/shaders/compositor.omegasl` (Phase 12) | 12 | Extend `OmegaWTKBitmapDrawParams` (`tintMode`/`tintSource`/gradient params) + `OmegaWTKBitmapVertex`/`RasterData` (`local` varying); Mask arm + gradient-eval call in `bitmapFragment` |
+| `wtk/include/omegaWTK/Composition/Brush.h` / `Brush.cpp` (Phase 13) | 13 | **New** `TextFill` (`Source` Color/Gradient, `GradientFill` factory, optional gradient box) |
+| `wtk/include/omegaWTK/Composition/DisplayList.h` (Phase 13) | 13 | `TextRun` payload `Composition::Color color` → `TextFill fill`; migrate emit sites via implicit `TextFill(Color)` |
+| `wtk/include/omegaWTK/UI/UIView.h` / StyleSheet (Phase 13) | 13 | `textGradient(tag, gradient)` authoring hook beside `textColor` |
+| `wtk/src/Composition/backend/RenderTarget.cpp` (Phase 13) | 13 | `emitTextSubRun` authors per-vertex run-local `local` coord + marshals gradient params (shared 9.3 helper); fallback sub-run lowers `TextFill::Gradient` to a Phase 12 `Mask` gradient tint |
+| `wtk/src/Composition/backend/shaders/compositor.omegasl` (Phase 13) | 13 | `local` varying on `OmegaWTKTextVertex`/`RasterData`; extend `OmegaWTKTextDrawParams` (`fillSource` + gradient params, reusing the reserved slot); gradient-eval branch in `msdfTextFragment` |
 
 ---
 

@@ -1927,6 +1927,219 @@ binding slot, and what was expected vs. what was bound.
 
 ---
 
+## Extension 9: Half (16-bit float) Types in `GEBufferWriter` / `GEBufferReader` (Proposed)
+
+### Goal
+
+Let host code stage and read back IEEE-754 **binary16** (`half`) scalars and
+vectors through `GEBufferWriter` / `GEBufferReader`, symmetric with the existing
+`writeFloat*` / `getFloat*` (and the §12.2 int/uint) families. OmegaSL already
+has real `half` / `half2` / `half3` / `half4` shader types (`KW_TY_HALF*` in
+`gte/omegasl/src/AST.cpp`), and the feature bit `OMEGASL_FEATURE_BIT_FLOAT16`
+already gates them at load time — but there is **no host path to fill or read a
+buffer whose fields are declared `half`**. A shader that declares
+`buffer<HalfData> b : 0` where `HalfData` has a `half4 color` field currently
+has no first-class way to be fed from the CPU; the caller has to hand-pack the
+bytes and lie about the layout.
+
+### Motivation / design decision
+
+The GPU side is already handled: shaders convert with the native
+`pack_half2x16` / `unpackHalf2x16` (GLSL), `f32tof16` / `f16tof32` (HLSL), and
+implicit `half` conversions (MSL), and the storage is genuinely 16-bit. The
+**only** missing half is the CPU end — the host has to produce the binary16
+bytes that the GPU reads directly (no shader-side unpack step, because the
+field is a real `half`, not a `uint` carrying two packed lanes).
+
+C++17 has no `std::float16` / `_Float16` portable scalar, so the host API stays
+in **float32** and the writer/reader is the single place that knows about
+16-bit. `writeHalf(float&)` converts float32 → binary16 on the way in;
+`getHalf(float&)` converts binary16 → float32 on the way out. Callers never
+handle a 16-bit host type. This is the "CPU-side pack/unpack done internally"
+that pairs with the GPU's existing pack/unpack ops.
+
+**Scope: scalar + vec2/vec3/vec4 only.** OmegaSL has no half matrix types
+(`AST.cpp` defines `half_type` … `half4_type`, no `halfCxR`), so half matrices
+are out of scope — no `writeHalf4x4`. If half matrices are ever added to the
+shader language, they extend this the same way §12.2 extended the float matrix
+writers.
+
+### 9.1 `omegasl_data_type` enumerators
+
+Append four half enumerators at the **tail** of `omegasl_data_type`
+(`gte/include/omegasl.h`), the same discipline the §12.2 int/uint matrix
+enumerators used — appended rather than grouped so every pre-existing
+enumerator keeps its numeric value. These values are never serialized into a
+`.omegasllib` archive (codegen emits no `half`-typed resource *fields* into the
+layout desc today; the writer/reader consume them purely in-memory), so only
+the in-memory C++ ABI matters.
+
+```cpp
+    // §Ext-9 — half (binary16) scalar/vector types for the host buffer R/W
+    // API (GEBufferWriter::writeHalf*, GEBufferReader::getHalf*). Tail-appended
+    // to preserve every prior enumerator's value; not emitted into .omegasllib.
+    OMEGASL_HALF,
+    OMEGASL_HALF2,
+    OMEGASL_HALF3,
+    OMEGASL_HALF4
+```
+
+### 9.2 Public API additions
+
+**`GEBufferWriter` (`gte/include/omegaGTE/GTEShader.h`):**
+
+```cpp
+/// Half (binary16) uploads. The host works in float32; the writer converts
+/// each lane to IEEE-754 binary16 (round-to-nearest-even, matching the GPU's
+/// pack_half2x16 / f32tof16 semantics) and stages the packed bytes. See
+/// Pipeline-Completion-Extension-Plan §Ext-9.
+virtual void writeHalf(float & v) = 0;
+virtual void writeHalf2(FVec<2> & v) = 0;
+virtual void writeHalf3(FVec<3> & v) = 0;
+virtual void writeHalf4(FVec<4> & v) = 0;
+```
+
+**`GEBufferReader` (same header):**
+
+```cpp
+/// Half downloads — symmetric with the writer. Reads binary16 lanes and
+/// widens each to float32 on the way into the host's FVec.
+virtual void getHalf(float & v) = 0;
+virtual void getHalf2(FVec<2> & v) = 0;
+virtual void getHalf3(FVec<3> & v) = 0;
+virtual void getHalf4(FVec<4> & v) = 0;
+```
+
+The host vector type stays `FVec<N>` (float32) deliberately — there is no
+`HVec`, and introducing one would push a 16-bit host scalar onto every caller
+for no benefit.
+
+### 9.3 CPU pack/unpack — shared conversion in `BufferIO.h`
+
+The only genuinely new logic. Add a branch-light, portable float32 ↔ binary16
+converter to `gte/src/BufferIO.h` (header-side, backend-independent, so it is
+unit-testable on any platform — the same placement as the matrix encode/decode
+helpers):
+
+```cpp
+/// float32 → IEEE-754 binary16 bits, round-to-nearest-even. Handles
+/// zero/subnormal/overflow→inf/NaN so CPU-written data is bit-identical to
+/// what a shader's pack_half2x16 / f32tof16 would produce for the same input.
+inline uint16_t floatToHalfBits(float f) noexcept;      // impl in BufferIO.h
+/// Inverse — binary16 bits → float32 (exact; every binary16 is representable).
+inline float    halfBitsToFloat(uint16_t h) noexcept;
+```
+
+RNE (round-to-nearest-even) is specified so the CPU path and a GPU pack of the
+same float agree bit-for-bit — important for any test that cross-checks
+CPU-written against GPU-written half data, and consistent with the determinism
+bar the project holds elsewhere. The two functions are pure bit manipulation
+(no `_Float16`, no intrinsics), so they compile identically on the D3D12 /
+Vulkan hosts that have no native half scalar. Metal *does* have `__fp16`, but
+the backends share this helper rather than each rolling their own so the
+rounding behavior is defined in exactly one place.
+
+### 9.4 std430 / std140 layout rules
+
+Half members follow the standard 16-bit-storage layout (component size `N = 2`):
+
+| Type    | std430 / std140 align | std430 / std140 size | Metal native size |
+|---------|----------------------:|---------------------:|------------------:|
+| `half`  | 2                     | 2                    | 2                 |
+| `half2` | 4                     | 4                    | 4                 |
+| `half3` | 8                     | 6                    | **8** (`half3` padded) |
+| `half4` | 8                     | 8                    | 8                 |
+
+`half3` reproduces the exact `float3` split the code already handles: the
+logical std430/Vulkan/D3D12 size is the tight **6** bytes (alignment 8), while
+Metal's `half3` in a `device`/`constant` buffer is a padded **8** bytes — the
+same 12-vs-16 divergence `float3` has today (`simd_float3` is 16, std430 is
+12). So this is **not a new architectural problem**: the shared logical layout
+in `structStride` uses the tight size, and the Metal backend keeps its native
+size in `sendToBuffer` / the reader, exactly as it already does for `float3`.
+
+Concretely, `BufferIO.h` gains half cases in the three shared layout helpers:
+
+- `std140ScalarVec()` — add `OMEGASL_HALF → {2,2}`, `HALF2 → {4,4}`,
+  `HALF3 → {8,6}`, `HALF4 → {8,8}`. (Both std430 and std140 share these; a
+  16-bit scalar/vector member is not rounded to 16 in std140 — only structs and
+  arrays are, and the flat writer API has neither.)
+- `memberBaseAlignment()` — falls out of `std140ScalarVec().first`, plus the
+  `DXStructured` path collapses half to its 2-byte component alignment (a
+  DX `StructuredBuffer<half>` scalar-aligns to 2, `half3` size 6).
+- `structStride()` — no change beyond the above; it already reads size/align
+  from those helpers.
+
+### 9.5 Backend implementation
+
+Each backend's writer stages a `DataBlock` tagged `OMEGASL_HALF*` holding the
+already-packed `uint16_t` lanes, and `sendToBuffer` places it with the size in
+9.4. The reader reverses it. No native-API surface changes — half buffers are
+ordinary buffers with 16-bit contents.
+
+| Backend | Writer stages | `sendToBuffer` size for half3 | Notes |
+|---|---|---|---|
+| **Metal** (`GEMetal.mm`) | packed `uint16_t[N]` (byte-identical to MSL `half`) | 8 (native `half3`) | `__fp16` exists but use the shared `floatToHalfBits` for one rounding definition |
+| **Vulkan** (`GEVulkan.cpp`) | packed `uint16_t[N]` | 6 (std430 tight) | shader half read needs `VK_KHR_16bit_storage` + `GL_EXT_shader_16bit_storage` — a device-feature concern on the *shader* side (`OMEGASL_FEATURE_BIT_FLOAT16`), not the writer |
+| **D3D12** (`GED3D12.cpp`) | packed `uint16_t[N]` | 6 (`DXStructured`, scalar-aligned to 2) | shader half needs SM6.2 native 16-bit (`-enable-16bit-types`); again a load-time feature gate, not a writer concern |
+
+The writer/reader themselves are **unconditional** — they only move bytes. The
+device-feature gate (`OMEGASL_FEATURE_BIT_FLOAT16`) already lives on the shader
+load path: a shader that declares `half` fields on a device that lacks fp16 is
+rejected with a diagnostic before any buffer is written, so the R/W path never
+needs to check the feature bit.
+
+### 9.6 Implementation order
+
+1. `omegasl_data_type` half enumerators (9.1) — trivial, unblocks everything.
+2. Shared `BufferIO.h`: `floatToHalfBits` / `halfBitsToFloat` + the half cases
+   in `std140ScalarVec` / `memberBaseAlignment` (9.3, 9.4).
+3. Public API: eight pure virtuals on the two structs (9.2).
+4. Metal writer + reader (native host, verifiable end-to-end here).
+5. Vulkan writer + reader.
+6. D3D12 writer + reader (written-from-source; Windows build hand-off).
+7. Tests (9.7).
+
+### 9.7 Tests
+
+- **Unit (host-only, any platform):** round-trip a set of representative
+  floats (0, ±1, subnormal, a value that rounds up, a value that ties-to-even,
+  a value that overflows to inf, NaN) through `floatToHalfBits` /
+  `halfBitsToFloat` and assert the expected binary16 bit patterns and widened
+  values. This locks the RNE contract independent of any GPU.
+- **Layout:** extend the existing `structStride` unit test with a struct mixing
+  half and float members (e.g. `{OMEGASL_HALF, OMEGASL_FLOAT4, OMEGASL_HALF3}`)
+  and assert the std430 / std140 / DXStructured strides match the 9.4 table.
+- **GPU round-trip (Metal, verifiable on this host):** write a struct with
+  `half4` + `half3` + `half` fields via `GEBufferWriter`, run a trivial compute
+  kernel that reads the `half` fields, does an identity op, and writes them to
+  an output buffer; read back with `GEBufferReader` and assert the float32
+  values survive within binary16 precision. This proves the CPU-packed bytes
+  are what the GPU's native `half` read expects.
+- **Per-backend:** confirm Vulkan/D3D12 writers produce the tight-6 `half3`
+  layout and Metal produces the padded-8, mirroring the existing `float3`
+  backend tests.
+
+### 9.8 Open questions
+
+- **`half3` on D3D12 `StructuredBuffer`.** DX scalar-alignment gives `half3`
+  size 6 / align 2, but confirm DXC lays out a `StructuredBuffer<half3>`
+  element that way (vs. a padded 8) before trusting the `DXStructured` size —
+  the `float3` precedent says scalar-aligned, but 16-bit native types are newer
+  in DXIL and worth a direct check on the Windows build.
+
+  <!-- ALEX: answer here -->
+
+- **Should the host API also offer a raw `uint16_t` fast-path** (e.g.
+  `writeHalfBits(uint16_t&)`) for callers that already hold packed half data and
+  want to skip the float round-trip? Symmetric with how nothing else in the API
+  exposes packed bits — leaning no, keep the surface float-only, but flagging it
+  since asset pipelines sometimes carry pre-packed halves.
+
+  <!-- ALEX: answer here -->
+
+---
+
 ## File Change Summary
 
 | File | Extensions |
@@ -1936,16 +2149,19 @@ binding slot, and what was expected vs. what was bound.
 | `gte/include/omegaGTE/GECommandQueue.h` | 1.3, 1.4, 1.5, 2.1, 3.1, 4.1-4.4 — indexed/instanced/indirect draw, indirect dispatch, blit pipeline commands, buffer/texture ops |
 | `gte/include/omegaGTE/GERenderTarget.h` | 1.3, 1.4, 1.5, 1.6, 1.7 — new draw methods, MRT, polygon types on CommandBuffer |
 | `gte/include/omegaGTE/GE.h` | 3.1 — `makeBlitPipelineState()` engine method |
+| `gte/include/omegaGTE/GTEShader.h` | Ext-9 — `writeHalf*` / `getHalf*` on the buffer writer / reader |
+| `gte/include/omegasl.h` | Ext-9 — `OMEGASL_HALF*` data-type enumerators (tail-appended) |
+| `gte/src/BufferIO.h` (shared, private) | Ext-9 — `floatToHalfBits` / `halfBitsToFloat` + half layout cases |
 | **D3D12 Backend** | |
-| `gte/src/d3d12/GED3D12.cpp` | 1.1, 1.2, 1.5, 3.2, 5.2 — PSO creation with vertex input / blend / command signature / blit PSO / blend fix |
+| `gte/src/d3d12/GED3D12.cpp` | 1.1, 1.2, 1.5, 3.2, 5.2, Ext-9 — PSO creation with vertex input / blend / command signature / blit PSO / blend fix / half buffer R/W |
 | `gte/src/d3d12/GED3D12CommandQueue.h` | 1.3, 1.4, 1.5, 2.1, 3.2, 4.1-4.4 — new command declarations |
 | `gte/src/d3d12/GED3D12CommandQueue.cpp` | 1.3, 1.4, 1.5, 2.1, 3.2, 4.1-4.4 — new command implementations |
 | **Metal Backend** | |
-| `gte/src/metal/GEMetal.mm` | 1.1, 1.2, 3.2 — PSO creation changes, blit PSO |
+| `gte/src/metal/GEMetal.mm` | 1.1, 1.2, 3.2, Ext-9 — PSO creation changes, blit PSO, half buffer R/W |
 | `gte/src/metal/GEMetalCommandQueue.h` | 1.3, 1.4, 1.5, 2.1, 3.2, 4.1-4.4 — new command declarations |
 | `gte/src/metal/GEMetalCommandQueue.mm` | 1.3, 1.4, 1.5, 2.1, 3.2, 4.1-4.4, 5.1 — new commands + region copy fix |
 | **Vulkan Backend** | |
-| `gte/src/vulkan/GEVulkan.cpp` | 1.1, 1.2, 3.2 — PSO creation changes, blit PSO |
+| `gte/src/vulkan/GEVulkan.cpp` | 1.1, 1.2, 3.2, Ext-9 — PSO creation changes, blit PSO, half buffer R/W |
 | `gte/src/vulkan/GEVulkanCommandQueue.h` | 1.3, 1.4, 1.5, 2.1, 3.2, 4.1-4.4 — new command declarations |
 | `gte/src/vulkan/GEVulkanCommandQueue.cpp` | 1.3, 1.4, 1.5, 2.1, 3.2, 4.1-4.4 — new command implementations |
 | **Shared** | |

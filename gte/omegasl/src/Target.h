@@ -34,6 +34,20 @@ namespace omegasl {
     }
     struct CodeGen;
 
+    /// §16 Phase E — copy an AST tessellation descriptor into the serialized
+    /// `omegasl_tessellation_desc` carried on a hull/domain `omegasl_shader`
+    /// record. The AST enum values (`ast::ShaderDecl::TessellationDesc`'s
+    /// Domain / Partitioning / OutputTopology) map 1:1 onto the descriptor's
+    /// `int` fields, so a static_cast is exact. Shared across the HLSL / MSL /
+    /// GLSL targets so the metadata a hull emits is backend-independent.
+    inline void fillTessellationDesc(const ast::ShaderDecl::TessellationDesc &td,
+                                     omegasl_tessellation_desc &out) {
+        out.domain = static_cast<int>(td.domain);
+        out.partitioning = static_cast<int>(td.partitioning);
+        out.output_topology = static_cast<int>(td.outputTopology);
+        out.output_control_points = td.outputControlPoints;
+    }
+
     /// Abstract boundary for backend-specific code-generation decisions.
     /// Hooks are added one phase at a time and called from CodeGen / the
     /// surviving *CodeGen subclasses. See
