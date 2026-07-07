@@ -1601,10 +1601,33 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
     }
 };
 
+void GED3D12CommandBuffer::startTessRenderPass(const GERenderPassDescriptor &desc) {
+    /// §16 Phase H — on D3D12 the HS/DS execute inside the one graphics
+    /// pipeline, so a tessellated draw needs no separate compute pre-pass
+    /// (unlike Metal). This is the normal render-pass setup plus a flag that
+    /// (a) allows `drawPatches` and (b) is what makes plain `startRenderPass`
+    /// and this one differ: a tessellation pipeline may only be bound inside a
+    /// tess pass. The render-target setup is identical, so reusing
+    /// `startRenderPass` keeps the two byte-compatible.
+    startRenderPass(desc);
+    tessPassActive = true;
+}
+
 void GED3D12CommandBuffer::setRenderPipelineState(SharedHandle<GERenderPipelineState> &pipelineState) {
     d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_PIPELINE, "setRenderPipelineState called while a compute pass is active");
     DEBUG_TRACE(DEBUG_DOMAIN_PIPELINE, "PSO set");
     auto *d3d12_pipeline_state = (GED3D12RenderPipelineState *)pipelineState.get();
+    /// §16 Phase H — a tessellation pipeline may only be bound inside a
+    /// `startTessRenderPass` scope; binding one in a plain render pass is a
+    /// caller-contract violation (no patch topology / tessellator is set up).
+    /// Refuse rather than hand the driver a patch-topology draw with no tess
+    /// pass (mirrors the Vulkan backend's guard).
+    if(d3d12_pipeline_state->isTess && !tessPassActive){
+        DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "setRenderPipelineState: a tessellation pipeline must be bound inside "
+                       "startTessRenderPass, not startRenderPass.");
+        assert(false && "tessellation pipeline bound outside a tess render pass");
+        return;
+    }
     commandList->SetPipelineState(d3d12_pipeline_state->pipelineState.Get());
     currentRenderPipeline = d3d12_pipeline_state;
     commandList->SetGraphicsRootSignature(d3d12_pipeline_state->rootSignature.Get());
@@ -1963,6 +1986,44 @@ void GED3D12CommandBuffer::drawPolygons(RenderPassDrawPolygonType polygonType, u
     commandList->DrawInstanced(vertexCount, 1, startIdx, 0);
 };
 
+void GED3D12CommandBuffer::drawPatches(unsigned patchCount,
+                                       SharedHandle<GEBuffer> & controlPointBuffer,
+                                       size_t startPatch) {
+    d3d12RequireOrReturn(!inComputePass, DEBUG_DOMAIN_QUEUE, "draw call issued while a compute pass is active");
+    /// §16 Phase H — must be inside a tess pass with a tessellation pipeline
+    /// bound (mirrors the Vulkan guard).
+    if(!tessPassActive || currentRenderPipeline == nullptr || !currentRenderPipeline->isTess){
+        DEBUG_CRITICAL(DEBUG_DOMAIN_QUEUE, "drawPatches: no tessellation pipeline bound in a startTessRenderPass scope.");
+        assert(false && "drawPatches outside a tessellation pass");
+        return;
+    }
+    /// The `vertex(tess=true)` stage reads its per-control-point input from the
+    /// control-point storage buffer (`buffer<CP> : 0` → StructuredBuffer SRV at
+    /// t0), indexed by VertexID. Bind it at the vertex stage's control-point
+    /// slot (0) so `controlPoints[SV_VertexID]` resolves; the SRV bind is
+    /// recorded on the graphics root signature like any other vertex resource.
+    bindResourceAtVertexShader(controlPointBuffer, 0);
+
+    /// The PSO topology type is PATCH; the concrete IA topology is an
+    /// N-control-point patch list, N = the per-patch control-point count. The
+    /// D3D primitive-topology enum values are contiguous — `_1_CONTROL_POINT_`
+    /// + (N-1) == `_N_CONTROL_POINT_PATCHLIST` — so offset from the
+    /// 1-control-point base. The vertex stage runs once per control point, so
+    /// the draw covers `patchCount * N` vertices and the tessellator groups them
+    /// into `patchCount` patches.
+    const unsigned n = currentRenderPipeline->patchControlPoints
+                           ? currentRenderPipeline->patchControlPoints : 1u;
+    const D3D12_PRIMITIVE_TOPOLOGY patchTopology =
+        (D3D12_PRIMITIVE_TOPOLOGY)(D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST + (n - 1u));
+    commandList->IASetPrimitiveTopology(patchTopology);
+
+    const unsigned vertexCount = patchCount * n;
+    const unsigned firstVertex = (unsigned)startPatch * n;
+    commandList->DrawInstanced(vertexCount, 1, firstVertex, 0);
+    DEBUG_TRACE(DEBUG_DOMAIN_QUEUE, "drawPatches: patchCount=" << patchCount
+                << " controlPoints=" << n << " vertexCount=" << vertexCount);
+};
+
 void GED3D12CommandBuffer::setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType) {
     auto *b = (GED3D12Buffer *)buffer.get();
     D3D12_INDEX_BUFFER_VIEW view;
@@ -2100,6 +2161,7 @@ void GED3D12CommandBuffer::finishRenderPass() {
     // Per-pass flag: clear it so a pooled command buffer that previously ran an
     // MSAA-resolve pass does not misclassify a later non-resolve pass.
     multisampleResolvePass = false;
+    tessPassActive = false;  // §16 Phase H — close any tess pass scope.
     currentTarget.texture = nullptr;
     currentTarget.native = nullptr;
     currentRenderPipeline = nullptr;

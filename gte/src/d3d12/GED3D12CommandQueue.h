@@ -34,6 +34,11 @@ _NAMESPACE_BEGIN_
         bool inComputePass;
         bool inBlitPass;
         bool inRenderPass;
+        /// §16 Phase H — true between `startTessRenderPass` and
+        /// `finishRenderPass`. Gates `drawPatches` (only valid in a tess pass)
+        /// and lets `setRenderPipelineState` keep the "plain render pass rejects
+        /// a tessellation pipeline" contract uniform with Vulkan/Metal.
+        bool tessPassActive = false;
         bool closed = false;
         std::uint64_t traceResourceId = 0;
 
@@ -175,6 +180,13 @@ _NAMESPACE_BEGIN_
         void finishAccelStructPass() override;
 
         void startRenderPass(const GERenderPassDescriptor &desc) override;
+        /// §16 Phase H — tessellation render pass. On D3D12 the HS/DS run inside
+        /// the one graphics pipeline, so this is a thin variant of
+        /// `startRenderPass` that permits a tessellation pipeline + patch
+        /// topology (no separate compute pre-pass, unlike Metal). It sets
+        /// `tessPassActive` so `drawPatches` is allowed and a plain render pass
+        /// rejects a tessellation pipeline.
+        void startTessRenderPass(const GERenderPassDescriptor &desc) override;
         void setVertexBuffer(SharedHandle<GEBuffer> &buffer) override;
         void setRenderPipelineState(SharedHandle<GERenderPipelineState> &pipelineState) override;
         void bindResourceAtVertexShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
@@ -189,6 +201,15 @@ _NAMESPACE_BEGIN_
         void setStencilRef(unsigned int ref) override;
        
         void drawPolygons(RenderPassDrawPolygonType polygonType, unsigned int vertexCount, size_t startIdx) override;
+        /// §16 Phase H — draw tessellation patches. Binds the input control
+        /// points at the vertex stage's control-point slot (0), sets the
+        /// N-control-point patch-list IA topology, and issues a
+        /// `patchCount * patchControlPoints`-vertex draw (the vertex stage runs
+        /// per control point; the tessellator groups them into patches). Must be
+        /// inside a `startTessRenderPass` scope with a tessellation pipeline bound.
+        void drawPatches(unsigned patchCount,
+                         SharedHandle<GEBuffer> & controlPointBuffer,
+                         size_t startPatch = 0) override;
         void setIndexBuffer(SharedHandle<GEBuffer> & buffer, RenderPassIndexType indexType) override;
         void drawIndexedPolygons(RenderPassDrawPolygonType polygonType,
                                  unsigned indexCount, size_t startIndex,

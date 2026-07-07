@@ -771,6 +771,23 @@ SharedHandle<GETexture> GED3D12Heap::makeTexture(const TextureDescriptor &desc){
         // the cost of querying every gate one more time.
         retentionQueue.drainAll();
 
+        // §16 Phase H — detach every resource that still holds a raw back-pointer
+        // to this engine (textures + samplers, which free a shared descriptor
+        // slot in their destructor). Nulling the back-pointer makes a resource
+        // that outlives the engine skip that free — correct, because the GPU is
+        // already idle and the descriptor heaps below are about to be released,
+        // so the deferred slot-free is moot (and the allocator's defaulted
+        // destructor tolerates the still-outstanding slot). This mirrors the
+        // `GED3D12AllocatorOwner` teardown-order hardening for the D3D12MA path,
+        // closing the descriptor-slot path it did not cover.
+        {
+            std::lock_guard<std::mutex> lk(engineBackRefMutex);
+            for(auto *ref : engineBackRefs){
+                ref->onEngineDestroyed();
+            }
+            engineBackRefs.clear();
+        }
+
         // Phase 2 — release the shared descriptor allocators after the
         // retention queue has drained (its callbacks call
         // `allocator->free(handle)`, so the allocator must still be live
@@ -1772,6 +1789,36 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         if(!(vertexFunc.type == OMEGASL_SHADER_VERTEX)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Function is not a vertex function"); assert((vertexFunc.type == OMEGASL_SHADER_VERTEX) && "Function is not a vertex function"); return nullptr; }
         if(!(fragmentFunc.type == OMEGASL_SHADER_FRAGMENT)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Function is not a fragment function"); assert((fragmentFunc.type == OMEGASL_SHADER_FRAGMENT) && "Function is not a fragment function"); return nullptr; }
 
+        /// §16 Phase H — a tessellation pipeline is one that carries both a hull
+        /// and a domain. On D3D12 the HS/DS run inside the one graphics pipeline
+        /// (vertex → hull → domain → fragment); the vertex stage — authored as
+        /// `vertex(tess=true)` — is required exactly as for a plain pipeline, so
+        /// the checks above already cover it. Feature-gate on
+        /// GTEDEVICE_FEATURE_TESSELLATION_SHADER (matching the mesh / raytracing
+        /// pattern) so a device that cannot honor it returns nullptr with a
+        /// diagnostic rather than tripping a driver error later.
+        const bool isTess = (bool)desc.hullFunc && (bool)desc.domainFunc;
+        std::uint32_t patchControlPoints = 0;
+        if(isTess){
+            if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_TESSELLATION_SHADER)){
+                DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeRenderPipelineState: device does not advertise "
+                             "GTEDEVICE_FEATURE_TESSELLATION_SHADER ('" << desc.name << "')");
+                return nullptr;
+            }
+            if(!_checkPipelineShader(desc.hullFunc,"hull",desc.name) ||
+               !_checkPipelineShader(desc.domainFunc,"domain",desc.name)){
+                return nullptr;
+            }
+            if(!(desc.hullFunc->internal.type == OMEGASL_SHADER_HULL)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Function is not a hull function"); assert((desc.hullFunc->internal.type == OMEGASL_SHADER_HULL) && "Function is not a hull function"); return nullptr; }
+            if(!(desc.domainFunc->internal.type == OMEGASL_SHADER_DOMAIN)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Function is not a domain function"); assert((desc.domainFunc->internal.type == OMEGASL_SHADER_DOMAIN) && "Function is not a domain function"); return nullptr; }
+            /// The hull's serialized tessellation descriptor is authoritative
+            /// for the per-patch control-point count; the API-surface field is a
+            /// fallback / validation value (mirrors the Vulkan path).
+            patchControlPoints = desc.hullFunc->internal.tessellationDesc.output_control_points;
+            if(patchControlPoints == 0){ patchControlPoints = desc.patchControlPoints; }
+            if(patchControlPoints == 0){ patchControlPoints = 3; }
+        }
+
         D3D12_INPUT_LAYOUT_DESC inputLayoutDesc {};
         if(vertexFunc.vertexShaderInputDesc.useVertexID){
             // Vertex-ID driven shaders consume system values and structured buffers,
@@ -1903,11 +1950,27 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         
         HRESULT hr;
 
-        omegasl_shader shaders[] = {desc.vertexFunc->internal,desc.fragmentFunc->internal};
+        /// §16 Phase H — a plain pipeline unions {vertex, fragment}; a
+        /// tessellation pipeline additionally exposes {hull, domain} so their
+        /// descriptor bindings land in the root signature. Every root parameter
+        /// is built at D3D12_SHADER_VISIBILITY_ALL and no stage access is denied
+        /// (see createRootSignatureFromOmegaSLShaders), so the HS/DS see the
+        /// same bindings as the VS with no per-stage visibility split. The VS
+        /// stays first in the array, so its resources keep their root-parameter
+        /// indices whether or not the pipeline is tessellated.
+        omegasl_shader shaders[4] = {desc.vertexFunc->internal,desc.fragmentFunc->internal};
+        unsigned shaderCount = 2;
+        if(isTess){
+            shaders[0] = desc.vertexFunc->internal;
+            shaders[1] = desc.hullFunc->internal;
+            shaders[2] = desc.domainFunc->internal;
+            shaders[3] = desc.fragmentFunc->internal;
+            shaderCount = 4;
+        }
 
         ID3D12RootSignature *signature;
         D3D12_ROOT_SIGNATURE_DESC1 rootSigDesc;
-        bool b = createRootSignatureFromOmegaSLShaders(2,shaders,&rootSigDesc,&signature);
+        bool b = createRootSignatureFromOmegaSLShaders(shaderCount,shaders,&rootSigDesc,&signature);
 
         if(!b){
             DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "Failed to Create Root Signature");
@@ -1919,6 +1982,18 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
 
         d.VS = vertexShader->shaderBytecode;
         d.PS = fragmentShader->shaderBytecode;
+        /// §16 Phase H — bind the tessellation-control (hull) and -evaluation
+        /// (domain) stages into the graphics PSO. The classic
+        /// D3D12_GRAPHICS_PIPELINE_STATE_DESC carries HS/DS directly (no
+        /// stream-based build is needed, unlike mesh); with these set and the
+        /// _PATCH topology type below, the fixed-function tessellator runs
+        /// between the VS and the domain stage.
+        if(isTess){
+            auto *hullShader = (GED3D12Shader *)desc.hullFunc.get();
+            auto *domainShader = (GED3D12Shader *)desc.domainFunc.get();
+            d.HS = hullShader->shaderBytecode;
+            d.DS = domainShader->shaderBytecode;
+        }
         d.pRootSignature = signature;
         {
             const auto & formats = desc.colorPixelFormats;
@@ -1971,7 +2046,14 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         d.RasterizerState.SlopeScaledDepthBias = desc.depthAndStencilDesc.slopeScale;
         d.RasterizerState.DepthBiasClamp = desc.depthAndStencilDesc.depthClamp;
 
-        switch(desc.primitiveTopologyCategory){
+        if(isTess){
+            /// §16 Phase H — the tessellator consumes control-point patches, so
+            /// the PSO topology type is PATCH. The concrete N-control-point
+            /// patch-list IA topology is set per-draw in `drawPatches` (it
+            /// depends on the per-patch control-point count).
+            d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+        }
+        else switch(desc.primitiveTopologyCategory){
             case PrimitiveTopologyCategory::Line:
                 d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
                 break;
@@ -2025,7 +2107,13 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         ATL::CStringW wstr(desc.name.data());
         state->SetName(wstr);
         DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Render pipeline created: '" << desc.name << "'");
-        return SharedHandle<GERenderPipelineState>(new GED3D12RenderPipelineState(desc.vertexFunc,desc.fragmentFunc,state,signature,rootSigDesc));
+        auto *renderPipelineState = new GED3D12RenderPipelineState(desc.vertexFunc,desc.fragmentFunc,state,signature,rootSigDesc);
+        /// §16 Phase H — record tessellation state so `drawPatches` can pick the
+        /// IA patch-list topology / size its draw and `setRenderPipelineState`
+        /// can reject the pipeline outside a `startTessRenderPass` scope.
+        renderPipelineState->isTess = isTess;
+        renderPipelineState->patchControlPoints = patchControlPoints;
+        return SharedHandle<GERenderPipelineState>(renderPipelineState);
     };
     SharedHandle<GEComputePipelineState> GED3D12Engine::makeComputePipelineState(ComputePipelineDescriptor &desc){
         if(!_checkPipelineShader(desc.computeFunc,"compute",desc.name)){
@@ -3410,8 +3498,24 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         return SharedHandle<GESamplerState>(new GED3D12SamplerState(this, slot, samplerDesc));
     }
 
+    GED3D12SamplerState::GED3D12SamplerState(GED3D12Engine *engine,
+                                             const D3D12DescriptorHandle & handle,
+                                             D3D12_SAMPLER_DESC & samplerDesc):
+        samplerHandle(handle), staticSampler(samplerDesc), owningEngine(engine){
+        // §16 Phase H — register so `~GED3D12Engine` can null our back-pointer if
+        // the engine is torn down while this sampler is still alive (see
+        // `GED3D12EngineBackRef`). Out-of-line so the engine's full type is visible.
+        if(owningEngine){
+            owningEngine->registerBackRef(this);
+        }
+    }
+
     GED3D12SamplerState::~GED3D12SamplerState(){
         if(owningEngine){
+            // §16 Phase H — drop out of the registry first (engine alive here); a
+            // null `owningEngine` means the engine already detached us on its own
+            // teardown, so this whole block is skipped.
+            owningEngine->unregisterBackRef(this);
             owningEngine->freeDescriptorAfterQueueDrain(
                 owningEngine->samplerDescriptorAllocator.get(), samplerHandle);
         }

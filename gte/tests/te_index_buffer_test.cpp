@@ -16,7 +16,11 @@ using namespace OmegaGTE;
 namespace {
 
 using Vertex = TETriangulationResult::TEMesh::Vertex;
-using Polygon = TETriangulationResult::TEMesh::Polygon;
+/// NB: not `Polygon` — on the D3D12 (TARGET_DIRECTX) build `<windows.h>` /
+/// `<wingdi.h>` (pulled in transitively via omegaGTE headers) defines a global
+/// `Polygon(...)` GDI function, so an unqualified `Polygon` alias here is
+/// ambiguous and fails to compile. Name it `MeshPolygon` to sidestep the clash.
+using MeshPolygon = TETriangulationResult::TEMesh::Polygon;
 using AttachmentData = TETriangulationResult::AttachmentData;
 
 FVec<3> makeNormal(float x, float y, float z) {
@@ -55,8 +59,8 @@ int main() {
         Vertex c = makeVertex(1.f, 1.f, 0.f, white, up);
         Vertex d = makeVertex(0.f, 1.f, 0.f, white, up);
 
-        Polygon tri1; tri1.a = a; tri1.b = b; tri1.c = c;
-        Polygon tri2; tri2.a = a; tri2.b = c; tri2.c = d;
+        MeshPolygon tri1; tri1.a = a; tri1.b = b; tri1.c = c;
+        MeshPolygon tri2; tri2.a = a; tri2.b = c; tri2.c = d;
         mesh.vertexPolygons = {tri1, tri2};
 
         mesh.buildIndexed();
@@ -76,11 +80,11 @@ int main() {
     //     one per corner, no sharing at all. ---
     {
         TETriangulationResult::TEMesh mesh;
-        Polygon tri1;
+        MeshPolygon tri1;
         tri1.a = makeVertex(0.f, 0.f, 0.f, white, up);
         tri1.b = makeVertex(1.f, 0.f, 0.f, white, up);
         tri1.c = makeVertex(1.f, 1.f, 0.f, white, up);
-        Polygon tri2;
+        MeshPolygon tri2;
         tri2.a = makeVertex(0.f, 0.f, 0.f, white, down);
         tri2.b = makeVertex(1.f, 1.f, 0.f, white, down);
         tri2.c = makeVertex(0.f, 1.f, 0.f, white, down);
@@ -96,11 +100,11 @@ int main() {
     // --- No attachment data at all: dedup falls back to position only. ---
     {
         TETriangulationResult::TEMesh mesh;
-        Polygon tri1;
+        MeshPolygon tri1;
         tri1.a = makePlainVertex(0.f, 0.f, 0.f);
         tri1.b = makePlainVertex(1.f, 0.f, 0.f);
         tri1.c = makePlainVertex(1.f, 1.f, 0.f);
-        Polygon tri2;
+        MeshPolygon tri2;
         tri2.a = makePlainVertex(0.f, 0.f, 0.f);
         tri2.b = makePlainVertex(1.f, 1.f, 0.f);
         tri2.c = makePlainVertex(0.f, 1.f, 0.f);
@@ -118,11 +122,11 @@ int main() {
     //     it stays distinct. ---
     {
         TETriangulationResult::TEMesh mesh;
-        Polygon tri1;
+        MeshPolygon tri1;
         tri1.a = makePlainVertex(0.f, 0.f, 0.f);
         tri1.b = makePlainVertex(1.f, 0.f, 0.f);
         tri1.c = makePlainVertex(0.5f, 1.f, 0.f);
-        Polygon tri2;
+        MeshPolygon tri2;
         tri2.a = makePlainVertex(0.f + 5e-8f, 0.f, 0.f);   // within epsilon of tri1.a
         tri2.b = makePlainVertex(1.f + 1e-3f, 0.f, 0.f);   // well outside epsilon of tri1.b
         tri2.c = makePlainVertex(0.5f, 1.f, 0.f);           // exact match to tri1.c

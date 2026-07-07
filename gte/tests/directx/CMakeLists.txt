@@ -77,3 +77,17 @@ add_d3d12_cli_test(
     "../commit_timing_test.cpp"
 )
 add_test(NAME omegagte_commit_timing COMMAND CommitTimingTest)
+
+# OmegaSL §16 Phase H — tessellated-draw integration test on the mandatory
+# vertex-stage model (`vertex(tess=true)`). Exercises the full chain:
+# OmegaSL → HLSL → dxc → DXIL → D3D12 graphics PSO (VS + HS + DS + PS) →
+# startTessRenderPass / drawPatches → texture readback. Skips cleanly (exit 0)
+# if the device does not advertise tessellation support. Backend-independent
+# source shared with the Vulkan build (gte/tests/vulkan/CMakeLists.txt).
+add_d3d12_cli_test(
+    NAME
+    "TessellationVtxDrawTest"
+    SOURCES
+    "../tessellation_vtx_draw_test.cpp"
+)
+add_test(NAME omegagte_tessellation_vtx_draw COMMAND TessellationVtxDrawTest)

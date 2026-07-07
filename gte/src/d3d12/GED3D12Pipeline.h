@@ -25,6 +25,17 @@ public:
      /// before issuing `DispatchMesh`; `drawPolygons` family is a
      /// logic error against a mesh PSO and assertion-bound the same way.
      bool isMesh = false;
+     /// §16 Phase H — tessellation-pipeline flag + per-patch control-point
+     /// count. Set by `makeRenderPipelineState` after construction when the
+     /// descriptor carried `hullFunc`/`domainFunc` (the PSO was built with
+     /// `.HS`/`.DS` and a `_PATCH` topology type). `GED3D12CommandBuffer::
+     /// drawPatches` reads `patchControlPoints` to select the N-control-point
+     /// patch-list IA topology and size the draw (`patchCount *
+     /// patchControlPoints` vertices); `setRenderPipelineState` rejects a
+     /// pipeline whose `isTess` is true unless a `startTessRenderPass` scope is
+     /// active (a tessellated draw must go through that entry point).
+     bool isTess = false;
+     std::uint32_t patchControlPoints = 0;
      ~GED3D12RenderPipelineState();
     GED3D12RenderPipelineState(SharedHandle<GTEShader> & _vertShader,SharedHandle<GTEShader> & _fragShader,ID3D12PipelineState *state,ID3D12RootSignature *signature,D3D12_ROOT_SIGNATURE_DESC1 & rootSignatureDesc);
     /// Mesh-Shader-Plan Phase 4b.1 — mesh-variant constructor. Same

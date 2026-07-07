@@ -8,7 +8,7 @@
 
 _NAMESPACE_BEGIN_
 
-class GED3D12Texture : public GETexture {
+class GED3D12Texture : public GETexture, public GED3D12EngineBackRef {
 public:
     std::uint64_t traceResourceId = 0;
     void copyBytes(void *bytes, size_t len) override;
@@ -37,11 +37,15 @@ public:
     ComPtr<ID3D12DescriptorHeap> rtvDescHeap;
     ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
 
-    /// Owning engine pointer for descriptor-slot lifetime management. Raw
-    /// pointer is safe because the engine outlives every texture it
-    /// hands out (waitForGPUIdle + retentionQueue.drainAll run in
-    /// `~GED3D12Engine` before the allocators are released).
+    /// Owning engine pointer for descriptor-slot lifetime management. In the
+    /// common case the engine outlives every texture it hands out
+    /// (waitForGPUIdle + retentionQueue.drainAll run in `~GED3D12Engine` before
+    /// the allocators are released). §16 Phase H hardens the reverse case — a
+    /// texture that outlives the engine — via `GED3D12EngineBackRef`: the engine
+    /// nulls this pointer on teardown, so the destructor skips the slot-free.
     GED3D12Engine *owningEngine = nullptr;
+    /// §16 Phase H — engine teardown detach (see `GED3D12EngineBackRef`).
+    void onEngineDestroyed() noexcept override { owningEngine = nullptr; }
 
     /// Captured at primary-SRV creation time so swizzled-view recreation
     /// can clone every field except `Shader4ComponentMapping`. Populated

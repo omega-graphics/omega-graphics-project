@@ -47,6 +47,12 @@ GED3D12Texture::GED3D12Texture(GED3D12Engine *engine,
             static_cast<float>(resource->GetDesc().Height));
     DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Texture created: id=" << traceResourceId
                << " " << resource->GetDesc().Width << "x" << resource->GetDesc().Height);
+    // §16 Phase H — register so `~GED3D12Engine` can null our back-pointer if
+    // the engine is torn down while this texture is still alive (teardown-order
+    // safety; see `GED3D12EngineBackRef`).
+    if(owningEngine){
+        owningEngine->registerBackRef(this);
+    }
 }
 
 void GED3D12Texture::updateAndValidateStatus(ID3D12GraphicsCommandList *commandList) {
@@ -428,6 +434,10 @@ GED3D12Texture::~GED3D12Texture(){
     // retired. `freeDescriptorAfterQueueDrain` is a no-op for invalid
     // handles, so textures that never got an SRV / UAV are fine.
     if(owningEngine){
+        // §16 Phase H — drop out of the engine's back-ref registry first (engine
+        // still alive here; a null `owningEngine` means the engine already
+        // detached us during its own teardown and this whole block is skipped).
+        owningEngine->unregisterBackRef(this);
         owningEngine->freeDescriptorAfterQueueDrain(
             owningEngine->resourceDescriptorAllocator.get(), srvHandle);
         owningEngine->freeDescriptorAfterQueueDrain(

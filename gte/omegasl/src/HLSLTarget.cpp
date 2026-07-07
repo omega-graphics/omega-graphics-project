@@ -147,6 +147,8 @@ namespace omegasl {
         std::cout << "[OmegaSL HLSL] Compiling shader '" << name.data() << "' target="
                   << (stage == ast::ShaderDecl::Vertex     ? "vs"
                       : stage == ast::ShaderDecl::Fragment ? "ps"
+                      : stage == ast::ShaderDecl::Hull     ? "hs"
+                      : stage == ast::ShaderDecl::Domain   ? "ds"
                                                           : "cs")
                   << "\n"
                   << source << std::endl;
@@ -156,6 +158,16 @@ namespace omegasl {
             target = "vs_5_1";
         } else if (stage == ast::ShaderDecl::Fragment) {
             target = "ps_5_1";
+        } else if (stage == ast::ShaderDecl::Hull) {
+            /// §16 Phase H — a hull is the tessellation-control stage, a domain
+            /// the tessellation-evaluation stage. FXC (`D3DCompile`) supports
+            /// both at SM 5.1 (`hs_5_1` / `ds_5_1`). Without these the target
+            /// string stayed empty → `error X3506: unrecognized compiler
+            /// target ''`, and the empty HS/DS bytecode then tripped the PSO's
+            /// "patch topology needs a hull + domain" check.
+            target = "hs_5_1";
+        } else if (stage == ast::ShaderDecl::Domain) {
+            target = "ds_5_1";
         } else if (stage == ast::ShaderDecl::Compute) {
             target = "cs_5_1";
         }
@@ -1047,6 +1059,18 @@ namespace omegasl {
                     cpStructNames.insert(rd->typeExpr->args[0]->name);
                 }
             }
+            /// §16 Phase G/H — the standard vertex→hull→domain dataflow passes
+            /// the post-vertex control points as an array *parameter* (`CP cp[N]`,
+            /// element = an internal struct) rather than an `[in]` buffer. That
+            /// element type is emitted as the `InputPatch`/`OutputPatch` element
+            /// in `emitShaderEntryHeader`, so it also needs the positional-
+            /// semantic re-emit here (HLSL requires semantics on patch I/O).
+            for (auto &p : _decl->params) {
+                if (p.typeExpr->arrayDims.empty()) continue;
+                if (structDeclMap.find(p.typeExpr->name) != structDeclMap.end()) {
+                    cpStructNames.insert(p.typeExpr->name);
+                }
+            }
             if (_decl->shaderType == ast::ShaderDecl::Hull) {
                 cpStructNames.insert(_decl->returnType->name);
             }
@@ -1207,6 +1231,11 @@ namespace omegasl {
             }
         } else if (_decl->shaderType == ast::ShaderDecl::Hull) {
             auto &td = _decl->tessDesc;
+            /// §16 Phase E/H — serialize the tessellation descriptor onto the
+            /// shader-map record (mirrors `MSLTarget`), so the D3D12 runtime can
+            /// read the per-patch control-point count / partitioning / winding
+            /// without re-parsing. AST-only before this call.
+            fillTessellationDesc(td, shaderDesc.tessellationDesc);
             out << "[domain(\""
                 << (td.domain == ast::ShaderDecl::TessellationDesc::Triangle ? "tri" : "quad") << "\")]"
                 << std::endl;
@@ -1228,6 +1257,9 @@ namespace omegasl {
             out << "[patchconstantfunc(\"" << cg.spellUserFuncName(td.patchFn) << "\")]" << std::endl;
         } else if (_decl->shaderType == ast::ShaderDecl::Domain) {
             auto &td = _decl->tessDesc;
+            /// §16 Phase E/H — serialize on the domain too (the runtime mirrors
+            /// the hull's descriptor onto its paired domain).
+            fillTessellationDesc(td, shaderDesc.tessellationDesc);
             out << "[domain(\""
                 << (td.domain == ast::ShaderDecl::TessellationDesc::Triangle ? "tri" : "quad") << "\")]"
                 << std::endl;
@@ -1244,13 +1276,48 @@ namespace omegasl {
         out << " " << _decl->name;
         out << "(";
 
+        /// `firstParam` tracks whether a leading comma is needed before the user
+        /// params that follow the injected tessellation params below.
+        bool firstParam = true;
+
+        /// §16 Phase H — FXC (the runtime `D3DCompile` / `ds_5_1` path) requires
+        /// a domain shader to consume the patch-constant (tess-factor) data as an
+        /// input parameter, or it errors `X3502: ds_5_1 tessfactor inputs
+        /// missing`. (dxc / the offline path is lax and compiles the domain
+        /// without it — but it also accepts its presence, so injecting it is
+        /// safe on both.) The patch-constant struct is the one carrying
+        /// `TessFactor`/`InsideTessFactor` fields; match it to this domain by its
+        /// edge-factor count (tri → 3, quad → 4) so it is the *same* struct the
+        /// paired hull's patchfn returns — the DS input signature then matches
+        /// the HS patch-constant output by construction. All top-level structs
+        /// are in `structDeclMap` before any shader is emitted. The domain body
+        /// need not read the param; its only job is to satisfy the DS contract.
+        if (_decl->shaderType == ast::ShaderDecl::Domain) {
+            const unsigned wantEdges =
+                (_decl->tessDesc.domain == ast::ShaderDecl::TessellationDesc::Triangle) ? 3u : 4u;
+            ast::StructDecl *patchConstStruct = nullptr;
+            for (auto &kv : structDeclMap) {
+                for (auto &f : kv.second->fields) {
+                    if (!f.attributeName.has_value()
+                        || f.attributeName.value() != ATTRIBUTE_TESS_FACTOR) continue;
+                    const unsigned edges =
+                        f.typeExpr->arrayDims.empty() ? 1u : f.typeExpr->arrayDims[0];
+                    if (edges == wantEdges) patchConstStruct = kv.second;
+                    break;
+                }
+                if (patchConstStruct) break;
+            }
+            if (patchConstStruct) {
+                out << patchConstStruct->name << " osl_patchConst";
+                firstParam = false;
+            }
+        }
+
         /// §16 — inject the tessellation control-point parameter. The hull's
         /// `[in]` buffer becomes `InputPatch<CP, N>` and the domain's becomes
         /// `const OutputPatch<CP, N>`; the body's `name[i]` then indexes a
         /// per-patch control point. (These buffers were skipped as file-scope
-        /// resources in `emitResourceBinding`.) `firstParam` tracks whether a
-        /// leading comma is needed before the user params that follow.
-        bool firstParam = true;
+        /// resources in `emitResourceBinding`.)
         if (_decl->shaderType == ast::ShaderDecl::Hull
             || _decl->shaderType == ast::ShaderDecl::Domain) {
             for (auto &r : _decl->resourceMap) {
@@ -1276,6 +1343,28 @@ namespace omegasl {
                 out << ",";
             }
             firstParam = false;
+
+            /// §16 Phase G/H — a hull/domain control-point-array parameter
+            /// (`CP cp[N]`, the post-vertex patch) is HLSL's `InputPatch<CP,N>`
+            /// (hull) / `const OutputPatch<CP,N>` (domain). Emitted in place of
+            /// the plain array param; the body's `cp[i].field` then indexes a
+            /// control point directly (no member-expr rewrite needed, unlike
+            /// GLSL's `gl_in[]`). The element struct was re-emitted with
+            /// positional semantics in `emitShaderUsedStructs`. This is the
+            /// standard vertex-stage dataflow; the pre-Phase-G `[in]`-buffer form
+            /// is still injected ahead of the param loop above for the SSBO model.
+            if ((_decl->shaderType == ast::ShaderDecl::Hull
+                 || _decl->shaderType == ast::ShaderDecl::Domain)
+                && !p_it->typeExpr->arrayDims.empty()
+                && structDeclMap.find(p_it->typeExpr->name) != structDeclMap.end()) {
+                const bool isHull = _decl->shaderType == ast::ShaderDecl::Hull;
+                out << (isHull ? "InputPatch<" : "const OutputPatch<");
+                writeTypeName(cg.typeResolver->resolveTypeWithExpr(p_it->typeExpr),
+                              p_it->typeExpr->pointer, out);
+                out << ", " << _decl->tessDesc.outputControlPoints << "> ";
+                writeIdentifier(p_it->name, out);
+                continue;
+            }
 
             /// §2b — mesh-stage `out vertices` / `out indices` qualifiers.
             /// SM 6.5 puts these prefixes directly on the parameter

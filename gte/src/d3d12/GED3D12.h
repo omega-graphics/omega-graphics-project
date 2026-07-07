@@ -14,6 +14,8 @@
 #include <wrl.h>
 #include <memory>
 #include <vector>
+#include <set>
+#include <mutex>
 #include "D3D12MemAlloc.h"
 #include "../common/GEResourceTracker.h"
 #include "../common/GERetentionQueue.h"
@@ -51,6 +53,25 @@ _NAMESPACE_BEGIN_
         }
         GED3D12AllocatorOwner(const GED3D12AllocatorOwner &) = delete;
         GED3D12AllocatorOwner & operator=(const GED3D12AllocatorOwner &) = delete;
+    };
+
+    // §16 Phase H — engine back-reference hardening (teardown-order safety,
+    // sibling to `GED3D12AllocatorOwner`). A `GED3D12Texture` / `GED3D12SamplerState`
+    // keeps a raw `owningEngine` pointer so its destructor can hand its shared
+    // descriptor-heap slot back to the engine's allocator. If such a resource
+    // outlives the engine — a caller drops the resource handle after `Close()`
+    // has already run `~GED3D12Engine` — that pointer would dangle and the
+    // destructor would fault. Every such resource registers with the engine;
+    // `~GED3D12Engine` calls `onEngineDestroyed()` on each still-registered one,
+    // which nulls the back-pointer. The destructor then skips the slot-free —
+    // correct, because the engine and its descriptor heaps are already gone and
+    // the GPU was drained to idle before teardown, so the free is moot. (The
+    // D3D12MA allocations these resources also hold are already teardown-safe via
+    // `GED3D12AllocatorOwner`; this closes the remaining descriptor-slot path.)
+    struct GED3D12EngineBackRef {
+        virtual void onEngineDestroyed() noexcept = 0;
+    protected:
+        ~GED3D12EngineBackRef() = default;
     };
 
     class GED3D12Buffer : public GEBuffer {
@@ -183,16 +204,20 @@ _NAMESPACE_BEGIN_
 
     class GED3D12Engine;
 
-    class GED3D12SamplerState : public GESamplerState {
+    class GED3D12SamplerState : public GESamplerState, public GED3D12EngineBackRef {
     public:
         // Phase 2 — sampler slot inside the engine's shared SAMPLER heap.
         D3D12DescriptorHandle samplerHandle{};
         D3D12_SAMPLER_DESC staticSampler;
         GED3D12Engine *owningEngine = nullptr;
+        // §16 Phase H — engine teardown detach: drop the back-pointer so the
+        // destructor skips its (now-moot) descriptor-slot free.
+        void onEngineDestroyed() noexcept override { owningEngine = nullptr; }
+        // Constructor is out-of-line (GED3D12.cpp) so it can `registerBackRef`
+        // with the engine, whose full type is not visible at this point.
         explicit GED3D12SamplerState(GED3D12Engine *engine,
                                      const D3D12DescriptorHandle & handle,
-                                     D3D12_SAMPLER_DESC & samplerDesc):
-            samplerHandle(handle), staticSampler(samplerDesc), owningEngine(engine){};
+                                     D3D12_SAMPLER_DESC & samplerDesc);
         // SharedHandle<GESamplerState> is shared_ptr, whose deleter uses the
         // static type at wrap time, so this destructor runs even though the
         // base GESamplerState has no virtual dtor.
@@ -322,6 +347,25 @@ _NAMESPACE_BEGIN_
         // gone. Released after waitForGPUIdle() in the destructor.
         std::unique_ptr<D3D12DescriptorAllocator> resourceDescriptorAllocator;  // CBV/SRV/UAV
         std::unique_ptr<D3D12DescriptorAllocator> samplerDescriptorAllocator;   // SAMPLER
+
+        // §16 Phase H — registry of resources that keep a raw `owningEngine`
+        // back-pointer (textures + samplers, which free a shared descriptor-heap
+        // slot on destruction). `~GED3D12Engine` nulls each still-registered
+        // one's back-pointer (`onEngineDestroyed`) so a resource that outlives
+        // the engine skips its slot-free instead of dereferencing freed engine
+        // memory. The mutex guards the (rare) case a resource is released off the
+        // frame thread while another resource registers/unregisters. See
+        // `GED3D12EngineBackRef`.
+        std::mutex engineBackRefMutex;
+        std::set<GED3D12EngineBackRef *> engineBackRefs;
+        void registerBackRef(GED3D12EngineBackRef *ref){
+            std::lock_guard<std::mutex> lk(engineBackRefMutex);
+            engineBackRefs.insert(ref);
+        }
+        void unregisterBackRef(GED3D12EngineBackRef *ref){
+            std::lock_guard<std::mutex> lk(engineBackRefMutex);
+            engineBackRefs.erase(ref);
+        }
 
         // Build a fence-gate vector that signals once every command list
         // currently submitted to every live command queue has retired.

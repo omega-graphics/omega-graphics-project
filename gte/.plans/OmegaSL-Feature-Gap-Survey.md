@@ -4493,6 +4493,65 @@ here; their `omegasl_compile_tessellation` gate stays `WILL_FAIL` until reworked
   draw test (one triangle patch → offscreen RGBA8 → center pixel green), built
   and run against the warm `./build`.
 
+### Phase H — D3D12 / HLSL tessellation runtime (`vertex(tess=true)`) [Alex, 2026-07-06]
+
+The D3D12 analog of Phase G (Vulkan): make a tessellated draw run on D3D12 on
+the mandatory vertex-stage model. Task 16-E2 was the original placeholder, but
+Phase G superseded the SSBO-only hull input, so D3D12 lands the *same*
+`vertex → hull → domain → fragment` dataflow the Vulkan runtime uses. Two pieces
+were open: HLSL codegen for the Phase-G surface (only GLSL had it — §16-G2), and
+the D3D12 runtime itself. Unlike the Vulkan work, this runs and is verifiable on
+the native-Windows agent (the `build/` clang-cl DirectX config); `dxc` validates
+codegen directly.
+
+Scope note — two HLSL tessellation surfaces coexist. The pre-Phase-G SSBO model
+(`tessellation.omegasl` **compile** test: hull reads an `[in]` buffer injected as
+`InputPatch`) was already handled by §16-B and stays `dxc`-passing. Phase H is
+purely **additive**: it teaches HLSL the Phase-G **vertex-stage** surface
+(`vertex(tess=true)` + `CP cp[N]` array param) used by the
+`tessellation_vtx_draw_test.cpp` **runtime** test, without disturbing the
+compile-test path.
+
+#### Sub-phases
+
+- **H.1 — HLSL codegen for the Phase-G surface** (`HLSLTarget.cpp`). A hull/domain
+  control-point-array parameter (`CP cp[N]`, element = an internal struct) is
+  emitted as `InputPatch<CP,N>` (hull) / `const OutputPatch<CP,N>` (domain) in
+  place of the plain array param; the body's `cp[i].field` then indexes it
+  directly — **no member-expr rewrite** is needed (HLSL indexes `InputPatch`
+  natively, unlike GLSL's `gl_in[]`). The element struct is added to the
+  positional-semantic re-emit set (`cpStructNames`) so patch I/O carries HLSL
+  semantics; a `Position` field rides `SV_Position` consistently across
+  VS-out / HS-in / HS-out / DS-in. `vertex(tess=true)` needs no special HLSL
+  handling — it is a normal VS reading its control points by `SV_VertexID`.
+  `fillTessellationDesc` is now called from the hull/domain arms (mirroring MSL)
+  so the serialized `omegasl_tessellation_desc` is accurate for the runtime. The
+  pre-Phase-G `[in]`-buffer `InputPatch` injection is left intact.
+- **H.2 — D3D12 pipeline** (`GED3D12.cpp`, `GED3D12Pipeline.h`).
+  `makeRenderPipelineState`: `isTess = hullFunc && domainFunc`, feature-gate on
+  `GTEDEVICE_FEATURE_TESSELLATION_SHADER`, build the root signature over the four
+  stages {VS,HS,DS,PS} (all root params are `SHADER_VISIBILITY_ALL` and no stage
+  access is denied, so no per-stage split), set `d.HS`/`d.DS` on the classic
+  `D3D12_GRAPHICS_PIPELINE_STATE_DESC` (no stream build needed, unlike mesh),
+  `PrimitiveTopologyType = …_PATCH`, and stamp `isTess`/`patchControlPoints`
+  (from the serialized descriptor, falling back to the API field / 3) on
+  `GED3D12RenderPipelineState`.
+- **H.3 — D3D12 command buffer** (`GED3D12CommandQueue.cpp/.h`).
+  `startTessRenderPass` (= `startRenderPass` + `tessPassActive`), `drawPatches`
+  (bind CP buffer at VS slot 0, `IASetPrimitiveTopology(…_N_CONTROL_POINT_PATCHLIST)`
+  from the contiguous enum, `DrawInstanced(patchCount*N, …)`),
+  `setRenderPipelineState` rejects a tess pipeline outside a tess pass, and
+  `finishRenderPass` clears the flag — the same contract as the Vulkan backend.
+- **H.4 — feature honesty (D3D12 slice of 16-F).** D3D12 already advertised
+  `TESSELLATION_SHADER` (`GED3D12.cpp:179`) — dishonestly, since the runtime
+  would crash. With H.2/H.3 landing, the advertisement becomes honest, so it
+  stays as-is (no gate needed). This closes the load-then-crash the honesty bug
+  described.
+- **H.5 — test.** Register the backend-independent `tessellation_vtx_draw_test.cpp`
+  under `gte/tests/directx/CMakeLists.txt` (`add_d3d12_cli_test`); one triangle
+  patch → offscreen RGBA8 → center pixel green. Built + run on the native-Windows
+  DirectX config.
+
 ### Task table
 
 | # | Task | Where | Effort | Blocks | Status |
@@ -4503,15 +4562,21 @@ here; their `omegasl_compile_tessellation` gate stays `WILL_FAIL` until reworked
 | 16-D | Metal kernel (per-CP store + factor epilogue) + post-tess vertex (`patch_control_point`/`position_in_patch`) | `MSLTarget.cpp`, `Target.h` | large | E4 | **DONE (codegen, interim per-CP)** — `metal`-verified; `omegasl_compile_tessellation` flipped to expected-pass on `APPLE`. Dispatch shape to be revised to **per-patch** in Phase E (16-E4a) per Alex — the per-CP kernel is the interim cut. |
 | 16-E4a | **Metal per-patch dispatch**: serialize `omegasl_tessellation_desc` into `omegasl_shader`; re-shape hull kernel to thread=patch id (CP loop + unconditional factor write); dispatch `threadsPerGrid = patchCount` | `MSLTarget.cpp` (codegen), shader-map writer, `GEMetal.mm` (runtime) | medium | — | **CODEGEN + DISPATCH VERIFIED** 2026-07-05 — hull kernel re-shaped to per-patch (`__osl_patch_id [[thread_position_in_grid]]` → `for(__osl_cp<N)` binding `vid = patchId*N+cp` → unconditional factor write to `__osl_tess_factors[__osl_patch_id]`). Also gave the hull a valid `threadgroupDesc` (32×1×1, serialized in `ShaderArchive.cpp`) so it builds as a `MTLComputePipelineState` and dispatches. **RUNTIME-VERIFIED on real Metal**: `TessellationDispatchTest` dispatches triHull+quadHull as compute kernels (one thread per patch), the synthesized factor buffer binds at the fall-through slot (id 2 → Metal buffer 2), and the readback confirms per-CP output echo + factor half-bits (1.0=0x3C00 tri / 2.0=0x4000 quad). The auto-`drawPatches` render command (16-E4, compute-then-render encoder + tess render pipeline) is still open. |
 | 16-E1 | Public API: descriptor fields, patch topology, `drawPatches`, `omegasl_tessellation_desc` | `GEPipeline.h`, `GERenderTarget.h`, `omegasl.h` | medium | E2–E4 | **PARTIAL** 2026-07-05 — DONE: `omegasl_tessellation_desc` (struct in `omegasl.h`; serialized in `ShaderArchive.cpp` read+write for HULL/DOMAIN; populated by `fillTessellationDesc` in `Target.h`, called from `MSLTarget.cpp` hull+domain arms); `RenderPipelineDescriptor::hullFunc/domainFunc/patchControlPoints`; `PrimitiveTopologyCategory::Patch`. TODO: `GECommandBuffer::PolygonType::Patch` + `drawPatches` command (blocked on the E4 draw-model plumbing below). |
-| 16-E2 | D3D12 HS/DS pipeline + patch topology | `GED3D12.cpp` | medium | — | open |
+| 16-E2 | D3D12 HS/DS pipeline + patch topology | `GED3D12.cpp` | medium | — | **DONE (via Phase H, 16-H2/H3)** 2026-07-06 — superseded by the Phase-G vertex-stage model. See 16-H* rows. |
 | 16-E3 | Vulkan tess stages + tess state + device-feature enable | `GEVulkan.cpp` | medium | — | **DONE** 2026-07-06 — subsumed by Phase G (16-G3), which requires the `vertex(tess=true)` stage. `tessellationShader` was already enabled at device creation. |
 | 16-E4 | Metal `startTessRenderPass` + tessellation pipeline + `drawPatches` | `GEMetal.mm`, `GEMetalCommandQueue.*`, `GEMetalPipeline.h`, `GERenderTarget.h` | large | — | **DONE (Metal)** 2026-07-06 — `startTessRenderPass` (deferred: records the descriptor, opens no encoder) + `drawPatches` (opens a compute encoder for the hull dispatch → engine-owned Private hullOut + factor buffers, ends it, then opens the render encoder via the stored descriptor, sets the half tess-factor buffer + `hullOut` as the per-patch-control-point stage-in, `[rp drawPatches:...]`). `makeRenderPipelineState` builds a `MTLComputePipelineState` from the hull + a render pipeline from domain/fragment with `MTLRenderPipelineDescriptor` tess state (partition/winding/half-factor + `MTLVertexStepFunctionPerPatchControlPoint` stage-in). Plain `startRenderPass` rejects tessellation pipelines. **RUNTIME-VERIFIED on real Metal** under the API + GPU validation layer: `TessellationDrawTest` draws one triangle patch to a texture → center pixel green (0,255,0,255). Metal now advertises `GTEDEVICE_FEATURE_TESSELLATION_SHADER` (Metal's slice of 16-F). |
-| 16-F | Feature-flag honesty gate + per-backend re-enable | `GED3D12.cpp`, `GEVulkan.cpp`, `GEMetal.mm`, tests `CMakeLists.txt` | small | — | open |
+| 16-F | Feature-flag honesty gate + per-backend re-enable | `GED3D12.cpp`, `GEVulkan.cpp`, `GEMetal.mm`, tests `CMakeLists.txt` | small | — | **DONE** 2026-07-06 — all three backends now honor `TESSELLATION_SHADER`: Metal (16-E4), Vulkan (16-G4), and D3D12 (16-H4 — the runtime lands, so its pre-existing unconditional advertisement is now honest, closing the load-then-crash). |
 | 16-G1 | Front-end: `vertex(tess=true)` descriptor + `tessVertex` AST + hull `CP cp[N]` input + Sema (Phase G.1) | `Parser.cpp` (KW_VERTEX), `AST.h`, `Sema.cpp` | medium | G2–G3 | **DONE** 2026-07-06 — `vertex(tess=true)` parses (peek/putback like `fragment(early_depth)`); `ShaderDecl::tessVertex`. Array function params (`cp[N]`) already parsed + indexable in Sema, so the hull/domain CP-array input type-checks with no new Sema rule; hull `out`-buffer requirement relaxed "exactly one"→"at most one" (the store buffer is Metal-only; GLSL/HLSL write `gl_out[]`/return). |
 | 16-G2 | GLSL codegen: emit `.vert`, tesc reads `gl_in[]`, hull writes `gl_out[]`, tess-level epilogue reachable (Phase G.2) | `GLSLTarget.cpp`, `Target.h` | medium | G3 | **DONE** 2026-07-06 — `glslc`/`shaderc`-verified (vert/tesc/tese/frag). A hull/domain CP-array param (`controlPointArrayParams`) is suppressed as a `layout(location) in` varying and `cp[i].<Pos>` rewrites to `gl_in[i].gl_Position`; `writeInternalFieldRef` routes hull Position → `gl_out[gl_InvocationID].gl_Position`; the hull's internal-struct `return` emits no mid-body `return;` so the factor epilogue stays reachable. **Also fixed the runtime `compileShaderRuntime` shaderc kind: Hull→`tess_control`, Domain→`tess_evaluation` (was defaulting to compute → invalid SPIR-V).** Non-Position CP varyings deferred (tests are Position-only). |
 | 16-G3 | Vulkan runtime: 4-stage tess pipeline + tess state + PATCH_LIST + HULL/DOMAIN stage flags; `startTessRenderPass` + `drawPatches` (Phase G.3, = 16-E3 + Vulkan slice of 16-E4) | `GEVulkan.cpp`, `GEVulkanCommandQueue.cpp/.h`, `GEVulkanPipeline.h` | large | G5 | **DONE** 2026-07-06 — **RUNTIME-VERIFIED under VVL.** `makeRenderPipelineState` builds vertex+tesc+tese+fragment with `pTessellationState.patchControlPoints` (from the serialized `omegasl_tessellation_desc`) + static `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`; HULL/DOMAIN → tess-control/eval stage flags in both `createPipelineLayoutFromShaderDescs` switches; `isTess`/`patchControlPoints` on the PSO. `startTessRenderPass` (thin `startRenderPass` variant + `tessPassActive`), `drawPatches` (binds control points as the VS SSBO at slot 0, `vkCmdDraw(patchCount*N)`), plain `startRenderPass`/`setRenderPipelineState` reject a tess pipeline, `finishRenderPass` clears the flag. `tessellationShader` is enabled implicitly at device creation (features2 copies all core feats) — no device change. |
 | 16-G4 | Feature honesty: Vulkan advertises `TESSELLATION_SHADER` only once G3 runs (Vulkan slice of 16-F) | `GEVulkan.cpp` | small | — | **DONE** (no-op) 2026-07-06 — Vulkan already advertised it when the GPU reports `tessellationShader`; with G3 the runtime now honors it, so the advertisement is honest and no change is needed. D3D12 stays dishonest until its Phase-E lands (still open). |
 | 16-G5 | `vertex(tess=true)` tess shader + Vulkan-runnable tess draw test | `gte/tests/tessellation_vtx_draw_test.cpp`, `gte/tests/vulkan/CMakeLists.txt` | medium | — | **DONE** 2026-07-06 — `omegagte_tessellation_vtx_draw` (backend-independent source, registered under Vulkan) draws one triangle patch to a 64² RGBA8 texture via `startTessRenderPass`/`drawPatches`; center pixel reads back green (0,255,0,255) under the Vulkan validation layer with zero VVL errors. Skips cleanly if the device lacks tessellation. Full omegasl suite (136/136) + Vulkan runtime suite (9/9) green. Metal/D3D12 can register the same source once their vertex-stage runtime lands. |
+| 16-H1 | HLSL codegen for the Phase-G surface: `CP cp[N]` → `InputPatch`/`OutputPatch`, CP-struct positional re-emit, `fillTessellationDesc` on hull/domain, runtime `compileShaderRuntime` tess profiles, FXC domain patch-constant input | `HLSLTarget.cpp` | medium | H2 | **DONE — RUNTIME-VERIFIED on real D3D12** 2026-07-06 — additive over §16-B (pre-G `[in]`-buffer path preserved). HLSL indexes `InputPatch` natively (no member-expr rewrite, unlike GLSL). Bring-up fixes: (a) `compileShaderRuntime` (FXC/`D3DCompile`) had no Hull/Domain target profile → empty target → `X3506`; added `hs_5_1`/`ds_5_1`. (b) FXC (unlike dxc) requires the DS to consume the patch-constant struct → `X3502: ds_5_1 tessfactor inputs missing`; the domain now injects the patch-constant struct (matched to the domain by edge-factor count) as its first param. |
+| 16-H2 | D3D12 tess pipeline: 4-stage root sig, `.HS`/`.DS`, `_PATCH` topology, `isTess`/`patchControlPoints` on PSO, feature-gate | `GED3D12.cpp`, `GED3D12Pipeline.h` | medium | — | **DONE — RUNTIME-VERIFIED** 2026-07-06 — classic `D3D12_GRAPHICS_PIPELINE_STATE_DESC` HS/DS (no stream build); root sig unions {VS,HS,DS,PS} at `VISIBILITY_ALL`. |
+| 16-H3 | D3D12 command buffer: `startTessRenderPass` + `drawPatches` (N-CP patch-list IA + `DrawInstanced(patchCount*N)`) + reject-in-plain-pass | `GED3D12CommandQueue.cpp/.h` | medium | — | **DONE — RUNTIME-VERIFIED** 2026-07-06 — same contract as the Vulkan backend; CP buffer bound at VS slot 0 SRV. |
+| 16-H4 | Feature honesty (D3D12 slice of 16-F): advertisement now backed by the runtime | `GED3D12.cpp` | small | — | **DONE (no-op)** 2026-07-06 — D3D12 already advertised `TESSELLATION_SHADER`; with H2/H3 it is honest. |
+| 16-H5 | Register `tessellation_vtx_draw_test.cpp` under D3D12 | `gte/tests/directx/CMakeLists.txt`, `gte/tests/tessellation_vtx_draw_test.cpp` | small | — | **DONE — PASSES on real D3D12** 2026-07-06 — `add_d3d12_cli_test`; one triangle patch → offscreen RGBA8 → **center pixel (0,255,0,255)**. The test deliberately holds every GPU resource handle across `Close(gte)` (destructs at scope exit, after the engine) so it doubles as the regression test for 16-H6. Separately fixed a pre-existing Windows-portability break in `te_index_buffer_test.cpp` (its `using Polygon =` alias clashed with `<wingdi.h>`'s `Polygon`). |
+| 16-H6 | D3D12 teardown-order hardening: resources may outlive the engine | `GED3D12.h`, `GED3D12.cpp`, `GED3D12Texture.h/.cpp` | small | — | **DONE** 2026-07-06 — the first headless D3D12 render-to-texture test surfaced that a `GETexture`/`GESamplerState` outliving the engine (handle dropped after `Close()` ran `~GED3D12Engine`) faults derefing its raw `owningEngine` back-pointer in the descriptor-slot-free path. Hardened as a sibling to `GED3D12AllocatorOwner` (which already covered the D3D12MA path): a `GED3D12EngineBackRef` interface + an engine-side registry; `~GED3D12Engine` nulls every still-live resource's back-pointer (`onEngineDestroyed`), so its destructor skips the (moot — GPU idle, heaps releasing) slot-free. Buffers already tolerate it via `GED3D12AllocatorOwner`; render targets delegate to their texture. |
 
 ### Tests
 

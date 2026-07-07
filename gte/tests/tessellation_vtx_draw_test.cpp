@@ -238,6 +238,13 @@ GTE_TEST_ENTRY_POINT {
     // dominate the center (vs the black clear).
     const bool ok = (p[1] >= 200) && (p[0] < 60) && (p[2] < 60);
 
+    // Intentionally Close() the engine while still holding every GPU resource
+    // handle (pipeline, textures, render target, buffer, queue, command buffer):
+    // they destruct at scope exit, AFTER the engine. This exercises the D3D12
+    // §16 Phase H teardown-order hardening — a GETexture/GESamplerState that
+    // outlives the engine has its raw `owningEngine` back-pointer nulled by
+    // `~GED3D12Engine`, so its destructor skips the (now-moot) descriptor-slot
+    // free instead of faulting. Metal/Vulkan already tolerate this order.
     OmegaGTE::Close(gte);
     std::cout << (ok ? "PASS: tessellation vtx draw" : "FAIL: tessellation vtx draw") << "\n";
     return ok ? 0 : 1;
