@@ -1,5 +1,6 @@
 #include "AQComputeBackend.h"
 #include "AQBodySoA.h"
+#include "AQComputeUtil.h"
 
 // Phase 5b: AQUA now links OmegaGTE and defines the target-platform macro
 // (aqua/CMakeLists.txt), so the GPU headers compile here. The Metal-specific
@@ -126,53 +127,21 @@ struct AQSolverParamsHost {
     std::uint32_t counts[4];
 };
 
-// One float4 per body per component-group buffer.
-std::size_t bodyBufferStride() {
-    static const std::size_t stride = OmegaGTE::omegaSLStructStride({OMEGASL_FLOAT4});
-    return stride;
-}
+// Thin shims over the shared marshalling helpers (AQComputeUtil.h — split out
+// when the 7f/6g+ GPU sub-phases spread the backend across TUs), keeping this
+// file's many existing call sites unchanged.
+std::size_t bodyBufferStride() { return aqF4Stride(); }
 
-// Write `count` float4 records (x/y/z/w lane arrays) into `buffer`.
-// A null lane pointer writes 0 in that lane.
 bool writeF4Buffer(SharedHandle<OmegaGTE::GEBuffer>& buffer,
                    const float* x, const float* y, const float* z, const float* w,
                    std::size_t count) {
-    auto writer = OmegaGTE::GEBufferWriter::Create();
-    writer->setOutputBuffer(buffer);
-    for (std::size_t i = 0; i < count; ++i) {
-        auto v = OmegaGTE::FVec<4>::Create();
-        v[0][0] = x ? x[i] : 0.f;
-        v[1][0] = y ? y[i] : 0.f;
-        v[2][0] = z ? z[i] : 0.f;
-        v[3][0] = w ? w[i] : 0.f;
-        writer->structBegin();
-        writer->writeFloat4(v);
-        writer->structEnd();
-        writer->sendToBuffer();
-    }
-    writer->flush();
-    return true;
+    return aqWriteF4Buffer(buffer, x, y, z, w, count);
 }
 
-// Read `count` float4 records out of `buffer` into lane arrays (null lane
-// pointers discard that lane).
 bool readF4Buffer(SharedHandle<OmegaGTE::GEBuffer>& buffer,
                   float* x, float* y, float* z, float* w,
                   std::size_t count) {
-    auto reader = OmegaGTE::GEBufferReader::Create();
-    reader->setInputBuffer(buffer);
-    reader->setStructLayout({OMEGASL_FLOAT4});
-    for (std::size_t i = 0; i < count; ++i) {
-        reader->structBegin();
-        auto v = OmegaGTE::FVec<4>::Create();
-        reader->getFloat4(v);
-        reader->structEnd();
-        if (x) { x[i] = v[0][0]; }
-        if (y) { y[i] = v[1][0]; }
-        if (z) { z[i] = v[2][0]; }
-        if (w) { w[i] = v[3][0]; }
-    }
-    return true;
+    return aqReadF4Buffer(buffer, x, y, z, w, count);
 }
 
 } // namespace

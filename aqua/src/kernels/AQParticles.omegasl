@@ -1,0 +1,370 @@
+// AQUA compute kernels — the live particle pipeline (Phase 6h/6i, brief §14).
+//
+// The GPU half of the §14.2 split: the HOST owns the deterministic integer
+// bookkeeping (seeded emission, death schedule, census, and therefore the
+// compaction permutation — all predictable without any readback); the GPU
+// owns the parallel float physics. Kernels are transliterations of the
+// scalar-generic CPU templates (src/AQParticleMath.h field evaluation +
+// semi-implicit Euler; src/AQParticleCollision.h SDF push-out) with the CPU
+// float operation ORDER preserved — the remaining gap is codegen
+// reassociation/FMA + libm-vs-GPU transcendentals, the trajectory band the
+// 6h/6i parity tests assert against the double oracle. Death and flags are
+// INTEGER ops — bit-exact with the host schedule by construction (6f).
+//
+// Pool layout (one slot per particle, always compacted to the live prefix at
+// frame end — §14.2 "packed-to-prefix"):
+//   posR  : float4 (xyz position, w collision radius)
+//   velIM : float4 (xyz velocity, w invMass)
+//   death : uint   (age() calls until death — the 6f countdown)
+//   flags : uint   (1 alive / 0 dead)
+//
+// Per advance-frame the host encodes ONE command buffer: inject (staged new
+// particles → the pool tail) → nSub × (integrate [+ collide] + age) → the 6g
+// exclusive scan over the alive flags → scatter (stable compaction into the
+// ping-pong destination) → flag rebuild from the host-predicted live count.
+// No atomics anywhere; every write slot is private to its thread, so a single
+// GPU path is run-to-run deterministic (plan §8).
+
+#include "AQKernelsCommon.omegaslh"
+
+// config = (dt, 0, 0, 0);
+// counts = (activeSpan, fieldCount, injectStart | newLiveCount, injectCount | colliderCount).
+// activeSpan is the occupied prefix (live at frame start + injected): slots
+// past it are dead and never touched. counts[2]/counts[3] are per-kernel:
+// inject reads (injectStart, injectCount); scatter/rebuild read newLiveCount
+// in counts[2]; collide reads colliderCount in counts[3].
+struct AQParticleParams {
+    float4 config;
+    uint4  counts;
+};
+
+constant<AQParticleParams> aqPtParams : 0;
+
+buffer<AQF4> aqPtPosR  : 1;   // xyz position, w radius
+buffer<AQF4> aqPtVelIM : 2;   // xyz velocity, w invMass
+buffer<AQU1> aqPtDeath : 3;   // integer death countdown (6f)
+buffer<AQU1> aqPtFlags : 4;   // 1 alive / 0 dead
+
+// One force field (AQForceField flattened): meta = (kind, enabled, 0, 0);
+// position = (xyz, w radiusOfInfluence); axis = (xyz, w param0 — g / k /
+// speed / strength); extra = (param1 — falloff, 0, 0, 0).
+struct AQFieldGPU {
+    uint4  meta;
+    float4 position;
+    float4 axis;
+    float4 extra;
+};
+
+buffer<AQFieldGPU> aqPtFields : 5;
+
+// Emission staging (host-sampled attributes for this frame's k new
+// particles, in slot order — the inject kernel appends them to the pool tail
+// because GEBufferWriter cannot write at an offset into the resident pool).
+buffer<AQF4> aqPtStagePosR  : 6;
+buffer<AQF4> aqPtStageVelIM : 7;
+buffer<AQU1> aqPtStageDeath : 8;
+
+// Compaction: the 6g scan's exclusive offsets over the alive flags, and the
+// ping-pong destination the stable scatter writes into.
+buffer<AQU1> aqPtOffsets  : 9;
+buffer<AQF4> aqPtDstPosR  : 10;
+buffer<AQF4> aqPtDstVelIM : 11;
+buffer<AQU1> aqPtDstDeath : 12;
+
+// One static collider (6i): meta = (shapeType, 0, 0, 0) — AQShapeType uint
+// values (0 Sphere, 1 Box, 2 Capsule, 3 Plane; hulls are filtered out on the
+// host, their SDF is +inf); pos = (combined world translation, w
+// restitution); quat = combined world orientation; params = per-type (sphere
+// r; box hx,hy,hz; capsule r,halfHeight; plane nx,ny,nz + offset — plane
+// normal pre-normalized on the host with the same float math the CPU uses).
+struct AQColliderGPU {
+    uint4  meta;
+    float4 pos;
+    float4 quat;
+    float4 params;
+};
+
+buffer<AQColliderGPU> aqPtColliders : 13;
+
+// ---------------------------------------------------------------------------
+// Field evaluation — AQevalField<float> (AQParticleMath.h) transliterated,
+// acceleration-space, same guard thresholds and operation order.
+// ---------------------------------------------------------------------------
+
+float3 aqPtNormalizeOr(float3 v, float3 fallback){
+    float len = sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    if(len > 1e-12){
+        return v * (1.0 / len);
+    }
+    return fallback;
+}
+
+float3 aqPtEvalField(AQFieldGPU f, float3 pos, float3 vel){
+    float3 zero = float3(0.0, 0.0, 0.0);
+    if(f.meta[1] == 0u){
+        return zero;                      // disabled
+    }
+    uint kind = f.meta[0];
+    float3 fpos = float3(f.position[0], f.position[1], f.position[2]);
+    float roi   = f.position[3];
+    float3 axis = float3(f.axis[0], f.axis[1], f.axis[2]);
+    float p0    = f.axis[3];
+    float p1    = f.extra[0];
+
+    if(kind == 0u){                       // gravity: g * normalize(axis)
+        return aqPtNormalizeOr(axis, float3(0.0, -1.0, 0.0)) * p0;
+    }
+    if(kind == 1u){                       // drag: -k * vel
+        return vel * (-p0);
+    }
+    if(kind == 2u){                       // wind: speed * normalize(axis)
+        return aqPtNormalizeOr(axis, float3(1.0, 0.0, 0.0)) * p0;
+    }
+    if(kind == 3u){                       // vortex: swirl about position+axis
+        float3 ax = aqPtNormalizeOr(axis, float3(0.0, 1.0, 0.0));
+        float3 r = pos - fpos;
+        float rDotA = r[0]*ax[0] + r[1]*ax[1] + r[2]*ax[2];
+        float3 rPerp = r - ax * rDotA;
+        float rr = sqrt(rPerp[0]*rPerp[0] + rPerp[1]*rPerp[1] + rPerp[2]*rPerp[2]);
+        if(roi > 0.0 && rr > roi){
+            return zero;
+        }
+        float3 tang = aqPtNormalizeOr(cross(ax, rPerp), zero);
+        float fall = 1.0 / pow(max(rr, 1e-4), p1);
+        return tang * (p0 * fall);
+    }
+    if(kind == 4u){                       // point: +attract / -repel
+        float3 d = fpos - pos;
+        float dist = sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+        if(roi > 0.0 && dist > roi){
+            return zero;
+        }
+        float3 dir = aqPtNormalizeOr(d, zero);
+        float fall = 1.0 / pow(max(dist, 1e-4), p1);
+        return dir * (p0 * fall);
+    }
+    return zero;
+}
+
+// ---------------------------------------------------------------------------
+// Inject — copy this frame's host-staged new particles into the pool tail
+// [injectStart, injectStart + injectCount). One thread per new particle.
+// ---------------------------------------------------------------------------
+
+[in aqPtParams, in aqPtStagePosR, in aqPtStageVelIM, in aqPtStageDeath,
+ out aqPtPosR, out aqPtVelIM, out aqPtDeath, out aqPtFlags]
+compute(x=64,y=1,z=1)
+void AQParticleInject(uint3 tid : GlobalThreadID){
+    uint t = tid[0];
+    if(t >= aqPtParams.counts[3]){
+        return;
+    }
+    uint dst = aqPtParams.counts[2] + t;
+    aqPtPosR[dst].v  = aqPtStagePosR[t].v;
+    aqPtVelIM[dst].v = aqPtStageVelIM[t].v;
+    aqPtDeath[dst].v = aqPtStageDeath[t].v;
+    aqPtFlags[dst].v = 1u;
+}
+
+// ---------------------------------------------------------------------------
+// Integrate — Pass B + C: per-lane field accumulation (fields visited in
+// upload order, matching the CPU sum order) + semi-implicit Euler.
+// ---------------------------------------------------------------------------
+
+[in aqPtParams, inout aqPtPosR, inout aqPtVelIM, in aqPtFlags, in aqPtFields]
+compute(x=64,y=1,z=1)
+void AQParticleIntegrate(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqPtParams.counts[0]){
+        return;
+    }
+    if(aqPtFlags[i].v != 1u){
+        return;
+    }
+    float4 posR = aqPtPosR[i].v;
+    float4 velIM = aqPtVelIM[i].v;
+    float3 x = float3(posR[0], posR[1], posR[2]);
+    float3 v = float3(velIM[0], velIM[1], velIM[2]);
+
+    float3 a = float3(0.0, 0.0, 0.0);
+    for(uint f = 0u; f < aqPtParams.counts[1]; f++){
+        a = a + aqPtEvalField(aqPtFields[f], x, v);
+    }
+
+    float dt = aqPtParams.config[0];
+    v = v + a * dt;                      // AQintegrateSemiImplicit
+    x = x + v * dt;
+    aqPtVelIM[i].v = float4(v[0], v[1], v[2], velIM[3]);
+    aqPtPosR[i].v  = float4(x[0], x[1], x[2], posR[3]);
+}
+
+// ---------------------------------------------------------------------------
+// Collide (6i) — Pass D: one-way exact analytic push-out against the static
+// collider snapshot, transliterating AQshapeSignedDistanceGeneric<float>
+// (src/AQParticleCollision.h) with the CPU's inverse-transform shape
+// (t_inv + rotateConj(q, p), the AQTransform::inverse().transformPoint order).
+// ---------------------------------------------------------------------------
+
+[in aqPtParams, inout aqPtPosR, inout aqPtVelIM, in aqPtFlags, in aqPtColliders]
+compute(x=64,y=1,z=1)
+void AQParticleCollide(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqPtParams.counts[0]){
+        return;
+    }
+    if(aqPtFlags[i].v != 1u){
+        return;
+    }
+    float4 posR = aqPtPosR[i].v;
+    float4 velIM = aqPtVelIM[i].v;
+    float3 p = float3(posR[0], posR[1], posR[2]);
+    float3 v = float3(velIM[0], velIM[1], velIM[2]);
+    float radius = posR[3];
+
+    for(uint c = 0u; c < aqPtParams.counts[3]; c++){
+        AQColliderGPU col = aqPtColliders[c];
+        float4 q = col.quat;
+        float3 t = float3(col.pos[0], col.pos[1], col.pos[2]);
+        float restitution = col.pos[3];
+        uint shapeType = col.meta[0];
+
+        // AQTransform<float>::inverse().transformPoint(p):
+        //   inv.p = -rotateConj(q, t); pl = inv.p + rotateConj(q, p).
+        float3 rct = aqRotateConj(q, t);
+        float3 tInv = float3(-rct[0], -rct[1], -rct[2]);
+        float3 pl = tInv + aqRotateConj(q, p);
+
+        float dist = 1e30;
+        float3 nLocal = float3(0.0, 1.0, 0.0);
+
+        if(shapeType == 0u){              // Sphere: params = (radius)
+            float r = col.params[0];
+            float len = sqrt(pl[0]*pl[0] + pl[1]*pl[1] + pl[2]*pl[2]);
+            dist = len - r;
+            if(len > 1e-12){
+                nLocal = pl * (1.0 / len);
+            }
+        }
+        if(shapeType == 1u){              // Box: params = (hx, hy, hz)
+            float qx = abs(pl[0]) - col.params[0];
+            float qy = abs(pl[1]) - col.params[1];
+            float qz = abs(pl[2]) - col.params[2];
+            float mx = max(qx, 0.0);
+            float my = max(qy, 0.0);
+            float mz = max(qz, 0.0);
+            float outside = sqrt(mx*mx + my*my + mz*mz);
+            float inside = min(max(qx, max(qy, qz)), 0.0);
+            dist = outside + inside;
+            if(outside > 1e-12){
+                // copysign(m, pl) with m >= 0; m > 0 implies |pl| > h > 0,
+                // so the sign of pl is well-defined where it matters.
+                float gx = (pl[0] >= 0.0) ? mx : -mx;
+                float gy = (pl[1] >= 0.0) ? my : -my;
+                float gz = (pl[2] >= 0.0) ? mz : -mz;
+                float3 g = float3(gx, gy, gz);
+                float glen = sqrt(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
+                if(glen > 1e-12){
+                    nLocal = g * (1.0 / glen);
+                }
+            } else {
+                if(qx >= qy && qx >= qz){
+                    nLocal = float3((pl[0] >= 0.0) ? 1.0 : -1.0, 0.0, 0.0);
+                } else {
+                    if(qy >= qz){
+                        nLocal = float3(0.0, (pl[1] >= 0.0) ? 1.0 : -1.0, 0.0);
+                    } else {
+                        nLocal = float3(0.0, 0.0, (pl[2] >= 0.0) ? 1.0 : -1.0);
+                    }
+                }
+            }
+        }
+        if(shapeType == 2u){              // Capsule: params = (radius, halfHeight)
+            float hh = col.params[1];
+            float cy = max(-hh, min(pl[1], hh));
+            float3 delta = float3(pl[0], pl[1] - cy, pl[2]);
+            float len = sqrt(delta[0]*delta[0] + delta[1]*delta[1] + delta[2]*delta[2]);
+            dist = len - col.params[0];
+            if(len > 1e-12){
+                nLocal = delta * (1.0 / len);
+            }
+        }
+        if(shapeType == 3u){              // Plane: params = pre-normalized (n, offset)
+            float3 n = float3(col.params[0], col.params[1], col.params[2]);
+            dist = n[0]*pl[0] + n[1]*pl[1] + n[2]*pl[2] - col.params[3];
+            nLocal = n;
+        }
+
+        if(dist >= radius){
+            continue;                     // no contact with this collider
+        }
+        float3 nWorld = aqRotate(q, nLocal);
+        p = p + nWorld * (radius - dist); // exact analytic push-out
+        float vn = v[0]*nWorld[0] + v[1]*nWorld[1] + v[2]*nWorld[2];
+        if(vn < 0.0){                     // reflect/damp the into-surface part
+            v = v - nWorld * ((1.0 + restitution) * vn);
+        }
+    }
+
+    aqPtPosR[i].v  = float4(p[0], p[1], p[2], radius);
+    aqPtVelIM[i].v = float4(v[0], v[1], v[2], velIM[3]);
+}
+
+// ---------------------------------------------------------------------------
+// Age — Pass E: the 6f integer countdown. Bit-exact with the host schedule.
+// ---------------------------------------------------------------------------
+
+[in aqPtParams, inout aqPtDeath, inout aqPtFlags]
+compute(x=64,y=1,z=1)
+void AQParticleAge(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqPtParams.counts[0]){
+        return;
+    }
+    if(aqPtFlags[i].v != 1u){
+        return;
+    }
+    uint d = aqPtDeath[i].v;
+    if(d <= 1u){
+        aqPtDeath[i].v = 0u;
+        aqPtFlags[i].v = 0u;
+    } else {
+        aqPtDeath[i].v = d - 1u;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compact — Pass F: stable scatter of the survivors into the ping-pong
+// destination at their 6g-scanned exclusive offsets (survivor order
+// preserved; each destination slot has exactly one writer), then the flag
+// rebuild from the HOST-predicted live count (the host knows the census from
+// the integer death schedule alone — no readback, §14.2).
+// ---------------------------------------------------------------------------
+
+[in aqPtParams, in aqPtPosR, in aqPtVelIM, in aqPtDeath, in aqPtFlags,
+ in aqPtOffsets, out aqPtDstPosR, out aqPtDstVelIM, out aqPtDstDeath]
+compute(x=64,y=1,z=1)
+void AQParticleScatter(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqPtParams.counts[0]){
+        return;
+    }
+    if(aqPtFlags[i].v != 1u){
+        return;
+    }
+    uint j = aqPtOffsets[i].v;
+    aqPtDstPosR[j].v  = aqPtPosR[i].v;
+    aqPtDstVelIM[j].v = aqPtVelIM[i].v;
+    aqPtDstDeath[j].v = aqPtDeath[i].v;
+}
+
+// Rebuild the flags over [0, spanCount): alive exactly on the packed prefix
+// [0, newLiveCount). Also the pool-creation zero pass (newLiveCount = 0).
+[in aqPtParams, out aqPtFlags]
+compute(x=64,y=1,z=1)
+void AQParticleRebuildFlags(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqPtParams.counts[0]){
+        return;
+    }
+    aqPtFlags[i].v = (i < aqPtParams.counts[2]) ? 1u : 0u;
+}

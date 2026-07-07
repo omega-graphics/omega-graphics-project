@@ -1,30 +1,37 @@
-// AQUA Phase 6 §1 / §9 — the runnable deliverable: a GPU-substrate-shaped (here
-// CPU-live) particle fountain validated against a slow, obviously-correct
-// double-precision reference oracle.
+// AQUA Phase 6h/6i — the LIVE GPU particle path vs the double oracle (§14.3).
 //
-// The oracle replays the EXACT same ACAC pipeline (emit once/frame -> per-sub-step
-// integrate+collide+age -> compact once/frame) in sequential double code, reusing
-// the very same scalar-generic math the production float path uses
-// (AQParticleMath.h + AQParticleCollision.h). So a divergence localizes to
-// precision, never to a second algorithm (§8). Because emission count, slot
-// assignment, kill order, and stable compaction are all deterministic and shared,
-// the packed live set corresponds index-for-index between the two paths — which is
-// what lets the trajectory band be per-particle.
+// Unlike the rigid pillar's stage-isolation tests, this drives the PUBLIC
+// surface end to end: AQContext::loadKernels flips the particle pillar live,
+// setExecutionPath(GPU) selects it, and advance() runs AQUA's first live GPU
+// step — host-side deterministic bookkeeping (seeded emission, integer death,
+// census, compaction permutation) + device-side float physics (field
+// integrate, SDF collide, stable scan/scatter compaction).
 //
-// Asserts the §9 acceptance criteria that the earlier increments don't already
-// pin (census/recycle in 6b, determinism in 6d): trajectory-vs-oracle band,
-// no-tunneling against a floor + box + sphere (exact), and scale.
+// Acceptance mirrors the 6e CPU deliverable (§9): the census must match the
+// double oracle EXACTLY every frame (integer bookkeeping is shared, so
+// count AND slot assignment agree by construction — any mismatch is a real
+// bug); trajectories carry the float band; the no-tunnel invariant is checked
+// on the GPU readback against the analytic SDF; the GPU path is run-to-run
+// deterministic (byte-identical readbacks); and the pool sustains scale.
+//
+// INTERNAL test (the oracle shares src/AQParticleMath.h +
+// src/AQParticleCollision.h), device-guarded, skips on headless CI.
 
-#include "AQSpaceImpl.h"          // AQParticleCollider (for the collider spec)
-#include "AQParticleMath.h"       // shared emission / field / integration math
-#include "AQParticleCollision.h"  // AQshapeSignedDistanceGeneric<Ty>
+#include "AQSpaceImpl.h"          // AQParticleCollider spec types
+#include "AQParticleMath.h"
+#include "AQParticleCollision.h"
 
 #include <aqua/AQContext.h>
 #include <aqua/AQSpace.h>
 #include <aqua/AQMath.h>
 
+#include <omegaGTE/GTEDevice.h>
+#include <omegaGTE/GE.h>
+#include <omegaGTE/GECommandQueue.h>
+
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -37,7 +44,8 @@ static void check(bool cond, const std::string& what) {
 }
 
 // ---------------------------------------------------------------------------
-// Double-precision reference oracle — the same pipeline, sequential + obvious.
+// Double-precision oracle — the 6e reference with the 6f integer death model,
+// replaying the exact ACAC schedule AQContext::advance runs.
 // ---------------------------------------------------------------------------
 struct ColliderD { AQShape shape; AQTransform<double> xform; double restitution; };
 
@@ -45,7 +53,7 @@ struct Oracle {
     std::uint32_t capacity = 0;
     std::vector<AQVec3<double>> pos, vel;
     std::vector<double> invMass, life, rad;
-    std::vector<std::uint32_t> cd;         // integer death countdown (6f) — the death authority
+    std::vector<std::uint32_t> cd;
     std::vector<std::uint32_t> flags, freeList;
     std::uint32_t liveCount = 0;
 
@@ -67,7 +75,7 @@ struct Oracle {
         cd.assign(cap, 0u);
         flags.assign(cap, AQParticleDead);
         freeList.resize(cap);
-        for (std::uint32_t i = 0; i < cap; ++i) freeList[i] = cap - 1u - i;  // descending
+        for (std::uint32_t i = 0; i < cap; ++i) freeList[i] = cap - 1u - i;
         liveCount = 0;
     }
     std::uint32_t allocate(std::uint32_t k, std::vector<std::uint32_t>& out) {
@@ -115,8 +123,6 @@ struct Oracle {
                 pos[s]     = AQsampleEmitPosition<double>(em, rng);
                 vel[s]     = AQsampleEmitVelocity<double>(em, rng);
                 life[s]    = AQsampleLifetime<double>(em, rng);
-                // 6f: identical integer death schedule (same double draw, same
-                // shared AQdeathCountdown, same sub-step) as the production path.
                 cd[s]      = AQdeathCountdown(life[s], fixedDt);
                 invMass[s] = (em.mass > 0.f) ? (1.0 / em.mass) : 0.0;
                 rad[s]     = em.radius;
@@ -144,15 +150,13 @@ struct Oracle {
             }
         }
     }
-    void age(double dt) {
+    void age() {
         for (std::uint32_t s = 0; s < capacity; ++s) {
             if ((flags[s] & AQParticleAlive) == 0u) continue;
-            life[s] -= dt;                        // display mirror only (6f)
             if (cd[s] <= 1u) { cd[s] = 0u; kill(s); }
             else             { --cd[s]; }
         }
     }
-    // Mirror of AQContext::advance so the sub-step count matches bit-for-bit.
     void advance(float realDt) {
         if (realDt <= 0.f) return;
         if (realDt > 0.25f) realDt = 0.25f;
@@ -164,7 +168,7 @@ struct Oracle {
         while (accumulator >= fixedDt) {
             integrate(static_cast<double>(fixedDt));
             if (collide) collidePass();
-            age(static_cast<double>(fixedDt));
+            age();
             accumulator -= fixedDt;
         }
         if (nSub > 0) compact();
@@ -172,7 +176,7 @@ struct Oracle {
 };
 
 // ---------------------------------------------------------------------------
-// Scene helpers — build the SAME emitter/fields/colliders for both paths.
+// Shared scene builders (identical for production and oracle).
 // ---------------------------------------------------------------------------
 static AQEmitter fountainEmitter(float rate) {
     AQEmitter em;
@@ -198,7 +202,6 @@ static AQForceField dragF() {
     AQForceField f; f.kind = AQFieldDrag; f.p.drag = {0.15f}; f.enabled = 1; return f;
 }
 
-// Static-collider specs shared by production and oracle.
 struct ColliderSpec { AQShape shape; FVec<3> pos; float restitution; };
 static std::vector<ColliderSpec> fountainColliders() {
     std::vector<ColliderSpec> v;
@@ -223,19 +226,32 @@ static AQTransform<double> xformD(const FVec<3>& p) {
     AQTransform<double> t; t.p = AQvec3<double>(p[0][0], p[1][0], p[2][0]); return t;
 }
 
+// A GPU-path context: engine + queue + kernels loaded + GPU selected.
+static SharedHandle<AQContext> makeGpuContext(OmegaGTE::GTE& gte, bool& ok) {
+    OmegaGTE::GECommandQueueDesc queueDesc;
+    queueDesc.maxBufferCount = 4;
+    auto queue = gte.graphicsEngine->makeCommandQueue(queueDesc);
+    auto ctx = AQContext::Create(gte.graphicsEngine, queue);
+    ok = ctx->loadKernels(OmegaCommon::String(AQUA_KERNELS_LIB_PATH));
+    ctx->setExecutionPath(AQExecPath::GPU);
+    ok = ok && (ctx->executionPath() == AQExecPath::GPU);
+    return ctx;
+}
+
 // ---------------------------------------------------------------------------
-// Test 1 — free-flight trajectory match vs the double oracle (+ census + scale).
+// Test 1 (6h) — collision-free fountain: census exact + trajectory band.
 // ---------------------------------------------------------------------------
-static void testOracleTrajectory() {
+static void testGpuFreeFlight(OmegaGTE::GTE& gte) {
     const std::uint32_t CAP = 8192;
     const float RATE = 4000.f;
-    auto ctx   = AQContext::CreateCPUOnly();
+    bool gpuOk = false;
+    auto ctx = makeGpuContext(gte, gpuOk);
+    check(gpuOk, "loadKernels + setExecutionPath(GPU) resolve the live GPU path");
     auto space = ctx->createSpace();
     AQParticleSystemHandle sys = space->createParticleSystem(CAP);
     space->addEmitter(sys, fountainEmitter(RATE));
     space->addForceField(sys, gravityF());
     space->addForceField(sys, dragF());
-    // No colliders: isolate emission + integration precision.
 
     Oracle oracle; oracle.reset(CAP); oracle.collide = false;
     oracle.emitters.push_back(fountainEmitter(RATE));
@@ -264,21 +280,55 @@ static void testOracleTrajectory() {
         }
     }
 
-    std::printf("    [measure] free-flight max |pos - oracle| = %.3e, max |vel - oracle| = %.3e, peak live = %u\n",
+    std::printf("    [measure] GPU free-flight max |pos - oracle| = %.3e, max |vel - oracle| = %.3e, peak live = %u\n",
                 maxPos, maxVel, peak);
-    check(censusExact, "census matches the double oracle exactly every frame (count + slots)");
-    check(maxPos < 5e-3, "per-particle position tracks the double oracle within the float band");
-    check(maxVel < 5e-3, "per-particle velocity tracks the double oracle within the float band");
-    check(peak > 3000, "sustains a large live population");
+    check(censusExact, "GPU census matches the double oracle exactly every frame (count + slots)");
+    check(maxPos < 5e-3, "GPU per-particle position tracks the double oracle within the float band");
+    check(maxVel < 5e-3, "GPU per-particle velocity tracks the double oracle within the float band");
+    check(peak > 3000, "GPU fountain sustains a large live population");
 }
 
 // ---------------------------------------------------------------------------
-// Test 2 — no tunneling against floor + box + sphere (exact), + census + scale.
+// Test 2 (6h) — within-path determinism: two full GPU runs, byte-identical.
 // ---------------------------------------------------------------------------
-static void testNoTunnelScene() {
+static void testGpuDeterminism(OmegaGTE::GTE& gte) {
+    auto runOnce = [&](std::string& bytes) -> bool {
+        const std::uint32_t CAP = 4096;
+        bool gpuOk = false;
+        auto ctx = makeGpuContext(gte, gpuOk);
+        auto space = ctx->createSpace();
+        AQParticleSystemHandle sys = space->createParticleSystem(CAP);
+        space->addEmitter(sys, fountainEmitter(2000.f));
+        space->addForceField(sys, gravityF());
+        space->addForceField(sys, dragF());
+        for (int frame = 0; frame < 45; ++frame) ctx->advance(1.f / 60.f);
+        std::vector<FVec<3>> pp(CAP, FVec<3>::Create()), pv(CAP, FVec<3>::Create());
+        const std::uint32_t n = space->readParticleState(sys, pp.data(), pv.data(), nullptr, nullptr, CAP);
+        bytes.clear();
+        for (std::uint32_t i = 0; i < n; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                const float p = pp[i][c][0], v = pv[i][c][0];
+                bytes.append(reinterpret_cast<const char*>(&p), sizeof(float));
+                bytes.append(reinterpret_cast<const char*>(&v), sizeof(float));
+            }
+        }
+        return gpuOk && n > 0;
+    };
+    std::string a, b;
+    const bool ranA = runOnce(a);
+    const bool ranB = runOnce(b);
+    check(ranA && ranB, "two independent GPU runs complete");
+    check(!a.empty() && a == b, "two GPU runs are byte-identical (within-path determinism)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 3 (6i) — the full fountain: floor + box + sphere on-device collision.
+// ---------------------------------------------------------------------------
+static void testGpuCollisionScene(OmegaGTE::GTE& gte) {
     const std::uint32_t CAP = 8192;
     const float RATE = 4000.f;
-    auto ctx   = AQContext::CreateCPUOnly();
+    bool gpuOk = false;
+    auto ctx = makeGpuContext(gte, gpuOk);
     auto space = ctx->createSpace();
 
     const std::vector<ColliderSpec> specs = fountainColliders();
@@ -293,20 +343,17 @@ static void testNoTunnelScene() {
     space->addForceField(sys, dragF());
     space->setParticleCollisionEnabled(sys, true);
 
-    // Oracle mirrors the census (collision doesn't change counts, but running it
-    // with the same colliders keeps the two paths identical end to end).
     Oracle oracle; oracle.reset(CAP); oracle.collide = true;
     oracle.emitters.push_back(fountainEmitter(RATE));
     oracle.fields.push_back(gravityF());
     oracle.fields.push_back(dragF());
     for (const ColliderSpec& s : specs) oracle.colliders.push_back({s.shape, xformD(s.pos), s.restitution});
 
-    // Float SDF (via the shared template) to check the no-tunnel invariant on the
-    // production readback.
     std::vector<AQTransform<float>> xf;
     for (const ColliderSpec& s : specs) { AQTransform<float> t; t.p = s.pos; xf.push_back(t); }
 
-    double worstPenetration = 0.0;   // most-negative signed distance seen (0 = none)
+    double worstPenetration = 0.0;
+    double maxPos = 0.0;
     std::uint32_t peak = 0;
     bool censusExact = true, noTunnel = true;
     std::vector<FVec<3>> pp(CAP, FVec<3>::Create());
@@ -319,31 +366,43 @@ static void testNoTunnelScene() {
         censusExact = censusExact && (nLive == oracle.liveCount);
         peak = (nLive > peak) ? nLive : peak;
 
+        const std::uint32_t n = (nLive < oracle.liveCount) ? nLive : oracle.liveCount;
+        for (std::uint32_t i = 0; i < n; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                maxPos = std::max(maxPos, std::fabs(double(pp[i][c][0]) - oracle.pos[i][c][0]));
+            }
+        }
         for (std::uint32_t i = 0; i < nLive; ++i) {
             for (std::size_t c = 0; c < specs.size(); ++c) {
                 const AQShapeSample sd = AQshapeSignedDistance(specs[c].shape, pp[i], xf[c]);
                 if (sd.distance < 0.f) worstPenetration = std::min(worstPenetration, double(sd.distance));
-                if (sd.distance < -2e-3f) noTunnel = false;   // meaningfully inside a solid
+                if (sd.distance < -2e-3f) noTunnel = false;
             }
         }
     }
 
-    std::printf("    [measure] worst penetration = %.3e (0 = never inside), peak live = %u\n",
-                worstPenetration, peak);
-    check(noTunnel, "no live particle ever tunnels into the floor / box / sphere (exact invariant)");
-    check(censusExact, "collision scene census matches the oracle every frame");
-    check(peak > 3000, "collision fountain sustains a large live population");
+    std::printf("    [measure] GPU collision scene: worst penetration = %.3e, max |pos - oracle| = %.3e, peak live = %u\n",
+                worstPenetration, maxPos, peak);
+    check(noTunnel, "GPU path: no live particle ever tunnels the floor / box / sphere");
+    check(censusExact, "GPU collision-scene census matches the oracle every frame");
+    // Bounce trajectories are contact-ordering sensitive (a float-band
+    // difference at a contact flips a reflection a sub-step earlier/later),
+    // so the collision scene pins the band looser than free flight and the
+    // hard invariants above carry the correctness weight.
+    check(maxPos < 5e-2, "GPU collision-scene positions track the oracle within the contact band");
+    check(peak > 3000, "GPU collision fountain sustains a large live population");
 }
 
 // ---------------------------------------------------------------------------
-// Test 2b — scale: production-only (no oracle) run to hundreds of thousands.
+// Test 4 — scale on the GPU path (no per-frame readback: census is host-side).
 // ---------------------------------------------------------------------------
-static void testScale() {
+static void testGpuScale(OmegaGTE::GTE& gte) {
     const std::uint32_t CAP = 262144;
-    auto ctx   = AQContext::CreateCPUOnly();
+    bool gpuOk = false;
+    auto ctx = makeGpuContext(gte, gpuOk);
     auto space = ctx->createSpace();
     AQParticleSystemHandle sys = space->createParticleSystem(CAP);
-    space->addEmitter(sys, fountainEmitter(180000.f));   // ~hundreds of thousands live
+    space->addEmitter(sys, fountainEmitter(180000.f));
     space->addForceField(sys, gravityF());
 
     std::uint32_t peak = 0;
@@ -352,36 +411,29 @@ static void testScale() {
         const std::uint32_t live = space->liveParticleCount(sys);
         peak = (live > peak) ? live : peak;
     }
-    std::printf("    [measure] scale peak live = %u (capacity %u)\n", peak, CAP);
-    check(peak > 100000, "scale: sustains > 100k live particles without leaking the pool");
-    check(peak < CAP,    "scale: fixed pool is never exceeded (guards hold below capacity)");
-}
-
-// ---------------------------------------------------------------------------
-// Test 3 — debug bus emission gates on the flag bits.
-// ---------------------------------------------------------------------------
-static void testDebugBus() {
-    auto ctx   = AQContext::CreateCPUOnly();
-    auto space = ctx->createSpace();
-    AQParticleSystemHandle sys = space->createParticleSystem(4096);
-    space->addEmitter(sys, fountainEmitter(2000.f));
-    space->addForceField(sys, gravityF());
-
-    // Off by default: no particle lines drained.
-    for (int i = 0; i < 10; ++i) ctx->advance(1.f / 60.f);
-    check(space->drainDebugLines().empty(), "debug off (default): particle bus is empty");
-
-    space->setDebugFlags(AQDebugParticle | AQDebugForceField);
-    for (int i = 0; i < 5; ++i) ctx->advance(1.f / 60.f);
-    const auto lines = space->drainDebugLines();
-    check(!lines.empty(), "AQDebugParticle/ForceField: lines are emitted onto the drainable bus");
+    std::printf("    [measure] GPU scale peak live = %u (capacity %u)\n", peak, CAP);
+    check(peak > 100000, "GPU scale: sustains > 100k live particles");
+    check(peak < CAP,    "GPU scale: fixed pool is never exceeded");
 }
 
 int main() {
-    testOracleTrajectory();
-    testNoTunnelScene();
-    testScale();
-    testDebugBus();
+    std::printf("== AQUA Phase 6h/6i: live GPU particle path vs the double oracle ==\n");
+
+    OmegaCommon::Vector<SharedHandle<OmegaGTE::GTEDevice>> devices =
+        OmegaGTE::enumerateDevices();
+    if (devices.empty()) {
+        std::printf("[SKIP] no GTE device on this host — GPU particle test skipped\n");
+        return 0;
+    }
+    OmegaGTE::GTE gte = OmegaGTE::Init(devices[0]);
+    check(static_cast<bool>(gte.graphicsEngine), "GTE initialized a graphics engine");
+
+    testGpuFreeFlight(gte);
+    testGpuDeterminism(gte);
+    testGpuCollisionScene(gte);
+    testGpuScale(gte);
+
+    OmegaGTE::Close(gte);
 
     std::printf("\n%s: %d failure(s)\n", g_failures == 0 ? "OK" : "FAILURES", g_failures);
     return g_failures == 0 ? 0 : 1;

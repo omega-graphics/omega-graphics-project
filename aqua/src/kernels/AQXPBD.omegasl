@@ -1,0 +1,200 @@
+// AQUA compute kernels — XPBD constraint projection (Phase 7f, brief §13.4).
+//
+// Line-by-line transliterations of the three passes in src/AQXPBDMath.h
+// (AQxpbdPredict / AQxpbdProjectDistance / AQxpbdDeriveVelocity) with the CPU
+// templates' float operation ORDER preserved (the 5c discipline): same
+// left-associated sums, scalar-multiply-then-vector-scale shapes, the same
+// guard thresholds. The remaining CPU<->GPU gap is codegen reassociation/FMA
+// and libm-vs-GPU sqrt — the tolerance band the 7f parity test asserts.
+//
+// Dispatch structure (brief §6 / §13.2 11.3): the constraint array arrives
+// COLOR-SORTED (contiguous per color, the coalesced-read layout AQXPBDBody
+// already builds for the CPU solve), so one color batch is one dispatch over
+// the contiguous range [colorStart, colorStart + colorCount) — no indirection
+// table. Colors run serially (sequential compute passes in one command
+// buffer); within a color no two constraints share a particle, so the
+// position writes never race and the solve needs NO atomics — which is what
+// keeps a single GPU path run-to-run deterministic (plan §8).
+//
+// One XPBD slice of size h = dt / substeps is:
+//   AQXPBDPredict     (per particle)   — unconstrained symplectic step
+//   AQXPBDZeroLambda  (per constraint) — λ reset (accumulates within a slice)
+//   per color: AQXPBDProjectDistance (per constraint in the color)
+//   AQXPBDDerive      (per particle)   — v = (x − x_prev)/h, optional damping
+//
+// Guards ride IN the projection exactly like the CPU (§6 "guards for the 3am
+// engineer"): zero-length gradient → skip (never divide), per-projection
+// correction clamped to maxMove with λ kept consistent. A trip increments the
+// constraint's slot in aqXpTrips — a plain (non-atomic) counter is safe
+// because a constraint belongs to exactly one thread of one color dispatch —
+// and the host reads the buffer back to report loudly and feed the debug bus.
+
+#include "AQKernelsCommon.omegaslh"
+
+// gravityH = (gx, gy, gz, h); damping = (velocityDamping, maxMove, 0, 0);
+// counts = (particleCount, constraintCount, colorStart, colorCount).
+struct AQXPBDStepParams {
+    float4 gravityH;
+    float4 damping;
+    uint4  counts;
+};
+
+constant<AQXPBDStepParams> aqXpParams : 0;
+
+buffer<AQF4> aqXpPos  : 1;   // xyz position,      w invMass (0 ⇒ pinned)
+buffer<AQF4> aqXpPrev : 2;   // xyz prev position, w unused
+buffer<AQF4> aqXpVel  : 3;   // xyz velocity,      w unused
+
+// One color-sorted distance constraint: ab = (a, b, color, 0);
+// terms = (restLength, compliance, lambda, 0). λ is solver state mutated in
+// place (reset by AQXPBDZeroLambda each slice, accumulated by the projection).
+struct AQXPBDConGPU {
+    uint4  ab;
+    float4 terms;
+};
+
+buffer<AQXPBDConGPU> aqXpCon   : 4;
+buffer<AQU1>         aqXpTrips : 5;   // cumulative explosion-guard trips / constraint
+
+// ---------------------------------------------------------------------------
+// 1. predict — AQxpbdPredict, one thread per particle. Pinned lanes
+// (invMass == 0) still refresh x_prev so a later unpin never derives a bogus
+// velocity from stale history (the CPU's explicit pinned branch).
+// ---------------------------------------------------------------------------
+
+[in aqXpParams, inout aqXpPos, out aqXpPrev, inout aqXpVel]
+compute(x=64,y=1,z=1)
+void AQXPBDPredict(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqXpParams.counts[0]){
+        return;
+    }
+    float4 posW = aqXpPos[i].v;
+    float invMass = posW[3];
+    float3 x = float3(posW[0], posW[1], posW[2]);
+    aqXpPrev[i].v = float4(x[0], x[1], x[2], 0.0);
+    if(invMass == 0.0){
+        return;                       // pinned — x_prev refreshed, pose holds
+    }
+    float h = aqXpParams.gravityH[3];
+    float3 gravity = float3(aqXpParams.gravityH[0], aqXpParams.gravityH[1], aqXpParams.gravityH[2]);
+    float4 vel4 = aqXpVel[i].v;
+    float3 v = float3(vel4[0], vel4[1], vel4[2]);
+    v = v + gravity * h;              // AQxpbdPredict: v = v + gravity * h
+    x = x + v * h;                    //                x = x + v * h
+    aqXpVel[i].v = float4(v[0], v[1], v[2], 0.0);
+    aqXpPos[i].v = float4(x[0], x[1], x[2], invMass);
+}
+
+// ---------------------------------------------------------------------------
+// λ reset — one thread per constraint, top of every slice (λ accumulates
+// within a slice across the slice's iterations, brief §6).
+// ---------------------------------------------------------------------------
+
+[in aqXpParams, inout aqXpCon]
+compute(x=64,y=1,z=1)
+void AQXPBDZeroLambda(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqXpParams.counts[1]){
+        return;
+    }
+    float4 terms = aqXpCon[i].terms;
+    aqXpCon[i].terms = float4(terms[0], terms[1], 0.0, terms[3]);
+}
+
+// ---------------------------------------------------------------------------
+// 2. project — AQxpbdProjectDistance over ONE color batch: the contiguous
+// color-sorted range [counts[2], counts[2] + counts[3]). One thread per
+// constraint; no two constraints in the range share a particle (coloring
+// invariant), so the two position writes are conflict-free.
+// ---------------------------------------------------------------------------
+
+[in aqXpParams, inout aqXpPos, inout aqXpCon, inout aqXpTrips]
+compute(x=64,y=1,z=1)
+void AQXPBDProjectDistance(uint3 tid : GlobalThreadID){
+    uint t = tid[0];
+    if(t >= aqXpParams.counts[3]){
+        return;
+    }
+    uint ci = aqXpParams.counts[2] + t;
+
+    uint4 ab = aqXpCon[ci].ab;
+    uint a = ab[0];
+    uint b = ab[1];
+    float4 terms = aqXpCon[ci].terms;
+    float restLength = terms[0];
+    float compliance = terms[1];
+    float lambda     = terms[2];
+
+    float4 posA4 = aqXpPos[a].v;
+    float4 posB4 = aqXpPos[b].v;
+    float wa = posA4[3];
+    float wb = posB4[3];
+    float wsum = wa + wb;
+    if(wsum <= 0.0){
+        return;                       // both pinned — nothing to move
+    }
+
+    float3 xa = float3(posA4[0], posA4[1], posA4[2]);
+    float3 xb = float3(posB4[0], posB4[1], posB4[2]);
+    float3 d = xa - xb;
+    float len2 = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];   // OmegaGTE::dot order
+    if(len2 < 1e-24){
+        return;                       // coincident: zero-length gradient
+    }
+    float len = sqrt(len2);
+
+    float3 n = d * (1.0 / len);
+    float C = len - restLength;
+    float h = aqXpParams.gravityH[3];
+    float alphaTilde = compliance / (h * h);
+
+    float dLambda = (-C - alphaTilde * lambda) / (wsum + alphaTilde);
+
+    // Explosion guard: bound the larger endpoint's move this projection,
+    // keeping λ consistent with the clamped correction (AQXPBDMath.h).
+    float wMax = (wa > wb) ? wa : wb;
+    float move = abs(dLambda) * wMax;
+    float maxMove = aqXpParams.damping[1];
+    if(move > maxMove){
+        dLambda = dLambda * (maxMove / move);
+        aqXpTrips[ci].v = aqXpTrips[ci].v + 1u;   // one owner thread — no race
+    }
+
+    lambda = lambda + dLambda;
+    aqXpCon[ci].terms = float4(restLength, compliance, lambda, terms[3]);
+
+    xa = xa + n * (wa * dLambda);
+    xb = xb - n * (wb * dLambda);
+    aqXpPos[a].v = float4(xa[0], xa[1], xa[2], wa);
+    aqXpPos[b].v = float4(xb[0], xb[1], xb[2], wb);
+}
+
+// ---------------------------------------------------------------------------
+// 3. derive — AQxpbdDeriveVelocity, one thread per particle. Pinned lanes
+// read velocity 0 by definition (the CPU's explicit else-branch).
+// ---------------------------------------------------------------------------
+
+[in aqXpParams, in aqXpPos, in aqXpPrev, out aqXpVel]
+compute(x=64,y=1,z=1)
+void AQXPBDDerive(uint3 tid : GlobalThreadID){
+    uint i = tid[0];
+    if(i >= aqXpParams.counts[0]){
+        return;
+    }
+    float4 posW = aqXpPos[i].v;
+    if(posW[3] == 0.0){
+        aqXpVel[i].v = float4(0.0, 0.0, 0.0, 0.0);
+        return;
+    }
+    float h = aqXpParams.gravityH[3];
+    float4 prev4 = aqXpPrev[i].v;
+    float3 x = float3(posW[0], posW[1], posW[2]);
+    float3 xPrev = float3(prev4[0], prev4[1], prev4[2]);
+    float3 v = (x - xPrev) * (1.0 / h);
+    float damping = aqXpParams.damping[0];
+    if(damping > 0.0){
+        v = v * (1.0 - damping);
+    }
+    aqXpVel[i].v = float4(v[0], v[1], v[2], 0.0);
+}

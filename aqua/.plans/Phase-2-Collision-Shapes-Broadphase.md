@@ -594,7 +594,10 @@ the pimpl boundary holds.
 6. **Convex hull in Phase 2 or deferred.** *Lean: land sphere / box / capsule /
    plane first (the thin slice, roadmap §3 principle 5), convex hull as the Phase
    2 stretch*; heightfield and static triangle mesh deferred to a Phase 2.x / the
-   static side of Phase 3.
+   static side of Phase 3. *(2026-07-07: the Phase 2.x proposal now exists —
+   `.plans/future/Phase-2.x-Static-Mesh-Colliders.md` — covering cooked static
+   triangle meshes with a PLOC-built midphase BVH, internal-edge filtering, and
+   the static world set beside the grid; heightfield stays a follow-on there.)*
 7. **Where the candidate list is owned & handed off.** Exposed via
    `candidatePairs()` for debug now; the real consumer is Phase 3 narrowphase.
    *Lean: the space owns the SoA pair buffer; Phase 3 reads it in place* (no copy),

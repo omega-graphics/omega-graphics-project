@@ -19,6 +19,7 @@
 
 #include "AQSpaceImpl.h"
 #include "AQXPBDMath.h"
+#include "AQComputeBackend.h"   // Phase 7f — the live GPU XPBD path
 
 #include <algorithm>
 #include <cmath>
@@ -42,6 +43,7 @@ std::uint32_t AQXPBDBody::addParticles(const OmegaGTE::FVec<3>* pos, const float
         const float wi = w ? w[i] : 1.f;
         invMass.push_back(wi > 0.f ? wi : 0.f);
     }
+    gpuUploadNeeded = true;   // 7f: the device particle SoA must be re-seeded
     return first;
 }
 
@@ -201,6 +203,30 @@ bool AQXPBDBody::anyNonFinite() const {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 7f — the host↔device readback sync point (the 6h idiom). Pulls the
+// body's positions/velocities from the resident pool into the host mirror.
+// No-op on the CPU path (never dirty) or when no backend is attached.
+// ---------------------------------------------------------------------------
+
+static void AQrefreshHostXPBDState(AQXPBDBody &body, AQComputeBackend *gpu) {
+    if (!body.gpuDirty || gpu == nullptr) return;
+    const std::size_t n = body.positions.size();
+    if (n > 0) {
+        OmegaCommon::Vector<float> px, py, pz, vx, vy, vz;
+        if (!gpu->downloadXPBDParticles(body.id, px, py, pz, vx, vy, vz, n)) {
+            std::cerr << "AQUA::AQSpace[XPBD]: GPU state readback failed for body "
+                      << body.id << " — host mirror stays stale.\n";
+            return;
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            body.positions[i]  = AQvec3(px[i], py[i], pz[i]);
+            body.velocities[i] = AQvec3(vx[i], vy[i], vz[i]);
+        }
+    }
+    body.gpuDirty = false;
+}
+
+// ---------------------------------------------------------------------------
 // AQSpace::Impl — handle resolution (the particle-system idiom).
 // ---------------------------------------------------------------------------
 
@@ -240,6 +266,9 @@ AQXPBDBodyHandle AQSpace::createXPBDBody(const AQXPBDBodyDesc& desc) {
 void AQSpace::destroyXPBDBody(AQXPBDBodyHandle body) {
     for (auto it = impl->xpbdBodies.begin(); it != impl->xpbdBodies.end(); ++it) {
         if (*it && (*it)->id == body.id) {
+            if (impl->gpuBackend && (*it)->gpuResident) {
+                impl->gpuBackend->xpbdReleasePool(body.id);
+            }
             impl->xpbdBodies.erase(it);
             return;
         }
@@ -302,8 +331,11 @@ std::uint32_t AQSpace::readXPBDState(AQXPBDBodyHandle body,
                                      OmegaGTE::FVec<3>* outPositions,
                                      OmegaGTE::FVec<3>* outVelocities,
                                      std::uint32_t maxCount) const {
-    const AQXPBDBody* bp = impl->xpbdBodyAt(body.id);
+    // unique_ptr does not propagate constness to the pointee — the lazy GPU
+    // readback (a cache refresh, logically const) is reachable from here.
+    AQXPBDBody* bp = impl->xpbdBodyAt(body.id);
     if (!bp) return 0;
+    AQrefreshHostXPBDState(*bp, impl->gpuBackend);
     const std::uint32_t n =
         std::min<std::uint32_t>(static_cast<std::uint32_t>(bp->positions.size()), maxCount);
     for (std::uint32_t i = 0; i < n; ++i) {
@@ -344,7 +376,85 @@ std::uint32_t AQSpace::xpbdGuardTrips(AQXPBDBodyHandle body) const {
 void AQSpace::xpbdSubstep(float dt) {
     if (impl->xpbdBodies.empty()) return;
     for (auto& body : impl->xpbdBodies) {
-        if (body) body->advance(dt, impl->xpbdParams, impl->gravity);
+        if (!body) continue;
+        // Path-switch guard (GPU → CPU mid-run): never advance a stale host
+        // mirror — re-base it on the device state first.
+        AQrefreshHostXPBDState(*body, impl->gpuBackend);
+        body->advance(dt, impl->xpbdParams, impl->gravity);
+    }
+}
+
+// Phase 7f — the live GPU frame: encode every body's whole advance-frame
+// (nSub engine sub-steps × params.substeps slices) in one command buffer per
+// body, uploading state/topology only when authoring changed it. Failures are
+// loud and skip the body (§9 guard doctrine — frozen is observable).
+void AQSpace::xpbdGpuFrame(AQComputeBackend* backend, float dt, int substeps) {
+    impl->gpuBackend = backend;
+    if (!backend || substeps <= 0) return;
+
+    for (auto& bodyH : impl->xpbdBodies) {
+        if (!bodyH) continue;
+        AQXPBDBody& body = *bodyH;
+        const std::size_t n = body.positions.size();
+        if (n == 0) continue;
+
+        const bool needUpload = !body.gpuResident || body.colorsDirty || body.gpuUploadNeeded;
+        if (needUpload) {
+            // A topology change re-seeds the device from the host: pull the
+            // live device state down first so authoring mid-simulation never
+            // rewinds particles to stale host positions.
+            AQrefreshHostXPBDState(body, backend);
+            if (body.colorsDirty) body.recolor();
+
+            OmegaCommon::Vector<float> px(n), py(n), pz(n), im(n), vx(n), vy(n), vz(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                px[i] = body.positions[i][0][0];
+                py[i] = body.positions[i][1][0];
+                pz[i] = body.positions[i][2][0];
+                im[i] = body.invMass[i];
+                vx[i] = body.velocities[i][0][0];
+                vy[i] = body.velocities[i][1][0];
+                vz[i] = body.velocities[i][2][0];
+            }
+            OmegaCommon::Vector<AQComputeBackend::XPBDConstraintIn> sorted;
+            for (const AQDistanceConstraint& c : body.distanceSorted) {
+                AQComputeBackend::XPBDConstraintIn in;
+                in.a = c.a;
+                in.b = c.b;
+                in.restLength = c.restLength;
+                in.compliance = c.compliance;
+                in.color = c.color;
+                sorted.push_back(in);
+            }
+            OmegaCommon::Vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
+            for (const AQConstraintBatch& batch : body.batches) {
+                ranges.push_back({batch.firstConstraint, batch.constraintCount});
+            }
+            if (!backend->uploadXPBDParticles(body.id, px, py, pz, im, vx, vy, vz) ||
+                !backend->uploadXPBDConstraints(body.id, sorted, ranges)) {
+                std::cerr << "AQUA::AQSpace[XPBD]: GPU upload failed for body "
+                          << body.id << " — frame skipped.\n";
+                continue;
+            }
+            body.gpuResident = true;
+            body.gpuUploadNeeded = false;
+            // Fresh upload zeroes the device trip counters — resync the delta
+            // baseline so xpbdFrameEnd doesn't misread the reset as trips.
+            body.gpuTripsPrev.assign(body.distanceSorted.size(), 0u);
+        }
+
+        const float g[3] = {impl->gravity[0][0], impl->gravity[1][0], impl->gravity[2][0]};
+        if (!backend->encodeXPBDAdvance(body.id, dt, g,
+                                        impl->xpbdParams.substeps,
+                                        impl->xpbdParams.iterations,
+                                        impl->xpbdParams.velocityDamping,
+                                        impl->xpbdParams.explosionThreshold,
+                                        n, static_cast<std::uint32_t>(substeps))) {
+            std::cerr << "AQUA::AQSpace[XPBD]: GPU frame encode failed for body "
+                      << body.id << " — device state did not advance.\n";
+            continue;
+        }
+        body.gpuDirty = true;
     }
 }
 
@@ -362,7 +472,39 @@ void AQSpace::xpbdFrameEnd() {
     for (auto& body : impl->xpbdBodies) {
         if (!body) continue;
 
+        // 7f live path — fold the device's CUMULATIVE guard-trip counters
+        // into the host bookkeeping as this-frame deltas: guardTrips advances
+        // exactly as the CPU path's would, the tripped sorted-slots feed the
+        // flat-red debug grading below, and the loud once-per-body report
+        // fires from here (the projection runs on the device, so the CPU
+        // path's in-loop stderr never sees these trips).
+        if (body->gpuResident && impl->gpuBackend) {
+            OmegaCommon::Vector<std::uint32_t> trips;
+            if (impl->gpuBackend->downloadXPBDTrips(body->id, trips)) {
+                if (body->gpuTripsPrev.size() != trips.size()) {
+                    body->gpuTripsPrev.assign(trips.size(), 0u);
+                }
+                for (std::uint32_t k = 0; k < trips.size(); ++k) {
+                    const std::uint32_t delta = trips[k] - body->gpuTripsPrev[k];
+                    if (delta > 0) {
+                        body->guardTrips += delta;
+                        body->trippedThisFrame.push_back(k);
+                    }
+                }
+                body->gpuTripsPrev = trips;
+                if (body->guardTrips > 0 && !body->guardWarned) {
+                    std::cerr << "AQUA::AQSpace[XPBD]: explosion guard tripped on body "
+                              << body->id << " (GPU path) — per-slice corrections clamped; "
+                              << "the solve is diverging (over-stiff rig, extreme mass "
+                              << "ratio, or too-coarse dt); further warnings for this "
+                              << "body suppressed.\n";
+                    body->guardWarned = true;
+                }
+            }
+        }
+
         if (drawStrain || drawColors) {
+            AQrefreshHostXPBDState(*body, impl->gpuBackend);
             // Dedup this frame's guard trips for O(log n) membership below.
             auto& tripped = body->trippedThisFrame;
             std::sort(tripped.begin(), tripped.end());

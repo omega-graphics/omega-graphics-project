@@ -35,6 +35,7 @@
 namespace OmegaGTE {
     class OmegaGraphicsEngine;
     class GECommandQueue;
+    class GECommandBuffer;
     class GEBuffer;
     /// GEPipeline.h spells this as a using-alias of an incomplete struct —
     /// repeat the same alias (a plain `class` forward-decl would clash).
@@ -43,6 +44,7 @@ namespace OmegaGTE {
 }
 
 struct AQBodySoA;
+struct AQForceField;
 
 /// Owns the OmegaGTE handles AQUA dispatches physics compute kernels through.
 struct AQUA_EXPORT AQComputeBackend {
@@ -244,6 +246,159 @@ struct AQUA_EXPORT AQComputeBackend {
     bool encodeVelocityHalfStep(float dt, const float gravity[3], std::size_t bodyCount);
     bool encodePositionHalfStep(float dt, const float gravity[3], std::size_t bodyCount);
 
+    // --- Phase 7f: XPBD constraint projection (AQComputeXPBD.cpp) ---
+    // One resident pool per XPBD body (keyed by the body's opaque id — the
+    // particle-pool idiom): particle SoA + color-sorted constraints stay
+    // device-resident across slices, sub-steps, AND frames; uploads happen on
+    // topology change only, downloads at the readback sync points.
+
+    /// One color-sorted distance constraint for upload (mirrors
+    /// AQDistanceConstraint minus λ, which starts 0 on-device).
+    struct XPBDConstraintIn {
+        std::uint32_t a = 0, b = 0;
+        float restLength = 0.f, compliance = 0.f;
+        std::uint32_t color = 0;
+    };
+
+    /// Upload body @p id's particle SoA (positions+invMass, velocities;
+    /// x_prev is device-initialized to x). Creates/grows the body's pool;
+    /// positions ride the pos buffer's xyz with invMass in w (pinned = 0).
+    bool uploadXPBDParticles(std::uint64_t id,
+                             const OmegaCommon::Vector<float>& posX,
+                             const OmegaCommon::Vector<float>& posY,
+                             const OmegaCommon::Vector<float>& posZ,
+                             const OmegaCommon::Vector<float>& invMass,
+                             const OmegaCommon::Vector<float>& velX,
+                             const OmegaCommon::Vector<float>& velY,
+                             const OmegaCommon::Vector<float>& velZ);
+
+    /// Upload body @p id's COLOR-SORTED constraint array + its color ranges
+    /// (contiguous per color — AQXPBDBody's `distanceSorted`/`batches`
+    /// layout). Uploaded on topology change only; per-constraint guard-trip
+    /// counters reset to 0.
+    bool uploadXPBDConstraints(std::uint64_t id,
+                               const OmegaCommon::Vector<XPBDConstraintIn>& sorted,
+                               const OmegaCommon::Vector<std::pair<std::uint32_t, std::uint32_t>>& colorRanges);
+
+    /// Encode + submit @p engineSubsteps back-to-back engine sub-steps of
+    /// XPBD for body @p id: each sub-step is `substeps` slices of
+    /// h = dt/substeps, each slice predict → λ-reset → iterations ×
+    /// (one dispatch per color, colors serial) → derive — all in ONE command
+    /// buffer, one sync (the live path encodes a whole advance-frame at once).
+    bool encodeXPBDAdvance(std::uint64_t id, float dt, const float gravity[3],
+                           std::uint32_t substeps, std::uint32_t iterations,
+                           float velocityDamping, float explosionThreshold,
+                           std::size_t particleCount,
+                           std::uint32_t engineSubsteps = 1);
+
+    /// Read back body @p id's particle positions + velocities (the
+    /// readXPBDState / debug-draw sync point, and the parity assertions).
+    bool downloadXPBDParticles(std::uint64_t id,
+                               OmegaCommon::Vector<float>& posX,
+                               OmegaCommon::Vector<float>& posY,
+                               OmegaCommon::Vector<float>& posZ,
+                               OmegaCommon::Vector<float>& velX,
+                               OmegaCommon::Vector<float>& velY,
+                               OmegaCommon::Vector<float>& velZ,
+                               std::size_t particleCount);
+
+    /// Read back body @p id's cumulative per-constraint explosion-guard trip
+    /// counters (the host reports loudly + feeds AQDebugConstraint, like the
+    /// CPU path).
+    bool downloadXPBDTrips(std::uint64_t id, OmegaCommon::Vector<std::uint32_t>& trips);
+
+    /// Drop a destroyed body's pool (no-op on an unknown id).
+    void xpbdReleasePool(std::uint64_t id);
+
+    // --- Phase 6g: reusable exclusive prefix scan (AQComputeParticles.cpp) ---
+
+    /// Standalone exclusive prefix sum over uints: upload @p in, run the
+    /// multi-pass reduce-then-scan chain (AQScan.omegasl), download into
+    /// @p out. Integer adds ⇒ the result is bit-exact, run-to-run and
+    /// cross-device. This is the stage-test surface; the particle compaction
+    /// (6h) reuses the same chain via encodeScanExclusive on its own buffers.
+    bool scanExclusive(const OmegaCommon::Vector<std::uint32_t>& in,
+                       OmegaCommon::Vector<std::uint32_t>& out);
+
+    // --- Phase 6h/6i: live GPU particle path (AQComputeParticles.cpp) ---
+    // One resident pool per particle system (keyed by the system's opaque
+    // id), always compacted to the live prefix at frame end. The host owns
+    // the integer bookkeeping (emission, death schedule, census); the pool
+    // holds the float state, resident across sub-steps AND frames — the host
+    // syncs only at emission (staging upload) and readback (§14.1).
+
+    /// Whether the live GPU pillars (Phase 6h particles + Phase 7f XPBD) are
+    /// selectable: kernel library loaded + capability probe passed
+    /// (AQContext::loadKernels flips it). Distinct from usable(), which
+    /// remains the full-rigid-step gate.
+    AQUA_NODISCARD bool kernelsLive() const { return kernelsLiveFlag; }
+    void setKernelsLive(bool on) { kernelsLiveFlag = on; }
+
+    /// One static collider for the 6i collide kernel — the shape's COMBINED
+    /// world transform (body ∘ shape-local), its type + params (plane normal
+    /// pre-normalized host-side with the CPU's float math), and restitution.
+    /// Hulls are filtered out by the caller (their SDF is +inf on the CPU
+    /// path too).
+    struct ParticleColliderIn {
+        std::uint32_t shapeType = 0;     ///< AQShapeType as uint (never ConvexHull)
+        float px = 0.f, py = 0.f, pz = 0.f;
+        float qx = 0.f, qy = 0.f, qz = 0.f, qw = 1.f;
+        float params[4] = {0.f, 0.f, 0.f, 0.f};
+        float restitution = 0.f;
+    };
+
+    /// One advance-frame's encode parameters (§14.3 6h). The whole frame —
+    /// inject → substeps × (integrate [+ collide] + age) → scan → scatter →
+    /// flag rebuild — rides one command buffer with one sync.
+    struct ParticleFrameDesc {
+        std::uint64_t systemId = 0;
+        float         dt = 0.f;          ///< engine fixed sub-step
+        std::uint32_t substeps = 0;      ///< sub-steps this advance runs
+        std::uint32_t activeSpan = 0;    ///< occupied prefix: live-at-frame-start + injected
+        std::uint32_t injectStart = 0;   ///< first tail slot of this frame's new particles
+        std::uint32_t injectCount = 0;
+        std::uint32_t newLiveCount = 0;  ///< host-predicted census after this frame's deaths
+        std::uint32_t fieldCount = 0;
+        std::uint32_t colliderCount = 0; ///< 0 ⇒ collision pass skipped
+    };
+
+    /// Create (or re-create at a larger capacity) the resident pool for a
+    /// system; freshly-created flags are device-zeroed. Returns false when
+    /// the engine is null or allocation fails.
+    bool particlesEnsurePool(std::uint64_t id, std::uint32_t capacity);
+    /// Drop a destroyed system's pool (no-op on an unknown id).
+    void particlesReleasePool(std::uint64_t id);
+
+    /// Upload this frame's host-sampled new particles into the emission
+    /// staging buffers (lane arrays; `radius` rides posR.w, `invMass`
+    /// velIM.w, `death` is the 6f integer countdown).
+    bool particlesUploadStaging(std::uint64_t id,
+                                const float* posX, const float* posY, const float* posZ,
+                                const float* radius,
+                                const float* velX, const float* velY, const float* velZ,
+                                const float* invMass,
+                                const std::uint32_t* death, std::size_t count);
+
+    /// Upload the system's force fields (all of them, enabled flag included —
+    /// the kernel replicates the CPU's per-field enabled check).
+    bool particlesUploadFields(std::uint64_t id,
+                               const OmegaCommon::Vector<AQForceField>& fields);
+
+    /// Upload the per-advance static-collider snapshot (6i).
+    bool particlesUploadColliders(std::uint64_t id,
+                                  const OmegaCommon::Vector<ParticleColliderIn>& colliders);
+
+    /// Encode + submit one advance-frame of device work and wait; swaps the
+    /// pool's ping-pong buffers so the packed live prefix is current.
+    bool particlesEncodeFrame(const ParticleFrameDesc& desc);
+
+    /// Read back the packed live prefix's positions + velocities (the
+    /// readParticleState / debug-draw sync point).
+    bool particlesDownloadState(std::uint64_t id,
+                                float* posX, float* posY, float* posZ,
+                                float* velX, float* velY, float* velZ,
+                                std::size_t count);
+
 private:
     AQComputeBackend(SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine,
                      SharedHandle<OmegaGTE::GECommandQueue> queue);
@@ -326,6 +481,59 @@ private:
     std::size_t bpBodyCapacity = 0;
     std::size_t bpHullVertCapacity = 0;
     std::size_t bpPairCapacity = 0;
+
+    /// 6g scan state (slots per AQScan.omegasl; AQComputeParticles.cpp).
+    /// The level buffers hold each recursion depth's block sums and their
+    /// scans (depth ≤ 3 up to 2M elements at block size 128).
+    bool ensureScanCapacity(std::size_t n);
+    /// Encode the recursive reduce-then-scan chain (block scan → recurse on
+    /// the sums → uniform add) into an already-open command buffer. `input`
+    /// may be any uint buffer (the 6h compaction passes its flags buffer);
+    /// the exclusive result lands in `output`.
+    bool encodeScanExclusive(const SharedHandle<OmegaGTE::GECommandBuffer>& cmdBuf,
+                             SharedHandle<OmegaGTE::GEBuffer> input,
+                             SharedHandle<OmegaGTE::GEBuffer> output,
+                             std::size_t n, unsigned level);
+    SharedHandle<OmegaGTE::GEBuffer> scanInput, scanOutput;   ///< standalone-API staging
+    OmegaCommon::Vector<SharedHandle<OmegaGTE::GEBuffer>> scanLevelSums;
+    OmegaCommon::Vector<SharedHandle<OmegaGTE::GEBuffer>> scanLevelScan;
+    std::size_t scanCapacity = 0;
+
+    /// 6h/6i resident particle pools (slots per AQParticles.omegasl;
+    /// AQComputeParticles.cpp). posR/velIM/death are ping-pong pairs (`cur`
+    /// is the live index) so the stable-compaction scatter never aliases its
+    /// source; flags/offsets are rebuilt in place each frame.
+    struct ParticlePoolGPU {
+        SharedHandle<OmegaGTE::GEBuffer> posR[2], velIM[2];
+        SharedHandle<OmegaGTE::GEBuffer> death[2];
+        SharedHandle<OmegaGTE::GEBuffer> flags, offsets;
+        SharedHandle<OmegaGTE::GEBuffer> stagePosR, stageVelIM, stageDeath;
+        SharedHandle<OmegaGTE::GEBuffer> fields, colliders;
+        std::size_t capacity = 0;
+        std::size_t stageCapacity = 0;
+        std::size_t fieldCapacity = 0;
+        std::size_t colliderCapacity = 0;
+        int cur = 0;
+    };
+    ParticlePoolGPU* ptPoolAt(std::uint64_t id);
+    std::map<std::uint64_t, ParticlePoolGPU> ptPools;
+    bool kernelsLiveFlag = false;
+
+    /// 7f XPBD pools, one per body id (slots per AQXPBD.omegasl;
+    /// AQComputeXPBD.cpp). pos/vel are Universal (CPU-seeded, GPU-mutated,
+    /// CPU-read-back); prev is GPU-only (Readback); con carries λ in the
+    /// record (Universal); trips are CPU-zeroed + GPU-counted (Universal).
+    struct XPBDPoolGPU {
+        SharedHandle<OmegaGTE::GEBuffer> pos, prev, vel, con, trips;
+        std::size_t particleCapacity = 0;
+        std::size_t constraintCapacity = 0;
+        std::size_t constraintCount = 0;
+        OmegaCommon::Vector<std::pair<std::uint32_t, std::uint32_t>> colorRanges;
+    };
+    XPBDPoolGPU* xpbdPoolAt(std::uint64_t id);
+    bool ensureXPBDParticleCapacity(XPBDPoolGPU& pool, std::size_t particleCount);
+    bool ensureXPBDConstraintCapacity(XPBDPoolGPU& pool, std::size_t constraintCount);
+    std::map<std::uint64_t, XPBDPoolGPU> xpbdPools;
 };
 
 #endif // AQUA_AQCOMPUTEBACKEND_H

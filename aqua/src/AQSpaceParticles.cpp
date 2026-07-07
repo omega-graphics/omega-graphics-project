@@ -13,10 +13,12 @@
 
 #include "AQSpaceImpl.h"
 #include "AQParticleMath.h"
+#include "AQComputeBackend.h"   // Phase 6h — the live GPU particle path
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iostream>
 
 // ---------------------------------------------------------------------------
 // AQParticleSystem — pool lifecycle, allocation, compaction, guards.
@@ -33,7 +35,8 @@ void AQParticleSystem::reset(std::uint32_t cap) {
     velocities.assign(cap, zero);
     accels.assign(cap, zero);
     invMass.assign(cap, 0.f);
-    lifetime.assign(cap, 0.0);
+    deathCountdown.assign(cap, 0u);
+    lifetime.assign(cap, 0.f);
     radius.assign(cap, 0.f);
     flags.assign(cap, AQParticleDead);
 
@@ -75,13 +78,14 @@ void AQParticleSystem::compact() {
     for (std::uint32_t readIdx = 0; readIdx < capacity; ++readIdx) {
         if ((flags[readIdx] & AQParticleAlive) == 0u) continue;
         if (writeIdx != readIdx) {
-            positions[writeIdx]  = positions[readIdx];
-            velocities[writeIdx] = velocities[readIdx];
-            accels[writeIdx]     = accels[readIdx];
-            invMass[writeIdx]    = invMass[readIdx];
-            lifetime[writeIdx]   = lifetime[readIdx];
-            radius[writeIdx]     = radius[readIdx];
-            flags[writeIdx]      = AQParticleAlive;
+            positions[writeIdx]      = positions[readIdx];
+            velocities[writeIdx]     = velocities[readIdx];
+            accels[writeIdx]         = accels[readIdx];
+            invMass[writeIdx]        = invMass[readIdx];
+            deathCountdown[writeIdx] = deathCountdown[readIdx];
+            lifetime[writeIdx]       = lifetime[readIdx];
+            radius[writeIdx]         = radius[readIdx];
+            flags[writeIdx]          = AQParticleAlive;
         }
         ++writeIdx;
     }
@@ -99,11 +103,17 @@ void AQParticleSystem::compact() {
 // AQParticleSystem — per-sub-step passes (§13.3 6c).
 // ---------------------------------------------------------------------------
 
-void AQParticleSystem::emit(float dt) {
+void AQParticleSystem::emit(float dt, float substepDt) {
     // Keep the per-emitter bookkeeping parallel to `emitters` (emitters may have
     // been added since the last frame). Resize preserves existing carry/ordinal.
     if (emitterCarry.size()   != emitters.size()) emitterCarry.resize(emitters.size(), 0.0);
     if (emitterOrdinal.size() != emitters.size()) emitterOrdinal.resize(emitters.size(), 0u);
+
+    // 6h: the pool was compacted at the last frame end, so this frame's
+    // allocations are exactly the tail [liveCount, liveCount + emitted) — the
+    // window the GPU staging upload reads back out of the host arrays.
+    emitBase = liveCount;
+    emitDeathStage.clear();
 
     OmegaCommon::Vector<std::uint32_t> slots;
     for (std::size_t e = 0; e < emitters.size(); ++e) {
@@ -127,13 +137,18 @@ void AQParticleSystem::emit(float dt) {
             positions[s]  = AQsampleEmitPosition<float>(em, rng);
             velocities[s] = AQsampleEmitVelocity<float>(em, rng);
             accels[s]     = AQvec3(0.f, 0.f, 0.f);
-            // lifetime in double (same draw as the oracle) — see AQSpaceImpl.h.
-            lifetime[s]   = AQsampleLifetime<double>(em, rng);
+            // Lifetime sampled in double (same draw on every path), then
+            // frozen into the integer death schedule — see AQSpaceImpl.h.
+            const double lifeD = AQsampleLifetime<double>(em, rng);
+            deathCountdown[s] = AQdeathCountdown(lifeD, substepDt);
+            emitDeathStage.push_back(deathCountdown[s]);  // 6h: pre-age copy
+            lifetime[s]   = static_cast<float>(lifeD);   // display only
             invMass[s]    = (em.mass > 0.f) ? (1.f / em.mass) : 0.f;
             radius[s]     = em.radius;
             // flags[s] is already AQParticleAlive (set by allocate()).
         }
     }
+    emittedThisFrame = liveCount - emitBase;
 }
 
 void AQParticleSystem::accumulateAndIntegrate(float dt) {
@@ -149,8 +164,13 @@ void AQParticleSystem::accumulateAndIntegrate(float dt) {
 void AQParticleSystem::age(float dt) {
     for (std::uint32_t s = 0; s < capacity; ++s) {
         if ((flags[s] & AQParticleAlive) == 0u) continue;
-        lifetime[s] -= static_cast<double>(dt);
-        if (lifetime[s] <= 0.0) kill(s);
+        lifetime[s] -= dt;                       // display only, never a death test
+        if (deathCountdown[s] <= 1u) {
+            deathCountdown[s] = 0u;
+            kill(s);
+        } else {
+            --deathCountdown[s];
+        }
     }
 }
 
@@ -226,6 +246,31 @@ const AQParticleSystem *AQSpace::Impl::particleSystemAt(std::uint64_t id) const 
 }
 
 // ---------------------------------------------------------------------------
+// Phase 6h — the host↔device readback sync point (§14.1). Pulls the packed
+// live prefix's positions/velocities from the resident pool into the host
+// mirror. No-op on the CPU path (never dirty) or when no backend is attached.
+// ---------------------------------------------------------------------------
+
+static void AQrefreshHostParticleState(AQParticleSystem &sys, AQComputeBackend *gpu) {
+    if (!sys.gpuDirty || gpu == nullptr) return;
+    const std::uint32_t n = sys.liveCount;
+    if (n > 0) {
+        OmegaCommon::Vector<float> px(n), py(n), pz(n), vx(n), vy(n), vz(n);
+        if (!gpu->particlesDownloadState(sys.id, px.data(), py.data(), pz.data(),
+                                         vx.data(), vy.data(), vz.data(), n)) {
+            std::cerr << "AQUA::AQSpace[particles]: GPU state readback failed for "
+                         "system " << sys.id << " — host mirror stays stale.\n";
+            return;
+        }
+        for (std::uint32_t i = 0; i < n; ++i) {
+            sys.positions[i]  = AQvec3(px[i], py[i], pz[i]);
+            sys.velocities[i] = AQvec3(vx[i], vy[i], vz[i]);
+        }
+    }
+    sys.gpuDirty = false;
+}
+
+// ---------------------------------------------------------------------------
 // AQSpace — public particle API (§10). Handles are opaque ids resolved through
 // the pimpl each call; an unknown/stale handle is a safe no-op / zero.
 // ---------------------------------------------------------------------------
@@ -243,7 +288,13 @@ AQParticleSystemHandle AQSpace::createParticleSystem(std::uint32_t capacity) {
 void AQSpace::destroyParticleSystem(AQParticleSystemHandle system) {
     auto &vec = impl->particleSystems;
     for (std::size_t i = 0; i < vec.size(); ++i) {
-        if (vec[i] && vec[i]->id == system.id) { vec.erase(vec.begin() + i); return; }
+        if (vec[i] && vec[i]->id == system.id) {
+            if (impl->gpuBackend && vec[i]->gpuResident) {
+                impl->gpuBackend->particlesReleasePool(system.id);
+            }
+            vec.erase(vec.begin() + i);
+            return;
+        }
     }
 }
 
@@ -275,14 +326,18 @@ std::uint32_t AQSpace::readParticleState(AQParticleSystemHandle system,
                                          float *outLifetimes,
                                          std::uint32_t *outFlags,
                                          std::uint32_t maxCount) const {
-    const AQParticleSystem *s = impl->particleSystemAt(system.id);
+    // unique_ptr does not propagate constness to the pointee: the lazy GPU
+    // readback (a cache refresh, logically const) is reachable from here —
+    // the same idiom readXPBDConstraints uses for its lazy recolor.
+    AQParticleSystem *s = impl->particleSystemAt(system.id);
     if (!s) return 0;
+    AQrefreshHostParticleState(*s, impl->gpuBackend);
     // After the end-of-frame compaction the live set is packed into [0, liveCount).
     const std::uint32_t n = (s->liveCount < maxCount) ? s->liveCount : maxCount;
     for (std::uint32_t i = 0; i < n; ++i) {
         if (outPositions)  outPositions[i]  = s->positions[i];
         if (outVelocities) outVelocities[i] = s->velocities[i];
-        if (outLifetimes)  outLifetimes[i]  = static_cast<float>(s->lifetime[i]);
+        if (outLifetimes)  outLifetimes[i]  = s->lifetime[i];
         if (outFlags)      outFlags[i]      = s->flags[i];
     }
     return n;
@@ -297,7 +352,7 @@ std::uint32_t AQSpace::liveParticleCount(AQParticleSystemHandle system) const {
 // AQSpace — particle stepping (private; driven by AQContext::advance).
 // ---------------------------------------------------------------------------
 
-void AQSpace::particlesEmit(float simDt) {
+void AQSpace::particlesEmit(float simDt, float substepDt) {
     if (impl->particleSystems.empty()) return;
 
     // Rebuild the static-collider snapshot once per advance. Uses the PUBLIC body
@@ -316,17 +371,156 @@ void AQSpace::particlesEmit(float simDt) {
         impl->particleColliders.push_back(c);
     }
 
-    for (auto &sys : impl->particleSystems) if (sys) sys->emit(simDt);
+    for (auto &sys : impl->particleSystems) if (sys) sys->emit(simDt, substepDt);
 }
 
 void AQSpace::particlesSubstep(float dt) {
     for (auto &sys : impl->particleSystems) {
         if (!sys) continue;
+        // Path-switch guard (GPU → CPU mid-run): the CPU float step must not
+        // integrate a stale host mirror — re-base it on the device state.
+        AQrefreshHostParticleState(*sys, impl->gpuBackend);
         sys->accumulateAndIntegrate(dt);
         if (sys->collisionEnabled)
             sys->collide(impl->particleColliders, impl->hullVerts.data(), impl->hullVerts.size());
         sys->age(dt);
     }
+}
+
+// Phase 6h — the GPU path's per-sub-step HOST work: only the deterministic
+// integer bookkeeping (death countdown + display lifetime). The float physics
+// (integrate/collide) runs on the device in particlesGpuFrame's encode.
+void AQSpace::particlesAgeSubstep(float dt) {
+    for (auto &sys : impl->particleSystems) {
+        if (sys) sys->age(dt);
+    }
+}
+
+// Phase 6h — encode one advance-frame of device work per system: staged-
+// emission inject → substeps × (integrate [+ collide] + age) → scan/scatter
+// compaction, one command buffer, one sync (§14.3). Runs AFTER the sub-step
+// loop (the host bookkeeping is then final, so newLiveCount is exact) and
+// BEFORE the host-side compaction mirrors the same permutation. Failures are
+// loud and skip the system — a frozen system is observable; a silent one is
+// not (§9 guard doctrine).
+void AQSpace::particlesGpuFrame(AQComputeBackend *backend, float dt, int substeps) {
+    impl->gpuBackend = backend;
+    if (!backend || substeps <= 0) return;
+
+    for (auto &sysH : impl->particleSystems) {
+        if (!sysH) continue;
+        AQParticleSystem &sys = *sysH;
+        const std::uint32_t span = sys.emitBase + sys.emittedThisFrame;
+        if (span == 0 && !sys.gpuResident) continue;   // nothing has ever lived
+
+        if (!sys.gpuResident) {
+            if (!backend->particlesEnsurePool(sys.id, sys.capacity)) {
+                std::cerr << "AQUA::AQSpace[particles]: GPU pool creation failed for "
+                             "system " << sys.id << " — frame skipped.\n";
+                continue;
+            }
+            sys.gpuResident = true;
+        }
+
+        // Stage this frame's emission slice out of the host arrays (positions
+        // and velocities are still the at-emission values — the host never
+        // integrates on this path; countdowns come from the pre-age copy).
+        const std::uint32_t k = sys.emittedThisFrame;
+        bool ok = true;
+        if (k > 0) {
+            OmegaCommon::Vector<float> px(k), py(k), pz(k), rad(k);
+            OmegaCommon::Vector<float> vx(k), vy(k), vz(k), im(k);
+            for (std::uint32_t i = 0; i < k; ++i) {
+                const std::uint32_t s = sys.emitBase + i;
+                px[i] = sys.positions[s][0][0];
+                py[i] = sys.positions[s][1][0];
+                pz[i] = sys.positions[s][2][0];
+                rad[i] = sys.radius[s];
+                vx[i] = sys.velocities[s][0][0];
+                vy[i] = sys.velocities[s][1][0];
+                vz[i] = sys.velocities[s][2][0];
+                im[i] = sys.invMass[s];
+            }
+            ok = backend->particlesUploadStaging(sys.id, px.data(), py.data(), pz.data(),
+                                                 rad.data(), vx.data(), vy.data(), vz.data(),
+                                                 im.data(), sys.emitDeathStage.data(), k);
+        }
+        ok = ok && backend->particlesUploadFields(sys.id, sys.fields);
+
+        // Static-collider snapshot → the flattened GPU records (6i). Combined
+        // world transform (body ∘ shape-local) with the CPU's float math;
+        // hulls are filtered (their SDF is +inf on the CPU path too); plane
+        // normals pre-normalized exactly as AQshapeSignedDistanceGeneric does.
+        std::uint32_t colliderCount = 0;
+        if (ok && sys.collisionEnabled && !impl->particleColliders.empty()) {
+            OmegaCommon::Vector<AQComputeBackend::ParticleColliderIn> cols;
+            for (const AQParticleCollider &c : impl->particleColliders) {
+                if (c.shape.type == AQShapeType::ConvexHull) continue;
+                AQTransform<float> local;
+                local.p = AQvec3(c.shape.lpx, c.shape.lpy, c.shape.lpz);
+                local.q = OmegaGTE::Quaternion<float>{c.shape.lqx, c.shape.lqy,
+                                                      c.shape.lqz, c.shape.lqw};
+                const AQTransform<float> xf = c.xform * local;
+                AQComputeBackend::ParticleColliderIn in;
+                in.shapeType = static_cast<std::uint32_t>(c.shape.type);
+                in.px = xf.p[0][0]; in.py = xf.p[1][0]; in.pz = xf.p[2][0];
+                in.qx = xf.q.x; in.qy = xf.q.y; in.qz = xf.q.z; in.qw = xf.q.w;
+                in.restitution = c.restitution;
+                switch (c.shape.type) {
+                case AQShapeType::Sphere:
+                    in.params[0] = c.shape.sphere.radius;
+                    break;
+                case AQShapeType::Box:
+                    in.params[0] = c.shape.box.hx;
+                    in.params[1] = c.shape.box.hy;
+                    in.params[2] = c.shape.box.hz;
+                    break;
+                case AQShapeType::Capsule:
+                    in.params[0] = c.shape.capsule.radius;
+                    in.params[1] = c.shape.capsule.halfHeight;
+                    break;
+                case AQShapeType::Plane: {
+                    float nx = c.shape.plane.nx, ny = c.shape.plane.ny, nz = c.shape.plane.nz;
+                    float offset = c.shape.plane.offset;
+                    const float nlen = std::sqrt(nx * nx + ny * ny + nz * nz);
+                    if (nlen > 1e-12f) { nx /= nlen; ny /= nlen; nz /= nlen; offset /= nlen; }
+                    in.params[0] = nx; in.params[1] = ny; in.params[2] = nz;
+                    in.params[3] = offset;
+                    break;
+                }
+                case AQShapeType::ConvexHull:
+                    break;   // filtered above
+                }
+                cols.push_back(in);
+            }
+            colliderCount = static_cast<std::uint32_t>(cols.size());
+            ok = backend->particlesUploadColliders(sys.id, cols);
+        }
+
+        if (ok) {
+            AQComputeBackend::ParticleFrameDesc desc;
+            desc.systemId = sys.id;
+            desc.dt = dt;
+            desc.substeps = static_cast<std::uint32_t>(substeps);
+            desc.activeSpan = span;
+            desc.injectStart = sys.emitBase;
+            desc.injectCount = k;
+            desc.newLiveCount = sys.liveCount;      // host census, post-age
+            desc.fieldCount = static_cast<std::uint32_t>(sys.fields.size());
+            desc.colliderCount = colliderCount;
+            ok = backend->particlesEncodeFrame(desc);
+        }
+        if (!ok) {
+            std::cerr << "AQUA::AQSpace[particles]: GPU frame encode failed for "
+                         "system " << sys.id << " — device state did not advance.\n";
+            continue;
+        }
+        sys.gpuDirty = true;
+    }
+}
+
+void AQSpace::detachCompute() {
+    impl->gpuBackend = nullptr;
 }
 
 void AQSpace::particlesCompact() {
@@ -340,6 +534,9 @@ void AQSpace::particlesCompact() {
 
     for (auto &sys : impl->particleSystems) {
         if (!sys) continue;
+        // GPU path: the velocity vectors below draw host positions — pull the
+        // packed prefix down first (debug drain is a §14.1 sync point).
+        AQrefreshHostParticleState(*sys, impl->gpuBackend);
 
         if (dflags & AQDebugParticle) {
             // One short velocity vector per live particle (0.05 s of motion).

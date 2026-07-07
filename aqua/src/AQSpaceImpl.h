@@ -23,6 +23,8 @@
 #include <utility>
 #include <cstdint>
 
+struct AQComputeBackend;   // Phase 6h — non-owning live-GPU-path pointer below
+
 using OmegaGTE::FVec;
 
 // ============================================================================
@@ -68,13 +70,19 @@ struct AQParticleSystem {
     OmegaCommon::Vector<FVec<3>>       velocities;
     OmegaCommon::Vector<FVec<3>>       accels;      ///< per-step scratch
     OmegaCommon::Vector<float>         invMass;
-    // Lifetime is carried in DOUBLE on every path (sampled via AQsampleLifetime
-    // <double> from the same integer RNG draw, aged by the same double dt) so a
-    // particle dies on the SAME sub-step cross-path — death is a threshold on an
-    // accumulated value, so leaving it in float would let a boundary-straddling
-    // particle die a sub-step apart from the double oracle and break the exact
-    // cross-path census (§9). Position/velocity stay float (trajectory band).
-    OmegaCommon::Vector<double>        lifetime;    ///< remaining seconds
+    // Death is an INTEGER sub-step countdown (§14.2/6f), not an fp threshold:
+    // computed once at emission in double (`ceil(sampledLifetime / substepDt)`
+    // from the same RNG draw on every path) and decremented by one per age()
+    // call. Integer death is exact on any hardware — CPU, the double oracle,
+    // and the GPU age kernel share the identical schedule without needing
+    // device fp64 (which is probed, not guaranteed). This replaces the 6e
+    // double-lifetime carry. `lifetime` (float) remains for READBACK DISPLAY
+    // only — aged for presentation, never consulted for death. The countdown
+    // is fixed at emission, so changing the fixed timestep mid-flight rescales
+    // a live particle's remaining wall-clock life (documented edge; the
+    // display lifetime keeps honest seconds).
+    OmegaCommon::Vector<std::uint32_t> deathCountdown; ///< age() calls until death (≥1 while alive)
+    OmegaCommon::Vector<float>         lifetime;    ///< remaining seconds (display only)
     OmegaCommon::Vector<float>         radius;
     OmegaCommon::Vector<std::uint32_t> flags;       ///< AQParticleAlive / AQParticleDead | user bits
 
@@ -94,6 +102,25 @@ struct AQParticleSystem {
     // monotonic per-emitter emission count that seeds each particle's RNG.
     OmegaCommon::Vector<double>        emitterCarry;
     OmegaCommon::Vector<std::uint64_t> emitterOrdinal;
+
+    // Phase 6h — GPU-path bookkeeping. Because the pool is compacted to the
+    // live prefix at every frame end, this frame's emission is always the
+    // contiguous tail [emitBase, emitBase + emittedThisFrame) — the slice the
+    // staging upload reads straight out of the host arrays. `gpuResident`
+    // marks a created device pool; `gpuDirty` marks the host float mirror
+    // (positions/velocities) stale vs the device — the readback sync point
+    // (readParticleState / debug draw) downloads and clears it (§14.1).
+    std::uint32_t emitBase = 0;
+    std::uint32_t emittedThisFrame = 0;
+    // The emitted slice's AT-EMISSION death countdowns, staged for the GPU
+    // inject. The device replays the whole frame from its start (inject →
+    // sub-steps), but by the time the frame encodes, the host's age() calls
+    // have already decremented — or zeroed — this frame's countdowns, so the
+    // pre-age values must be kept aside. Positions/velocities need no copy:
+    // the host never touches them on the GPU path after emit.
+    OmegaCommon::Vector<std::uint32_t> emitDeathStage;
+    bool gpuResident = false;
+    bool gpuDirty = false;
 
     std::uint32_t freeCount()   const { return static_cast<std::uint32_t>(freeList.size()); }
     std::uint32_t deadPending() const { return capacity - liveCount - freeCount(); }
@@ -119,13 +146,15 @@ struct AQParticleSystem {
     // deadPending() == 0 and liveCount + freeCount() == capacity.
     void compact();
 
-    // --- Per-sub-step passes (§13.3 6c) ---
+    // --- Per-sub-step passes (§13.3 6c, death model revised by 6f) ---
     // emit() is Pass A (once per advance-frame): seeded, count-deterministic
-    // spawn of Reeves attributes into free slots. accumulateAndIntegrate() is
-    // Pass B + C (per sub-step): sum field accelerations, semi-implicit Euler.
-    // age() is Pass E (per sub-step): decrement lifetime, mark expired dead.
-    // Collision (Pass D), step wiring, and the public API arrive in 6d.
-    void emit(float dt);
+    // spawn of Reeves attributes into free slots; `substepDt` is the fixed
+    // sub-step the frame will run, from which the integer deathCountdown is
+    // derived (in double, identically on every path). accumulateAndIntegrate()
+    // is Pass B + C (per sub-step): sum field accelerations, semi-implicit
+    // Euler. age() is Pass E (per sub-step): decrement the countdown, kill at
+    // zero; `dt` only ages the display lifetime.
+    void emit(float dt, float substepDt);
     void accumulateAndIntegrate(float dt);
     void age(float dt);
 
@@ -192,6 +221,19 @@ struct AQXPBDBody {
     std::uint32_t                      guardTrips = 0;
     OmegaCommon::Vector<std::uint32_t> trippedThisFrame;
     bool                               guardWarned = false;
+
+    // Phase 7f live-GPU bookkeeping (the 6h idiom). `gpuResident` marks a
+    // created device pool; `gpuDirty` marks the host float mirror stale vs
+    // the device (readXPBDState / debug draw download + clear it);
+    // `gpuUploadNeeded` forces a particle re-upload after addParticles (a
+    // constraint-topology change is tracked by colorsDirty). `gpuTripsPrev`
+    // is the last-seen per-constraint trip snapshot, so xpbdFrameEnd can turn
+    // the device's cumulative counters into this-frame deltas for guardTrips
+    // and the flat-red AQDebugConstraint flagging.
+    bool gpuResident = false;
+    bool gpuDirty = false;
+    bool gpuUploadNeeded = false;
+    OmegaCommon::Vector<std::uint32_t> gpuTripsPrev;
 
     // Append `count` particles (positions/invMass parallel arrays); returns the
     // index of the first appended particle.
@@ -359,6 +401,12 @@ struct AQSpace::Impl {
     // Static collider snapshot, rebuilt once per advance in particlesEmit and
     // reused by every sub-step's push-out (colliders don't move within a frame).
     OmegaCommon::Vector<AQParticleCollider> particleColliders;
+    // Phase 6h — the compute backend while the live GPU particle path steps
+    // this space. NON-owning (the AQContext owns the backend); set by
+    // particlesGpuFrame each advance and cleared by AQSpace::detachCompute
+    // when the owning context is destroyed, so a space handle that outlives
+    // its context can never dangle into a freed backend. Null on the CPU path.
+    AQComputeBackend *gpuBackend = nullptr;
 
     AQParticleSystem       *particleSystemAt(std::uint64_t id);
     const AQParticleSystem *particleSystemAt(std::uint64_t id) const;

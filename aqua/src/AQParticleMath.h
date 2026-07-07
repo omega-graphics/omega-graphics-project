@@ -71,6 +71,21 @@ inline std::uint32_t AQemitCount(float rate, float dt, double& carry) {
     return static_cast<std::uint32_t>(whole);
 }
 
+// Integer death schedule (§14.2 / 6f): the number of age() calls a sampled
+// lifetime survives, computed in DOUBLE at emission so every path — the float
+// production step, the double oracle, and the GPU age kernel (which only
+// decrements the integer) — derives the identical schedule without device
+// fp64. ceil keeps the former accumulated-threshold semantics ("dies on the
+// first sub-step where accumulated age >= lifetime"); a non-positive lifetime
+// dies on the first age() call; an absurd one saturates rather than
+// overflowing the uint32 cast.
+inline std::uint32_t AQdeathCountdown(double sampledLifetime, float substepDt) {
+    const double slices = std::ceil(sampledLifetime / static_cast<double>(substepDt));
+    if (!(slices > 1.0))    return 1u;             // <= 0, NaN, or sub-one-step lifetime
+    if (slices >= 4.0e9)    return 0xFFFFFFFFu;    // saturate, never overflow
+    return static_cast<std::uint32_t>(slices);
+}
+
 // --- small vector helpers (Ty-generic) -------------------------------------
 template<class Ty> inline Ty AQvlen(const AQVec3<Ty>& v) { return std::sqrt(OmegaGTE::dot(v, v)); }
 

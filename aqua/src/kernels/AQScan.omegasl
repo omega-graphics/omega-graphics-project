@@ -1,0 +1,92 @@
+// AQUA compute kernels — reusable exclusive prefix scan (Phase 6g, §14.3).
+//
+// Algorithm choice (2026-07-07 recency audit, Q3): a MULTI-PASS
+// reduce-then-scan — per-block shared-memory scans + a recursively scanned
+// block-sums array + a uniform add pass. Portable libraries (FidelityFX
+// Parallel Sort, GPUSorting's DeviceRadixSort) ship exactly this shape,
+// because the single-pass alternative (decoupled look-back, Merrill &
+// Garland 2016) requires a forward-progress guarantee no portable target
+// provides — it can deadlock outright on Metal hardware (Apple M-series has
+// no FPG) and is fragile on Vulkan. Multi-pass is deadlock-free everywhere
+// AQUA compiles, work-efficient (unlike the narrowphase's inlined
+// Hillis-Steele ping-pong, which does O(n log n) global traffic), and its
+// integer adds make the result BIT-exact run-to-run and cross-device — the
+// determinism the Phase 6 compaction (6h) rides on.
+//
+// Block size 128 == the host-side kAQScanBlock (AQComputeParticles.cpp): the
+// host always dispatches FULL blocks (blockCount * 128 threads) so every
+// lane — including the tail block's — exists on every backend (Metal's
+// exact-thread dispatch would otherwise drop the high lanes the block-total
+// write relies on); out-of-range lanes contribute 0.
+//
+//   AQScanBlockExclusive — shared-memory inclusive scan of each 128-element
+//                          block (Hillis-Steele in-group, log2(128) rounds),
+//                          written back as EXCLUSIVE (incl − own value);
+//                          lane 127 writes the block total to the sums array.
+//   AQScanAddOffsets     — adds the exclusively-scanned block sums back into
+//                          every element of its block (the down-sweep).
+//
+// The host recurses AQScanBlockExclusive over the sums array until one block
+// remains, then unwinds with AQScanAddOffsets — depth ≤ 3 up to 2M elements.
+
+// counts = (elementCount, 0, 0, 0).
+struct AQScanParams {
+    uint4 counts;
+};
+
+struct AQScanU1 {
+    uint v;
+};
+
+constant<AQScanParams> aqScanParams : 0;
+
+buffer<AQScanU1> aqScanIn   : 1;
+buffer<AQScanU1> aqScanOut  : 2;
+buffer<AQScanU1> aqScanSums : 3;
+
+[in aqScanParams, in aqScanIn, out aqScanOut, out aqScanSums]
+compute(x=128,y=1,z=1)
+void AQScanBlockExclusive(uint3 tid : GlobalThreadID, uint3 lid : LocalThreadID){
+    threadgroup uint sh[128];
+
+    uint gi = tid[0];
+    uint li = lid[0];
+    uint n = aqScanParams.counts[0];
+
+    uint v = 0u;
+    if(gi < n){
+        v = aqScanIn[gi].v;
+    }
+    sh[li] = v;
+    threadgroupBarrier();
+
+    // In-group inclusive Hillis-Steele: read-old / barrier / write-new per
+    // round keeps every round race-free; integer adds keep it bit-exact.
+    for(uint stride = 1u; stride < 128u; stride = stride * 2u){
+        uint add = 0u;
+        if(li >= stride){
+            add = sh[li - stride];
+        }
+        threadgroupBarrier();
+        sh[li] = sh[li] + add;
+        threadgroupBarrier();
+    }
+
+    uint incl = sh[li];
+    if(gi < n){
+        aqScanOut[gi].v = incl - v;      // exclusive from inclusive (exact)
+    }
+    if(li == 127u){
+        aqScanSums[gi / 128u].v = incl;  // block total (lanes past n added 0)
+    }
+}
+
+[in aqScanParams, inout aqScanOut, in aqScanSums]
+compute(x=128,y=1,z=1)
+void AQScanAddOffsets(uint3 tid : GlobalThreadID){
+    uint gi = tid[0];
+    if(gi >= aqScanParams.counts[0]){
+        return;
+    }
+    aqScanOut[gi].v = aqScanOut[gi].v + aqScanSums[gi / 128u].v;
+}

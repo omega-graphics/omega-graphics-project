@@ -23,6 +23,10 @@
 #include <memory>
 #include <vector>
 
+/// The GPU compute backend (Phase 5/6h, internal pimpl — forward-declared so
+/// this public header carries no OmegaGTE backend dependency).
+struct AQComputeBackend;
+
 /// The simulation space: holds bodies that AQContext advances each sub-step.
 ///
 /// Spaces are created by `AQContext::createSpace` and owned by that context,
@@ -336,12 +340,28 @@ private:
     /// Phase 6 — particle stepping, driven by AQContext::advance on the same
     /// fixed-step cadence as the rigid pillar. `particlesEmit` runs once per
     /// advance (gathers the space's static colliders, then seeds new particles
-    /// for the simulated slice `simDt`); `particlesSubstep` runs each sub-step
-    /// (field accumulate + integrate + one-way collide + age); `particlesCompact`
-    /// runs once per advance (stable stream compaction + free-list rebuild).
-    void particlesEmit(float simDt);
+    /// for the simulated slice `simDt`; `substepDt` is the fixed sub-step the
+    /// integer death countdown is derived from — §14.2/6f); `particlesSubstep`
+    /// runs each sub-step (field accumulate + integrate + one-way collide +
+    /// age); `particlesCompact` runs once per advance (stable stream
+    /// compaction + free-list rebuild).
+    void particlesEmit(float simDt, float substepDt);
     void particlesSubstep(float dt);
     void particlesCompact();
+
+    /// Phase 6h — the live GPU particle path (§14). When the context resolves
+    /// the GPU path, the per-sub-step HOST work shrinks to the deterministic
+    /// integer bookkeeping (`particlesAgeSubstep`: countdown decrement +
+    /// display lifetime — the float physics runs on the device), and
+    /// `particlesGpuFrame` encodes the whole advance's device work once per
+    /// advance (staged-emission inject → sub-steps × (integrate [+ collide] +
+    /// age) → scan/scatter compaction), before the host-side compaction
+    /// mirrors the same permutation. `detachCompute` clears the space's
+    /// non-owning backend pointer — called by the owning context's destructor
+    /// so a space handle that outlives it never dangles.
+    void particlesAgeSubstep(float dt);
+    void particlesGpuFrame(AQComputeBackend *backend, float dt, int substeps);
+    void detachCompute();
 
     /// Phase 7 — XPBD stepping, driven by AQContext::advance on the same fixed
     /// sub-step cadence as the rigid and particle pillars (one clock, §13.1).
@@ -351,6 +371,13 @@ private:
     /// (AQDebugConstraint / AQDebugConstraintColor) + guard-trip reporting.
     void xpbdSubstep(float dt);
     void xpbdFrameEnd();
+
+    /// Phase 7f — the live GPU XPBD path (post-6h flip). Encodes the whole
+    /// advance-frame's slices for every body once per advance (uploads on
+    /// topology change only, buffers resident across frames); xpbdFrameEnd
+    /// then downloads the guard-trip counters and, when debug flags demand
+    /// positions, the particle state.
+    void xpbdGpuFrame(AQComputeBackend *backend, float dt, int substeps);
 
     friend class AQContext;
 

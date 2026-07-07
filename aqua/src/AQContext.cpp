@@ -13,7 +13,12 @@ AQContext::AQContext(SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine,
       accumulator(0.f),
       elapsedTime(0.0) {}
 
-AQContext::~AQContext() = default;  // defined here: AQComputeBackend is complete
+AQContext::~AQContext() {
+    // The spaces hold a NON-owning pointer to this context's compute backend
+    // while the GPU particle path steps them (Phase 6h). A space handle can
+    // outlive its context, so sever the pointer before the backend dies.
+    for (auto &space : spaces) space->detachCompute();
+}
 
 SharedHandle<AQContext> AQContext::Create(SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine,
                                           SharedHandle<OmegaGTE::GECommandQueue> commandQueue) {
@@ -34,12 +39,35 @@ SharedHandle<AQContext> AQContext::CreateCPUOnly() {
         SharedHandle<OmegaGTE::GECommandQueue>()));
 }
 
+bool AQContext::loadKernels(const OmegaCommon::String &kernelLibPath) {
+    if (!compute) {
+        std::cerr << "AQUA::AQContext::loadKernels: CPU-only context (no engine) — "
+                     "there is no device to load kernels for.\n";
+        return false;
+    }
+    if (!compute->loadKernelLibrary(kernelLibPath)) {
+        std::cerr << "AQUA::AQContext::loadKernels: failed to load `" << kernelLibPath
+                  << "` — the CPU path keeps running.\n";
+        return false;
+    }
+    if (!compute->selfTest()) {
+        std::cerr << "AQUA::AQContext::loadKernels: device capability probe failed — "
+                     "the CPU path keeps running.\n";
+        return false;
+    }
+    // Phase 6h/7f: the particle and XPBD pillars are the live GPU paths this
+    // flips on. The rigid pillar's usable() stays false until its own flip.
+    compute->setKernelsLive(true);
+    return true;
+}
+
 void AQContext::setExecutionPath(AQExecPath path) {
     requestedPath = path;
-    if (path == AQExecPath::GPU && !(compute && compute->usable())) {
+    const bool anyGpu = compute && (compute->usable() || compute->kernelsLive());
+    if (path == AQExecPath::GPU && !anyGpu) {
         // Asked for GPU but no usable backend (no engine, or kernels not yet
-        // available in this build). Loud once-per-call so the fallback is never
-        // silent; the resolved path stays CPU.
+        // loaded — see loadKernels). Loud once-per-call so the fallback is
+        // never silent; the resolved path stays CPU.
         std::cerr << "AQUA::AQContext: GPU execution requested but no usable "
                      "compute backend — running the CPU path.\n";
     }
@@ -49,9 +77,11 @@ AQExecPath AQContext::executionPath() const {
     if (requestedPath == AQExecPath::CPU) {
         return AQExecPath::CPU;
     }
-    const bool gpuUsable = compute && compute->usable();
-    // Auto and GPU both resolve to GPU only when a usable backend exists; the
+    // Auto and GPU resolve to GPU when any live GPU pillar exists: the full
+    // rigid step (usable(), still pending its flip) or the Phase 6h/7f
+    // particle + XPBD pillars (kernelsLive(), flipped by loadKernels). The
     // GPU-request warning is emitted in setExecutionPath, so this stays const.
+    const bool gpuUsable = compute && (compute->usable() || compute->kernelsLive());
     return gpuUsable ? AQExecPath::GPU : AQExecPath::CPU;
 }
 
@@ -105,26 +135,53 @@ void AQContext::advance(float realDt) {
     for (float acc = accumulator; acc >= fixedDt; acc -= fixedDt) ++nSub;
     const float simDt = static_cast<float>(nSub) * fixedDt;
     if (nSub > 0) {
-        for (auto &space : spaces) space->particlesEmit(simDt);
+        for (auto &space : spaces) space->particlesEmit(simDt, fixedDt);
     }
+
+    // Phase 6h/7f — resolve the live-GPU executor once per advance: the GPU
+    // paths run when the caller selected GPU (or Auto) AND loadKernels flipped
+    // the pillars live. The timestep authority does not change — the GPU only
+    // swaps WHERE the per-particle/per-constraint float arithmetic executes
+    // (§14.1); neither pillar feeds the rigid step mid-frame (coupling is 7g),
+    // so their device work batches at the frame boundary below.
+    const bool gpuPillars = compute && compute->kernelsLive() &&
+                            executionPath() == AQExecPath::GPU;
 
     while (accumulator >= fixedDt) {
         for (auto &space : spaces) space->stepInternal(fixedDt);
-        for (auto &space : spaces) space->particlesSubstep(fixedDt);
+        if (gpuPillars) {
+            // Host keeps only the deterministic integer bookkeeping per
+            // sub-step; the float physics is encoded once per advance below.
+            for (auto &space : spaces) space->particlesAgeSubstep(fixedDt);
+        } else {
+            for (auto &space : spaces) space->particlesSubstep(fixedDt);
+        }
         // Phase 7 — XPBD constraint projection on the same fixed clock: each
         // sub-step is subdivided into params.substeps XPBD slices internally
         // (Macklin 2019 small steps), so there is still exactly ONE timestep
-        // authority — this loop (the Phase 6 §14.1 rule).
-        for (auto &space : spaces) space->xpbdSubstep(fixedDt);
+        // authority — this loop (the Phase 6 §14.1 rule). On the GPU path the
+        // whole frame's slices encode at the frame boundary instead.
+        if (!gpuPillars) {
+            for (auto &space : spaces) space->xpbdSubstep(fixedDt);
+        }
         accumulator -= fixedDt;
         elapsedTime += fixedDt;
     }
 
     // Phase 6 — stable stream compaction once per advance, after the sub-steps,
-    // so readParticleState sees the live set packed into the prefix.
+    // so readParticleState sees the live set packed into the prefix. On the
+    // GPU path the whole frame's device work (inject → sub-steps → on-device
+    // compaction) encodes first, then the host compaction mirrors the same
+    // permutation from the same integer death schedule.
     // Phase 7 — XPBD debug-bus emission + guard-trip frame boundary, same
     // once-per-advance cadence.
     if (nSub > 0) {
+        if (gpuPillars) {
+            for (auto &space : spaces)
+                space->particlesGpuFrame(compute.get(), fixedDt, nSub);
+            for (auto &space : spaces)
+                space->xpbdGpuFrame(compute.get(), fixedDt, nSub);
+        }
         for (auto &space : spaces) space->particlesCompact();
         for (auto &space : spaces) space->xpbdFrameEnd();
     }

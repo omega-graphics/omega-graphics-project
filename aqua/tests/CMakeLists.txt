@@ -282,6 +282,56 @@ if(APPLE)
         BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
 endif()
 
+# Phase 7f: XPBD-kernel stage-isolation parity (Phase-7 brief §13.4 7f) — the
+# GPU predict / lambda-reset / per-color project / derive kernels vs the CPU
+# AQXPBDBody::advance slice loop on rigid + compliant ropes, plus pinned
+# bit-exactness, the byte-identical re-run, and the loud explosion guard.
+# Device-guarded, skips on headless CI.
+add_aqua_test(
+    NAME    aqua_gpu_xpbd_test
+    SOURCES aqua_gpu_xpbd_test.cpp
+    LIBS    AQUA OmegaGTE OmegaCommonCore)
+target_include_directories(aqua_gpu_xpbd_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_compile_definitions(aqua_gpu_xpbd_test PRIVATE "AQUA_KERNELS_LIB_PATH=\"${AQUA_KERNELS_LIB}\"")
+add_dependencies(aqua_gpu_xpbd_test AQUAKernelLib)
+if(APPLE)
+    set_property(TARGET aqua_gpu_xpbd_test APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()
+
+# Phase 6g: reusable-exclusive-scan stage test (Phase-6 brief §14.3 6g) — the
+# AQScan.omegasl reduce-then-scan chain vs a CPU exclusive prefix sum across
+# block/level boundary sizes, bit-exact, plus the byte-identical re-run.
+# Device-guarded, skips on headless CI.
+add_aqua_test(
+    NAME    aqua_gpu_scan_test
+    SOURCES aqua_gpu_scan_test.cpp
+    LIBS    AQUA OmegaGTE OmegaCommonCore)
+target_include_directories(aqua_gpu_scan_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_compile_definitions(aqua_gpu_scan_test PRIVATE "AQUA_KERNELS_LIB_PATH=\"${AQUA_KERNELS_LIB}\"")
+add_dependencies(aqua_gpu_scan_test AQUAKernelLib)
+if(APPLE)
+    set_property(TARGET aqua_gpu_scan_test APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()
+
+# Phase 6h/6i: the LIVE GPU particle path (Phase-6 brief §14.3) — drives the
+# public surface (loadKernels + setExecutionPath(GPU) + advance) against the
+# double oracle: census exact every frame, trajectory band, on-device SDF
+# collision no-tunnel, byte-identical re-run, and 100k+ scale. INTERNAL only
+# for the oracle's shared math. Device-guarded, skips on headless CI.
+add_aqua_test(
+    NAME    aqua_gpu_particle_test
+    SOURCES aqua_gpu_particle_test.cpp
+    LIBS    AQUA OmegaGTE OmegaCommonCore)
+target_include_directories(aqua_gpu_particle_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+target_compile_definitions(aqua_gpu_particle_test PRIVATE "AQUA_KERNELS_LIB_PATH=\"${AQUA_KERNELS_LIB}\"")
+add_dependencies(aqua_gpu_particle_test AQUAKernelLib)
+if(APPLE)
+    set_property(TARGET aqua_gpu_particle_test APPEND PROPERTY
+        BUILD_RPATH "${CMAKE_BINARY_DIR}/Frameworks")
+endif()
+
 # Phase 5d: broadphase stage-isolation parity (plan §9/§13 5d) — the GPU grid
 # chain (AABB refresh -> hash -> stable sort -> pair scan -> pair sort) vs the
 # CPU broadphase's candidate list on a randomized static scene; the ordered

@@ -78,6 +78,15 @@ class AQUA_EXPORT AQContext
 
     ~AQContext();
 
+    /// Loads AQUA's precompiled compute-kernel library (`AQKernels.omegasllib`,
+    /// staged beside the AQUA runtime artifact by the build) and runs the
+    /// device capability probe. On success the LIVE GPU particle path becomes
+    /// selectable via `setExecutionPath` (Phase 6h — AQUA's first live GPU
+    /// pillar; the rigid step remains CPU until its own flip). Returns false —
+    /// loudly — when the context is CPU-only, the library fails to load, or
+    /// the probe fails; the CPU path keeps running either way.
+    bool loadKernels(const OmegaCommon::String &kernelLibPath);
+
     /// Requests a substrate. `Auto` (default) picks GPU when usable, else CPU;
     /// `CPU` forces the reference path; `GPU` prefers the GPU and warns + falls
     /// back to CPU when no usable backend exists.

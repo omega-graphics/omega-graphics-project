@@ -83,7 +83,7 @@ static void testEmissionCountCarry() {
     // rate 10 over dt 0.05 = 0.5 particles/frame -> 0,1,0,1,... totalling 10 in 20 frames.
     std::uint32_t total = 0, prevLive = 0;
     for (int frame = 0; frame < 20; ++frame) {
-        s.emit(0.05f);
+        s.emit(0.05f, 0.05f);
         total += (s.liveCount - prevLive);
         prevLive = s.liveCount;
     }
@@ -101,7 +101,7 @@ static void testEmissionDeterminism() {
     };
     AQParticleSystem a, b; a.reset(64); b.reset(64);
     a.emitters.push_back(build()); b.emitters.push_back(build());
-    for (int f = 0; f < 5; ++f) { a.emit(0.02f); b.emit(0.02f); }
+    for (int f = 0; f < 5; ++f) { a.emit(0.02f, 0.02f); b.emit(0.02f, 0.02f); }
 
     bool same = (a.liveCount == b.liveCount);
     for (std::uint32_t s = 0; same && s < a.liveCount; ++s) {
@@ -121,7 +121,7 @@ static void testSpawnBounds() {
     box.origin = AQvec3(10.f, 0.f, 0.f); box.baseVelocity = AQvec3(0.f, 1.f, 0.f);
     box.rate = 5000.f; box.lifetime = 100.f; box.mass = 1.f; box.seed = 3; box.enabled = 1;
     s.emitters.push_back(box);
-    s.emit(0.03f);
+    s.emit(0.03f, 0.03f);
     bool inBox = s.liveCount > 20;
     for (std::uint32_t p = 0; p < s.liveCount; ++p) {
         inBox = inBox && std::fabs(s.positions[p][0][0] - 10.f) <= 1.f + 1e-4f
@@ -136,7 +136,7 @@ static void testSpawnBounds() {
     sph.origin = AQvec3(0.f, 0.f, 0.f); sph.baseVelocity = AQvec3(0.f, 1.f, 0.f);
     sph.rate = 5000.f; sph.lifetime = 100.f; sph.mass = 1.f; sph.seed = 4; sph.enabled = 1;
     s2.emitters.push_back(sph);
-    s2.emit(0.03f);
+    s2.emit(0.03f, 0.03f);
     bool inSphere = s2.liveCount > 20;
     for (std::uint32_t p = 0; p < s2.liveCount; ++p) {
         const float r = std::sqrt(OmegaGTE::dot(s2.positions[p], s2.positions[p]));
@@ -151,13 +151,15 @@ static void testAging() {
     em.baseVelocity = AQvec3(0.f, 0.f, 0.f); em.rate = 1000.f; em.lifetime = 0.1f; em.lifetimeJitter = 0.f;
     em.mass = 1.f; em.seed = 9; em.enabled = 1;
     s.emitters.push_back(em);
-    s.emit(0.01f);                         // spawn a handful
+    s.emit(0.01f, 0.05f);                  // spawn a handful; sub-step 0.05
     const std::uint32_t born = s.liveCount;
     check(born > 0, "aging setup: some particles born");
+    // Integer death (6f): lifetime 0.1 over sub-step 0.05 freezes to a
+    // countdown of ceil(0.1/0.05) = 2 age() calls at emission.
     s.age(0.05f);
-    check(s.liveCount == born, "aging: lifetime 0.1 survives a 0.05 step");
-    s.age(0.06f);                          // total 0.11 > 0.1
-    check(s.liveCount == 0, "aging: particles past their lifetime are killed");
+    check(s.liveCount == born, "aging: lifetime 0.1 survives the first 0.05 sub-step");
+    s.age(0.05f);                          // second of the 2 scheduled sub-steps
+    check(s.liveCount == 0, "aging: particles die on their scheduled sub-step (integer countdown)");
 }
 
 static void testPipelineSmoke() {
@@ -177,7 +179,7 @@ static void testPipelineSmoke() {
     const float frameDt = 1.f / 60.f; const int subSteps = 2; const float subDt = frameDt / subSteps;
     bool ok = true; std::uint32_t peak = 0;
     for (int frame = 0; frame < 120; ++frame) {
-        s.emit(frameDt);
+        s.emit(frameDt, subDt);
         for (int sub = 0; sub < subSteps; ++sub) { s.accumulateAndIntegrate(subDt); s.age(subDt); }
         s.compact();
         ok = ok && s.partitionOK() && !s.anyNonFinite();

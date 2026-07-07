@@ -1,122 +1,205 @@
-# KRT Naming + Submodule Split — Implementation Plan
+# KRT Naming + Submodule Split + API Redesign — Implementation Plan
 
 ## Context
 
-Two rename axes are landing together because doing them separately would
-churn the same files twice:
+Three changes are landing together because they churn the same files and
+only make sense as one coherent reshaping of kREATE's surface:
 
 1. **Type-prefix rename.** Every public type in the `Kreate` namespace gets
    a `KRT` prefix (`App` → `KRTApp`, `Object` → `KRTObject`, etc.).
    Static methods on those types do **not** get prefixed (the type
    already carries it).
 2. **Library split.** The single `KREATE` shared library is broken into
-   per-submodule libraries with the `KRT_<Submodule>` naming convention
-   (`KRT_Core`, `KRT_Renderer`, `KRT_Pipeline`, `KRT_Mesh`, `KRT_Platform`,
-   plus a foundational `KRT_Math`).
+   **three** per-submodule libraries — `KRTBase`, `KRTPipeline`,
+   `KRTScene` (no underscore, no separator).
+3. **API redesign.** The public surface is corrected in three ways that the
+   original rename-only plan would otherwise have frozen in place:
+   - **Pipelines leave the public API.** `Pipeline` / `PipelineDesc` /
+     `CullMode` / `FillMode` become internal to `KRTPipeline`. What users
+     customize instead is **material, vertex, and mesh shaders**, with a
+     **default mesh renderer** (base vertex shader + basic material shader)
+     for the common case.
+   - **`App` stops owning the GTE and stops making meshes.** It shrinks to
+     "own the window + drive the run loop." Assets are loaded and it is the
+     **`Scene` + `Renderer`** that decide how they are placed and rendered.
+   - **`Scene` owns the `Renderer`** (which owns the GTE device / queue /
+     native render target). `Scene::render()` no longer takes an `App`.
 
-Locked-in decisions (see chat for derivation):
+Locked-in decisions (this session):
 
 | # | Decision | Choice |
 |---|---|---|
-| 1 | Binary split scope | **Split** into per-submodule libraries |
-| 2 | Library name separator | `KRT_Renderer` (underscore, NOT literal `.`) |
+| 1 | Binary split scope | **Split** into 3 per-submodule libraries |
+| 2 | Library naming | `KRTBase` / `KRTPipeline` / `KRTScene` — **no** underscore, no `.` |
 | 3 | Free functions (`Kreate::CreateApp`) | **No** prefix |
-| 4 | Macro / header-guard rename (`KREATE_EXPORT`, `KREATE__BUILD__`, `KREATE_*_H`) | **Keep as-is** |
+| 4 | Legacy macros / guards (`KREATE_EXPORT`, `KREATE__BUILD__`, `KREATE_*_H`) | **Keep as-is**; add per-lib `KRT_<MOD>_EXPORT` alongside |
 | 5 | Namespace + include path | `Kreate` namespace and `<kreate/...>` path **stay** |
+| 6 | `Pipeline` in the public API | **Removed** — internal to `KRTPipeline`; users customize material/vertex/mesh shaders + a default mesh renderer |
+| 7 | GTE / `Renderer` ownership | Moves **off `App`** onto `Scene` (Scene owns the Renderer; Renderer owns the GTE stack) |
+| 8 | Mesh / asset creation | **Off `App`** — Scene/Renderer own placement + draw. CPU-data mesh creation moves onto `Scene`; file-based asset import stays deferred to Engine-Roadmap Phase 3 |
+
+The scope decision this session was **"fold it all into this plan"** — the
+rename, the 3-way split, *and* the API redesign land here as sequenced
+phases, one coherent reshaping rather than a rename now / redesign later.
 
 ---
 
-## Decision still surfaced
+## Decisions still surfaced
 
-The split forces **new** per-submodule export macros (each library is its
-own DLL boundary on Windows). This is additive, not a rename of
-`KREATE_EXPORT`, but it does mean public headers stop saying
-`KREATE_EXPORT` and start saying `KRT_CORE_EXPORT` / `KRT_RENDERER_EXPORT`
-/ etc. Decision 4 was framed as "don't rename for visual consistency"; the
-split makes this structural, not cosmetic.
+These are the sub-decisions the redesign forces that are genuinely open.
+Each has a recommended default so the plan is buildable, but call them
+before the phase that depends on them.
 
-**Proposal:** introduce `KRT_<MOD>_EXPORT` + `KRT_<MOD>__BUILD__` per
-library, defined together in `Base.h`. Each public header switches its
-annotation to its owning submodule's macro. `KREATE_EXPORT` is retired
-once no header references it. If you want `KREATE_EXPORT` kept as an
-umbrella alias, say so before Phase 2 starts.
+- **D1 — `KRTMaterial` scope.** How much material API lands now vs. defers
+  to the real material/lighting system (Roadmap Phase 4). **Recommend
+  minimal:** a shader-set (optional custom vertex / material / mesh shader,
+  each an OmegaSL path + entry point) plus render state (cull / fill /
+  depth). Parameter binding, lighting, and PBR stay in Roadmap Phase 4.
+- **D2 — Default-shader packaging.** Where the default mesh renderer's base
+  vertex + basic material `.omegasl` live and how they are resolved at
+  runtime. **Recommend** shipping them as engine assets alongside
+  `KRTPipeline`, resolved through the same shader-resolution path
+  `PipelineFactory` already uses for user shaders.
+- **D3 — Scene mesh/asset entry API.** `scene->createMesh(desc, data…)`
+  (CPU-vertex parity with today) vs. `scene->loadModel(path)` (needs the
+  Roadmap Phase 3 importer). **Recommend** landing `createMesh` on `Scene`
+  now for parity; file import stays a Roadmap Phase 3 follow-on that drops
+  into the same Scene/Renderer ownership boundary.
+- **D4 — `CullMode` / `FillMode` home.** Become public render-state fields
+  on `KRTMaterial` (as `KRTCullMode` / `KRTFillMode`) vs. stay fully
+  internal. **Recommend public on `KRTMaterial`** — users need cull/fill
+  control, and it is the natural replacement for the old `PipelineDesc`
+  render state.
+- **D5 — GPU `KRTMesh` handle visibility.** Public opaque handle vs. fully
+  internal. **Recommend public handle:** the header (`Mesh.h`) stays in
+  `KRTBase`'s public include dir, but its GTE-touching `.cpp` compiles into
+  `KRTPipeline`. Header location and compilation unit are decoupled, so no
+  link cycle results (see "The header-vs-compilation-unit rule" below).
 
 ---
 
 ## Target architecture
 
 ```
-                  KRT_Math   (header-clean of GTE; .cpp uses GTEMath)
-                    ▲   ▲   ▲   ▲
-                    │   │   │   │
-       ┌────────────┼───┘   │   └────────────┐
-       │            │       │                │
-   KRT_Mesh   KRT_Pipeline  KRT_Renderer   KRT_Platform
-       ▲            ▲       ▲                ▲
-       └────────────┴───┬───┴────────────────┘
-                        │
-                     KRT_Core   (App, Scene, Object)
-                        ▲
-                  Game (BasicGame, user games)
+        OmegaGTE
+           ▲
+           │
+        KRTBase      Math, Window (+platform), Object, Mesh (descriptors
+           ▲         + opaque handle decl), App, Base.h
+           │
+       KRTPipeline   Renderer (owns GTE stack) · Pipeline* · Material ·
+           ▲         Mesh GPU impl · pipeline/mesh factories   (*internal)
+           │
+        KRTScene     Scene — owns a Renderer, drives placement + draw,
+           ▲         hosts the default mesh renderer
+           │
+         Game        BasicGame, user games — link KRTScene only
 ```
 
-All five engine libraries link `OmegaGTE`. `KRT_Core` is the only one that
-games link directly — it transitively pulls the rest. `KRT_Math` is the
-sink so the leaves stay parallel rather than chaining through `Core`.
+The chain is essentially linear. A game links **`KRTScene`**, whose `PUBLIC`
+dependency edges transitively expose `KRTPipeline` and `KRTBase` (so `App`,
+`Window`, `Object`, math types, `KRTMaterial`, and `Scene` are all
+type-visible). Every library links `OmegaGTE`.
+
+### The header-vs-compilation-unit rule (load-bearing)
+
+The split's cleanliness rests on one existing pattern in this codebase:
+`Object.h` already forward-declares `class Pipeline;` / `class Mesh;` and
+holds `std::shared_ptr<>` members of them without completing the types.
+`std::shared_ptr<Incomplete>` is legal to declare, hold, copy, and destroy
+— the deleter is type-erased into the control block at construction time, so
+the *destroying* translation unit never needs the complete type.
+
+That lets us put a type's **public header in `KRTBase`** while compiling its
+**GTE-touching `.cpp` in `KRTPipeline`**, with no link cycle, as long as no
+`KRTBase` translation unit ever *completes* the type:
+
+- `Object` (KRTBase) forward-declares `KRTMaterial` + `KRTMesh` and only
+  stores/returns `shared_ptr<>`s of them → `KRTBase` needs no link edge to
+  `KRTPipeline`.
+- `Mesh.h`'s opaque handle is declared in `KRTBase`'s include dir but
+  `src/mesh/Mesh.cpp` (which includes `GEMesh`) compiles into `KRTPipeline`.
+- `KRTScene` and `KRTPipeline` *do* complete these types and link the
+  library that defines them.
+
+Any deviation (a `KRTBase` `.cpp` constructing/dereferencing `KRTMaterial`
+or `KRTMesh`) reintroduces the cycle — this is the invariant to protect in
+review.
 
 ### Per-library contents
 
-| Library | Public headers | Sources |
-|---|---|---|
-| `KRT_Math` | `Math.h`, `Base.h` | `src/Math.cpp` |
-| `KRT_Mesh` | `Mesh.h` | `src/mesh/Mesh.cpp`, `src/mesh/MeshFactory.h` (private) |
-| `KRT_Pipeline` | `Pipeline.h` | `src/pipeline/Pipeline.cpp`, `src/pipeline/PipelineFactory.h` (private) |
-| `KRT_Renderer` | (none public — `src/renderer/Renderer.h` becomes a cross-submodule internal header) | `src/renderer/Renderer.cpp` |
-| `KRT_Platform` | `Window.h` | `src/platform/<os>/*Window.{cpp,mm}` (one per OS picker) |
-| `KRT_Core` | `App.h`, `Scene.h`, `Object.h` | `src/App.cpp`, `src/Scene.cpp`, `src/Object.cpp` |
+| Library | Public headers (`include/kreate/`) | Sources compiled here | Depends |
+|---|---|---|---|
+| `KRTBase` | `Base.h`, `Math.h`, `Window.h`, `App.h`, `Object.h`, `Mesh.h` | `src/Math.cpp`, `src/App.cpp`, `src/Object.cpp`, `src/platform/<os>/*Window.{cpp,mm}` | `OmegaGTE` |
+| `KRTPipeline` | `Material.h` | `src/renderer/Renderer.{h,cpp}` (internal), `src/pipeline/Pipeline.cpp` + `src/pipeline/Pipeline.h` + `PipelineFactory.h` (internal), `src/material/Material.cpp` (new), `src/mesh/Mesh.cpp` + `src/mesh/MeshFactory.h` (internal) | `KRTBase`, `OmegaGTE` |
+| `KRTScene` | `Scene.h` | `src/Scene.cpp` | `KRTPipeline`, `KRTBase`, `OmegaGTE` |
 
-`Renderer.h` stays in `src/renderer/` but `KRT_Core` adds it as a private
-include directory — that's enough for `App` to own a `Renderer` via
-pimpl without promoting it to public API.
+`Renderer.h` stays at `src/renderer/Renderer.h` as a cross-submodule
+internal header: `KRTScene` adds `src/renderer/` (and the internal
+`src/material/` / `src/pipeline/` headers it needs) as **private** include
+dirs and links `KRTPipeline`, so `Scene` can own a `unique_ptr<Renderer>`
+and hand it materials/meshes without any of that reaching the public API.
 
 ---
 
-## New / moved files
+## New / moved / deleted files
 
-No new source files — this is a rename + CMake restructure. The plan
-adds:
+| File | Change | Purpose |
+|---|---|---|
+| `kreate/include/kreate/Pipeline.h` | **Deleted** (moved) | Public pipeline header retired; contents relocate to `src/pipeline/Pipeline.h` (internal). |
+| `kreate/src/pipeline/Pipeline.h` | **New** (from the old public header) | Internal `Pipeline` / `PipelineDesc` + (if D4 lands public) the render-state enums that stay internal. |
+| `kreate/include/kreate/Material.h` | **New** | `KRTMaterial` — the public shader-customization surface that replaces public `Pipeline`. Owned by `KRTPipeline`. |
+| `kreate/src/material/Material.cpp` | **New** | `KRTMaterial` impl + the material→internal-pipeline build path (absorbs `PipelineFactory` use). |
+| `kreate/assets/shaders/DefaultMesh.omegasl` (or similar) | **New** (D2) | Base vertex + basic material shader backing the default mesh renderer. Location per D2. |
+| `kreate/cmake/KrtSubmodule.cmake` | **Proposed** | Optional helper wrapping `add_omega_graphics_module` for the three libraries — only if the repeated CMake boilerplate looks ugly; skip if not. |
 
-| File | Purpose |
-|---|---|
-| `kreate/cmake/KrtSubmodule.cmake` (proposed) | Tiny helper that wraps `add_omega_graphics_module` for the five submodules — keeps `kreate/CMakeLists.txt` flat. Only if the repeated boilerplate looks ugly; skip if not. |
+No new *platform* sources — the OS-picker Window sources are unchanged, they
+just move library.
 
 ## Modified files (overview)
 
-- All 8 public headers in `kreate/include/kreate/*.h` — type renames + per-submodule export macro swap.
-- All sources in `kreate/src/**` (toplevel + `mesh/`, `pipeline/`, `renderer/`, `platform/<os>/`) — type renames at use sites.
-- `kreate/CMakeLists.txt` — five `add_omega_graphics_module` calls instead of one; per-library `target_compile_definitions(... KRT_<MOD>__BUILD__)`.
-- `kreate/cmake/KreateGame.cmake` — link `KRT_Core` instead of `KREATE`; stage all six runtime DLLs on Windows.
-- Root `CMakeLists.txt:116` — `omega_graphics_add_subdir(KREATE kreate)` → still passes `kreate/` as the subdir but the umbrella name is gone; the kreate `CMakeLists.txt` now defines five targets directly. Keep the call signature working with whatever `omega_graphics_add_subdir` expects (TBD when Phase 3 lands).
-- `kreate/tests/BasicGame.cpp` — type renames at use sites; still links `KRT_Core` only.
-- `kreate/AGENTS.md`, `kreate/README.md`, `kreate/cmake/KreateGame.cmake` header comments — name references.
-- Codedb area map `utils/omega-codedb/OMEGA-Project.json` — the existing areas already map to the right folders; the area `name` fields stay descriptive ("Omega kREATE Renderer" etc.), no change needed unless we want the area names to reflect the new library names. **Open question — leave area labels alone.**
+- **Public headers** in `kreate/include/kreate/*.h` — type renames
+  (Phase 1) + `App`/`Object`/`Scene`/`Window`/`Mesh` surface changes
+  (Phase 2) + per-submodule export macro swap (Phase 4).
+- **Sources** across `kreate/src/**` — type renames at use sites, plus the
+  ownership rewiring (App loses GTE/mesh/pipeline; Scene gains the Renderer;
+  Object's pipeline→material; factories move behind the Scene/Renderer).
+- `kreate/CMakeLists.txt` — three `add_omega_graphics_module` calls instead
+  of one; per-library `KRT_<MOD>__BUILD__` defines and dependency edges.
+- `kreate/cmake/KreateGame.cmake` — link `KRTScene` instead of `KREATE`
+  (lines 40, 63, 91, 112, 133); the macOS `DEPS KREATE OmegaGTE.framework`
+  (line 86) expands to embed all three KRT libraries; Windows
+  `omega_stage_runtime_dlls` already fans out `bin/` so it should pick up
+  the new DLL set automatically — **verify**.
+- Root `CMakeLists.txt:124` — `omega_graphics_add_subdir(KREATE kreate)`
+  still passes `kreate/` as the subdir, but the umbrella `KREATE` target is
+  gone; `kreate/CMakeLists.txt` now defines three targets directly. Keep the
+  call signature working with whatever `omega_graphics_add_subdir` expects
+  (resolve when Phase 5 lands).
+- `kreate/tests/BasicGame.cpp` — rewritten onto the new API (Phase 2):
+  Scene owns the Renderer, no `App::createPipeline/createMesh`, Object
+  carries a `KRTMaterial`. Still links only the game's single library
+  (`KRTScene`).
+- `kreate/AGENTS.md`, `kreate/README.md`, `KreateGame.cmake` header comment
+  — name + surface references.
+- Codedb area map `utils/omega-codedb/OMEGA-Project.json` — existing areas
+  already map to the right folders; area `name` labels stay descriptive.
+  **Open question — leave area labels alone.**
 
 ---
 
 ## Phases
 
-The whole refactor is **roughly 800–1200 lines of diff** dominated by
-mechanical renames, but the binary split is a real architectural change.
-Splitting the work into four phases keeps each landing reviewable on its
-own.
+The refactor is dominated by mechanical renames, but the API redesign and
+the binary split are real architectural changes. Six phases keep each
+landing reviewable on its own, and — critically — **each phase ends with the
+Linux Vulkan build green and `BasicGame` still drawing the spinning cube.**
 
-### Phase 1 — Public type renames (no binary changes)
+### Phase 1 — Public type renames (no surface or binary changes)
 
-Rename every public type in the `Kreate` namespace to add the `KRT`
-prefix. Static methods and the `Kreate::CreateApp` free function are
-**not** renamed. Headers, sources, and the `BasicGame` test all land
-together — the build still produces a single `KREATE` library at the
-end of this phase.
+Add the `KRT` prefix to every public type that **remains** public. This is a
+pure, greppable, class-name-only rename; member signatures and ownership are
+untouched. The build still produces a single `KREATE` library.
 
 **Renames:**
 
@@ -128,178 +211,240 @@ end of this phase.
 | `Kreate::WindowDesc` | `Kreate::KRTWindowDesc` |
 | `Kreate::Scene` | `Kreate::KRTScene` |
 | `Kreate::Object` | `Kreate::KRTObject` |
-| `Kreate::Pipeline` | `Kreate::KRTPipeline` |
-| `Kreate::PipelineDesc` | `Kreate::KRTPipelineDesc` |
 | `Kreate::Mesh` | `Kreate::KRTMesh` |
 | `Kreate::MeshDesc` | `Kreate::KRTMeshDesc` |
+| `Kreate::MeshTopology` | `Kreate::KRTMeshTopology` |
+| `Kreate::IndexFormat` | `Kreate::KRTIndexFormat` |
 | `Kreate::Vec3` | `Kreate::KRTVec3` |
 | `Kreate::Vec4` | `Kreate::KRTVec4` |
 | `Kreate::Color` | `Kreate::KRTColor` |
 | `Kreate::Mat4` | `Kreate::KRTMat4` |
-| `Kreate::MeshTopology` | `Kreate::KRTMeshTopology` |
-| `Kreate::IndexFormat` | `Kreate::KRTIndexFormat` |
-| `Kreate::CullMode` | `Kreate::KRTCullMode` |
-| `Kreate::FillMode` | `Kreate::KRTFillMode` |
 
-**Not renamed:**
+**Deliberately NOT renamed here:**
 
-- `Kreate::CreateApp()` — free function.
-- All static methods (`KRTObject::create`, `KRTScene::create`, `KRTMat4::perspective`, `KRTMat4::lookAt`, `KRTMat4::rotation`).
+- `Pipeline`, `PipelineDesc`, `CullMode`, `FillMode` — these are **leaving**
+  the public API in Phase 2. Prefixing them now would be churn we undo two
+  phases later, so they keep their names this phase (they are still public
+  and still used by `BasicGame` until Phase 2).
+- `Kreate::CreateApp()` — free function (decision 3).
+- All static methods (`KRTObject::create`, `KRTScene::create`,
+  `KRTMat4::perspective`, `KRTMat4::lookAt`, `KRTMat4::rotation`, …).
 - The `Kreate::VertexAttribute` namespace (namespaces aren't types).
-- `Renderer` (internal — gets touched in Phase 3 when the split happens, NOT here).
-- Macros (`KREATE_EXPORT`, `KREATE__BUILD__`, `KREATE_*_H`).
+- `Renderer` (internal).
+- Macros / guards (`KREATE_EXPORT`, `KREATE__BUILD__`, `KREATE_*_H`).
 
-**Exit criteria:** Vulkan native build green on Linux, `BasicGame`
-runs and shows the spinning cube. Single `KREATE` library still
-produced.
+**Exit criteria:** Vulkan native build green on Linux, `BasicGame` runs and
+shows the spinning cube. Single `KREATE` library still produced.
 
-### Phase 2 — Introduce per-submodule export macros
+### Phase 2 — API redesign (still one library)
 
-Additive only; no library split yet. Defines the new
-`KRT_<MOD>_EXPORT` / `KRT_<MOD>__BUILD__` macros in `Base.h`, and
-updates each public header to use its submodule's macro instead of
-`KREATE_EXPORT`. Until Phase 3 turns on the split, all five macros
-expand to the same `KREATE__BUILD__`-gated definition, so the single
-library still works.
+The core reshaping — done inside the single `KREATE` library so the split
+(Phase 5) later carves along boundaries that are already correct.
 
-**Macros defined in `Base.h`:**
+**2.1 — Pipeline goes internal.** Delete `include/kreate/Pipeline.h`; move
+its `Pipeline` / `PipelineDesc` (and, per D4, the internal render-state
+enums) into `src/pipeline/Pipeline.h`. `PipelineFactory` already lives in
+`src/pipeline/` and already hides GTE — it stays, now invoked from the
+material path instead of `App`.
+
+**2.2 — Introduce `KRTMaterial`** (new public `include/kreate/Material.h`,
+scope per D1/D4). Holds an optional custom shader set (vertex / material /
+mesh, each OmegaSL path + entry point) and render state (cull / fill /
+depth). A default-constructed `KRTMaterial` denotes "use the default mesh
+renderer." The internal `Pipeline` is built lazily from a `KRTMaterial` by
+the Renderer / material path and cached.
+
+**2.3 — Slim `App`.** Remove `createPipeline`, `createPipelineFromLibrary`,
+`createMesh`, `internalRenderer()`, and `friend class Scene`. `App::Impl`
+stops constructing a `Renderer` — it owns only the `Window`. `App` keeps
+`window()`, `onInit`/`onFrame`, and `run()`. `App.h` drops its `Pipeline.h`
+and `Mesh.h` includes.
+
+**2.4 — `Scene` owns the `Renderer`.** `KRTScene::create(KRTWindow &)`
+builds and owns the `Renderer` (which owns the GTE stack + the window's
+native render target). `Scene::render()` loses its `App &` parameter and
+drives its own Renderer. Scene gains the mesh entry point per D3
+(`scene->createMesh(desc, data…)`), routing to `MeshFactory` with its
+Renderer's `gte()`.
+
+**2.5 — `Object` carries a material, not a pipeline.**
+`setPipeline`/`pipeline()` → `setMaterial`/`material()` over
+`shared_ptr<KRTMaterial>`; `Object::create(material = nullptr,
+mesh = nullptr)`. A null material means "default mesh renderer."
+
+**2.6 — Rewrite `BasicGame`** onto the new flow:
 
 ```cpp
-// While the single KREATE library is still in use (pre-Phase 3),
-// every KRT_<MOD>_EXPORT collapses to KREATE_EXPORT.
-#define KRT_CORE_EXPORT     KREATE_EXPORT
-#define KRT_MATH_EXPORT     KREATE_EXPORT
-#define KRT_MESH_EXPORT     KREATE_EXPORT
-#define KRT_PIPELINE_EXPORT KREATE_EXPORT
-#define KRT_RENDERER_EXPORT KREATE_EXPORT
-#define KRT_PLATFORM_EXPORT KREATE_EXPORT
+class BasicGame : public Kreate::KRTApp {
+    std::shared_ptr<Kreate::KRTScene>  scene;
+    std::shared_ptr<Kreate::KRTObject> cube;
+    void onInit() override {
+        scene = Kreate::KRTScene::create(window());
+        auto mesh = scene->createMesh(mdesc, verts.data(), …);
+        // Phase 2 uses a CUSTOM material wrapping the already-working
+        // Phase1Basic shaders, so the runnable exit criterion never
+        // depends on the not-yet-written default shaders (those arrive
+        // in Phase 3).
+        auto mat  = Kreate::KRTMaterial::fromShaders("Phase1Basic.omegasl", …);
+        cube = Kreate::KRTObject::create(mat, mesh);
+        scene->add(cube);
+        scene->setProjectionMatrix(…);
+        scene->setViewMatrix(…);
+    }
+    void onFrame() override { cube->setTransform(…); scene->render(); }
+};
 ```
 
-Phase 3 swaps each definition to use its own `KRT_<MOD>__BUILD__`
-gate.
+**Exit criteria:** single `KREATE` library; `BasicGame` draws the spinning
+cube through the new API (Scene-owned Renderer, `KRTMaterial`, no
+`App::create*`).
 
-**Header migration:**
+### Phase 3 — Default mesh renderer
 
-- `App.h`, `Scene.h`, `Object.h` → `KRT_CORE_EXPORT`
-- `Math.h` → `KRT_MATH_EXPORT`
-- `Mesh.h` → `KRT_MESH_EXPORT`
-- `Pipeline.h` → `KRT_PIPELINE_EXPORT`
-- `Window.h` → `KRT_PLATFORM_EXPORT`
-- (No public Renderer.h.)
+Ship the base vertex shader + basic material shader (D2) and wire a
+default-constructed `KRTMaterial` to them, so an object added with **no**
+material still renders. Kept separate from Phase 2 so Phase 2's runnable
+exit criterion doesn't depend on brand-new shader assets.
 
-**Exit criteria:** build still produces single `KREATE` library; no
+**Work:** author the default `.omegasl` (D2 location), make the material
+path fall back to it when a `KRTMaterial` names no custom shaders, and add a
+demo (or a `BasicGame` variant) that draws with a default material to prove
+the path.
+
+**Exit criteria:** an object with a null/default `KRTMaterial` renders via
+the default mesh renderer; still one `KREATE` library.
+
+### Phase 4 — Per-submodule export macros
+
+Additive; no split yet. Define `KRT_<MOD>_EXPORT` / `KRT_<MOD>__BUILD__` for
+the three libraries in `Base.h`, and switch each public header to its owning
+submodule's macro. Until Phase 5 turns on the split, all three collapse to
+`KREATE_EXPORT`, so the single library still works.
+
+```cpp
+// Pre-split (Phase 4): every KRT_<MOD>_EXPORT collapses to KREATE_EXPORT.
+#define KRT_BASE_EXPORT     KREATE_EXPORT
+#define KRT_PIPELINE_EXPORT KREATE_EXPORT
+#define KRT_SCENE_EXPORT    KREATE_EXPORT
+```
+
+**Header migration:** `App.h` / `Window.h` / `Object.h` / `Math.h` /
+`Mesh.h` → `KRT_BASE_EXPORT`; `Material.h` → `KRT_PIPELINE_EXPORT`;
+`Scene.h` → `KRT_SCENE_EXPORT`.
+
+**Exit criteria:** build still produces a single `KREATE` library; no
 behavioral change.
 
-### Phase 3 — Library split
+### Phase 5 — Library split
 
-The real architectural change. `kreate/CMakeLists.txt` is rewritten
-to define five (six counting Math) libraries instead of one, each
-with its own `KRT_<MOD>__BUILD__` define and its own dependency edges.
+The binary change. `kreate/CMakeLists.txt` is rewritten to define three
+libraries with their own `KRT_<MOD>__BUILD__` define and dependency edges.
 
-**3.1 — `KRT_Math`.** Smallest leaf. `src/Math.cpp` becomes its own
-library; links `OmegaGTE` (for `GTEMath`). Public include dir
-exposes only `Math.h` + `Base.h`.
+**5.1 — `KRTBase`.** Foundation. Sources `src/Math.cpp`, `src/App.cpp`,
+`src/Object.cpp`, and the OS-picker `platform/<os>/*Window.*`. Public
+headers `Base.h`, `Math.h`, `Window.h`, `App.h`, `Object.h`, `Mesh.h`.
+Links `OmegaGTE`. (Contains no translation unit that *completes*
+`KRTMaterial`/`KRTMesh` — see the header-vs-compilation-unit rule.)
 
-**3.2 — `KRT_Mesh`, `KRT_Pipeline`.** Independent leaves. Each
-takes its `src/<dir>/*.cpp`, depends on `KRT_Math` + `OmegaGTE`. The
-private factory headers (`MeshFactory.h`, `PipelineFactory.h`) stay
-in `src/` and are visible only to that library.
+**5.2 — `KRTPipeline`.** Rendering backend. Sources `src/renderer/*.cpp`,
+`src/pipeline/*.cpp`, `src/material/*.cpp`, `src/mesh/Mesh.cpp`. Internal
+headers (`Renderer.h`, `Pipeline.h`, `PipelineFactory.h`, `MeshFactory.h`)
+stay in `src/`. Public header `Material.h`. `PUBLIC`-links `KRTBase` +
+`OmegaGTE` (so `Scene` sees GTE + base types through it). This is where the
+default-shader assets (D2) are staged.
 
-**3.3 — `KRT_Renderer`.** `src/renderer/Renderer.cpp` + `Renderer.h`.
-Renderer.h stays at `src/renderer/Renderer.h`. `KRT_Core` adds
-`src/renderer/` as a private include dir + declares
-`target_link_libraries(KRT_Core PRIVATE KRT_Renderer)` so the App
-pimpl can still own a `Renderer&`. Depends on `KRT_Math`,
-`KRT_Pipeline`, `KRT_Mesh`, `OmegaGTE`.
+**5.3 — `KRTScene`.** Top of the graph. Source `src/Scene.cpp`, public
+header `Scene.h`. Adds `src/renderer/` + the internal `src/pipeline/`,
+`src/material/` headers as **private** include dirs. `PUBLIC`-links
+`KRTPipeline` (→ `KRTBase`, `OmegaGTE` transitively).
+`target_compile_definitions(KRTScene PRIVATE KRT_SCENE__BUILD__)`.
 
-**3.4 — `KRT_Platform`.** Same OS-picker pattern as today, but
-now its own library. One source per platform
-(`Win32Window.cpp` / `X11Window.cpp` / `CocoaWindow.mm` /
-`UIKitWindow.mm` / `AndroidWindow.cpp`) with the corresponding
-system-framework / X11 / android-log linkage moved here. Public
-header is `Window.h`. Depends on `KRT_Math`, `OmegaGTE`.
-
-**3.5 — `KRT_Core`.** Top of the graph. Sources: `src/App.cpp`,
-`src/Scene.cpp`, `src/Object.cpp`. Public headers: `App.h`,
-`Scene.h`, `Object.h`. `PUBLIC` link deps: `KRT_Math`, `KRT_Mesh`,
-`KRT_Pipeline`, `KRT_Platform`, `OmegaGTE` (so a game linking
-`KRT_Core` gets the full type-visible surface). `PRIVATE` link dep:
-`KRT_Renderer`. `target_compile_definitions(... PRIVATE KRT_CORE__BUILD__)`.
-
-**3.6 — Flip `Base.h`.** Each `KRT_<MOD>_EXPORT` macro now expands
-based on its own `KRT_<MOD>__BUILD__` gate instead of the umbrella
-alias. The umbrella `KREATE_EXPORT` and `KREATE__BUILD__` stay
-defined (decision 4: no macro rename) but are no longer used by
+**5.4 — Flip `Base.h`.** Each `KRT_<MOD>_EXPORT` now expands from its own
+`KRT_<MOD>__BUILD__` gate instead of the umbrella alias. `KREATE_EXPORT` /
+`KREATE__BUILD__` stay defined (decision 4) but are no longer referenced by
 public headers.
 
-**Exit criteria:** six libraries built; `BasicGame` links only
-`KRT_Core` and still runs; Windows DLL set in `${CMAKE_BINARY_DIR}/bin/`
-is `KRT_Math.dll`, `KRT_Mesh.dll`, `KRT_Pipeline.dll`, `KRT_Renderer.dll`,
-`KRT_Platform.dll`, `KRT_Core.dll`.
+**Platform linkage** (frameworks / X11 / android-log) moves to the library
+that owns the platform Window sources — `KRTBase`.
 
-### Phase 4 — KreateGame.cmake + docs + codedb
+**Exit criteria:** three libraries built; `BasicGame` links only `KRTScene`
+and still runs; the Windows DLL set in `${CMAKE_BINARY_DIR}/bin/` is
+`KRTBase.dll`, `KRTPipeline.dll`, `KRTScene.dll`.
 
-**4.1 — `KreateGame.cmake`.** Replace every `target_link_libraries(... PRIVATE KREATE)` with
-`target_link_libraries(... PRIVATE KRT_Core)`. The macOS branch's
-`EMBEDDED_FRAMEWORKS OmegaGTE` and `add_app_bundle DEPS KREATE OmegaGTE.framework ...`
-list expands to embed all six KRT libraries. Windows
-`omega_stage_runtime_dlls` already fans out everything in `bin/`,
-so it should pick up the new DLL set automatically — **verify**.
+### Phase 6 — KreateGame.cmake + docs + codedb + plan move
 
-**4.2 — Docs.** Update `kreate/AGENTS.md`, `kreate/README.md`, and
-the `KreateGame.cmake` header block to reference the six libraries
-and the `KRT`-prefixed types. Leave the namespace explanation
-("all code is under namespace `Kreate`") unchanged.
+**6.1 — `KreateGame.cmake`.** Replace every `PRIVATE KREATE` with
+`PRIVATE KRTScene` (lines 40, 63, 91, 112, 133). The macOS branch's
+`add_app_bundle DEPS KREATE OmegaGTE.framework …` (line 86) expands to embed
+all three KRT libraries. Windows `omega_stage_runtime_dlls` already fans out
+`bin/`, so it should pick up the new DLL set — **verify**. Android's
+`PRIVATE KREATE android log` → `PRIVATE KRTScene android log` (android/log
+now pulled `PUBLIC` from `KRTBase`'s Android branch — confirm the
+PUBLIC/PRIVATE split when 5.1 lands).
 
-**4.3 — Codedb.** Run
-`python3 utils/omega-codedb/codedb.py index --rebuild`. Spot-check
-that the renamed types show up in `find <KRTApp>` and that the area
-labels still resolve.
+**6.2 — Docs.** Update `kreate/AGENTS.md`, `kreate/README.md`, and the
+`KreateGame.cmake` header block for the three libraries, the `KRT`-prefixed
+types, the removed public `Pipeline`, and the `KRTMaterial` /
+default-mesh-renderer surface. Leave the namespace explanation unchanged.
 
-**4.4 — Plan move.** Once Phase 4 is shipped, move this plan to
+**6.3 — Codedb.** Run
+`python3 utils/omega-codedb/codedb.py index --rebuild`. Spot-check that the
+renamed types resolve (`find KRTApp`, `find KRTMaterial`) and that
+`Pipeline` no longer shows in the public surface.
+
+**6.4 — Plan move.** Once Phase 6 ships, move this plan to
 `kreate/.plans/done/`.
 
 ---
 
 ## Risk + sequencing notes
 
-- **CRLF churn (project memory).** The whole tree shows as modified
-  due to CRLF; each phase should commit only the files actually
-  touched, and reviews should use `git diff --ignore-cr-at-eol`.
+- **The runnable slice must survive every phase.** There is a *working*
+  spinning cube today. Each phase's exit criterion is "Linux Vulkan build +
+  `BasicGame` still draw the cube." Phase 2 in particular rewrites
+  `BasicGame` onto a custom `KRTMaterial` that wraps the **already-working**
+  Phase1Basic shaders, precisely so the runnable check never blocks on the
+  not-yet-authored default shaders (which are Phase 3's job).
+- **The header-vs-compilation-unit invariant.** The 3-library graph is
+  acyclic only because no `KRTBase` translation unit completes
+  `KRTMaterial`/`KRTMesh`. Guard this in review — a stray `#include
+  "material/Material.h"` (or dereference) inside a `KRTBase` `.cpp`
+  reintroduces the `KRTBase → KRTPipeline` cycle.
+- **CRLF churn (project memory).** The tree shows as modified due to CRLF;
+  each phase commits only the files it actually touches, and reviews use
+  `git diff --ignore-cr-at-eol`.
 - **Common identifier names.** `App`, `Window`, `Scene`, `Mesh`, `Object`
-  are very common. Strictly scope every rename to `kreate/` (plus the
-  one root `CMakeLists.txt:116` line in Phase 3) so no other module
-  gets clipped.
-- **Windows-only build paths.** Phases 3 and 4 introduce per-library
-  DLL boundaries — the only place `__declspec(dllexport/dllimport)`
-  actually matters. Linux/macOS visibility is currently a no-op in
-  `Base.h`, so the Linux Vulkan build will pass cleanly long before
-  the Windows side is verified. **Per AGENTS.md "Building"**: every
-  phase that touches CMake or export macros must be handed off to
-  the user for a Windows build verification before being declared
+  are very common. Strictly scope every rename to `kreate/` (plus the one
+  root `CMakeLists.txt:124` line in Phase 5) so no other module is clipped.
+- **Windows-only build paths.** Phases 4–5 introduce per-library DLL
+  boundaries — the only place `__declspec(dllexport/dllimport)` actually
+  matters. Linux/macOS visibility is a no-op in `Base.h`, so the Linux
+  Vulkan build passes long before the Windows side is verified. **Per
+  AGENTS.md "Building"**: every phase that touches CMake or export macros is
+  handed to the user for a Windows build verification before being declared
   done.
-- **`add_kreate_game` for Android.** Android currently uses
-  `target_link_libraries(... PRIVATE KREATE android log)`. After
-  the split it's `target_link_libraries(... PRIVATE KRT_Core android log)`
-  with `KRT_Platform` indirectly pulling android/log via PUBLIC
-  link from inside `KRT_Platform`'s Android branch. Confirm the
-  PUBLIC/PRIVATE split is right when Phase 3.4 lands.
-- **Single landing.** None of the four phases should land as
-  intermediate broken builds — each phase's exit criterion is "the
-  Linux Vulkan build + BasicGame still run." Phase 2 in particular
-  is a no-op at runtime but lays the groundwork for Phase 3.
+- **Single landing per phase.** None of the six phases should land as an
+  intermediate broken build.
 
 ---
 
 ## Out of scope
 
-- Renaming the `Kreate` namespace, the `<kreate/...>` include path, or
-  the `KREATE_EXPORT` / `KREATE__BUILD__` / `KREATE_*_H` macros
+- Renaming the `Kreate` namespace, the `<kreate/...>` include path, or the
+  `KREATE_EXPORT` / `KREATE__BUILD__` / `KREATE_*_H` macros/guards
   (decisions 4 + 5).
-- Renaming `Kreate::CreateApp` (decision 3).
-- Renaming static methods on the prefixed types (the type carries the
-  prefix; the method names stay).
-- Splitting `KRT_Core` further (App/Scene/Object stay together — they
-  share too much state to be worth separating today).
-- Promoting `Renderer.h` to public API. It remains a cross-submodule
-  internal header.
+- Renaming `Kreate::CreateApp` (decision 3) or the static methods on the
+  prefixed types.
+- The **full material & lighting system** — parameter binding, PBR,
+  light types, forward-vs-deferred. That is Engine-Roadmap Phase 4; this
+  plan lands only the minimal `KRTMaterial` surface (D1) needed to remove
+  public `Pipeline`.
+- The **file-based asset importer** (glTF/OBJ/USD via `GEMeshAsset`). That
+  is Engine-Roadmap Phase 3; this plan only moves the mesh-creation
+  *ownership* onto the Scene/Renderer so the importer drops in later without
+  further surface change.
+- The **entity-component model** (Roadmap Phase 6). `Object` stays an
+  object node; `KRTScene`, `KRTPipeline`, `KRTBase` co-exist with whatever
+  entity model Phase 6 chooses.
+- Promoting `Renderer.h` to public API — it stays a cross-submodule
+  internal header, now owned by `KRTScene` via a private include dir.

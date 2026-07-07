@@ -99,7 +99,7 @@ set(AQUA_KERNELS_LIB "${CMAKE_CURRENT_BINARY_DIR}/AQKernels.omegasllib" CACHE IN
 
 # One entry per stage source; each becomes AQUAKernel<Stage>Lib and a
 # per-stage .omegasllib under the build dir.
-set(AQUA_KERNEL_STAGES Probe Integrate Broadphase Narrowphase Solver)
+set(AQUA_KERNEL_STAGES Probe Integrate Broadphase Narrowphase Solver XPBD Scan Particles)
 set(AQUA_KERNEL_STAGE_LIBS)
 foreach(_stage IN LISTS AQUA_KERNEL_STAGES)
     set(_stage_src "${AQUA_KERNELS_DIR}/AQ${_stage}.omegasl")
