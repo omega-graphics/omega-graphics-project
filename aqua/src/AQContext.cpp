@@ -95,10 +95,38 @@ void AQContext::advance(float realDt) {
         for (auto &space : spaces) space->runBroadphase(realDt);
     }
 
+    // Phase 6 — particle emission runs ONCE per advance, before the sub-step
+    // loop, for exactly the slice that will be simulated this call (nSub sub-
+    // steps × fixedDt). Counting nSub with the same float subtraction the loop
+    // uses guarantees it equals the loop's iteration count, so the emitted
+    // census is a deterministic function of (seed, sub-step count) — the
+    // precondition for the double oracle to match (§8/§9).
+    int nSub = 0;
+    for (float acc = accumulator; acc >= fixedDt; acc -= fixedDt) ++nSub;
+    const float simDt = static_cast<float>(nSub) * fixedDt;
+    if (nSub > 0) {
+        for (auto &space : spaces) space->particlesEmit(simDt);
+    }
+
     while (accumulator >= fixedDt) {
         for (auto &space : spaces) space->stepInternal(fixedDt);
+        for (auto &space : spaces) space->particlesSubstep(fixedDt);
+        // Phase 7 — XPBD constraint projection on the same fixed clock: each
+        // sub-step is subdivided into params.substeps XPBD slices internally
+        // (Macklin 2019 small steps), so there is still exactly ONE timestep
+        // authority — this loop (the Phase 6 §14.1 rule).
+        for (auto &space : spaces) space->xpbdSubstep(fixedDt);
         accumulator -= fixedDt;
         elapsedTime += fixedDt;
+    }
+
+    // Phase 6 — stable stream compaction once per advance, after the sub-steps,
+    // so readParticleState sees the live set packed into the prefix.
+    // Phase 7 — XPBD debug-bus emission + guard-trip frame boundary, same
+    // once-per-advance cadence.
+    if (nSub > 0) {
+        for (auto &space : spaces) space->particlesCompact();
+        for (auto &space : spaces) space->xpbdFrameEnd();
     }
 
     if (willStep) {

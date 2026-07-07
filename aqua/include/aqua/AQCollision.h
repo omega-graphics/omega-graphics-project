@@ -92,6 +92,17 @@ inline bool operator==(const AQBroadphasePair &lhs, const AQBroadphasePair &rhs)
     return lhs.a == rhs.a && lhs.b == rhs.b;
 }
 
+/// Result of a point-vs-shape query (Phase 6 §13.3 6a). `distance` is the
+/// signed distance from the query point to the shape surface — negative inside,
+/// positive outside, in world units. `normal` is the unit outward surface
+/// normal at the query point, in world space: the direction a point moves to
+/// leave the shape. For the particle push-out (Phase 6 Pass D) a hit is
+/// `distance < radius`, and the correction is `pos += normal * (radius - distance)`.
+struct AQShapeSample {
+    float             distance;
+    OmegaGTE::FVec<3> normal = OmegaGTE::FVec<3>::Create();
+};
+
 // ============================================================================
 // Free functions over AQShape.
 // ============================================================================
@@ -131,5 +142,22 @@ AQUA_EXPORT OmegaGTE::FVec<3> AQshapeSupport(const AQShape &shape,
 AQUA_EXPORT OmegaGTE::FVec<3> AQshapeInertiaMoments(const AQShape &shape, float mass,
                                         const OmegaGTE::FVec<3> *hullVerts = nullptr,
                                         std::size_t hullVertCount = 0);
+
+/// Closed-form signed distance + outward surface normal of a world-space point
+/// against a shape worn by a body at `bodyXform` (Phase 6 §13.3 6a). This is
+/// the exact analytic collision query the Phase-6 particle push-out needs — the
+/// proposal's §5/§6 assumed Phase 2 already shipped it, but it did not (only
+/// `AQshapeSupport` existed, and its plane case is a GJK placeholder), so Phase
+/// 6 builds it here. The query point is taken into the shape's local frame, the
+/// primitive's closed form is evaluated there, and the normal is rotated back
+/// to world. Exact for sphere/box/capsule/plane — a plane's distance is the
+/// closed form `n·x − offset`, so a particle can never tunnel it. The convex
+/// hull is NOT supported in Phase 6 (returns `+inf` distance so the push-out
+/// treats it as no-contact); a real hull SDF is deferred with Phase 7.
+AQUA_EXPORT AQShapeSample AQshapeSignedDistance(const AQShape &shape,
+                                    const OmegaGTE::FVec<3> &pointWorld,
+                                    const AQTransform<float> &bodyXform,
+                                    const OmegaGTE::FVec<3> *hullVerts = nullptr,
+                                    std::size_t hullVertCount = 0);
 
 #endif // AQUA_AQCOLLISION_H

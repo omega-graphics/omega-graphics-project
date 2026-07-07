@@ -13,8 +13,10 @@
 #include "AQContact.h"
 #include "AQDebug.h"
 #include "AQJoint.h"
+#include "AQParticles.h"
 #include "AQQuery.h"
 #include "AQRigidBody.h"
+#include "AQXPBD.h"
 #include <omegaGTE/GTEMath.h>
 #include <cstddef>
 #include <cstdint>
@@ -178,6 +180,102 @@ public:
     void setSleepThresholds(float linearVel, float angularVel,
                             std::uint32_t idleSubsteps);
 
+    // --- Particle systems (Phase 6, §13.3) ----------------------------------
+    // Fixed-capacity particle systems simulated on the CPU path each advance.
+    // Handles are opaque IDs (never pointers), resolved behind the pimpl so a
+    // caller can never dangle into a pool that compaction relocated.
+
+    /// Creates a particle system backed by a fixed-capacity pool. Capacity is
+    /// bounded at creation (§2 — the guards fire before it is exceeded).
+    AQParticleSystemHandle createParticleSystem(std::uint32_t capacity);
+    /// Destroys a particle system. No-op on an unknown/stale handle.
+    void destroyParticleSystem(AQParticleSystemHandle system);
+
+    /// Attaches an emitter (copied by value — AQEmitter is POD).
+    void addEmitter(AQParticleSystemHandle system, const AQEmitter &emitter);
+    /// Enables/disables emitter `idx` on the system. Out-of-range is a no-op.
+    void setEmitterEnabled(AQParticleSystemHandle system, std::uint32_t idx, bool on);
+
+    /// Adds a force field (gravity/drag/wind/vortex/point; copied by value).
+    void addForceField(AQParticleSystemHandle system, const AQForceField &field);
+    /// Enables/disables force field `idx` on the system. Out-of-range is a no-op.
+    void setForceFieldEnabled(AQParticleSystemHandle system, std::uint32_t idx, bool on);
+
+    /// Toggles one-way collision of the system's particles against the static
+    /// AQShapes registered in this space (Phase 2 colliders). Off by default.
+    void setParticleCollisionEnabled(AQParticleSystemHandle system, bool on);
+
+    /// Snapshots the packed live particle state into caller-owned SoA buffers for
+    /// rendering (kREATE). Fills [0, returned) with the live set and returns the
+    /// count written; any out array may be null to skip that attribute. Valid
+    /// after `AQContext::advance` returns — the live set is packed into the
+    /// prefix by the end-of-frame compaction.
+    AQUA_NODISCARD std::uint32_t readParticleState(AQParticleSystemHandle system,
+                                       OmegaGTE::FVec<3> *outPositions,
+                                       OmegaGTE::FVec<3> *outVelocities,
+                                       float *outLifetimes,
+                                       std::uint32_t *outFlags,
+                                       std::uint32_t maxCount) const;
+    /// Number of live particles in the system (0 on an unknown handle).
+    AQUA_NODISCARD std::uint32_t liveParticleCount(AQParticleSystemHandle system) const;
+
+    // --- XPBD constraint core (Phase 7, §10/§13) -----------------------------
+    // An XPBD body is a persistent particle set + typed constraints projected
+    // by the shared XPBD solver each sub-step. Handles are opaque ids resolved
+    // behind the pimpl (the particle-system idiom). This is the authoring
+    // surface Phases 8–10 extend with their own constraint types; the solver
+    // core they share lands here.
+
+    /// Creates an XPBD body from parallel position/invMass arrays
+    /// (`invMass[i] == 0` pins particle i). Returns an invalid handle for an
+    /// empty/malformed desc (null arrays, zero count).
+    AQXPBDBodyHandle createXPBDBody(const AQXPBDBodyDesc &desc);
+    /// Destroys an XPBD body. No-op on an unknown/stale handle.
+    void destroyXPBDBody(AQXPBDBodyHandle body);
+
+    /// Authors a distance constraint between two particles of `body`.
+    /// `restLength < 0` derives the rest length from the current particle
+    /// distance. Returns an invalid handle on a bad body/indices/self-pair.
+    AQConstraintHandle addDistanceConstraint(AQXPBDBodyHandle body,
+                                             std::uint32_t a, std::uint32_t b,
+                                             float restLength, float compliance);
+
+    /// Convenience: chains `count` particles with `count − 1` distance
+    /// constraints at the given compliance, rest lengths taken from the
+    /// current particle spacing (the rope deliverable). Returns the number of
+    /// constraints created (0 on a bad body / fewer than two particles).
+    std::uint32_t addRope(AQXPBDBodyHandle body,
+                          const std::uint32_t *particles, std::uint32_t count,
+                          float compliance);
+
+    /// Per-space XPBD solve tuning (substeps × iterations, damping, guard).
+    /// Values are sanitized: substeps/iterations clamp to ≥ 1, damping to
+    /// [0, 1), explosionThreshold to > 0.
+    void setXPBDParams(const AQXPBDParams &params);
+    AQUA_NODISCARD AQXPBDParams xpbdParams() const;
+
+    /// Snapshots particle state into caller-owned arrays (either may be null
+    /// to skip). Returns the count written (min(particleCount, maxCount); 0 on
+    /// an unknown handle). Valid between `AQContext::advance` calls.
+    AQUA_NODISCARD std::uint32_t readXPBDState(AQXPBDBodyHandle body,
+                                   OmegaGTE::FVec<3> *outPositions,
+                                   OmegaGTE::FVec<3> *outVelocities,
+                                   std::uint32_t maxCount) const;
+
+    /// Snapshots the color-sorted constraint records (with live λ and color —
+    /// the solver's own view, one contiguous range per color batch) and the
+    /// batch table. Any out array may be null. Returns the constraint count
+    /// written. Re-colors first if the topology changed since the last step.
+    AQUA_NODISCARD std::uint32_t readXPBDConstraints(AQXPBDBodyHandle body,
+                                   AQDistanceConstraint *outConstraints,
+                                   std::uint32_t maxConstraints,
+                                   OmegaCommon::Vector<AQConstraintBatch> *outBatches) const;
+
+    /// Cumulative explosion-guard trips on this body (0 on an unknown handle).
+    /// A non-zero value means the solve diverged and was clamped — loud by
+    /// contract (§9.7), so tests can assert both "tripped" and "never trips".
+    AQUA_NODISCARD std::uint32_t xpbdGuardTrips(AQXPBDBodyHandle body) const;
+
 private:
     AQSpace();
 
@@ -234,6 +332,25 @@ private:
     /// into-surface velocity, so a fast/thin body cannot tunnel. Reads the
     /// pre-step positions captured in `impl->ccdPrevPos`.
     void runCCD(float dt);
+
+    /// Phase 6 — particle stepping, driven by AQContext::advance on the same
+    /// fixed-step cadence as the rigid pillar. `particlesEmit` runs once per
+    /// advance (gathers the space's static colliders, then seeds new particles
+    /// for the simulated slice `simDt`); `particlesSubstep` runs each sub-step
+    /// (field accumulate + integrate + one-way collide + age); `particlesCompact`
+    /// runs once per advance (stable stream compaction + free-list rebuild).
+    void particlesEmit(float simDt);
+    void particlesSubstep(float dt);
+    void particlesCompact();
+
+    /// Phase 7 — XPBD stepping, driven by AQContext::advance on the same fixed
+    /// sub-step cadence as the rigid and particle pillars (one clock, §13.1).
+    /// `xpbdSubstep` runs each sub-step: n = params.substeps XPBD slices of
+    /// h = dt/n, each predict → colored projection → derive-velocity.
+    /// `xpbdFrameEnd` runs once per advance: debug-bus emission
+    /// (AQDebugConstraint / AQDebugConstraintColor) + guard-trip reporting.
+    void xpbdSubstep(float dt);
+    void xpbdFrameEnd();
 
     friend class AQContext;
 

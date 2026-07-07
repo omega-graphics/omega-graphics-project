@@ -106,6 +106,92 @@ add_aqua_test(
     SOURCES aqua_phase4_test.cpp
     LIBS    AQUA OmegaCommonCore)
 
+# Phase 6 §13.3 6a: closed-form point-vs-shape signed-distance validation. The
+# AQshapeSignedDistance query the particle push-out rides on — pinned against
+# hand-computed distances/normals for plane/sphere/box/capsule with translated
+# and rotated bodies. Pure CPU (the math is header-only; the query is in libAQUA).
+add_aqua_test(
+    NAME    aqua_particle_sdf_test
+    SOURCES aqua_particle_sdf_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+
+# Phase 6 §13.3 6b: particle pool / free-list / stable-compaction census. INTERNAL
+# test — drives the private AQParticleSystem (src/AQSpaceImpl.h) directly, so it
+# adds ../src to the include path. Pure CPU (no kernel lib, no GPU): asserts the
+# §9 census invariants — conservation, stable survivor order, recycle-exactly-once,
+# deterministic reuse, and the NaN guard.
+add_aqua_test(
+    NAME    aqua_particle_pool_test
+    SOURCES aqua_particle_pool_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+target_include_directories(aqua_particle_pool_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+
+# Phase 6 §13.3 6c: emission + force fields + integration. INTERNAL test — drives
+# AQParticleSystem + the scalar-generic particle math (src/AQParticleMath.h)
+# directly. Pure CPU: per-field acceleration, semi-implicit closed form,
+# deterministic emission (count carry + bitwise attribute reproducibility),
+# spawn bounds, aging, and a whole-pipeline census smoke.
+add_aqua_test(
+    NAME    aqua_particle_step_test
+    SOURCES aqua_particle_step_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+target_include_directories(aqua_particle_step_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+
+# Phase 6 §13.3 6d: public particle API + one-way collision + step wiring. PUBLIC
+# test — drives AQContext/AQSpace exactly as kREATE would (no src/ internals):
+# API round-trip, the collision no-tunneling hard invariant, the collision toggle,
+# and determinism through the public surface.
+add_aqua_test(
+    NAME    aqua_particle_api_test
+    SOURCES aqua_particle_api_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+
+# Phase 6 §1/§9 6e: the runnable deliverable — a particle fountain validated
+# against a double-precision reference oracle that replays the same pipeline in
+# sequential double code (reusing AQParticleMath.h + AQParticleCollision.h).
+# INTERNAL (the oracle needs the shared generic math): trajectory-vs-oracle band,
+# no-tunneling against floor/box/sphere (exact), census match, scale, debug bus.
+add_aqua_test(
+    NAME    aqua_particle_test
+    SOURCES aqua_particle_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+target_include_directories(aqua_particle_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+
+# Phase 7 §13 7b: XPBD storage + authoring + deterministic graph coloring.
+# INTERNAL test — drives the private AQXPBDBody (src/AQSpaceImpl.h) directly
+# plus the public authoring surface. Pure CPU: conflict-free color batches,
+# chain/star closed forms, coloring determinism, topology-change recolor,
+# public round-trip.
+add_aqua_test(
+    NAME    aqua_xpbd_color_test
+    SOURCES aqua_xpbd_color_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+target_include_directories(aqua_xpbd_color_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+
+# Phase 7 §13 7c: the XPBD projection math + slice loop. INTERNAL test — the
+# scalar-generic src/AQXPBDMath.h against hand-computed closed forms (rigid /
+# compliant / pinned / degenerate / guard-clamped projections), then
+# AQXPBDBody::advance semantics (free-fall closed form, pendulum rigidity,
+# loud guard trips, bitwise determinism).
+add_aqua_test(
+    NAME    aqua_xpbd_step_test
+    SOURCES aqua_xpbd_step_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+target_include_directories(aqua_xpbd_step_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+
+# Phase 7 §1/§9: the runnable deliverable — a rope under XPBD validated against
+# double-precision physical oracles (measurement off the hot path, §8): energy
+# no-injection + monotone settle, catenary fit, alpha = 0 inextensibility,
+# timestep-independent stretch (60 vs 240 Hz — the headline XPBD property),
+# analytic per-segment stretch alpha*T_i, determinism, and the loud guard.
+# INTERNAL (the oracle shares src/AQXPBDMath.h); authoring goes through the
+# public AQContext/AQSpace surface exactly as kREATE would.
+add_aqua_test(
+    NAME    aqua_xpbd_rope_test
+    SOURCES aqua_xpbd_rope_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+target_include_directories(aqua_xpbd_rope_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
+
 # Phase 5a compute-substrate groundwork: execution-path selection + the
 # CreateCPUOnly / mandatory-engine Create(engine, queue) factory split. The
 # CPU-only assertions always run; the guarded mandatory-engine section inits a

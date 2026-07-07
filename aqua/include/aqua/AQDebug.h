@@ -50,6 +50,12 @@ enum AQDebugFlags : std::uint32_t {
     AQDebugRaycastHit       = 1U << 13,  ///< Last query: origin→hit segment + a short normal tick
     AQDebugSleepingBody     = 1U << 14,  ///< A greyed marker cross at each sleeping body's COM
     AQDebugCCDSweep         = 1U << 15,  ///< One segment per opted-in body showing the swept extension
+    // --- Phase 6 additions (particle systems, see Phase-6 brief §9/§13) ---
+    AQDebugParticle         = 1U << 16,  ///< Per-particle velocity vector + live-set bounds; a live/free count line
+    AQDebugForceField       = 1U << 17,  ///< Each field's influence region (vortex axis, point radius, wind direction)
+    // --- Phase 7 additions (XPBD constraint core, see Phase-7 brief §9/§10) ---
+    AQDebugConstraint       = 1U << 18,  ///< One line per active constraint, color-graded by strain
+    AQDebugConstraintColor  = 1U << 19,  ///< Constraint lines tinted by graph-color batch id
 };
 
 #endif // AQUA_AQDEBUG_H

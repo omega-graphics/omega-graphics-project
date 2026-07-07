@@ -17,6 +17,7 @@
 
 #include <aqua/AQCollision.h>
 #include <aqua/AQMath.h>
+#include "AQParticleCollision.h"   // AQshapeSignedDistanceGeneric<Ty> — single source
 
 #include <algorithm>
 #include <cmath>
@@ -227,4 +228,34 @@ FVec<3> AQshapeInertiaMoments(const AQShape &shape, float mass,
     }
     }
     return AQvec3(0.f, 0.f, 0.f);
+}
+
+// ============================================================================
+// AQshapeSignedDistance — exact point-vs-shape signed distance + normal.
+// ============================================================================
+//
+// The Phase-6 particle push-out (Pass D) needs, for a world point, the signed
+// distance to a collider surface and the outward normal there. The proposal
+// (§5/§6) assumed Phase 2 already shipped this; it did not — only AQshapeSupport
+// existed, and its plane case is a GJK placeholder. So it lands here, closed
+// form per primitive, in the shape's LOCAL frame (query point pulled in by the
+// inverse world-pose, normal rotated back out). Everything is signed-distance-
+// field standard: negative inside, positive outside.
+
+// The public float entry point delegates to the scalar-generic template in
+// AQParticleCollision.h so there is ONE implementation of the closed forms; the
+// double oracle (6e) instantiates the same template at double. (bodyXform never
+// composes a hull, so the hull vertex pool is unused — hull SDF is deferred.)
+AQShapeSample AQshapeSignedDistance(const AQShape &shape,
+                                    const FVec<3> &pointWorld,
+                                    const AQTransform<float> &bodyXform,
+                                    const FVec<3> *hullVerts,
+                                    std::size_t hullVertCount) {
+    (void)hullVerts;
+    (void)hullVertCount;
+    const AQShapeSampleT<float> r = AQshapeSignedDistanceGeneric<float>(shape, pointWorld, bodyXform);
+    AQShapeSample out;
+    out.distance = r.distance;
+    out.normal   = r.normal;
+    return out;
 }

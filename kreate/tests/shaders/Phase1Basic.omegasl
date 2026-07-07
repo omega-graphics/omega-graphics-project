@@ -27,7 +27,7 @@ struct Raster internal {
 };
 
 constant<PushData>  pc    : 0;
-buffer<VertexIn>    verts : 0;
+buffer<VertexIn>    verts : 1;
 
 [in pc, in verts]
 vertex Raster vertexFunc(uint vid : VertexID){

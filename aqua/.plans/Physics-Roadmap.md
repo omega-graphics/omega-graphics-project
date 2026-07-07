@@ -769,7 +769,17 @@ decided deliberately:
    while keeping the same public surface and the same compute/CPU story.
 2. **Solver architecture — hybrid (impulse rigid + XPBD soft) vs. unified XPBD.**
    (Before Phase 7.) The single most far-reaching technical choice; Phases 8–9
-   assume the answer. Lean: hybrid.
+   assume the answer. Lean was hybrid; **DECIDED 2026-07-07 (developer): UNIFIED
+   destination, vet-corrected path** — the XPBD constraint core shipped in
+   Phase 7 is the substrate for all deformables + PBF fluids; rigid stays on
+   the impulse solver near-term (the 2026-07-07 recency sweep found it already
+   embodies the winning TGS-Soft family: small steps + soft rows + impulse PGS,
+   and rigid-XPBD is a documented downgrade per Catto's Solver2D); everything
+   runs under AQContext's one substep clock, coupled at contacts (7g). True
+   unification migrates rigid onto the substrate via an **AVBD-class prototype
+   (SIGGRAPH 2025), oracle-gated** on the Phase 3/4 battery per capability —
+   whatever the impulse solver still measurably wins, it keeps. See Phase-7
+   brief §13.0/§13.4/§13.5-A.
 3. **Data layout — AoS vs. SoA.** (Before Phase 3.) SoA so the Phase 5 compute
    port isn't a rewrite.
 4. **Determinism guarantee — bitwise vs. stable.** (Before Phase 5.) Constrains
