@@ -192,6 +192,30 @@ add_aqua_test(
     LIBS    AQUA OmegaCommonCore)
 target_include_directories(aqua_xpbd_rope_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
 
+# Phase 7g — rigid<->XPBD two-way contact coupling: one-way parity on static
+# colliders, a pinned XPBD bed catching a dynamic box against gravity (the
+# two-way reaction), determinism, and finiteness. Public AQContext/AQSpace only.
+add_aqua_test(
+    NAME    aqua_xpbd_coupling_test
+    SOURCES aqua_xpbd_coupling_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+
+# Phase 7h #1 — long-range attachments: a long inextensible pinned chain that a
+# 1-iteration solve leaves over-stretched converges to its geodesic reach with
+# LRA on; no-op without pins; deterministic.
+add_aqua_test(
+    NAME    aqua_xpbd_lra_test
+    SOURCES aqua_xpbd_lra_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+
+# Phase 7h #2 — far-from-origin hardening: a rope simulated at world ~1e5 settles
+# cleanly with originRelative on and jitters with float noise without it; the
+# flag-off path stays byte-identical to the near-origin solve.
+add_aqua_test(
+    NAME    aqua_xpbd_origin_test
+    SOURCES aqua_xpbd_origin_test.cpp
+    LIBS    AQUA OmegaCommonCore)
+
 # Phase 5a compute-substrate groundwork: execution-path selection + the
 # CreateCPUOnly / mandatory-engine Create(engine, queue) factory split. The
 # CPU-only assertions always run; the guarded mandatory-engine section inits a

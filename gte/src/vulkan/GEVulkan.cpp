@@ -3426,11 +3426,25 @@ _NAMESPACE_BEGIN_
             rasterState.polygonMode = VK_POLYGON_MODE_FILL;
         }
 
+        /// Vulkan render-parity — front-face / winding normalization.
+        /// `GEVulkanCommandBuffer::setViewports` (GEVulkanCommandQueue.cpp:1433)
+        /// binds a NEGATIVE-height viewport to flip NDC-Y so `y=+1` maps to the
+        /// framebuffer top, matching Metal/D3D12 (NDC coords themselves get no
+        /// special treatment). That viewport flip REVERSES the apparent triangle
+        /// winding the rasterizer sees, so applying `polygonFrontFaceRotation`
+        /// straight through would classify the opposite faces as front on Vulkan
+        /// vs Metal/D3D12. Compensate with the OPPOSITE VkFrontFace: the same
+        /// `polygonFrontFaceRotation` then classifies the same PHYSICAL faces as
+        /// front on every backend, keeping cull results AND `gl_FrontFacing` /
+        /// two-sided stencil consistent cross-backend. Shared by the graphics
+        /// and tessellation (isTess) pipelines; the mesh pipeline applies the
+        /// same flip. Currently latent — every pipeline uses `cullMode=None` —
+        /// but crucial the moment culling is enabled. (Alex, 2026-07-06.)
         if(desc.polygonFrontFaceRotation == GTEPolygonFrontFaceRotation::Clockwise){
-            rasterState.frontFace = VK_FRONT_FACE_CLOCKWISE;
+            rasterState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         }
         else {
-            rasterState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+            rasterState.frontFace = VK_FRONT_FACE_CLOCKWISE;
         }
 
         VkViewport viewport {};
@@ -4028,8 +4042,11 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         }
         rasterState.polygonMode = (desc.triangleFillMode == TriangleFillMode::Wireframe)
                                       ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+        /// Vulkan render-parity: OPPOSITE VkFrontFace to compensate for the
+        /// negative-height viewport's winding reversal (see the graphics-pipeline
+        /// note in makeRenderPipelineState — GEVulkanCommandQueue.cpp:1433).
         rasterState.frontFace = (desc.polygonFrontFaceRotation == GTEPolygonFrontFaceRotation::Clockwise)
-                                    ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+                                    ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
 
         /// Viewport/scissor placeholders — actual values come at draw
         /// time via VK_DYNAMIC_STATE_{VIEWPORT,SCISSOR}, same as the

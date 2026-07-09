@@ -193,6 +193,60 @@ struct AQParticleSystem {
 // color-sorted mirror `distanceSorted` (+ `sortedAuthoring` mapping each
 // sorted slot back to its authoring index) is rebuilt only on topology change,
 // never per frame.
+
+// --- Phase 7g — rigid↔XPBD contact coupling records (§13.6) ---
+//
+// A rigid collider snapshot the XPBD contact coupling reads each engine
+// sub-step. Gathered from the space's bodies-with-shapes via the PUBLIC
+// AQRigidBody accessors — the same convention AQParticleCollider follows,
+// extended with the mass/inertia/body-index the TWO-WAY reaction needs. The
+// collider is read for the push-out and written back (as a reaction impulse)
+// only through the body index, never here.
+struct AQXPBDCollider {
+    AQShape            shape;
+    AQTransform<float> xform;                          // body world pose (p + q)
+    AQMat3F            worldInvInertia = AQMat3F::Create(); // for the body term w_b
+    FVec<3>            com             = FVec<3>::Create(); // world COM (impulse arm)
+    // Contact-point velocity is v = vel + omega × r. Held per-collider and
+    // EVOLVED within a body's advance() as reactions land, so the velocity-level
+    // impulse self-limits across the sub-step's slices (a frozen collider pose
+    // would otherwise re-apply the full stopping impulse every slice — §13.6).
+    FVec<3>            vel   = FVec<3>::Create();
+    FVec<3>            omega = FVec<3>::Create();       // world angular velocity
+    float              invMassBody = 0.f;
+    float              restitution = 0.f;
+    std::uint32_t      bodyIndex   = 0;                // into AQSpace::Impl::bodies
+    bool               dynamic     = false;            // mass > 0 ⇒ receives reaction
+};
+
+// One reaction impulse an XPBD body applied to a rigid collider this engine
+// sub-step. Buffered on the body during advance() in a deterministic fixed
+// order (body → particle → collider) and drained by xpbdSubstep through
+// AQRigidBody::applyImpulseAtPoint — the same impulse path the PGS sweep uses,
+// so the COM offset the descriptor may set is handled correctly (not snapshot).
+struct AQXPBDReaction {
+    std::uint32_t bodyIndex = 0;
+    FVec<3>       impulse   = FVec<3>::Create();
+    FVec<3>       point     = FVec<3>::Create();
+    // Split-impulse position correction (§13.6): a pseudo-position push that
+    // removes the body's penetration share WITHOUT adding velocity, so a body
+    // resting on a particle bed holds continuous contact instead of being
+    // bounced off (a velocity bias) or creeping through (no recovery). Applied
+    // as a MAX per body in xpbdSubstep, never summed (many contacts, one push).
+    FVec<3>       posCorrection = FVec<3>::Create();
+};
+
+// A long-range attachment (§13.7 7h #1; Kim/Chentanez/Müller 2012): dynamic
+// particle `p` may be no farther than `maxDist` (the geodesic sum of rest
+// lengths along the constraint graph) from pinned particle `pin`. A unilateral
+// inextensibility constraint that converges a long pinned chain in one
+// iteration, attacking the ~(N²/2)·g·h² 1-iteration residual quantified in 7e.
+struct AQLongRangeAttachment {
+    std::uint32_t p       = 0;
+    std::uint32_t pin     = 0;
+    float         maxDist = 0.f;
+};
+
 struct AQXPBDBody {
     std::uint64_t id = 0;   ///< matches AQXPBDBodyHandle.id (never 0 when live)
 
@@ -235,6 +289,35 @@ struct AQXPBDBody {
     bool gpuUploadNeeded = false;
     OmegaCommon::Vector<std::uint32_t> gpuTripsPrev;
 
+    // --- Phase 7g — rigid↔XPBD contact coupling (§13.6). Opt-in per body so
+    // every existing oracle is untouched (default off). `particleRadius` is the
+    // contact thickness (0 ⇒ point particle); `friction` is the Coulomb μ vs
+    // colliders (0 ⇒ frictionless, the Phase 6 particle-path default).
+    // `reactionsThisStep` buffers the two-way impulses advance() applies to the
+    // particles' own positions, for xpbdSubstep to hand back to the rigid bodies.
+    bool  collisionEnabled = false;
+    float particleRadius   = 0.f;
+    float friction         = 0.f;
+    OmegaCommon::Vector<AQXPBDReaction> reactionsThisStep;
+
+    // --- Phase 7h #1 — long-range attachments (§13.7). Opt-in (default off — it
+    // would wrongly clamp a COMPLIANT chain; it is for inextensible pinned
+    // ropes/cloth). `lra` is the geodesic pin/maxDist per dynamic particle,
+    // rebuilt by recolor() on topology change.
+    bool  longRangeAttach = false;
+    OmegaCommon::Vector<AQLongRangeAttachment> lra;
+
+    // --- Phase 7h #2 — far-from-origin hardening (§13.7). Particle positions
+    // and prevPositions are stored as OFFSETS from this origin. Default 0 ⇒
+    // offset == world ⇒ byte-identical to the pre-7h path. When
+    // AQXPBDParams.originRelative is on, advance() re-bases the origin toward the
+    // particle centroid so the solve always runs on small (precise) offsets.
+    // `originActive` disambiguates "positions are offsets" from "origin happens
+    // to be 0": false ⇒ positions are WORLD and origin is 0 (the default, and
+    // exactly the pre-7h state); true ⇒ positions are offsets from `origin`.
+    FVec<3> origin       = FVec<3>::Create();
+    bool    originActive = false;
+
     // Append `count` particles (positions/invMass parallel arrays); returns the
     // index of the first appended particle.
     std::uint32_t addParticles(const OmegaGTE::FVec<3>* pos, const float* w,
@@ -246,13 +329,25 @@ struct AQXPBDBody {
                               float restLength, float compliance);
 
     // Deterministic greedy coloring + (color, authoring-index)-sorted mirror +
-    // batch ranges. Runs on demand (topology change), never per frame.
+    // batch ranges. Runs on demand (topology change), never per frame. Also
+    // rebuilds the long-range-attachment set (§13.7 7h #1) when enabled.
     void recolor();
 
+    // Rebuild the long-range-attachment records: BFS the constraint graph from
+    // every pinned particle, accumulating rest lengths, to give each dynamic
+    // particle its nearest pin and geodesic max distance (§13.7 7h #1). Called
+    // by recolor(); a no-op (clears `lra`) when longRangeAttach is off.
+    void buildLongRange();
+
     // One ENGINE sub-step of dt: n XPBD slices of h = dt/n, each slice
-    // predict → (iterations ×) colored projection → derive (brief §6 loop).
-    // Gravity is the space's; params are the space's AQXPBDParams.
-    void advance(float dt, const AQXPBDParams& params, const FVec<3>& gravity);
+    // predict → (iterations ×) colored projection → [long-range clamp] →
+    // [rigid contact coupling] → derive (brief §6 loop + §13.6/§13.7). Gravity
+    // is the space's; params are the space's AQXPBDParams. `colliders` is the
+    // rigid-collider snapshot for the two-way contact coupling — empty when
+    // this body has collision off, so the coupling pass is skipped. Reaction
+    // impulses accumulate in `reactionsThisStep` for xpbdSubstep to apply.
+    void advance(float dt, const AQXPBDParams& params, const FVec<3>& gravity,
+                 const OmegaCommon::Vector<AQXPBDCollider>& colliders);
 
     // Guards (mirroring AQParticleSystem): any NaN/Inf in live particle state.
     bool anyNonFinite() const;

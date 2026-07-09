@@ -280,6 +280,26 @@ public:
     /// contract (§9.7), so tests can assert both "tripped" and "never trips".
     AQUA_NODISCARD std::uint32_t xpbdGuardTrips(AQXPBDBodyHandle body) const;
 
+    /// Enables two-way contact coupling of this XPBD body's particles against
+    /// the space's rigid colliders (Phase 7g, §13.6). Off by default. Particles
+    /// are pushed out of penetrating colliders and the equal-and-opposite
+    /// reaction impulse is applied back to dynamic rigid bodies; static /
+    /// kinematic colliders behave as the one-way push-out. `particleRadius` is
+    /// the contact thickness (0 ⇒ point particle); `friction` is the Coulomb μ
+    /// against colliders (0 ⇒ frictionless). A collision-enabled body solves on
+    /// the CPU even when the context resolved the GPU path (the coupling reads
+    /// rigid poses and writes rigid impulses, both CPU-resident).
+    void setXPBDCollisionEnabled(AQXPBDBodyHandle body, bool on,
+                                 float particleRadius = 0.f, float friction = 0.f);
+
+    /// Enables long-range attachments on this body (Phase 7h #1, §13.7): each
+    /// dynamic particle gains a unilateral max-distance constraint to its
+    /// nearest pinned particle (geodesic sum of rest lengths), converging a long
+    /// pinned chain toward inextensibility in one iteration. Off by default —
+    /// it is for INEXTENSIBLE pinned ropes/cloth; it would wrongly clamp a
+    /// compliant (α > 0) chain. No-op on a body with no pinned particles.
+    void setXPBDLongRangeAttachment(AQXPBDBodyHandle body, bool on);
+
 private:
     AQSpace();
 
@@ -366,10 +386,14 @@ private:
     /// Phase 7 — XPBD stepping, driven by AQContext::advance on the same fixed
     /// sub-step cadence as the rigid and particle pillars (one clock, §13.1).
     /// `xpbdSubstep` runs each sub-step: n = params.substeps XPBD slices of
-    /// h = dt/n, each predict → colored projection → derive-velocity.
-    /// `xpbdFrameEnd` runs once per advance: debug-bus emission
-    /// (AQDebugConstraint / AQDebugConstraintColor) + guard-trip reporting.
-    void xpbdSubstep(float dt);
+    /// h = dt/n, each predict → colored projection → [long-range clamp] →
+    /// [rigid contact coupling] → derive-velocity. `xpbdFrameEnd` runs once per
+    /// advance: debug-bus emission (AQDebugConstraint / AQDebugConstraintColor)
+    /// + guard-trip reporting. `gpuActive` is set when the context resolved the
+    /// GPU path: xpbdSubstep then advances ONLY collision-enabled bodies on the
+    /// CPU (their two-way coupling needs CPU-resident rigid state), leaving the
+    /// rest to xpbdGpuFrame's device batch (§13.6).
+    void xpbdSubstep(float dt, bool gpuActive);
     void xpbdFrameEnd();
 
     /// Phase 7f — the live GPU XPBD path (post-6h flip). Encodes the whole

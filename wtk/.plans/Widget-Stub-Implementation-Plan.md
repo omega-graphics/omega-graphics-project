@@ -50,7 +50,7 @@ These conventions apply to every widget built under this plan:
 | Shape primitives (`Rectangle`, `Ellipse`, etc.) | `UIView` | Shapes map directly to `UIViewLayoutV2` elements with `StyleSheet` theming. |
 | Text widgets (`Label`, `TextInput`, `TextArea`) | `UIView` | Text elements use `UIView`'s text layout, font, color, and wrapping support. |
 | Composite input widgets (`Button`, `Toggle`, etc.) | `UIView` via `Container` | Multi-element composition (background shape + label + icon) with stylesheet state transitions. |
-| Collection widgets (`ListView`, `TableView`) | `ScrollView` child of `Container` | Scroll viewport with virtualized child widgets. |
+| Collection widgets (`List`, `Table`) | `ScrollView` child of `Container` | Scroll viewport with virtualized child widgets. |
 | Media wrappers (`VideoViewWidget`, `SVGViewWidget`) | Wrap existing `VideoView`/`SVGView` | Delegate to existing specialized view implementations. |
 | Custom drawing (`CanvasWidget`) | `CanvasView` | Direct canvas access for immediate-mode drawing. |
 
@@ -140,7 +140,7 @@ New headers under `wtk/include/omegaWTK/Widgets/`:
 | `Primatives.h` | Shape primitives + `Label`, `Icon`, `Image`, `Separator` (exists, expand) |
 | `UserInputs.h` | All input widgets (exists, expand) |
 | `Containers.h` | Stack/Grid/ZStack/Split/Tabs layout containers (exists, expand) |
-| `Collections.h` | `ListView`, `TreeView`, `TableView`, `CollectionView`, `PropertyGrid` |
+| `Collections.h` | `List`, `Tree`, `Table`, `Collection`, `PropertyGrid` |
 | `Navigation.h` | `NavigationStack`, `Sidebar`, `Breadcrumb`, `Toolbar`, `StatusBar` |
 | `Overlays.h` | `Tooltip`, `Popover`, `PopupMenu`, `ContextMenu`, `Modal`, `Snackbar`, `Sheet` |
 | `MediaWidgets.h` | `VideoViewWidget`, `AudioPlayerWidget`, `SVGViewWidget`, `CanvasWidget` |
@@ -1137,57 +1137,57 @@ public:
 };
 ```
 
-### 5B. ListView
+### 5B. List
 
 Virtualized vertical (or horizontal) list. Only children visible in the scroll viewport are mounted.
 
 ```cpp
-class ListViewDataSource {
+class ListDataSource {
 public:
-    virtual ~ListViewDataSource() = default;
+    virtual ~ListDataSource() = default;
     virtual std::size_t itemCount() = 0;
     virtual float itemHeight(std::size_t index) = 0; // or itemSize for horizontal
     virtual WidgetPtr createItem(std::size_t index) = 0;
     virtual void recycleItem(std::size_t index, WidgetPtr widget) {}
 };
 
-class ListView : public Widget {
-    ListViewDataSource *dataSource_ = nullptr;
+class List : public Widget {
+    ListDataSource *dataSource_ = nullptr;
     // Internal: ScrollableContainer + item pool + visible range tracking
 public:
-    explicit ListView(Composition::Rect rect);
-    void setDataSource(ListViewDataSource *source);
+    explicit List(Composition::Rect rect);
+    void setDataSource(ListDataSource *source);
     void reloadData();
     void scrollToItem(std::size_t index);
 };
 ```
 
-### 5C. TreeView
+### 5C. Tree
 
-Hierarchical expandable list built on top of `ListView`.
+Hierarchical expandable list built on top of `List`.
 
 ```cpp
-class TreeViewNode {
+class TreeNode {
 public:
-    virtual ~TreeViewNode() = default;
+    virtual ~TreeNode() = default;
     virtual OmegaCommon::UString label() = 0;
     virtual std::size_t childCount() = 0;
-    virtual TreeViewNode *childAt(std::size_t index) = 0;
+    virtual TreeNode *childAt(std::size_t index) = 0;
     virtual bool isExpandable() { return childCount() > 0; }
 };
 
-class TreeView : public Widget {
-    TreeViewNode *rootNode_ = nullptr;
-    // Internal: flattened visible list driven through ListView
+class Tree : public Widget {
+    TreeNode *rootNode_ = nullptr;
+    // Internal: flattened visible list driven through List
 public:
-    explicit TreeView(Composition::Rect rect);
-    void setRootNode(TreeViewNode *root);
-    void expandNode(TreeViewNode *node);
-    void collapseNode(TreeViewNode *node);
+    explicit Tree(Composition::Rect rect);
+    void setRootNode(TreeNode *root);
+    void expandNode(TreeNode *node);
+    void collapseNode(TreeNode *node);
 };
 ```
 
-### 5D. TableView
+### 5D. Table
 
 Columnar data with sorting and column resize.
 
@@ -1200,43 +1200,43 @@ struct TableColumn {
     bool sortable = false;
 };
 
-class TableViewDataSource {
+class TableDataSource {
 public:
-    virtual ~TableViewDataSource() = default;
+    virtual ~TableDataSource() = default;
     virtual std::size_t rowCount() = 0;
     virtual OmegaCommon::UString cellValue(std::size_t row, std::size_t column) = 0;
 };
 
-class TableView : public Widget {
+class Table : public Widget {
     OmegaCommon::Vector<TableColumn> columns_ {};
-    TableViewDataSource *dataSource_ = nullptr;
-    // Internal: header row (HStack) + virtualized row list (ListView)
+    TableDataSource *dataSource_ = nullptr;
+    // Internal: header row (HStack) + virtualized row list (List)
 public:
-    explicit TableView(Composition::Rect rect);
+    explicit Table(Composition::Rect rect);
     void setColumns(const OmegaCommon::Vector<TableColumn> & columns);
-    void setDataSource(TableViewDataSource *source);
+    void setDataSource(TableDataSource *source);
 };
 ```
 
-### 5E. CollectionView
+### 5E. Collection
 
 Grid/flow layout collection with item reuse.
 
 ```cpp
-class CollectionViewDataSource {
+class CollectionDataSource {
 public:
-    virtual ~CollectionViewDataSource() = default;
+    virtual ~CollectionDataSource() = default;
     virtual std::size_t itemCount() = 0;
     virtual Composition::Rect itemSize(std::size_t index) = 0;
     virtual WidgetPtr createItem(std::size_t index) = 0;
 };
 
-class CollectionView : public Widget {
-    CollectionViewDataSource *dataSource_ = nullptr;
+class Collection : public Widget {
+    CollectionDataSource *dataSource_ = nullptr;
     // Internal: ScrollableContainer + Grid-like placement + item pool
 public:
-    explicit CollectionView(Composition::Rect rect);
-    void setDataSource(CollectionViewDataSource *source);
+    explicit Collection(Composition::Rect rect);
+    void setDataSource(CollectionDataSource *source);
     void reloadData();
 };
 ```
@@ -1263,19 +1263,19 @@ public:
 
 ### Source Files
 
-- `wtk/src/Widgets/Collections.ListView.cpp`
-- `wtk/src/Widgets/Collections.TreeView.cpp`
-- `wtk/src/Widgets/Collections.TableView.cpp`
-- `wtk/src/Widgets/Collections.CollectionView.cpp`
+- `wtk/src/Widgets/Collections.List.cpp`
+- `wtk/src/Widgets/Collections.Tree.cpp`
+- `wtk/src/Widgets/Collections.Table.cpp`
+- `wtk/src/Widgets/Collections.Collection.cpp`
 - `wtk/src/Widgets/Collections.PropertyGrid.cpp`
 
 ### Verification
 
 - `ScrollableContainer` scrolls content beyond viewport bounds.
-- `ListView` renders 10,000 items without mounting all of them (check child count).
-- `TreeView` expand/collapse toggles visibility of subtree items.
-- `TableView` column headers drag-resize; sort callback fires.
-- `CollectionView` reflows items on resize.
+- `List` renders 10,000 items without mounting all of them (check child count).
+- `Tree` expand/collapse toggles visibility of subtree items.
+- `Table` column headers drag-resize; sort callback fires.
+- `Collection` reflows items on resize.
 
 ---
 

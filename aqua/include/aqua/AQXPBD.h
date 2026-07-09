@@ -89,6 +89,15 @@ struct AQXPBDParams {
     /// diagnostic line names the constraint, its color, and both particles —
     /// never a silent NaN three frames later (§6 "guards for the 3am engineer").
     float         explosionThreshold = 10.f;
+    /// Far-from-origin hardening (§13.7 7h #2). When false (the default) every
+    /// body keeps its origin at 0 and solves in world coordinates — byte-for-
+    /// byte identical to the pre-7h path. When true, each body stores particle
+    /// positions as offsets from a per-body origin that re-bases toward the
+    /// particle centroid, so the derive step's `(x − x_prev)/h` and the
+    /// projection differences run on small offsets and keep full float precision
+    /// even as the body travels far from the world origin (the solver2d XPBD
+    /// precision failure). CPU-path only; GPU-batched bodies keep origin 0.
+    bool          originRelative    = false;
 };
 
 // --- Handles ------------------------------------------------------------------

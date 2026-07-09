@@ -32,6 +32,10 @@
 
 using OmegaGTE::FVec;
 
+// Phase 7g added a collider parameter to AQXPBDBody::advance; the CPU reference
+// in this parity test uses no colliders (the coupling is a CPU-only feature).
+static const OmegaCommon::Vector<AQXPBDCollider> kNoColliders;
+
 namespace {
 
 int g_failures = 0;
@@ -137,7 +141,7 @@ ParityResult runParity(AQComputeBackend& backend, const AQXPBDBody& rope,
     const std::size_t n = rope.positions.size();
 
     for (int s = 0; s < steps && r.ok; ++s) {
-        r.cpu.advance(dt, params, gravity);
+        r.cpu.advance(dt, params, gravity, kNoColliders);
         r.ok = backend.encodeXPBDAdvance(rope.id, dt, g, params.substeps, params.iterations,
                                          params.velocityDamping, params.explosionThreshold,
                                          n);

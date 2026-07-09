@@ -15,6 +15,10 @@
 #include <cstdio>
 #include <string>
 
+// Phase 7g gave AQXPBDBody::advance a collider parameter for the two-way contact
+// coupling; these unit tests drive the solver with no colliders.
+static const OmegaCommon::Vector<AQXPBDCollider> kNoColliders;
+
 static int g_failures = 0;
 static void check(bool cond, const std::string& what) {
     std::printf("[%s] %s\n", cond ? "PASS" : "FAIL", what.c_str());
@@ -120,7 +124,7 @@ static void testFreeFallClosedForm() {
     AQXPBDParams params;                 // substeps 4, iterations 1
     const auto gravity = AQvec3(0.f, -10.f, 0.f);
     const float dt = 1.f / 60.f;
-    for (int step = 0; step < 60; ++step) body.advance(dt, params, gravity);
+    for (int step = 0; step < 60; ++step) body.advance(dt, params, gravity, kNoColliders);
 
     // After exactly 1 s of slices: v = -10; y = -10·h²·(N(N+1)/2), N = 240
     // slices of h = dt/4. Tolerance note: XPBD DERIVES v = (x − x_prev)/h, so
@@ -146,7 +150,7 @@ static void testPendulumHoldsLength() {
 
     float maxViolation = 0.f;
     for (int step = 0; step < 600; ++step) {              // 10 s of swinging
-        body.advance(dt, params, gravity);
+        body.advance(dt, params, gravity, kNoColliders);
         const FVec<3> d = body.positions[1] - body.positions[0];
         maxViolation = std::max(maxViolation,
                                 std::fabs(std::sqrt(OmegaGTE::dot(d, d)) - 1.f));
@@ -168,7 +172,7 @@ static void testBodyGuardTripsLoudly() {
     params.explosionThreshold = 0.01f;
     const auto gravity = AQvec3(0.f, -9.81f, 0.f);
 
-    body.advance(1.f / 60.f, params, gravity);
+    body.advance(1.f / 60.f, params, gravity, kNoColliders);
     check(body.guardTrips > 0, "guard: degenerate rig trips (loud, counted)");
     check(!body.trippedThisFrame.empty(), "guard: tripped constraint recorded for the debug bus");
     check(!body.anyNonFinite(), "guard: clamped solve stays finite (no silent NaN)");
@@ -179,7 +183,7 @@ static void testAdvanceDeterminism() {
         AQXPBDParams params;
         params.substeps = 6;
         const auto gravity = AQvec3(0.f, -9.81f, 0.f);
-        for (int step = 0; step < 300; ++step) body.advance(1.f / 60.f, params, gravity);
+        for (int step = 0; step < 300; ++step) body.advance(1.f / 60.f, params, gravity, kNoColliders);
     };
     AQXPBDBody a = makePendulum(0.7f);
     AQXPBDBody b = makePendulum(0.7f);

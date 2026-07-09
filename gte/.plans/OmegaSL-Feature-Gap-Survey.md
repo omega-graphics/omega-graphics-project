@@ -4641,21 +4641,26 @@ exists yet. Two follow-ups:
   backend-independent rather than pushing the difference onto shader authors.
 
 - **Vulkan front-face / cull-mode normalization (general render parity, NOT
-  tessellation-specific).** CONFIRMED mechanism (Alex, 2026-07-06): the Vulkan
-  backend sets a **negative-height viewport** in
-  `GEVulkanCommandBuffer::setViewports` (`GEVulkanCommandQueue.cpp:1433`) to flip
-  NDC-Y so `y=+1` maps to the framebuffer top, matching Metal/D3D12 — NDC coords
-  themselves get no special treatment (universal). That negative-height flip
-  **reverses the apparent triangle winding** the rasterizer sees, so a
-  front-face/cull setup that culls correctly on D3D/Metal culls the *wrong* faces
-  on Vulkan. Because the Y-flip lives in the viewport (not a projection matrix),
-  the correct fix is in the **Vulkan pipeline setup**: reverse the cull mode
-  (Front↔Back) — or, equivalently, flip the declared front-face winding — so the
-  same `RasterCullMode` culls the same physical faces on every backend. **No test
-  exercises this yet** — every current render pipeline uses `RasterCullMode::None`
-  (the `setViewports` comment already notes the winding reversal is "harmless"
-  precisely because of that), so it is latent until a test (e.g. a tessellated
-  closed mesh) turns culling on, at which point it is crucial.
+  tessellation-specific) — IMPLEMENTED 2026-07-06 (write-only; pending a Vulkan
+  build).** CONFIRMED mechanism (Alex): the Vulkan backend sets a
+  **negative-height viewport** in `GEVulkanCommandBuffer::setViewports`
+  (`GEVulkanCommandQueue.cpp:1433`) to flip NDC-Y so `y=+1` maps to the
+  framebuffer top, matching Metal/D3D12 — NDC coords themselves get no special
+  treatment (universal). That negative-height flip **reverses the apparent
+  triangle winding** the rasterizer sees, so applying `polygonFrontFaceRotation`
+  straight through classifies the *wrong* faces as front on Vulkan vs
+  Metal/D3D12. **Fix applied:** the Vulkan pipeline rasterization state now uses
+  the **OPPOSITE `VkFrontFace`** (`GEVulkan.cpp` ~3429 graphics + tessellation,
+  ~4031 mesh — the blit pipeline routes through the graphics path). Chosen over a
+  literal cull-mode swap because the frontFace flip *normalizes front-facing*
+  (the stated goal): it culls the same physical faces AND keeps `gl_FrontFacing`
+  / two-sided stencil consistent, whereas swapping only the cull mode fixes
+  culling but leaves those inverted. **Latent today** — every pipeline uses
+  `RasterCullMode::None` (the `setViewports` comment notes the winding reversal
+  is "harmless" precisely because of that) — so behavior is unchanged until
+  culling is enabled, at which point it is correct-by-construction. Not
+  compile-verifiable on the macOS host; build + confirm on a Vulkan platform,
+  ideally with the first culled-draw test (e.g. a tessellated closed mesh).
 
 #### Metal `startTessRenderPass` / `drawPatches` first-cut constraints (2026-07-06)
 

@@ -159,11 +159,11 @@ void AQContext::advance(float realDt) {
         // Phase 7 — XPBD constraint projection on the same fixed clock: each
         // sub-step is subdivided into params.substeps XPBD slices internally
         // (Macklin 2019 small steps), so there is still exactly ONE timestep
-        // authority — this loop (the Phase 6 §14.1 rule). On the GPU path the
-        // whole frame's slices encode at the frame boundary instead.
-        if (!gpuPillars) {
-            for (auto &space : spaces) space->xpbdSubstep(fixedDt);
-        }
+        // authority — this loop (the Phase 6 §14.1 rule). Runs on BOTH paths:
+        // on the GPU path xpbdSubstep advances only the contact-coupled bodies
+        // (7g coupling needs CPU-resident rigid state) while the rest batch at
+        // the frame boundary below; on the CPU path it advances every body.
+        for (auto &space : spaces) space->xpbdSubstep(fixedDt, gpuPillars);
         accumulator -= fixedDt;
         elapsedTime += fixedDt;
     }
