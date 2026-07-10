@@ -1,5 +1,7 @@
 #include "omegaWTK/Core/Core.h"
 #include "omegaWTK/Native/NativeEvent.h"
+#include "omegaWTK/Native/NativeTimer.h"   // §2.3a T1: tooltip hover-delay timer
+#include "omegaWTK/UI/OverlayHost.h"       // §2.3a T1: OverlayHandle for the tooltip
 #include <type_traits>
 #include <cstdint>
 #include <chrono>
@@ -151,6 +153,21 @@ namespace OmegaWTK {
         /// `View::focus`/`blur` are its writers.
         Core::UniquePtr<FocusManager> focusManager_;
 
+        /// §2.3a T1 — tooltip dispatcher state. The tooltip is a
+        /// dispatcher-owned overlay: on a hover that settles over a
+        /// widget with a non-empty `tooltip()`, `tooltipTimer_` arms a
+        /// one-shot hover delay; when it fires, a small text overlay is
+        /// presented at `lastCursorPos_ + {12,12}` (tier `Tooltip`,
+        /// `absorbsHits = false`) and its handle stored in
+        /// `currentTooltipHandle_`. `tooltipWidget_` is the widget the
+        /// tooltip is pending / shown for — used to detect when the
+        /// hovered widget changes so the tooltip re-arms. Any of hover
+        /// change / cursor exit / mouse-down / key-down cancels it.
+        OverlayHandle currentTooltipHandle_ {};
+        Widget * tooltipWidget_ = nullptr;
+        Native::NativeTimerPtr tooltipTimer_;
+        Composition::Point2D lastCursorPos_ {0.f, 0.f};
+
         WidgetTreeHost();
 
         friend class AppWindowManager;
@@ -189,6 +206,40 @@ namespace OmegaWTK {
         // unconditionally relayouts and force-repaints the whole tree,
         // so the gate has no remaining caller.
         View * hitTestWidget(Widget *widget,const Composition::Point2D &point) const;
+        /// Overlay-Z-Order-Plan O3 §5.1 — overlay hit-test precedence.
+        /// Asks the OverlayHost for the topmost absorbing overlay under
+        /// `point` (window-space) and descends into its view subtree,
+        /// returning the deepest hit View (or the overlay root when the
+        /// point lands on the overlay itself with no deeper child).
+        /// Returns nullptr when no overlay absorbs the point, so the
+        /// dispatcher falls through to the main tree.
+        View * hitTestOverlay(const Composition::Point2D &point) const;
+
+        /// Overlay-Z-Order-Plan (O1/O2 render gap) — make a presented
+        /// overlay renderable. An overlay lives outside the main tree, so
+        /// `present` never runs the `initWidgetTree` wiring; without this
+        /// the overlay's Views have no window render target and no host,
+        /// and `buildFrame` cannot rasterize them. `mountOverlay`
+        /// propagates the shared render target and threads the host down
+        /// the overlay subtree (mirroring `initWidgetTree`), sizing it to
+        /// the already-committed anchor rect. `unmountOverlay` un-threads
+        /// the host on dismiss. Called by `OverlayHost` (friend).
+        void mountOverlay(Widget * overlay);
+        void unmountOverlay(Widget * overlay);
+
+        /// §2.3a T1 tooltip helpers.
+        ///   `owningWidgetOf` — walk a hit View up to the nearest View
+        ///     whose `ownerWidget()` is set (tooltip is a per-Widget prop).
+        ///   `scheduleTooltip` — arm the one-shot hover-delay timer for a
+        ///     widget known to carry a non-empty tooltip.
+        ///   `presentTooltip` — build + present the tooltip overlay now.
+        ///   `cancelTooltip` — stop the timer and dismiss any shown tooltip.
+        Widget * owningWidgetOf(View * v) const;
+        void scheduleTooltip(Widget * owner);
+        void presentTooltip(const OmegaCommon::String & text,
+                            const Composition::Point2D & at);
+        void cancelTooltip();
+
         void initWidgetTree();
         Composition::Compositor *compPtr(){return compositor;};
         uint64_t laneId() const { return syncLaneId; }
@@ -294,6 +345,13 @@ namespace OmegaWTK {
         /// `treeHost->overlayHost().present(...)`.
         OverlayHost & overlayHost();
         const OverlayHost & overlayHost() const;
+
+        /// §2.3a T1 — dismiss the tooltip if it is currently pending or
+        /// shown for `widget`. Called by `Widget::clearTooltip` so a
+        /// programmatic clear takes the popup down immediately instead of
+        /// waiting for the next hover change. No-op when a different
+        /// widget's tooltip (or none) is active.
+        void dismissTooltipFor(Widget * widget);
 
         /// §2.3a F2 — the per-window keyboard-focus authority. Returns a
         /// reference because the host always owns exactly one

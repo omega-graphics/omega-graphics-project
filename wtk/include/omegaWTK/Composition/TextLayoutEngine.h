@@ -47,6 +47,14 @@ namespace OmegaWTK::Composition {
         /// the last (ascent + descent + lineGap per line, with no
         /// inter-line padding in Phase 1's single-line case).
         float layoutHeight = 0.f;
+        /// Widest laid-out line: `max(line.totalAdvance)` over the
+        /// visible lines (after wrap + `lineLimit` truncation). This is
+        /// the intrinsic horizontal extent the shaped glyphs occupy — the
+        /// content-driven width a caller uses for intrinsic sizing (Button
+        /// label width, caret X). `0` for empty / whitespace-only input.
+        /// A wrapped run reports the widest of its lines, not the wrap
+        /// width; a single line reports its own advance.
+        float layoutWidth = 0.f;
         /// Baseline Y per line, in the same convention as
         /// `ShapedGlyph::canvasY`. `lineBaselines.size()` is the
         /// laid-out line count (always 1 in Phase 1).

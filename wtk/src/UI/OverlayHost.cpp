@@ -46,9 +46,25 @@ Composition::Point2D widgetWindowOrigin(Widget * widget){
     return widget->viewRef().offsetFromRoot();
 }
 
+/// Half-open rect containment, matching `View::containsPoint`
+/// (View.Core.cpp:182): the right / bottom edges are exclusive so a
+/// point exactly on the far edge of an overlay counts as *outside*.
+bool rectContainsPoint(const Composition::Rect & r,
+                       const Composition::Point2D & p){
+    return p.x >= r.pos.x && p.x < r.pos.x + r.w &&
+           p.y >= r.pos.y && p.y < r.pos.y + r.h;
+}
+
 } // namespace
 
 struct OverlayHost::Impl {
+    /// O3 §5.4 — one observer per anchored overlay. Bound to the
+    /// anchor Widget at present time (`Widget::addObserver`); on the
+    /// anchor's detach from the tree it asks the host to dismiss the
+    /// overlay it guards. Nested in `Impl` so it can reach the private
+    /// erase helpers below.
+    class AnchorObserver;
+
     struct Entry {
         std::uint64_t handleId = 0;
         WidgetPtr widget;
@@ -57,6 +73,13 @@ struct OverlayHost::Impl {
         OverlayDismissPolicy policy {};
         OverlayOrnamentation ornament {};
         Composition::Rect rect {{0.f, 0.f}, 0.f, 0.f};
+        /// O3 §5.4 — the observer wired onto `anchorWidget`, and the
+        /// widget it is wired to. Both null unless this overlay was
+        /// presented `AtWidget` with `anchorDestroyed == true`. Kept
+        /// so the erase paths can un-wire the observer before the
+        /// entry dies.
+        WidgetObserverPtr anchorObserver;
+        Widget * anchorWidget = nullptr;
     };
 
     /// Set once at construction, never null, never reseated. Pointer
@@ -179,6 +202,103 @@ struct OverlayHost::Impl {
     const Entry * findById(std::uint64_t id) const {
         return const_cast<Impl *>(this)->findById(id);
     }
+
+    /// O3 §5.4 — un-wire an entry's anchor observer from its anchor
+    /// widget before the entry is erased. `skipWidget` is the widget
+    /// currently mid-detach-notify (its `notifyObservers` loop is on
+    /// the stack): removing an observer from it now would mutate the
+    /// vector being iterated, so that one is left for the widget's own
+    /// teardown. All non-detach callers pass nullptr and un-wire
+    /// eagerly so a still-living anchor does not keep a dead observer.
+    void detachAnchorObserver(Entry & e, Widget * skipWidget){
+        if(e.anchorObserver != nullptr && e.anchorWidget != nullptr &&
+           e.anchorWidget != skipWidget){
+            e.anchorWidget->removeObserver(e.anchorObserver);
+        }
+        e.anchorObserver = nullptr;
+        e.anchorWidget = nullptr;
+    }
+
+    /// Full teardown of an entry about to be erased: un-wire its anchor
+    /// observer (see above) and un-thread the host from the overlay's
+    /// subtree (the inverse of the `mountOverlay` in `present`). Every
+    /// erase path funnels through this so a dismissed overlay is left
+    /// detached, not a dangling host-wired subtree.
+    void teardownEntry(Entry & e, Widget * skipDetachWidget){
+        detachAnchorObserver(e, skipDetachWidget);
+        if(host != nullptr && e.widget != nullptr){
+            host->unmountOverlay(e.widget.get());
+        }
+    }
+
+    /// A dismissed overlay must vanish from the composite: force a
+    /// clean main-tree repaint (so the region the overlay covered is
+    /// redrawn) and ask the window for a frame. Without the root
+    /// mark, `FrameBuilder::buildFrame` would early-return on a clean
+    /// main tree once the last overlay is gone and the deposited frame
+    /// would still show the stale overlay pixels. Mirror of the
+    /// present-time `requestFrame` in `OverlayHost::present`.
+    void requestDismissRepaint(){
+        if(host == nullptr){
+            return;
+        }
+        // Public `viewRef()` (not the protected `view` field) — O1
+        // kept Widget's coupling surface unchanged and this follows
+        // suit. Root is guaranteed to have a view (Widget always
+        // constructs one), so the reference is safe once root is set.
+        if(host->root != nullptr){
+            host->root->viewRef().markDirty(View::Paint);
+        }
+        host->requestFrame();
+    }
+
+    /// Erase the entry with `handleId`, un-wiring its anchor observer
+    /// first (skipping `skipDetachWidget` when the call originates from
+    /// that widget's own detach notification). Returns true if an entry
+    /// was removed. Repaint is requested by the caller once, after a
+    /// batch, so a multi-overlay dismissal coalesces into one frame.
+    bool eraseById(std::uint64_t id, Widget * skipDetachWidget = nullptr){
+        if(id == 0){
+            return false;
+        }
+        for(auto & bucket : entriesByTier){
+            auto it = std::find_if(bucket.begin(), bucket.end(),
+                                   [&](const Entry & e){
+                                       return e.handleId == id;
+                                   });
+            if(it != bucket.end()){
+                teardownEntry(*it, skipDetachWidget);
+                bucket.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+/// O3 §5.4 — defined out-of-line now that `Impl` is complete.
+class OverlayHost::Impl::AnchorObserver : public WidgetObserver {
+    /// Non-owning back-pointer to the host impl. The host outlives
+    /// every overlay it presents (the observer is un-wired on dismiss
+    /// / detach before either dies), so this never dangles.
+    Impl * impl_;
+    std::uint64_t handleId_;
+public:
+    AnchorObserver(Impl * impl, std::uint64_t handleId)
+        : impl_(impl), handleId_(handleId) {}
+
+    void onWidgetDetach(WidgetPtr) override {
+        // We are running inside the anchor widget's `notifyObservers`
+        // loop, so this entry's `anchorWidget` is exactly the widget
+        // being iterated — pass it as `skipDetachWidget` so
+        // `detachAnchorObserver` does not `removeObserver` it mid-loop.
+        if(const Impl::Entry * e = impl_->findById(handleId_)){
+            Widget * anchor = e->anchorWidget;
+            if(impl_->eraseById(handleId_, anchor)){
+                impl_->requestDismissRepaint();
+            }
+        }
+    }
 };
 
 OverlayHost::OverlayHost(WidgetTreeHost & host)
@@ -204,6 +324,17 @@ OverlayHandle OverlayHost::present(WidgetPtr overlay,
     // parent's `onChildRectCommitted` — it only resizes the widget's
     // own view, which is what we want here.
     overlay->setRect(resolved);
+
+    // Make the overlay renderable: propagate the window render target
+    // and thread the host down its subtree (the overlay lives outside
+    // the main tree, so the `initWidgetTree` wiring never ran for it).
+    // Must precede the markDirty below so the first `buildFrame` sees a
+    // fully-wired view. O1/O2 shipped the paint walk but left this gap;
+    // it is closed here because T1 (tooltip) is the first overlay that
+    // actually renders.
+    if(impl_->host != nullptr){
+        impl_->host->mountOverlay(overlay.get());
+    }
 
     // O2: mark the overlay's root view dirty across Style / Layout /
     // Paint so the first `FrameBuilder::buildFrame(*overlay->view)`
@@ -238,6 +369,20 @@ OverlayHandle OverlayHost::present(WidgetPtr overlay,
     entry.ornament = ornament;
     entry.rect = resolved;
 
+    // O3 §5.4 — anchor-destruction dismissal. When the overlay is
+    // anchored to a Widget and its policy opts in, wire an observer
+    // onto that anchor so the overlay dismisses if the anchor leaves
+    // the tree (e.g. a popover must not outlive the button that opened
+    // it). Only meaningful for `AtWidget`; the other anchor modes have
+    // no widget to observe.
+    if(policy.anchorDestroyed && anchor.mode == OverlayAnchor::Mode::AtWidget &&
+       anchor.widget != nullptr){
+        entry.anchorWidget = anchor.widget;
+        entry.anchorObserver = std::make_shared<Impl::AnchorObserver>(
+            impl_.get(), entry.handleId);
+        anchor.widget->addObserver(entry.anchorObserver);
+    }
+
     impl_->entriesByTier[tierIndex(tier)].push_back(std::move(entry));
 
     return OverlayHandle{impl_->entriesByTier[tierIndex(tier)].back().handleId};
@@ -247,15 +392,8 @@ void OverlayHost::dismiss(OverlayHandle handle){
     if(!handle.valid()){
         return;
     }
-    for(auto & bucket : impl_->entriesByTier){
-        auto it = std::find_if(bucket.begin(), bucket.end(),
-                               [&](const Impl::Entry & e){
-                                   return e.handleId == handle.id;
-                               });
-        if(it != bucket.end()){
-            bucket.erase(it);
-            return;
-        }
+    if(impl_->eraseById(handle.id)){
+        impl_->requestDismissRepaint();
     }
 }
 
@@ -263,22 +401,47 @@ void OverlayHost::dismiss(Widget * overlay){
     if(overlay == nullptr){
         return;
     }
+    bool removed = false;
     for(auto & bucket : impl_->entriesByTier){
-        bucket.erase(std::remove_if(bucket.begin(), bucket.end(),
-                                    [&](const Impl::Entry & e){
-                                        return e.widget.get() == overlay;
-                                    }),
-                     bucket.end());
+        for(auto it = bucket.begin(); it != bucket.end(); ){
+            if(it->widget.get() == overlay){
+                impl_->teardownEntry(*it, nullptr);
+                it = bucket.erase(it);
+                removed = true;
+            }
+            else {
+                ++it;
+            }
+        }
+    }
+    if(removed){
+        impl_->requestDismissRepaint();
     }
 }
 
 void OverlayHost::dismissAll(OverlayTier tier){
-    impl_->entriesByTier[tierIndex(tier)].clear();
+    auto & bucket = impl_->entriesByTier[tierIndex(tier)];
+    if(bucket.empty()){
+        return;
+    }
+    for(auto & entry : bucket){
+        impl_->teardownEntry(entry, nullptr);
+    }
+    bucket.clear();
+    impl_->requestDismissRepaint();
 }
 
 void OverlayHost::dismissAll(){
+    bool removed = false;
     for(auto & bucket : impl_->entriesByTier){
+        for(auto & entry : bucket){
+            impl_->teardownEntry(entry, nullptr);
+            removed = true;
+        }
         bucket.clear();
+    }
+    if(removed){
+        impl_->requestDismissRepaint();
     }
 }
 
@@ -333,6 +496,65 @@ OmegaCommon::ArrayRef<PresentedOverlay> OverlayHost::overlaysForPaintIn(
         scratch.push_back(std::move(po));
     }
     return OmegaCommon::ArrayRef<PresentedOverlay>(scratch);
+}
+
+Widget * OverlayHost::absorbingOverlayAt(
+        const Composition::Point2D & point) const {
+    // Top-first: reverse tier order (DragGhost → Tooltip → Modal →
+    // Floating), then reverse insertion order within tier. The first
+    // overlay that contains the point *and* absorbs hits claims it; a
+    // containing-but-transparent overlay (Tooltip / DragGhost) is
+    // skipped so the walk falls through to lower overlays and the
+    // main tree (plan §5.1 — "you can click through a tooltip").
+    for(std::size_t i = kTierCount; i > 0; --i){
+        const auto & bucket = impl_->entriesByTier[i - 1];
+        for(auto it = bucket.rbegin(); it != bucket.rend(); ++it){
+            if(!rectContainsPoint(it->rect, point)){
+                continue;
+            }
+            if(it->policy.absorbsHits){
+                return it->widget.get();
+            }
+        }
+    }
+    return nullptr;
+}
+
+bool OverlayHost::dismissClickOutside(const Composition::Point2D & point){
+    // Gather the handles to dismiss top-first, then erase in a second
+    // pass so a bucket is never mutated while it is being walked.
+    std::vector<std::uint64_t> toDismiss;
+    for(std::size_t i = kTierCount; i > 0; --i){
+        const auto & bucket = impl_->entriesByTier[i - 1];
+        for(auto it = bucket.rbegin(); it != bucket.rend(); ++it){
+            if(it->policy.clickOutside && !rectContainsPoint(it->rect, point)){
+                toDismiss.push_back(it->handleId);
+            }
+        }
+    }
+    bool removed = false;
+    for(auto id : toDismiss){
+        removed = impl_->eraseById(id) || removed;
+    }
+    if(removed){
+        impl_->requestDismissRepaint();
+    }
+    return removed;
+}
+
+bool OverlayHost::dismissTopmostForEscape(){
+    for(std::size_t i = kTierCount; i > 0; --i){
+        auto & bucket = impl_->entriesByTier[i - 1];
+        for(auto it = bucket.rbegin(); it != bucket.rend(); ++it){
+            if(it->policy.escapeKey){
+                if(impl_->eraseById(it->handleId)){
+                    impl_->requestDismissRepaint();
+                }
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 Composition::Rect OverlayHost::rectFor(OverlayHandle handle) const {

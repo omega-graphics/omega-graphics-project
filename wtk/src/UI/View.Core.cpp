@@ -185,6 +185,14 @@ bool View::containsPoint(const Composition::Point2D &point) const{
            point.y >= r.pos.y && point.y < r.pos.y + r.h;
 }
 
+void View::setOwnerWidget(Widget * widget){
+    impl_->ownerWidget_ = widget;
+}
+
+Widget * View::ownerWidget() const{
+    return impl_->ownerWidget_;
+}
+
 
 View::View(const Composition::Rect & rect,ViewPtr parent):
     impl_(std::make_unique<Impl>(
@@ -777,6 +785,20 @@ void ViewDelegate::onRecieveEvent(Native::NativeEventPtr event){
             onKeyUp(event);
             if(forwardDelegate != nullptr){
                 forwardDelegate->onKeyUp(event);
+            }
+            break;
+        }
+        case NativeEvent::FocusGained : {
+            onFocusGained(event);
+            if(forwardDelegate != nullptr){
+                forwardDelegate->onFocusGained(event);
+            }
+            break;
+        }
+        case NativeEvent::FocusLost : {
+            onFocusLost(event);
+            if(forwardDelegate != nullptr){
+                forwardDelegate->onFocusLost(event);
             }
             break;
         }

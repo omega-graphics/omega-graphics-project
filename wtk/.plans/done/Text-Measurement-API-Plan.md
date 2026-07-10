@@ -222,6 +222,34 @@ This also fully resolves the §3 follow-up concern (measure was re-running
 `layout()` every frame): the shared cache means one layout per change,
 reused by paint.
 
+## 6 Width extension — horizontal length (added 2026-07-09)
+
+§3 shipped height-only and parked width: *"If width is ever wanted, add a
+`layoutWidth = max(line.totalAdvance)` field in the emit loop."* That width is
+now needed for intrinsic horizontal sizing — Button label width
+(Widget-Stub-Implementation-Plan Phase 4A `measureSelf` follow-up) and
+TextInput caret X (Phase 4B) — so this small feature lands it:
+
+- **`LayoutResult::layoutWidth`** (`TextLayoutEngine.h`): the widest visible
+  line, `max(line.totalAdvance)` over the same post-wrap / post-`lineLimit`
+  lines paint emits. Computed in the existing emit loop
+  (`TextLayoutEngine.cpp`), so it is free — no second layout pass. `0` for
+  empty / whitespace-only input.
+- **`UIView::measureText` now returns both extents** as a
+  `UIView::TextMeasurement { float width; float height; }` (the developer chose
+  "one call returns both" over a separate `measureTextWidth` — the two values
+  come from the one cached `LayoutResult`, so a struct return keeps them in
+  lockstep and costs nothing extra). Both read from the shared
+  `ensureTextLayout` memo, so width adds no layout work over height.
+- **The one existing caller, `Label`'s `ContentMeasure` hook**
+  (`Primatives.cpp`), is updated to read `.height`; its behavior is unchanged
+  (width stays owned by stretch for a vertical stack, so the measured `.width`
+  is intentionally ignored there). Width is now available for the future
+  Button / caret consumers.
+- **Verification:** `TextLayoutEngineTest` gains `layoutWidth` asserts on the
+  single-line (`ABC` → 30), multi-line (`AB\nCDE` → widest line 30), and empty
+  (→ 0) cases; all 29 tests pass. Full WTK build (incl. `BasicAppTest`) clean.
+
 ## 4 Cross-links
 
 - `Resize-Clamping-Plan.md` §1.6 (slot-vs-widget model — the spacer slot

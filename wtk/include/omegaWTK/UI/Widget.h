@@ -222,6 +222,20 @@ public:
     virtual bool layoutCrossStretchAllowed() const {
         return true;
     }
+    /// Native-API §2.3a T1: virtual tooltip popup. `setTooltip` gives this
+    /// widget a hover tooltip; after the cursor rests over the widget for
+    /// the hover delay, `WidgetTreeHost`'s dispatcher shows a small text
+    /// overlay near the cursor (rendered through the overlay layer,
+    /// `OverlayTier::Tooltip`). An empty string (the default, or after
+    /// `clearTooltip`) means no tooltip. The text is stored on the widget;
+    /// the overlay is dispatcher-owned and rebuilt each time it shows.
+    void setTooltip(const OmegaCommon::String & text);
+    /// Remove this widget's tooltip. Equivalent to `setTooltip("")`; also
+    /// dismisses the tooltip immediately if it is currently showing for
+    /// this widget.
+    void clearTooltip();
+    /// This widget's current tooltip text (empty when none is set).
+    const OmegaCommon::String & tooltip() const;
     /**
      Add a WidgetObserver to be notified.
     */

@@ -305,7 +305,7 @@ No interaction. A widget chooses its tier (or none, staying in the main tree); w
 |-------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------|
 | **O1** [DONE] | `OverlayHost` skeleton — `present` / `dismiss` / `overlaysTopFirst`. Overlay slot on `WidgetTreeHost`. Anchor → rect math. No focus integration, no Modal trap. | — (uses existing `WidgetTreeHost`, `View::containsPoint`, `UIView`)                                          | Widget-Stub Phase 6 Tooltip / Popover / Snackbar MVPs                              |
 | **O2** [DONE] | Paint walk extension — `paintSubtree` over the overlay slot after the main tree, tier ordering, per-tier FIFO.                                                  | O1; uses existing `FrameBuilder::buildFrame` paint pass                                                       | Visible overlays of any kind                                                       |
-| **O3** | Hit-test + click-outside + Escape + anchor-destruction dismissal.                                                                                                | O1; uses existing `WidgetTreeHost` hit dispatcher                                                             | Real dropdown / context-menu behavior; Native-API §2.3a Tooltip activation         |
+| **O3** [DONE] | Hit-test + click-outside + Escape + anchor-destruction dismissal.                                                                                                | O1; uses existing `WidgetTreeHost` hit dispatcher                                                             | Real dropdown / context-menu behavior; Native-API §2.3a Tooltip activation         |
 | **O4** | Focus restoration around present/dismiss (`pushRestorationPoint` / `popAndRestore`).                                                                              | O1 + **Native-API §2.3a Focus step 5** (`pushRestorationPoint` / `popAndRestore` on `FocusManager`)           | Widget-Stub Phase 6 `ContextMenu`, `Modal` (focus returns to opener)               |
 | **O5** | Modal tab-trap (`Tab`/`Backtab` constrained to the Modal subtree while presented).                                                                                | O4 + **Native-API §2.3a Focus step 4** (`FocusManager::focusNext` / `focusPrevious`)                          | Widget-Stub Phase 6 `Modal` (keyboard cannot escape modal)                         |
 
@@ -405,6 +405,39 @@ Surfacing these in O1 means O2/O3 plug in via the iteration accessors without ch
 
 The mechanics are correct; on-screen verification waits for a Phase 6 overlay widget to test against. Until then, the verification is mechanical (build + slice-order assertions).
 
+### 9.4 O3 implementation notes (2026-07-09) — hit-test + dismissal
+
+O3 wires the four §5 dismissal paths into the existing single input dispatcher. All four are policy-driven off the `OverlayDismissPolicy` O1 already stored on each entry; O3 is the first phase that *reads* those flags.
+
+**Files touched:**
+
+- `wtk/include/omegaWTK/UI/OverlayHost.h` — three dispatcher-facing methods:
+  - `Widget * absorbingOverlayAt(Point2D)` — §5.1 precedence. Top-first walk (reverse tier, reverse insertion); returns the first overlay that *contains* the point **and** `absorbsHits`. A containing-but-transparent overlay (Tooltip / DragGhost) is skipped so the walk falls through to lower overlays / main tree.
+  - `bool dismissClickOutside(Point2D)` — §5.2. Dismisses every `clickOutside` overlay whose rect excludes the point (topmost first); returns whether anything was dismissed so the caller can consume the gesture.
+  - `bool dismissTopmostForEscape()` — §5.3. Dismisses the single topmost `escapeKey` overlay; returns whether one was consumed.
+  - Anchor-destruction (§5.4) needs **no** public method — it is self-contained inside `present`/dismiss.
+- `wtk/src/UI/OverlayHost.cpp`:
+  - Per-entry `AnchorObserver` (nested in `Impl`, subclass of `WidgetObserver`) wired onto the anchor widget at `present` time when `mode == AtWidget && anchorDestroyed`. On the anchor's `onWidgetDetach` it dismisses the guarded overlay. The detach fires from `Container::unwireChild` (`BasicWidgets.cpp:173` → `notifyObservers(Widget::Detach)`).
+  - Centralized `Impl::eraseById` / `detachAnchorObserver` / `requestDismissRepaint` so every dismiss path (public `dismiss*`, the three O3 paths, and the detach callback) un-wires the observer and forces a repaint uniformly.
+  - `rectContainsPoint` free helper mirroring `View::containsPoint`'s half-open edge semantics.
+- `wtk/src/UI/WidgetTreeHost.h` + `WidgetTreeHost.cpp`:
+  - Private `View * hitTestOverlay(Point2D)` — asks the host for the absorbing overlay, translates the window-space point into the overlay's content space, and reuses `hitTestWidget` to find the deepest hit view.
+  - `dispatchInputEvent`: positional events now compute `overlayTarget = hitTestOverlay(pos)` and prefer it over `hitTest(pos)`; mouse-downs run `dismissClickOutside` and consume the gesture when the click landed on no absorbing overlay but closed one; `KeyDown(Escape)` is intercepted (alongside the existing Tab hook) before delegate dispatch.
+
+**Decisions surfaced beyond the §5 sketch:**
+
+1. **Re-entrancy in anchor-destroy.** `onWidgetDetach` runs *inside* the anchor's `notifyObservers` loop, so the callback dismisses via `eraseById(id, skipDetachWidget = anchorWidget)`, which erases the OverlayHost entry but skips `removeObserver` on the widget being iterated — the widget's own teardown releases the observer. All other dismiss paths pass `nullptr` and un-wire eagerly. This is why the plan's "OverlayHost subscribes" is implemented as one observer *per anchored entry*, not one shared observer (`WidgetObserver::hasAssignment` binds an observer to a single widget anyway).
+2. **Dismiss forces a main-tree repaint.** Erasing an overlay marks the root view `Paint`-dirty and calls `requestFrame` (`requestDismissRepaint`). Without the root mark, once the *last* overlay is gone `FrameBuilder::buildFrame` early-returns on the clean main tree and the deposited frame still shows the stale overlay pixels — the inverse of O2's force-paint guard. This also retroactively fixes O1's `dismiss` (which requested no frame).
+3. **Click-outside applies to L and R mouse-down.** `OverlayDismissPolicy::clickOutside` is documented as "mouseDown outside the overlay's bounds" with no button qualifier; a right-click away from an open popover should close it too.
+4. **Escape-up is not swallowed.** Unlike Tab (whose KeyUp is unconditionally eaten), Escape must reach the focused view when *no* overlay is present (to cancel a field), so only the consumed KeyDown is intercepted. A lone Escape-up is harmless (focused views don't act on key-release of Escape).
+
+**Verification status.** Mechanical: `OmegaWTK_UI` library builds clean and `BasicAppTest` links (bundle re-signed). The four behavioral checks in §10 (O3 click-outside / click-through tooltip / Escape) remain gated on a Phase 6 overlay widget to instantiate against — no overlay is presented anywhere in-tree yet — same caveat as O1/O2. The logic is unit-testable in isolation once a test harness presents overlays through `OverlayHost`.
+
+**Deferred** (still on the dependency chain):
+
+- O4 — focus restoration around present/dismiss (`pushRestorationPoint` / `popAndRestore`).
+- O5 — Modal tab-trap.
+
 ---
 
 ## 10. Verification
@@ -425,7 +458,7 @@ The mechanics are correct; on-screen verification waits for a Phase 6 overlay wi
 
 1. **Animated present / dismiss.** Should `OverlayHost::present` accept an `AnimationCurve` for fade-in / slide-in? Most production toolkits do; the trade-off is two extra frames of latency on first paint. Lean toward yes, opt-in via `OverlayPresentOptions::transition`.
 
-Yes
+Yes — **scheduled as [Native-API §2.3a T2.c](Native-API-Completion-Proposal.md#implementation-phasing)** (Tooltip v2). The `OverlayPresentOptions` transition (fade / fade-slide) lands on `OverlayHost` so every tier reuses it; the tooltip is the first consumer, Popover / Modal / ContextMenu follow. Dismissal becomes non-immediate when a transition is configured (a pending-removal flag on `Impl::Entry` + completion callback runs the reverse animation before erase).
 
 2. **Pointer events on a moving anchor.** If a Popover's anchor Widget animates its rect, should the Popover follow? Default-dismiss-on-anchor-move matches dropdown semantics; default-follow matches inspector-panel semantics. Likely per-overlay — surface a `OverlayDismissPolicy::dismissOnAnchorMove` flag.
 

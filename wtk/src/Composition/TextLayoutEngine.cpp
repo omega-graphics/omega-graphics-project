@@ -599,10 +599,14 @@ namespace OmegaWTK::Composition {
         result.glyphs.reserve(totalGlyphCount);
         result.lineBaselines.reserve(lines.size());
 
+        float maxLineAdvance = 0.f;
         for(std::size_t li = 0; li < lines.size(); ++li){
             const auto & line = lines[li];
             const float baseline = firstBaseline + static_cast<float>(li) * lineStride;
             result.lineBaselines.push_back(baseline);
+            // Intrinsic width is the widest visible line, tracked here across
+            // the same set of lines paint emits (post-wrap, post-lineLimit).
+            maxLineAdvance = std::max(maxLineAdvance, line.totalAdvance);
 
             if(line.glyphs.empty()){
                 continue; // Blank line — baseline stride still advanced.
@@ -632,6 +636,7 @@ namespace OmegaWTK::Composition {
         }
 
         result.layoutHeight = lineStride * static_cast<float>(lines.size());
+        result.layoutWidth = maxLineAdvance;
         return result;
     }
 

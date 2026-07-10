@@ -3,6 +3,7 @@
 #include "omegaWTK/UI/UIView.h"
 #include "omegaWTK/Composition/Brush.h"
 #include "omegaWTK/Native/NativeTheme.h"
+#include "omegaWTK/Native/NativeEvent.h"
 #include "omegaWTK/Core/Core.h"
 #include <functional>
 #include <memory>
@@ -12,12 +13,75 @@
 
 namespace OmegaWTK {
 
-    // TextInput, Dropdown, Slider remain stubs (their base implementations
-    // are gated on FocusManager — see Widget-Stub-Implementation-Plan §4B
-    // / Native-API-Completion-Proposal §2.3a).
+    // -----------------------------------------------------------------------
+    // TextInput — Phase 4B v0 base implementation.
+    //
+    // Single-line editable text field. Leaf Widget backed by one UIView with
+    // three element tags:
+    //   "bg"    — RoundedRect background (theme fill + focus-ring border)
+    //   "label" — the typed text, or the dimmed placeholder when empty
+    //   "caret" — 1px Rect insertion caret, authored ONLY while focused
+    //
+    // Focus: the UIView opts into `StrongFocus`, so a click (M1) or Tab
+    // (F4) makes the FocusManager route KeyDown events here. An internal
+    // `TextInputDelegate` (defined in UserInputs.TextInput.cpp) observes the
+    // new `ViewDelegate::onFocusGained`/`onFocusLost` callbacks (to toggle
+    // the caret + ring) and `onKeyDown` (to run the edit ops).
+    //
+    // v0 scope (Widget-Stub-Implementation-Plan §4B): printable insert,
+    // Backspace, Delete, Left/Right arrow. NO selection, IME, or clipboard.
+    // The caret X is a monospace approximation (per-glyph-exact caret is a
+    // documented follow-up — see the .cpp header comment). Caret blink is a
+    // follow-up too (needs a NativeTimer wire like the tooltip).
+    // -----------------------------------------------------------------------
+
+    class TextInputDelegate;
+
+    struct OMEGAWTK_EXPORT TextInputProps {
+        OmegaCommon::UString placeholder {};
+        OmegaCommon::UString initialValue {};
+        bool                 enabled = true;
+        float                cornerRadius = 4.f;
+    };
+
     class OMEGAWTK_EXPORT TextInput : public Widget {
+        TextInputProps                                     props_;
+        OmegaCommon::UString                               text_ {};
+        std::size_t                                        caretPosition_ = 0;
+        Native::ThemeDesc                                  theme_ {};
+        bool                                               focused_ = false;
+        std::function<void(const OmegaCommon::UString &)>  onValueChange_ {};
+        Core::UniquePtr<TextInputDelegate>                 delegate_;
+
+        friend class TextInputDelegate;
+
+    protected:
+        void onMount() override;
+        void onThemeSet(Native::ThemeDesc & desc) override;
+        void resize(Composition::Rect & newRect) override;
+
+        // rebuildContent(): element list (bg / label / caret) + sub-rects.
+        // rebuildStyle():   theme-driven colors + focus-ring on/off.
+        void rebuildContent();
+        void rebuildStyle();
+
+        // Focus in/out — flips focused_, re-authors the caret, invalidates.
+        void setFocused(bool focused);
+        // Apply one key event (printable insert / edit / caret move). Fires
+        // onValueChange_ when the text actually changes.
+        void handleKey(const Native::KeyDownParams & params);
+
     public:
-        WIDGET_CONSTRUCTOR()
+        explicit TextInput(Composition::Rect rect, const TextInputProps & props = {});
+        ~TextInput() override;
+
+        void setText(const OmegaCommon::UString & text);
+        const OmegaCommon::UString & text() const { return text_; }
+
+        void setOnValueChange(std::function<void(const OmegaCommon::UString &)> callback);
+        void setEnabled(bool enabled);
+        bool isEnabled() const;
+        bool isFocused() const { return focused_; }
     };
 
     class OMEGAWTK_EXPORT Slider : public Widget {

@@ -305,6 +305,8 @@ int RunBasicAppTest(AppInst *app) {
     // ancestor walk applies it even when the hit lands on the button's
     // inner label view.
     clickMe->viewRef().setCursorShape(Native::CursorShape::PointingHand);
+    // §2.3a T1 demo: hover for ~500ms to show a tooltip near the cursor.
+    clickMe->setTooltip("Default 150ms hover transition");
     buttonRow->addChild(clickMe);
 
     // Slow 400 ms hover transition with a custom accent color.
@@ -320,6 +322,7 @@ int RunBasicAppTest(AppInst *app) {
         }
     });
     slowHover->viewRef().setCursorShape(Native::CursorShape::PointingHand);
+    slowHover->setTooltip("Slow 400ms accent hover");
     buttonRow->addChild(slowHover);
 
     // Snap (no transition) — instant state change for comparison.
@@ -340,11 +343,44 @@ int RunBasicAppTest(AppInst *app) {
     // A disabled control shows the not-allowed cursor — a second shape so
     // the demo also exercises moving between distinct cursors.
     disabledBtn->viewRef().setCursorShape(Native::CursorShape::NotAllowed);
+    // Tooltip on a disabled control — hit-testing still reaches disabled
+    // views (see C1 notes), so the tooltip shows even though the button
+    // itself never enters hover/pressed.
+    disabledBtn->setTooltip("This button is disabled");
     buttonRow->addChild(disabledBtn);
 
     StackSlot buttonRowSlot;
     buttonRowSlot.flexGrow = 0.f;
     root->addChild(buttonRow, buttonRowSlot);
+
+    // TextInput row — Phase 4B v0. Click (or Tab) to focus it (accent ring +
+    // caret appear via the FocusManager), then type: printable chars insert,
+    // Backspace/Delete edit, Left/Right/Home/End move the caret. The mirror
+    // Label below echoes the value through the onValueChange callback, so the
+    // edit loop is visible without notification spam.
+    TextInputProps inputProps;
+    inputProps.placeholder = U"Type here…";
+    auto textInput = make<TextInput>(
+        Composition::Rect{{0, 0}, contentW, 32.f}, inputProps);
+    StackSlot inputSlot;
+    inputSlot.flexGrow = 0.f;
+    root->addChild(textInput, inputSlot);
+
+    LabelProps mirrorProps;
+    mirrorProps.text = U"(nothing typed yet)";
+    mirrorProps.followThemeForeground = true;
+    mirrorProps.alignment = Composition::TextLayoutDescriptor::LeftCenter;
+    mirrorProps.wrapping = Composition::TextLayoutDescriptor::None;
+    auto mirrorLabel = make<Label>(
+        Composition::Rect{{0, 0}, contentW, 22.f}, mirrorProps);
+    textInput->setOnValueChange([mirrorLabel](const OmegaCommon::UString & value){
+        OmegaCommon::UString shown = U"You typed: ";
+        shown += value;
+        mirrorLabel->setText(shown);
+    });
+    StackSlot mirrorSlot;
+    mirrorSlot.flexGrow = 0.f;
+    root->addChild(mirrorLabel, mirrorSlot);
 
     // Separator
     SeparatorProps sep3Props;

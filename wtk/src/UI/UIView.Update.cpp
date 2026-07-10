@@ -629,13 +629,22 @@ UIView::Impl::ensureTextLayout(const UIElementTag & tag, float availWidthDp){
     return &slot.layout;
 }
 
-float UIView::measureText(const UIElementTag & tag, float availWidthDp){
-    // Text-Measurement-API-Plan §3: report the wrapped height of the shared
-    // layout. The layout itself is cached and reused by paint, so this costs
-    // a `TextLayoutEngine::layout` only on the first measure per (content,
-    // width) — not once per frame, and never a second time in paint.
+UIView::TextMeasurement UIView::measureText(const UIElementTag & tag,
+                                            float availWidthDp){
+    // Text-Measurement-API-Plan §3 + §6: report both extents of the shared
+    // layout — the wrapped height and the widest-line width. The layout itself
+    // is cached and reused by paint, so this costs a `TextLayoutEngine::layout`
+    // only on the first measure per (content, width) — not once per frame, and
+    // never a second time in paint. Width is read from the same cached result,
+    // so it adds no layout work over measuring height alone.
     const auto * layout = impl_->ensureTextLayout(tag, availWidthDp);
-    return layout != nullptr ? layout->layoutHeight : 0.f;
+    if(layout == nullptr){
+        return TextMeasurement{};
+    }
+    TextMeasurement measured;
+    measured.width  = layout->layoutWidth;
+    measured.height = layout->layoutHeight;
+    return measured;
 }
 
 void UIView::update(){

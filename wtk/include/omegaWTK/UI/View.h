@@ -156,6 +156,11 @@ namespace OmegaWTK {
         /// to reach `host->focusManager()`; a detached view (null host)
         /// makes those calls no-ops.
         void setTreeHostRecurse(WidgetTreeHost *host);
+        /// §2.3a T1: back-link to the Widget that owns this View as its
+        /// root. Set by the `Widget` constructor on its own view (friend
+        /// access); null for element / sub-views that no Widget roots.
+        /// Read publicly via `ownerWidget()`.
+        void setOwnerWidget(Widget * widget);
         virtual bool hasDelegate();
         void addSubView(View *view);
         void removeSubView(View * view);
@@ -199,6 +204,13 @@ namespace OmegaWTK {
 
         /// @brief Retrieves the Rect that defines the position and bounds of the View.
         Composition::Rect & getRect();
+
+        /// §2.3a T1: the Widget that owns this View as its root, or null
+        /// when this is an element / sub-view no Widget roots. The hover
+        /// dispatcher resolves a hit View to its owning Widget by walking
+        /// the parent chain to the nearest non-null `ownerWidget()` — used
+        /// for per-widget tooltip lookup.
+        Widget * ownerWidget() const;
         // Phase 4.8: `getLayerTree()` and the per-view
         // `View::Impl::ownLayerTree` are gone. Every UIView's
         // DisplayList flows into the single
@@ -665,6 +677,20 @@ namespace OmegaWTK {
             Called when a key on a keyboard is raised after being pressed
          */
         virtual void onKeyUp(Native::NativeEventPtr event) DEFAULT;
+        /**
+            Called when this view gains keyboard focus (the host's
+            FocusManager selected it — see FocusManager / §2.3a). The
+            event's params carry the previously-focused `View *` (may be
+            null). By the time this fires `view->isFocused()` is already
+            true and `view->lastFocusReason()` is settled.
+         */
+        virtual void onFocusGained(Native::NativeEventPtr event) DEFAULT;
+        /**
+            Called when this view loses keyboard focus. The event's params
+            carry the newly-focused `View *` (null when focus was simply
+            cleared). `view->isFocused()` is already false when this fires.
+         */
+        virtual void onFocusLost(Native::NativeEventPtr event) DEFAULT;
         public:
         ViewDelegate();
         ~ViewDelegate();

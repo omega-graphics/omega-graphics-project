@@ -171,6 +171,24 @@ namespace OmegaWTK::Native::Win {
             emitIfPossible(button_event_to_native_event(NativeEvent::RMouseUp,&pt,hwnd, FLOAT(currentDpi)/96.f));
             break;
         };
+        // Keyboard. The event is converted (VK -> KeyCode + Unicode via
+        // key_event_to_native_event) and emitted into the WTK pipeline, where
+        // WidgetTreeHost::dispatchInputEvent routes it to the FocusManager's
+        // focused View. Leaving rc = TRUE consumes the message (no
+        // DefWindowProc), so the system does not beep and does not translate
+        // it to a WM_CHAR we would double-handle — the char already rides on
+        // KeyDownParams::key. Menu accelerators are dispatched by the app's
+        // TranslateAccelerator before the message reaches here, so they are
+        // unaffected. (WM_SYSKEYDOWN — Alt combos / F10 — is intentionally
+        // left to DefWindowProc so Alt menu access keeps working.)
+        case WM_KEYDOWN : {
+            emitIfPossible(key_event_to_native_event(NativeEvent::KeyDown, wParam, lParam));
+            break;
+        };
+        case WM_KEYUP : {
+            emitIfPossible(key_event_to_native_event(NativeEvent::KeyUp, wParam, lParam));
+            break;
+        };
         case WM_SIZE : {
             FLOAT scaleFactor = currentDpi/96.f;
             UINT width = LOWORD(lParam);

@@ -11,11 +11,20 @@ namespace OmegaWTK {
 Widget::Widget(Composition::Rect rect):
     impl_(std::make_unique<Impl>()),
     view(View::Create(rect)){
+    // §2.3a T1: back-link the root view to this widget so the hover
+    // dispatcher can resolve a hit View up to its owning Widget (for
+    // tooltip lookup). Only the widget's own root view is tagged; nested
+    // element / sub-views keep a null owner and the dispatcher walks the
+    // parent chain to the nearest non-null.
+    view->setOwnerWidget(this);
 }
 
 Widget::Widget(ViewPtr view):
     impl_(std::make_unique<Impl>()),
     view(std::move(view)){
+    // §2.3a T1: see the rect ctor above. `this->view` because the
+    // parameter shadows the member.
+    this->view->setOwnerWidget(this);
 }
 
 OmegaCommon::ArrayRef<WidgetPtr> Widget::childWidgets(){
@@ -61,6 +70,25 @@ void Widget::setTreeHostRecurse(WidgetTreeHost *host){
             c->setTreeHostRecurse(host);
         }
     }
+}
+
+void Widget::setTooltip(const OmegaCommon::String & text){
+    impl_->tooltip_ = text;
+}
+
+void Widget::clearTooltip(){
+    impl_->tooltip_.clear();
+    // §2.3a T1: if the tooltip is on screen for this widget right now,
+    // take it down immediately rather than waiting for the next hover
+    // change. `treeHost` is null when the widget is detached (nothing
+    // could be showing), so this is a no-op then.
+    if(treeHost != nullptr){
+        treeHost->dismissTooltipFor(this);
+    }
+}
+
+const OmegaCommon::String & Widget::tooltip() const{
+    return impl_->tooltip_;
 }
 
 void Widget::removeObserver(WidgetObserverPtr observerPtr){

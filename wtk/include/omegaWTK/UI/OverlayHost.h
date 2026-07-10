@@ -175,6 +175,35 @@ public:
     OmegaCommon::ArrayRef<PresentedOverlay> overlaysForPaintIn(
         OverlayTier tier) const;
 
+    /// O3 §5.1 hit-test precedence. Returns the topmost presented
+    /// overlay (reverse tier order, then reverse insertion order
+    /// within tier) whose resolved rect contains `point` *and* whose
+    /// dismiss policy has `absorbsHits == true`. Non-absorbing
+    /// overlays (Tooltip / DragGhost by default) are transparent to
+    /// hits: an overlay that contains the point but does not absorb is
+    /// skipped so the walk continues to lower overlays and, ultimately,
+    /// the main tree. Returns nullptr when no absorbing overlay claims
+    /// the point. The caller descends into the returned widget's own
+    /// view subtree to find the deepest hit view.
+    Widget * absorbingOverlayAt(const Composition::Point2D & point) const;
+
+    /// O3 §5.2 click-outside dismissal. Dismisses every presented
+    /// overlay whose policy has `clickOutside == true` and whose
+    /// resolved rect does *not* contain `point`, topmost first.
+    /// Returns true if at least one overlay was dismissed — the caller
+    /// consumes the originating mouse-down so the same gesture does not
+    /// also reach the main tree (the click that closes a popover must
+    /// not also activate the button beneath it). Overlays that contain
+    /// the point are left presented (the click lands inside them).
+    bool dismissClickOutside(const Composition::Point2D & point);
+
+    /// O3 §5.3 Escape dismissal. Dismisses the single topmost presented
+    /// overlay whose policy has `escapeKey == true`. Returns true if one
+    /// was dismissed — the caller consumes the Escape key so it does not
+    /// reach the focused view's delegate. Two consecutive Escapes
+    /// therefore dismiss two overlays, topmost first.
+    bool dismissTopmostForEscape();
+
     /// Window-space rect committed for `handle` at present time
     /// (already edge-clamped). Used by O2's paint walk to position
     /// the overlay subtree. Zero rect on a stale or zero handle.

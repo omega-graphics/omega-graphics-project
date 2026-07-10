@@ -14,6 +14,14 @@ namespace OmegaWTK::Native {
 NativeEventPtr button_event_to_native_event(NativeEvent::EventType event_type, LPPOINT pt, HWND hwnd = nullptr, float dpiScale = 1.f);
 NativeEventPtr scroll_event_to_native_event(NativeEvent::EventType event_type,float deltaX,float deltaY);
 
+/// Build a KeyDown / KeyUp NativeEvent from a WM_KEYDOWN / WM_KEYUP.
+/// `vk` is the virtual-key code (wParam); `lParam` carries the scan code
+/// (bits 16-23) and the repeat/previous-state flag (bit 30). The virtual
+/// key maps to `KeyCode`, and for a printable key the current keyboard
+/// state is resolved to a Unicode code point via ToUnicode() so the one
+/// event carries both `code` and `key` (matching the macOS/GTK model).
+NativeEventPtr key_event_to_native_event(NativeEvent::EventType event_type, WPARAM vk, LPARAM lParam);
+
 };
 
 #endif

@@ -104,6 +104,13 @@ struct Widget::Impl {
     bool hasExplicitLayoutStyle_ = false;
 
     OmegaCommon::Vector<WidgetObserverPtr> observers;
+
+    /// Native-API §2.3a T1: per-widget tooltip text. Empty = no tooltip
+    /// (the hover dispatcher in `WidgetTreeHost` skips widgets with an
+    /// empty string). Set via `Widget::setTooltip`, cleared via
+    /// `clearTooltip`. The dispatcher reads it after resolving a hovered
+    /// View back to its owning Widget through `View::ownerWidget()`.
+    OmegaCommon::String tooltip_ {};
 };
 
 }

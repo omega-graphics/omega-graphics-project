@@ -810,11 +810,52 @@ The delegate is owned by the Button (via `UniquePtr`) and outlives the view's ra
 
 ---
 
-### Phase 4B: TextInput — **blocked on FocusManager**
+### Phase 4B: TextInput — **v0 COMPLETE (runtime-verified macOS 2026-07-10)**
 
-The TextInput base implementation is **deferred until the per-window `FocusManager` lands** (see [Native-API-Completion-Proposal §2.3a](Native-API-Completion-Proposal.md#23a-virtual-focus-cursor-and-tooltip-in-the-view-tree)). Rationale: a leaf-Widget TextInput needs to claim keyboard focus and route key events from `WidgetTreeHost` rather than from the broadcast pipe — a hack today would have to be migrated immediately after FocusManager ships, and the migration touches the editing loop and caret-rendering paths. Better to wait one phase.
+> **Status.** Base TextInput v0 is done and developer-verified on macOS
+> (BasicAppTest: focus ring + caret on click/Tab, printable insert,
+> Backspace/Delete/arrows/Home/End editing, mirror-Label echo via
+> onValueChange, click-away defocus). Runtime testing surfaced and fixed three
+> latent backend bugs the widget was the first to exercise — see
+> [Native-API-Completion-Proposal §2.3a status row](Native-API-Completion-Proposal.md#completion-status):
+> macOS/Win32 had no keyboard delivery wired (only GTK did), the macOS
+> `key_code_from_ns` special-key table was mismapped, and M1 click-focus did
+> not resign focus on a click-miss. macOS + GTK paths are complete; **Win32 key
+> delivery is written but still needs a WSL build to verify** (backend parity
+> item, tracked in that status row — it does not gate the widget itself). The
+> follow-ups below (caret blink, measured caret X, selection, clipboard, IME,
+> multi-line) remain out of v0 scope.
+>
+> The FocusManager landed (Native-API-Completion-Proposal §2.3a
+> Focus block F1–F6 + M1), so TextInput v0 is now built:
+> `wtk/src/Widgets/UserInputs.TextInput.cpp` + the `TextInput` /
+> `TextInputProps` in `wtk/include/omegaWTK/Widgets/UserInputs.h`. The UIView
+> opts into `StrongFocus`; an internal `TextInputDelegate` observes the new
+> `ViewDelegate::onFocusGained`/`onFocusLost` callbacks (added for this — see
+> below) to toggle the caret + accent focus-ring, and `onKeyDown` to run the
+> edit ops. Element tags `"bg"` / `"label"` / `"caret"` (the `"border"` from
+> the sketch below is folded into `elementBorder("bg", …)`, matching Button's
+> focus-ring convention). Wired into BasicAppTest (a field + a mirror Label
+> that echoes edits via `onValueChange`). **Compile+link clean; this is also
+> the first runtime exercise of the FocusManager key-routing path (F3), so it
+> awaits an interactive/visual check per AGENTS.md Visual Debugging.**
+>
+> **New shared infra this required:** `ViewDelegate::onFocusGained` /
+> `onFocusLost` virtuals + their dispatch in `ViewDelegate::onRecieveEvent`
+> (`FocusManager::setFocus` already emits `FocusGained`/`FocusLost` through the
+> view's emitter; nothing routed them to a delegate callback before). Purely
+> additive — empty default bodies, two new `case`s.
+>
+> **Deltas from the v0 sketch below:** (1) caret X is a monospace
+> approximation (`kApproxCharAdvance`), *not* measured — a synchronous
+> `measureText("label")` right after an edit reads a one-keystroke-stale memo
+> (cache keyed on `(tag,width)`, invalidated a frame later in
+> `resolveStyles()`), which looks worse than a clean approximation; per-glyph
+> caret is a follow-up that drives `measureText` (now width-capable, see
+> Text-Measurement-API-Plan §6) from the layout phase. (2) `Home`/`End` caret
+> moves added. Everything else matches the sketch.
 
-When FocusManager is available the v0 shape is:
+The original v0 shape (design of record):
 
 ```cpp
 struct OMEGAWTK_EXPORT TextInputProps {

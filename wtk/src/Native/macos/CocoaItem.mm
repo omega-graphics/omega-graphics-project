@@ -98,6 +98,23 @@
     [super mouseMoved:event];
 };
 
+// Keyboard delivery. The view returns YES from acceptsFirstResponder, so once
+// it is the window's first responder (AppKit makes a clicked accepts-first-
+// responder view the first responder) key events land here. Convert + emit
+// into the WTK pipeline — `ns_event_to_omega_wtk_native_event` handles the
+// NSEventTypeKeyDown/KeyUp cases — where WidgetTreeHost::dispatchInputEvent
+// routes them to the FocusManager's focused View. We do NOT call
+// `[super keyDown:]`, which would NSBeep on any key the responder chain does
+// not otherwise consume; the key is considered handled by WTK. (Menu key
+// equivalents are dispatched by NSMenu's performKeyEquivalent before keyDown
+// reaches the view, so they still work.)
+- (void)keyDown:(NSEvent *)event{
+    [self emitEventIfPossible:event];
+};
+- (void)keyUp:(NSEvent *)event{
+    [self emitEventIfPossible:event];
+};
+
 - (void)scrollWheel:(NSEvent *)event {
     if(!self.delegate->hasEventEmitter()){
         [super scrollWheel:event];

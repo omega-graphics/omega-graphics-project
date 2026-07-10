@@ -172,6 +172,14 @@ struct View::Impl {
     /// `View::focus`/`blur` to reach `host->focusManager()`; a null host
     /// makes those calls no-ops (a detached view cannot take focus).
     WidgetTreeHost * treeHost_ = nullptr;
+    /// §2.3a T1: the Widget that roots this View, or null for element /
+    /// sub-views. Set once by the `Widget` ctor via
+    /// `View::setOwnerWidget`; read by `View::ownerWidget()` so the hover
+    /// dispatcher can resolve a hit View to its owning Widget for tooltip
+    /// lookup. Non-owning back-pointer (the Widget owns the View, not the
+    /// reverse), cleared implicitly when the Widget — and thus this View —
+    /// is destroyed.
+    Widget * ownerWidget_ = nullptr;
     /// Widget-View-Paint-Lifecycle-Plan Tier A: deferred-paint dirty mask.
     /// Per-node bits (Style / Layout / Content / Paint) set by
     /// `markDirty(bits)` on the node that actually changed.

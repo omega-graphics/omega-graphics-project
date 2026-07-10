@@ -421,29 +421,43 @@ public:
 
     void update();
 
-    /// Text-Measurement-API-Plan §3: measure the laid-out height (dp) of
+    /// Result of a `measureText` call: the intrinsic extents (dp) the shaped
+    /// text occupies. `height` is the wrapped, line-limited height the
+    /// renderer produces; `width` is the widest laid-out line
+    /// (`max(line.totalAdvance)`) — the intrinsic horizontal extent a caller
+    /// uses for label/caret sizing. Both are `0` when there is nothing to
+    /// measure (see `measureText`).
+    struct TextMeasurement {
+        float width = 0.f;
+        float height = 0.f;
+    };
+
+    /// Text-Measurement-API-Plan §3 + §6: measure the laid-out extents (dp) of
     /// the tagged text element when given `availWidthDp` of horizontal
     /// space. Resolves the element's effective font + `TextLayoutDescriptor`
     /// + line limit the *same* way `update()`'s paint pass does (resolved
     /// `TextFont` cell, else the Arial-18 `resolveFallbackTextFont()`
     /// default), then runs the CPU-only `TextLayoutEngine::layout` with a
     /// rect of `{0,0, availWidthDp, large}` — only `rect.w` drives the wrap,
-    /// so the returned `layoutHeight` is the wrapped, line-limited height
-    /// the renderer would produce. Height-only by design: the layout engine
-    /// reports no laid-out width, and the content-driven dimension for a
-    /// vertical stack is height (the cross axis stays owned by stretch).
+    /// so the returned `.height` is the wrapped, line-limited height and the
+    /// returned `.width` is the widest laid-out line, both exactly what the
+    /// renderer would produce. Height feeds the vertical content-driven
+    /// dimension for a vertical stack (cross axis stays owned by stretch);
+    /// width feeds intrinsic horizontal sizing (Button label width, caret X).
     ///
     /// Units are dp in and dp out, matching the `View::ContentMeasureFn`
-    /// contract the `Label` hook bridges to. Returns 0 when the tag has no
-    /// text element, the element has no text, or no font / shaper is
-    /// available — the caller (the hook) then degrades to its fallback size.
+    /// contract the `Label` hook bridges to. Returns `{0, 0}` when the tag has
+    /// no text element, the element has no text, or no font / shaper is
+    /// available — the caller then degrades to its fallback size.
     ///
     /// Memoized per element tag: the result is cached against `availWidthDp`
     /// and reused without re-running the layout engine until the width
     /// changes or a content/style edit invalidates it (the memo is dropped
-    /// in `resolveStyles()`). Steady-state frames therefore cost no layout
-    /// work — `layout()` runs once per actual change, not once per frame.
-    float measureText(const UIElementTag & tag, float availWidthDp);
+    /// in `resolveStyles()`). Both extents come from the one cached layout, so
+    /// asking for width costs no extra layout work over asking for height.
+    /// Steady-state frames therefore cost no layout work — `layout()` runs
+    /// once per actual change, not once per frame.
+    TextMeasurement measureText(const UIElementTag & tag, float availWidthDp);
 
 private:
     // Tier B / B3: the per-phase methods that update() orchestrates in

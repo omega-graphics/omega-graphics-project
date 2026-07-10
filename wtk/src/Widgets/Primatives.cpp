@@ -282,10 +282,13 @@ void Label::onMount() {
     viewAs<UIView>().setContentMeasure(
         [this](float availWidthDp, float /*availHeightDp*/,
                float & outWidthDp, float & outHeightDp) {
-            const float measuredHeight =
+            // Only the height is content-driven for a vertical stack; the
+            // measured width is available on the result but intentionally
+            // ignored here (the cross axis stays owned by stretch).
+            const auto measured =
                 viewAs<UIView>().measureText("label", availWidthDp);
-            if (measuredHeight > 0.f) {
-                outHeightDp = measuredHeight;
+            if (measured.height > 0.f) {
+                outHeightDp = measured.height;
             }
             outWidthDp = availWidthDp;
         });

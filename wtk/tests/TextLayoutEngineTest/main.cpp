@@ -178,6 +178,7 @@ namespace {
         assert(r.glyphs.empty());
         assert(r.lineBaselines.empty());
         assert(approx(r.layoutHeight, 0.f));
+        assert(approx(r.layoutWidth, 0.f));
         assert(shaper.callCount == 0);
 
         std::printf("  [PASS] Empty input short-circuits without shaping\n");
@@ -236,6 +237,9 @@ namespace {
         assert(r.glyphs[0].resolvedFont == font);
         assert(r.glyphs[2].resolvedFont == font);
         assert(approx(r.layoutHeight, metrics.lineHeight()));
+        // Text-Measurement-API-Plan §6: intrinsic width = the single line's
+        // advance (3 glyphs × 10).
+        assert(approx(r.layoutWidth, 30.f));
 
         std::printf("  [PASS] Left+Upper alignment\n");
     }
@@ -388,6 +392,8 @@ namespace {
         assert(approx(r.lineBaselines[1], metrics.ascent + metrics.lineHeight()));
         // Total layout height = 2 lines × lineHeight.
         assert(approx(r.layoutHeight, 2.f * metrics.lineHeight()));
+        // Intrinsic width = the widest line "CDE" (3 × 10), not "AB" (2 × 10).
+        assert(approx(r.layoutWidth, 30.f));
         // First glyph of line 2 (C) is at x=0, y=line 2 baseline.
         // Glyphs are emitted in logical order, so g[2] is 'C'.
         assert(approx(r.glyphs[2].canvasX, 0.f));

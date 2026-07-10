@@ -10,6 +10,9 @@
 #include "omegaWTK/UI/LayoutManager.h"   // Phase 2: LayoutManager::minSize for aggregateMinSize
 #include "omegaWTK/UI/OverlayHost.h"
 #include "omegaWTK/UI/FocusManager.h"
+#include "omegaWTK/UI/UIView.h"            // §2.3a T1: tooltip content authoring
+#include "omegaWTK/Native/NativeTheme.h"   // §2.3a T1: theme colors for the tooltip
+#include "omegaWTK/Composition/Brush.h"    // §2.3a T1: ColorBrush for tooltip fill
 #include "omegaWTK/Composition/CompositeFrame.h"
 #include "omegaWTK/Composition/CompositorSurface.h"
 #include "omegaWTK/Composition/CompositorClient.h"
@@ -704,6 +707,219 @@ namespace OmegaWTK {
         return nullptr;
     }
 
+    View * WidgetTreeHost::hitTestOverlay(const Composition::Point2D &point) const{
+        if(overlayHost_ == nullptr){
+            return nullptr;
+        }
+        Widget * ow = overlayHost_->absorbingOverlayAt(point);
+        if(ow == nullptr){
+            return nullptr;
+        }
+        // Overlay roots carry a window-space rect (set by
+        // `OverlayHost::present` via `setRect`), so translate `point`
+        // into the overlay's own content space before reusing the
+        // main-tree descent — exactly as `hitTest` passes a window-space
+        // point straight to `hitTestWidget(root, ...)` because root sits
+        // at the window origin. `hitTestWidget` returns the overlay's
+        // own view when no deeper child claims the point, so a bare
+        // overlay background still hit-tests to itself.
+        View & ov = ow->viewRef();
+        Composition::Point2D local {
+            point.x - ov.getRect().pos.x - ov.contentOffset().x,
+            point.y - ov.getRect().pos.y - ov.contentOffset().y
+        };
+        View * hit = hitTestWidget(ow, local);
+        return hit != nullptr ? hit : &ov;
+    }
+
+    namespace {
+    // §2.3a T1 — the tooltip's content is a UI-layer widget (not a
+    // Widgets-library `Label`): the dispatcher lives in the UI module,
+    // which has no dependency on the Widgets library, so the tooltip is
+    // built directly on a `UIView` here. A rounded background box plus a
+    // single centered text element, styled from the current OS theme.
+    // Content is authored in the constructor (an overlay is presented,
+    // never `onMount`-ed, so there is no mount hook to build it in).
+    class TooltipContentWidget : public Widget {
+    protected:
+        // Required override (NativeThemeObserver is abstract). The tooltip
+        // is short-lived and re-created on each present with the current
+        // theme, so it does not react to a live theme flip.
+        void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
+    public:
+        TooltipContentWidget(const Composition::Rect & rect,
+                             const OmegaCommon::UString & text,
+                             const Native::ThemeDesc & theme)
+            : Widget(ViewPtr(new UIView(rect, nullptr, "tooltip"))){
+            auto & uv = viewAs<UIView>();
+            auto & lv2 = uv.layoutV2();
+            lv2.clear();
+
+            // bg — full-rect rounded rectangle. Element coords are in the
+            // widget's rect space (the Layout pass normalizes them to the
+            // view's local bounds), matching how Button authors its "bg".
+            {
+                Composition::RoundedRect bg{};
+                bg.pos = rect.pos;
+                bg.w = rect.w;
+                bg.h = rect.h;
+                bg.rad_x = 4.f;
+                bg.rad_y = 4.f;
+                UIElementLayoutSpec spec;
+                spec.tag = "bg";
+                spec.shape = Shape::RoundedRect(bg);
+                lv2.element(spec);
+            }
+            // label — the tooltip text, horizontally inset, single line.
+            // Inset matches the width budget's `hpad` in `presentTooltip`.
+            {
+                const float pad = 8.f;
+                UIElementLayoutSpec spec;
+                spec.tag = "label";
+                spec.text = text;
+                spec.textRect = Composition::Rect{
+                    Composition::Point2D{rect.pos.x + pad, rect.pos.y},
+                    std::max(0.f, rect.w - pad * 2.f), rect.h};
+                lv2.element(spec);
+            }
+
+            auto ss = Style::Create();
+            ss->elementBrush("bg",
+                Composition::ColorBrush(theme.colors.controlBackground));
+            ss->elementBorder("bg", theme.colors.separator, 1.f);
+            // No explicit font: the tooltip text renders at the same body
+            // default as any Label (theme `defaultSize`). The box width in
+            // `presentTooltip` is calibrated to that size.
+            ss->textColor("label", theme.colors.foreground);
+            ss->textAlignment("label",
+                Composition::TextLayoutDescriptor::MiddleCenter);
+            ss->textWrapping("label",
+                Composition::TextLayoutDescriptor::None);
+            uv.setStyle(ss);
+        }
+    };
+    } // namespace
+
+    void WidgetTreeHost::mountOverlay(Widget * overlay){
+        if(overlay == nullptr){
+            return;
+        }
+        // Mirror the `initWidgetTree` wiring for a subtree presented
+        // outside the main tree: give its Views the window's shared
+        // render target, then thread the host (which also wires the
+        // compositor frontend + sync lane) down the subtree so
+        // `buildFrame` can rasterize it. The overlay's root rect was
+        // already committed by `OverlayHost::present` (`setRect`), and
+        // the Style/Layout/Paint dirty bits it set drive the first paint.
+        if(windowRenderTarget_ != nullptr){
+            propagateWindowRenderTargetRecurse(overlay);
+        }
+        overlay->setTreeHostRecurse(this);
+    }
+
+    void WidgetTreeHost::unmountOverlay(Widget * overlay){
+        if(overlay == nullptr){
+            return;
+        }
+        overlay->setTreeHostRecurse(nullptr);
+    }
+
+    Widget * WidgetTreeHost::owningWidgetOf(View * v) const{
+        for(; v != nullptr; v = v->impl_->parent_ptr){
+            if(Widget * w = v->ownerWidget()){
+                return w;
+            }
+        }
+        return nullptr;
+    }
+
+    void WidgetTreeHost::scheduleTooltip(Widget * owner){
+        if(owner == nullptr){
+            return;
+        }
+        tooltipWidget_ = owner;
+        const OmegaCommon::String text = owner->tooltip();
+        const Composition::Point2D at = lastCursorPos_;
+        // One-shot 500ms hover delay (macOS / Qt convention). Capturing
+        // `this` is safe: the host outlives its overlays, and the timer is
+        // stopped in `cancelTooltip` before either is torn down. `text` /
+        // `at` are captured by value so a later cursor move cannot mutate
+        // the pending tooltip's content or anchor.
+        tooltipTimer_ = Native::make_native_timer(0.5f, false,
+            [this, text, at](){
+                this->presentTooltip(text, at);
+            });
+    }
+
+    void WidgetTreeHost::presentTooltip(const OmegaCommon::String & text,
+                                        const Composition::Point2D & at){
+        if(overlayHost_ == nullptr || text.empty()){
+            return;
+        }
+        // Widen ASCII → UString for the text element (mirrors Button's
+        // iconToken widening). v0 tooltips are short ASCII; full UTF-8
+        // decoding is a follow-up if non-ASCII tooltips are wanted.
+        OmegaCommon::UString utext(text.begin(), text.end());
+
+        // The tooltip text renders at the same default size as a Label
+        // (no explicit font), so size the box against the theme's body
+        // `defaultSize`. Empirically the engine advances ~0.55·pt per
+        // glyph for mixed text; allocate a wider ~0.72·pt so the box
+        // comfortably encloses the string, plus padding on both sides.
+        // Height is one line plus vertical padding. Precise text-
+        // measurement-based sizing is deferred to T2 — see the Tooltip-v2
+        // plan. Width is clamped so a pathological string can't produce a
+        // giant box; the overlay host edge-clamps the final anchored rect
+        // against the window.
+        const Native::ThemeDesc theme = Native::queryCurrentTheme();
+        const float fontPt = theme.typography.defaultSize;
+        const float hpad  = 8.f;
+        const float vpad  = 5.f;
+        const float charW = fontPt * 0.72f;
+        const float lineH = fontPt * 1.5f;
+        float w = (hpad * 2.f) + (charW * static_cast<float>(text.size()));
+        w = std::min(std::max(w, 40.f), 420.f);
+        const float h = (vpad * 2.f) + lineH;
+
+        const Composition::Rect rect{Composition::Point2D{0.f, 0.f}, w, h};
+        auto tip = std::make_shared<TooltipContentWidget>(rect, utext, theme);
+
+        OverlayAnchor anchor;
+        anchor.mode = OverlayAnchor::Mode::AtPoint;
+        anchor.point = Composition::Point2D{at.x + 12.f, at.y + 12.f};
+
+        OverlayDismissPolicy policy;
+        policy.absorbsHits     = false;  // hover / click through the tooltip
+        policy.clickOutside    = false;  // dispatcher owns tooltip lifecycle
+        policy.escapeKey       = false;
+        policy.windowDeactivate = false;
+        policy.anchorDestroyed = false;
+
+        OverlayOrnamentation ornament;   // drop shadow on by default
+        ornament.cornerRadius = 4.f;     // match the tooltip bg rounding
+
+        currentTooltipHandle_ = overlayHost_->present(
+            tip, OverlayTier::Tooltip, anchor, policy, ornament);
+    }
+
+    void WidgetTreeHost::cancelTooltip(){
+        if(tooltipTimer_ != nullptr){
+            tooltipTimer_->stop();
+            tooltipTimer_ = nullptr;
+        }
+        if(currentTooltipHandle_.valid() && overlayHost_ != nullptr){
+            overlayHost_->dismiss(currentTooltipHandle_);
+            currentTooltipHandle_ = OverlayHandle{};
+        }
+        tooltipWidget_ = nullptr;
+    }
+
+    void WidgetTreeHost::dismissTooltipFor(Widget * widget){
+        if(widget != nullptr && tooltipWidget_ == widget){
+            cancelTooltip();
+        }
+    }
+
     void WidgetTreeHost::dispatchInputEvent(Native::NativeEventPtr event){
         if(root == nullptr){
             return;
@@ -739,6 +955,9 @@ namespace OmegaWTK {
                 break;
             }
             case NativeEvent::CursorExit: {
+                // §2.3a T1: the cursor left the window — take down any
+                // pending or shown tooltip.
+                cancelTooltip();
                 // Cursor left the window — send exit to hovered view.
                 if(hoveredView_ != nullptr){
                     // Widget-View-Paint-Lifecycle-Plan Tier D / D6.4
@@ -771,7 +990,25 @@ namespace OmegaWTK {
                 // swallowed so a widget never sees a lone Tab release; the
                 // actual focus move happens once, on the KeyDown.
                 if(event->type == NativeEvent::KeyDown){
+                    // §2.3a T1: any key press dismisses a pending / shown
+                    // tooltip (macOS / Qt behavior — typing hides the hint).
+                    cancelTooltip();
                     auto *kp = static_cast<Native::KeyDownParams *>(event->params);
+                    // Overlay-Z-Order-Plan O3 §5.3: Escape dismisses the
+                    // topmost presented overlay that opts into `escapeKey`
+                    // and is consumed before it can reach the focused
+                    // view. Intercepted here (before Tab / delegate
+                    // dispatch) for the same reason Tab is: a focused
+                    // TextInput must not be able to swallow Escape and
+                    // trap an open popover. Only when no overlay claims
+                    // the key does it fall through — so Escape can still
+                    // cancel a field when nothing is presented.
+                    if(kp != nullptr && kp->code == Native::KeyCode::Escape){
+                        if(overlayHost_ != nullptr &&
+                           overlayHost_->dismissTopmostForEscape()){
+                            return;
+                        }
+                    }
                     if(kp != nullptr && kp->code == Native::KeyCode::Tab){
                         if(kp->modifiers.shift){
                             focusManager_->focusPrevious();
@@ -799,7 +1036,45 @@ namespace OmegaWTK {
             return;
         }
 
-        View *target = hitTest(pos);
+        // §2.3a T1: track the latest cursor position so a tooltip is
+        // anchored where the cursor rested, and so an intra-widget move
+        // updates the anchor without restarting the hover timer.
+        lastCursorPos_ = pos;
+
+        // §2.3a T1: a mouse-down anywhere takes down a pending / shown
+        // tooltip (you clicked — the hint's job is done).
+        if(event->type == NativeEvent::LMouseDown ||
+           event->type == NativeEvent::RMouseDown){
+            cancelTooltip();
+        }
+
+        // Overlay-Z-Order-Plan O3 §5.1: hit-test precedence. An
+        // absorbing overlay under the cursor claims the event before
+        // the main tree. Non-absorbing overlays (tooltips, drag-ghosts)
+        // return nullptr here, so hover / clicks pass straight through
+        // to the main tree ("click through a tooltip").
+        View * overlayTarget = hitTestOverlay(pos);
+
+        // Overlay-Z-Order-Plan O3 §5.2: click-outside dismissal. On a
+        // mouse-down, dismiss every presented overlay whose clickOutside
+        // policy is set and whose bounds exclude the point (topmost
+        // first). When the down did not land inside an absorbing overlay
+        // and at least one overlay was dismissed, the gesture is consumed
+        // — the click that closes a popover must not also activate a
+        // widget beneath it. A down inside an absorbing overlay still
+        // runs the sweep (to close other, stale overlays) but is then
+        // delivered to that overlay rather than consumed.
+        if(event->type == NativeEvent::LMouseDown ||
+           event->type == NativeEvent::RMouseDown){
+            if(overlayHost_ != nullptr){
+                const bool dismissed = overlayHost_->dismissClickOutside(pos);
+                if(overlayTarget == nullptr && dismissed){
+                    return;
+                }
+            }
+        }
+
+        View *target = overlayTarget != nullptr ? overlayTarget : hitTest(pos);
 
         // Synthesize CursorEnter/CursorExit when the hovered view changes.
         if(target != hoveredView_){
@@ -842,6 +1117,23 @@ namespace OmegaWTK {
                 }
                 ownerWindow_->commitCursorShape(shape);
             }
+
+            // §2.3a T1: tooltip hover tracking. Resolve the new hovered
+            // View to its owning Widget; only when that owner *changes*
+            // do we re-arm. Moving between a widget's own sub-views (a
+            // Button's label vs. its background) resolves to the same
+            // owner, so the pending / shown tooltip is left alone. A real
+            // owner change cancels the old tooltip and arms a fresh
+            // hover-delay timer when the new owner carries a tooltip. This
+            // sits inside the hovered-View-changed branch (same site as
+            // C1) so it runs once per hover transition, not per move.
+            Widget * newOwner = owningWidgetOf(target);
+            if(newOwner != tooltipWidget_){
+                cancelTooltip();
+                if(newOwner != nullptr && !newOwner->tooltip().empty()){
+                    scheduleTooltip(newOwner);
+                }
+            }
         }
 
         // Widget-View-Paint-Lifecycle-Plan Tier D / D6.4 (2026-06-03):
@@ -864,17 +1156,30 @@ namespace OmegaWTK {
         // inside a Button focuses the Button rather than nothing.
         // FocusReason::Mouse is deliberate: it suppresses the focus ring
         // (only keyboard traversal raises it — see the F-table's
-        // isKeyboardReason gate). When no ancestor is click-focusable the
-        // current focus is left untouched; clicking inert chrome does not
-        // blur the prior holder, matching native toolkits. (The walk uses
-        // friend access to View::Impl::parent_ptr — there is no public
-        // parent accessor on View.)
+        // isKeyboardReason gate). When no ancestor is click-focusable, the
+        // click resigns focus from the current holder (clearFocus) — the
+        // standard "click outside a field commits and defocuses it" behavior
+        // users expect from a text field. (The walk uses friend access to
+        // View::Impl::parent_ptr — there is no public parent accessor on View.)
+        //
+        // Nuance for later: a *focus-neutral* control (e.g. a formatting
+        // toolbar button that must not steal focus from the text being
+        // edited) would want to opt out of this clearFocus. WTK has no such
+        // opt-out yet and TextInput is currently the only focusable widget, so
+        // clearing on miss is correct today; revisit when focus-neutral
+        // controls land (a per-View "declines focus steal" flag on the walk).
         if(event->type == NativeEvent::LMouseDown && target != nullptr){
+            View * clickFocusTarget = nullptr;
             for(View * v = target; v != nullptr; v = v->impl_->parent_ptr){
                 if(v->isClickFocusable()){
-                    focusManager_->setFocus(v, FocusReason::Mouse);
+                    clickFocusTarget = v;
                     break;
                 }
+            }
+            if(clickFocusTarget != nullptr){
+                focusManager_->setFocus(clickFocusTarget, FocusReason::Mouse);
+            } else {
+                focusManager_->clearFocus();
             }
         }
 
