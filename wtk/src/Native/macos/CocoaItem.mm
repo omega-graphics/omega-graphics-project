@@ -97,6 +97,14 @@
     [self emitEventIfPossible:event];
     [super mouseMoved:event];
 };
+- (void)mouseDragged:(NSEvent *)event {
+    // A left-button-held move. AppKit routes these to mouseDragged, not
+    // mouseMoved, so without this a scroll-bar thumb drag would never see
+    // motion. Emitted as CursorMove (see CocoaEvent.mm) and routed to the
+    // pointer-capture owner by WidgetTreeHost.
+    [self emitEventIfPossible:event];
+    [super mouseDragged:event];
+};
 
 // Keyboard delivery. The view returns YES from acceptsFirstResponder, so once
 // it is the window's first responder (AppKit makes a clicked accepts-first-
@@ -132,6 +140,28 @@
         static_cast<float>(dy),
         OmegaWTK::Composition::Point2D{static_cast<float>(localPt.x), static_cast<float>(localPt.y)}
     };
+    // E5: classify the scroll gesture phase so the ScrollView can tell a
+    // discrete mouse wheel (None) from a trackpad user scroll and from the
+    // OS-generated momentum stream. `momentumPhase` wins when set (the
+    // inertial fling); otherwise `phase` describes the fingers-on gesture.
+    using OmegaWTK::Native::ScrollPhase;
+    const NSEventPhase momentum = [event momentumPhase];
+    const NSEventPhase gesture  = [event phase];
+    ScrollPhase phase = ScrollPhase::None;
+    if(momentum & NSEventPhaseBegan){
+        phase = ScrollPhase::MomentumBegan;
+    } else if(momentum & NSEventPhaseChanged){
+        phase = ScrollPhase::Momentum;
+    } else if(momentum & (NSEventPhaseEnded | NSEventPhaseCancelled)){
+        phase = ScrollPhase::MomentumEnded;
+    } else if(gesture & NSEventPhaseBegan){
+        phase = ScrollPhase::Began;
+    } else if(gesture & (NSEventPhaseChanged | NSEventPhaseStationary)){
+        phase = ScrollPhase::Changed;
+    } else if(gesture & (NSEventPhaseEnded | NSEventPhaseCancelled)){
+        phase = ScrollPhase::Ended;
+    }
+    p->phase = phase;
     self.delegate->sendEventToEmitter(OmegaWTK::Native::NativeEventPtr(
             new OmegaWTK::Native::NativeEvent(
                     OmegaWTK::Native::NativeEvent::ScrollWheel, p)));

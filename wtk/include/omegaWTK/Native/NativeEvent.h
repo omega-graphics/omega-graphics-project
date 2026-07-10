@@ -82,10 +82,27 @@ struct OMEGAWTK_EXPORT ViewResize {
     Composition::Rect rect;
 };
 
+/// Scroll gesture phase (ScrollView-Interaction-Enhancements-Plan E5).
+/// A discrete mouse wheel reports `None`; a trackpad reports the gesture
+/// lifecycle so the ScrollView can tell user-driven scrolling from the
+/// OS-generated momentum (fling) stream and avoid layering app-side
+/// momentum on top of the OS's. Populated on macOS from NSEvent phase /
+/// momentumPhase; Win32 / GTK send `None` today.
+enum class ScrollPhase : std::uint8_t {
+    None = 0,        ///< discrete wheel — no gesture phase
+    Began,           ///< trackpad fingers-down, scroll starting
+    Changed,         ///< trackpad user-driven scroll
+    Ended,           ///< trackpad fingers lifted
+    MomentumBegan,   ///< OS inertial fling starting
+    Momentum,        ///< OS inertial fling decaying
+    MomentumEnded    ///< OS inertial fling finished
+};
+
 struct OMEGAWTK_EXPORT ScrollParams {
     float deltaX;
     float deltaY;
     Composition::Point2D position;
+    ScrollPhase phase = ScrollPhase::None;
 };
 
 struct OMEGAWTK_EXPORT WindowWillResize {

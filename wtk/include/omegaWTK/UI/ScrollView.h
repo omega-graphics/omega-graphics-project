@@ -2,6 +2,7 @@
 #define OMEGAWTK_UI_SCROLLVIEW_H
 
 #include "View.h"
+#include "omegaWTK/Composition/Animation.h"   // E4: AnimationHandle (fling)
 
 namespace OmegaWTK {
 
@@ -10,6 +11,7 @@ namespace Composition {
 }
 
 class ScrollViewDelegate;
+class AnimationScheduler;   // E4: per-window animation driver (UI-private)
 
 /// @brief A fully virtual scroll container.
 ///
@@ -29,6 +31,56 @@ class OMEGAWTK_EXPORT ScrollView : public View {
     ScrollViewDelegate *delegate = nullptr;
     bool hasVerticalScrollBar,hasHorizontalScrollBar;
     bool hasDelegate() override;
+
+    // E3 scroll-bar drag state. `draggingThumb_` is set between an
+    // LMouseDown on a thumb and the matching LMouseUp; `dragVertical_`
+    // records which bar; `dragGrab_` is the pointer-to-thumb-origin gap
+    // along the drag axis (window coords) captured at grab so the thumb
+    // does not jump under the cursor.
+    bool  draggingThumb_ = false;
+    bool  dragVertical_  = false;
+    float dragGrab_      = 0.f;
+
+    // E4 fling-momentum state. Velocity (offset px/sec) is sampled across
+    // the drag; on release a decelerating tween carries the offset to a
+    // projected landing point. `flingAnim_` is the in-flight tween,
+    // cancelled on any new user input and in the destructor.
+    float  dragLastOffset_  = 0.f;
+    double dragLastTimeSec_ = 0.0;
+    float  dragVelocity_    = 0.f;
+    Composition::AnimationHandle flingAnim_ {};
+
+    // E5: timestamp of the last discrete-wheel tick, for computing wheel
+    // velocity so a mouse wheel (no OS momentum) gets an app-side fling.
+    // Trackpad scrolling carries its own OS momentum and is left alone.
+    double wheelLastTimeSec_ = 0.0;
+
+    /// E1: the thumb rectangle for one axis in this view's LOCAL space, or
+    /// a zero-size rect when that axis does not overflow (no bar). Shared
+    /// by `paintAfterChildren` (drawing) and the drag hit-test.
+    Composition::Rect thumbLocalRect(bool vertical);
+    /// E1: which thumb (if any) a window-space point lands on. Returns 1
+    /// for the vertical thumb, 2 for the horizontal, 0 for neither.
+    int hitTestThumb(const Composition::Point2D & windowPoint);
+    /// E3: the full bar track strip for one axis in LOCAL space (the thumb
+    /// slides within this), or zero-size when that axis has no bar. Used to
+    /// tell a track click from a content click.
+    Composition::Rect trackLocalRect(bool vertical);
+    /// E3: set the scroll offset so the thumb's top/left sits at
+    /// `pointerAxisWindow - grab` along the drag axis (window coords),
+    /// clamped to the track. Shared by thumb-drag and track-click-jump.
+    void dragThumbTo(bool vertical, float pointerAxisWindow, float grab);
+    /// E3: handle an LMouseDown / CursorMove / LMouseUp for the scroll-bar
+    /// drag interaction. Kept off `DefaultScrollHandler::onRecieveEvent` to
+    /// keep the wheel/key path readable.
+    void handleDragPointer(Native::NativeEventPtr event);
+    /// E4: the window's AnimationScheduler, or nullptr if not attached.
+    AnimationScheduler * scheduler();
+    /// E4: cancel any in-flight momentum tween (called on new user input).
+    void cancelFling();
+    /// E4: start a decelerating momentum tween from the current offset
+    /// given the release velocity (offset px/sec) along the drag axis.
+    void startFling(bool vertical, float velocity);
 
     /// Internal event processor for default scroll handling when no
     /// delegate is set.
@@ -90,6 +142,10 @@ public:
     /// (the cache walker must not split the clip bracket across capture
     /// markers). See `View::clipsContentSubtree`.
     bool clipsContentSubtree() const override;
+
+    /// E4: cancels any in-flight momentum tween so the scheduler never
+    /// fires its `this`-capturing callback after the view is gone.
+    ~ScrollView() override;
 };
 
 class OMEGAWTK_EXPORT ScrollViewDelegate : public Native::NativeEventProcessor {

@@ -707,6 +707,14 @@ namespace OmegaWTK {
         return nullptr;
     }
 
+    void WidgetTreeHost::captureMouse(View * view){
+        capturedView_ = view;
+    }
+
+    void WidgetTreeHost::releaseMouse(){
+        capturedView_ = nullptr;
+    }
+
     View * WidgetTreeHost::hitTestOverlay(const Composition::Point2D &point) const{
         if(overlayHost_ == nullptr){
             return nullptr;
@@ -1036,6 +1044,21 @@ namespace OmegaWTK {
             return;
         }
 
+        // ScrollView-Interaction-Enhancements-Plan E2: pointer-capture
+        // short-circuit. While a view holds capture (an in-progress drag),
+        // the button/move stream belongs to it — deliver straight to the
+        // captured view and skip hit-testing + hover synthesis. The
+        // captured view releases on its own LMouseUp. ScrollWheel and the
+        // synthesized enter/exit are unaffected (they are not part of this
+        // set), so a wheel mid-drag still reaches its normal target.
+        if(capturedView_ != nullptr &&
+           (event->type == NativeEvent::LMouseDown ||
+            event->type == NativeEvent::LMouseUp ||
+            event->type == NativeEvent::CursorMove)){
+            capturedView_->emit(event);
+            return;
+        }
+
         // §2.3a T1: track the latest cursor position so a tooltip is
         // anchored where the cursor rested, and so an intra-widget move
         // updates the anchor without restarting the hover timer.
@@ -1184,18 +1207,27 @@ namespace OmegaWTK {
         }
 
         if(target != nullptr){
-            // ScrollView-4.7-Integration-Plan V2.1: route ScrollWheel
-            // through the bubbling dispatch so a wheel that lands on a
-            // deep leaf inside a ScrollView reaches the ScrollView's
-            // handler (the deepest hit is rarely the scroll consumer).
-            // Other event types keep the deepest-hit `emit` until V2.2
-            // generalizes bubbling (which needs the click-consumer audit
-            // for Invariant A).
-            if(event->type == NativeEvent::ScrollWheel){
-                target->dispatchEvent(event);
-            }
-            else {
-                target->emit(event);
+            // ScrollView-4.7-Integration-Plan V2.1 + V2.2: route ScrollWheel
+            // and the mouse-button events through the bubbling dispatch so
+            // an event that lands on a deep leaf reaches an ancestor handler
+            // (a wheel over a band → the ScrollView; a click a leaf ignores
+            // → an interactive ancestor). Consumers set `event->handled`
+            // (Invariant A) — a Button absorbs its click, the ScrollView its
+            // wheel — so propagation stops at the innermost handler. Hover
+            // motion (CursorMove/CursorEnter) stays deepest-hit `emit`: hover
+            // is driven by the WidgetTreeHost's own enter/exit synthesis
+            // above, not by bubbling these to ancestors.
+            switch(event->type){
+                case NativeEvent::ScrollWheel:
+                case NativeEvent::LMouseDown:
+                case NativeEvent::LMouseUp:
+                case NativeEvent::RMouseDown:
+                case NativeEvent::RMouseUp:
+                    target->dispatchEvent(event);
+                    break;
+                default:
+                    target->emit(event);
+                    break;
             }
         }
     }

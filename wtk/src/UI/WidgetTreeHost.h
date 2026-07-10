@@ -138,6 +138,14 @@ namespace OmegaWTK {
         bool attachedToWindow;
         View * hoveredView_ = nullptr;
 
+        /// ScrollView-Interaction-Enhancements-Plan E2 — pointer capture.
+        /// While non-null, positional mouse events (LMouseDown/Up,
+        /// CursorMove) route straight to this view instead of hit-testing,
+        /// so a drag (e.g. a scroll-bar thumb) keeps tracking after the
+        /// cursor leaves the widget. Cleared on releaseMouse() or when the
+        /// captured view detaches.
+        View * capturedView_ = nullptr;
+
         /// Overlay-Z-Order-Plan O1 — in-window overlay slot. One per
         /// host (i.e. one per AppWindow / AppPanel). Constructed in
         /// the host ctor so `overlayHost()` is always live; destroyed
@@ -336,6 +344,14 @@ namespace OmegaWTK {
         /// virtual widget tree via hit testing. Mouse events are routed
         /// to the View under the cursor; keyboard events go to the root.
         void dispatchInputEvent(Native::NativeEventPtr event);
+
+        /// ScrollView-Interaction-Enhancements-Plan E2 — pointer capture.
+        /// Route subsequent positional mouse events straight to `view`
+        /// (skipping hit-test + hover synthesis) until `releaseMouse()`.
+        /// A view captures for the duration of a drag it initiated.
+        void captureMouse(View * view);
+        void releaseMouse();
+        View * capturedView() const { return capturedView_; }
 
         /// Overlay-Z-Order-Plan O1 — in-window overlay slot. Returns
         /// a reference because the host always owns exactly one

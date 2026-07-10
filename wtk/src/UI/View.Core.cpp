@@ -589,6 +589,18 @@ void View::scheduleRepaint(){
     }
 }
 
+void View::captureMouse(){
+    if(impl_->treeHost_ != nullptr){
+        impl_->treeHost_->captureMouse(this);
+    }
+}
+
+void View::releaseMouse(){
+    if(impl_->treeHost_ != nullptr){
+        impl_->treeHost_->releaseMouse();
+    }
+}
+
 void View::dispatchEvent(Native::NativeEventPtr event){
     if(event == nullptr){
         return;

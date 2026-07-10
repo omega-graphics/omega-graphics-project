@@ -2,8 +2,17 @@
 #include "omegaWTK/UI/LayoutManager.h"
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/Brush.h"
+// E4: reach the per-window AnimationScheduler for fling momentum. These are
+// UI-private headers (same dir); ScrollView is a friend of View so it may
+// read `impl_->treeHost_`.
+#include "ViewImpl.h"
+#include "WidgetTreeHost.h"
+#include "FrameBuilder.h"
+#include "AnimationScheduler.h"
 
 #include <algorithm>
+#include <cmath>
+#include <chrono>
 #include <cstdio>
 
 namespace OmegaWTK {
@@ -20,6 +29,18 @@ namespace OmegaWTK {
         // V5: per-keypress arrow-key scroll distance. PageUp/PageDown use
         // the viewport extent; Home/End jump to the ends.
         constexpr float kKeyScrollStep = 40.f;
+
+        // E4 fling-momentum tuning.
+        constexpr float kMinFlingSpeed   = 120.f;  // px/sec release threshold
+        constexpr float kFlingProjectSec = 0.22f;  // how far velocity carries
+        constexpr float kFlingMsPerPx    = 2.2f;   // tween duration ∝ distance
+        constexpr float kFlingMinMs      = 220.f;
+        constexpr float kFlingMaxMs      = 1100.f;
+
+        double nowSeconds(){
+            return std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
 
         // V2.1 delivery trace, gated on OMEGAWTK_SCROLL_TRACE (any value
         // not starting with '0'). Lets the developer confirm a wheel
@@ -41,6 +62,13 @@ namespace OmegaWTK {
         if(event == nullptr || owner == nullptr){
             return;
         }
+        // E3: scroll-bar drag lives in its own method (press/move/release).
+        if(event->type == Native::NativeEvent::LMouseDown
+           || event->type == Native::NativeEvent::LMouseUp
+           || event->type == Native::NativeEvent::CursorMove){
+            owner->handleDragPointer(event);
+            return;
+        }
         const bool isWheel = event->type == Native::NativeEvent::ScrollWheel;
         const bool isKey   = event->type == Native::NativeEvent::KeyDown;
         if(!isWheel && !isKey){
@@ -58,14 +86,17 @@ namespace OmegaWTK {
             maxY = std::max(0.f, content.h - viewport.h);
         }
 
+        const Composition::Point2D prevOffset = owner->scrollOffset;
         Composition::Point2D newOffset = owner->scrollOffset;
         bool consumed = false;
+        Native::ScrollPhase wheelPhase = Native::ScrollPhase::None;
 
         if(isWheel){
             auto *p = static_cast<Native::ScrollParams *>(event->params);
             if(p == nullptr){
                 return;
             }
+            wheelPhase = p->phase;
             // Invariant B (axis-aware consumption): consume the wheel only
             // on an axis this ScrollView actually scrolls — enabled AND has
             // range AND the wheel moved on that axis. An axis we do not
@@ -129,8 +160,32 @@ namespace OmegaWTK {
 
         newOffset.x = std::clamp(newOffset.x, 0.f, maxX);
         newOffset.y = std::clamp(newOffset.y, 0.f, maxY);
+        // E4/E5: fresh user input cancels the in-flight glide so the action
+        // wins; a discrete mouse wheel then re-arms its own momentum below.
+        owner->cancelFling();
         owner->setScrollOffset(newOffset);
         event->handled = true;
+
+        // E5: momentum. A discrete mouse wheel (`phase == None`) carries no
+        // OS inertia, so synthesize an app-side fling from the per-tick
+        // velocity; rapid ticks re-project it further and, once ticks stop,
+        // the last fling coasts to rest. A TRACKPAD (any real phase) already
+        // streams its own decaying momentum deltas from the OS, so we simply
+        // apply those and never add app momentum on top (no double-glide).
+        if(isWheel && wheelPhase == Native::ScrollPhase::None){
+            const double now = nowSeconds();
+            const double dt = now - owner->wheelLastTimeSec_;
+            owner->wheelLastTimeSec_ = now;
+            const float dVy = newOffset.y - prevOffset.y;
+            const float dVx = newOffset.x - prevOffset.x;
+            const bool  flingVertical = std::fabs(dVy) >= std::fabs(dVx);
+            const float d = flingVertical ? dVy : dVx;
+            // Only fling for a plausible inter-tick gap — a first tick or a
+            // long pause (dt huge) is treated as a fresh start, not a fling.
+            if(dt > 1e-4 && dt < 0.2 && std::fabs(d) > 0.f){
+                owner->startFling(flingVertical, d / static_cast<float>(dt));
+            }
+        }
 
         if(scrollTraceEnabled()){
             std::fprintf(stderr,
@@ -233,62 +288,291 @@ namespace OmegaWTK {
         pc.displayList.append(Composition::DrawOp::makePushClip(windowClip));
     }
 
+    Composition::Rect ScrollView::thumbLocalRect(bool vertical){
+        const Composition::Rect empty{{0.f, 0.f}, 0.f, 0.f};
+        if(child == nullptr){
+            return empty;
+        }
+        const auto & viewRect = getRect();
+        const auto & contentRect = child->getRect();
+        if(vertical){
+            if(!hasVerticalScrollBar || contentRect.h <= viewRect.h){
+                return empty;
+            }
+            const float trackH = viewRect.h - 2.f * kScrollBarMargin;
+            const float thumbH = std::max(kMinThumbLength,
+                                          trackH * (viewRect.h / contentRect.h));
+            const float ratio = std::clamp(
+                scrollOffset.y / (contentRect.h - viewRect.h), 0.f, 1.f);
+            const float thumbY = ratio * (trackH - thumbH);
+            return {{viewRect.w - kScrollBarThickness - kScrollBarMargin,
+                     kScrollBarMargin + thumbY},
+                    kScrollBarThickness, thumbH};
+        }
+        if(!hasHorizontalScrollBar || contentRect.w <= viewRect.w){
+            return empty;
+        }
+        const float trackW = viewRect.w - 2.f * kScrollBarMargin;
+        const float thumbW = std::max(kMinThumbLength,
+                                      trackW * (viewRect.w / contentRect.w));
+        const float ratio = std::clamp(
+            scrollOffset.x / (contentRect.w - viewRect.w), 0.f, 1.f);
+        const float thumbX = ratio * (trackW - thumbW);
+        return {{kScrollBarMargin + thumbX,
+                 viewRect.h - kScrollBarThickness - kScrollBarMargin},
+                thumbW, kScrollBarThickness};
+    }
+
+    Composition::Rect ScrollView::trackLocalRect(bool vertical){
+        // The strip the thumb slides within: same cross-axis position and
+        // thickness as the thumb, spanning the whole track along the main
+        // axis. Zero-size when that axis has no bar.
+        const Composition::Rect thumb = thumbLocalRect(vertical);
+        if(thumb.w <= 0.f || thumb.h <= 0.f){
+            return {{0.f, 0.f}, 0.f, 0.f};
+        }
+        const auto & viewRect = getRect();
+        if(vertical){
+            return {{thumb.pos.x, kScrollBarMargin},
+                    kScrollBarThickness, viewRect.h - 2.f * kScrollBarMargin};
+        }
+        return {{kScrollBarMargin, thumb.pos.y},
+                viewRect.w - 2.f * kScrollBarMargin, kScrollBarThickness};
+    }
+
+    int ScrollView::hitTestThumb(const Composition::Point2D & windowPoint){
+        const auto origin = offsetFromRoot();
+        const Composition::Point2D local{windowPoint.x - origin.x,
+                                         windowPoint.y - origin.y};
+        auto inRect = [](const Composition::Rect & r,
+                         const Composition::Point2D & p){
+            return r.w > 0.f && r.h > 0.f
+                && p.x >= r.pos.x && p.x <= r.pos.x + r.w
+                && p.y >= r.pos.y && p.y <= r.pos.y + r.h;
+        };
+        if(inRect(thumbLocalRect(true), local)){
+            return 1;
+        }
+        if(inRect(thumbLocalRect(false), local)){
+            return 2;
+        }
+        return 0;
+    }
+
+    void ScrollView::dragThumbTo(bool vertical, float pointerAxisWindow, float grab){
+        if(child == nullptr){
+            return;
+        }
+        const auto origin = offsetFromRoot();
+        const auto & viewRect = getRect();
+        const auto & contentRect = child->getRect();
+        Composition::Point2D newOffset = scrollOffset;
+        if(vertical){
+            if(contentRect.h <= viewRect.h){
+                return;
+            }
+            const float trackH = viewRect.h - 2.f * kScrollBarMargin;
+            const float thumbH = std::max(kMinThumbLength,
+                                          trackH * (viewRect.h / contentRect.h));
+            const float span = trackH - thumbH;
+            // Desired thumb top in local track coords.
+            float thumbY = (pointerAxisWindow - grab) - (origin.y + kScrollBarMargin);
+            thumbY = std::clamp(thumbY, 0.f, std::max(0.f, span));
+            const float ratio = span > 0.f ? thumbY / span : 0.f;
+            newOffset.y = ratio * (contentRect.h - viewRect.h);
+        }
+        else {
+            if(contentRect.w <= viewRect.w){
+                return;
+            }
+            const float trackW = viewRect.w - 2.f * kScrollBarMargin;
+            const float thumbW = std::max(kMinThumbLength,
+                                          trackW * (viewRect.w / contentRect.w));
+            const float span = trackW - thumbW;
+            float thumbX = (pointerAxisWindow - grab) - (origin.x + kScrollBarMargin);
+            thumbX = std::clamp(thumbX, 0.f, std::max(0.f, span));
+            const float ratio = span > 0.f ? thumbX / span : 0.f;
+            newOffset.x = ratio * (contentRect.w - viewRect.w);
+        }
+        setScrollOffset(newOffset); // clamps + schedules the repaint
+    }
+
+    AnimationScheduler * ScrollView::scheduler(){
+        if(impl_->treeHost_ == nullptr){
+            return nullptr;
+        }
+        FrameBuilder * fb = impl_->treeHost_->frameBuilder();
+        return fb != nullptr ? fb->animationScheduler() : nullptr;
+    }
+
+    void ScrollView::cancelFling(){
+        if(flingAnim_.valid()){
+            flingAnim_.cancel();
+            flingAnim_ = Composition::AnimationHandle{};
+        }
+    }
+
+    void ScrollView::startFling(bool vertical, float velocity){
+        if(child == nullptr || std::fabs(velocity) < kMinFlingSpeed){
+            return;
+        }
+        AnimationScheduler * sched = scheduler();
+        if(sched == nullptr){
+            return;
+        }
+        const auto & viewRect = getRect();
+        const auto & contentRect = child->getRect();
+        const float maxV = vertical ? std::max(0.f, contentRect.h - viewRect.h)
+                                    : std::max(0.f, contentRect.w - viewRect.w);
+        const float cur = vertical ? scrollOffset.y : scrollOffset.x;
+        float landing = std::clamp(cur + velocity * kFlingProjectSec, 0.f, maxV);
+        if(std::fabs(landing - cur) < 1.f){
+            return; // already at the end / negligible fling
+        }
+        Composition::TimingOptions timing;
+        timing.durationMs = static_cast<std::uint32_t>(
+            std::clamp(std::fabs(landing - cur) * kFlingMsPerPx,
+                       kFlingMinMs, kFlingMaxMs));
+        cancelFling();
+        // The tween fires apply() each scheduler tick; `this` is cancelled
+        // in the destructor and on any new user input, so it never outlives
+        // the view.
+        flingAnim_ = sched->tween<float>(cur, landing,
+            [this, vertical](const float & v){
+                Composition::Point2D o = scrollOffset;
+                if(vertical){ o.y = v; } else { o.x = v; }
+                setScrollOffset(o);
+            }, timing, Composition::AnimationCurve::EaseOut());
+        // Bootstrap the first frame so the scheduler ticks; the FrameBuilder
+        // D7.2 auto-pump then keeps requesting frames while the tween is
+        // active (mirrors how Button::invalidate kicks off a hover tween).
+        scheduleRepaint();
+    }
+
+    void ScrollView::handleDragPointer(Native::NativeEventPtr event){
+        if(event->type == Native::NativeEvent::CursorMove){
+            if(!draggingThumb_){
+                return;
+            }
+            auto *cp = static_cast<Native::CursorMoveParams *>(event->params);
+            if(cp == nullptr){
+                return;
+            }
+            dragThumbTo(dragVertical_,
+                        dragVertical_ ? cp->position.y : cp->position.x,
+                        dragGrab_);
+            // E4: sample the offset velocity (px/sec) with light EMA
+            // smoothing, for the fling on release.
+            const double now = nowSeconds();
+            const float curAxis = dragVertical_ ? scrollOffset.y : scrollOffset.x;
+            const double dt = now - dragLastTimeSec_;
+            if(dt > 1e-4){
+                const float instV = (curAxis - dragLastOffset_)
+                                  / static_cast<float>(dt);
+                dragVelocity_ = 0.6f * instV + 0.4f * dragVelocity_;
+            }
+            dragLastOffset_  = curAxis;
+            dragLastTimeSec_ = now;
+            event->handled = true;
+            return;
+        }
+        if(event->type == Native::NativeEvent::LMouseUp){
+            if(draggingThumb_){
+                draggingThumb_ = false;
+                releaseMouse();
+                // E4: fling with the release velocity (no-op below threshold).
+                startFling(dragVertical_, dragVelocity_);
+                event->handled = true;
+            }
+            return;
+        }
+        // LMouseDown.
+        auto *mp = static_cast<Native::MouseEventParams *>(event->params);
+        if(mp == nullptr){
+            return;
+        }
+        bool vertical = false;
+        float grab = 0.f;
+        const int thumb = hitTestThumb(mp->position);
+        if(thumb != 0){
+            // Press on the thumb — grab it at the cursor so it does not jump.
+            vertical = (thumb == 1);
+            const auto origin = offsetFromRoot();
+            const auto tr = thumbLocalRect(vertical);
+            grab = vertical ? (mp->position.y - (origin.y + tr.pos.y))
+                            : (mp->position.x - (origin.x + tr.pos.x));
+        }
+        else {
+            // Press on the track off the thumb (decision #2): jump the thumb
+            // center under the pointer, then drag from there. Ignore presses
+            // that are neither thumb nor track — let them bubble.
+            const auto origin = offsetFromRoot();
+            const Composition::Point2D local{mp->position.x - origin.x,
+                                             mp->position.y - origin.y};
+            auto inRect = [](const Composition::Rect & r,
+                             const Composition::Point2D & p){
+                return r.w > 0.f && r.h > 0.f
+                    && p.x >= r.pos.x && p.x <= r.pos.x + r.w
+                    && p.y >= r.pos.y && p.y <= r.pos.y + r.h;
+            };
+            if(inRect(trackLocalRect(true), local)){
+                vertical = true;
+            }
+            else if(inRect(trackLocalRect(false), local)){
+                vertical = false;
+            }
+            else {
+                return;
+            }
+            const auto tr = thumbLocalRect(vertical);
+            grab = vertical ? (tr.h * 0.5f) : (tr.w * 0.5f);
+            dragThumbTo(vertical, vertical ? mp->position.y : mp->position.x, grab);
+        }
+        draggingThumb_ = true;
+        dragVertical_  = vertical;
+        dragGrab_      = grab;
+        // E4: a new drag cancels any in-flight fling and reseeds velocity.
+        cancelFling();
+        dragLastOffset_  = vertical ? scrollOffset.y : scrollOffset.x;
+        dragLastTimeSec_ = nowSeconds();
+        dragVelocity_    = 0.f;
+        captureMouse();
+        event->handled = true;
+    }
+
     void ScrollView::paintAfterChildren(Composition::PaintContext & pc){
         // V3: close the content clip opened in `paint`.
         pc.displayList.append(Composition::DrawOp::makePopClip());
 
         // V4: emit the scroll-bar thumbs AFTER the PopClip so they draw
-        // outside the viewport scissor. Positions are baked into absolute
-        // window coords with `pc.offset` (the 4.7 walker no longer applies
-        // a per-view replay translation). A bar is drawn only when its axis
-        // actually overflows — a non-scrolling axis shows no bar.
-        if(child == nullptr){
-            return;
-        }
-        const auto & viewRect = getRect();
-        const auto & contentRect = child->getRect();
+        // outside the viewport scissor. `thumbLocalRect` (E1) computes the
+        // per-axis thumb in local space; `pc.offset` lifts it to absolute
+        // window coords (the 4.7 walker no longer applies a per-view replay
+        // translation). Empty rect (no overflow) → no bar.
         const float ox = pc.offset.x;
         const float oy = pc.offset.y;
-
-        if(hasVerticalScrollBar && contentRect.h > viewRect.h){
-            const float trackH = viewRect.h - 2.f * kScrollBarMargin;
-            const float thumbRatio = viewRect.h / contentRect.h;
-            const float thumbH = std::max(kMinThumbLength, trackH * thumbRatio);
-            float scrollRatio = scrollOffset.y / (contentRect.h - viewRect.h);
-            scrollRatio = std::clamp(scrollRatio, 0.f, 1.f);
-            const float thumbY = scrollRatio * (trackH - thumbH);
-
-            Composition::RoundedRect thumb {
-                {ox + viewRect.w - kScrollBarThickness - kScrollBarMargin,
-                 oy + kScrollBarMargin + thumbY},
-                kScrollBarThickness, thumbH,
-                kScrollBarRadius, kScrollBarRadius
-            };
+        auto emitThumb = [&](const Composition::Rect & t){
+            if(t.w <= 0.f || t.h <= 0.f){
+                return;
+            }
+            Composition::RoundedRect rr{
+                {ox + t.pos.x, oy + t.pos.y}, t.w, t.h,
+                kScrollBarRadius, kScrollBarRadius};
             pc.displayList.append(Composition::DrawOp{
-                thumb, Composition::ColorBrush(kScrollBarColor)});
-        }
-
-        if(hasHorizontalScrollBar && contentRect.w > viewRect.w){
-            const float trackW = viewRect.w - 2.f * kScrollBarMargin;
-            const float thumbRatio = viewRect.w / contentRect.w;
-            const float thumbW = std::max(kMinThumbLength, trackW * thumbRatio);
-            float scrollRatio = scrollOffset.x / (contentRect.w - viewRect.w);
-            scrollRatio = std::clamp(scrollRatio, 0.f, 1.f);
-            const float thumbX = scrollRatio * (trackW - thumbW);
-
-            Composition::RoundedRect thumb {
-                {ox + kScrollBarMargin + thumbX,
-                 oy + viewRect.h - kScrollBarThickness - kScrollBarMargin},
-                thumbW, kScrollBarThickness,
-                kScrollBarRadius, kScrollBarRadius
-            };
-            pc.displayList.append(Composition::DrawOp{
-                thumb, Composition::ColorBrush(kScrollBarColor)});
-        }
+                rr, Composition::ColorBrush(kScrollBarColor)});
+        };
+        emitThumb(thumbLocalRect(true));
+        emitThumb(thumbLocalRect(false));
     }
 
     bool ScrollView::clipsContentSubtree() const{
         return true;
+    }
+
+    ScrollView::~ScrollView(){
+        // E4: stop any in-flight fling so the scheduler never invokes its
+        // `this`-capturing callback after this view is destroyed.
+        cancelFling();
     }
 
     void ScrollViewDelegate::onRecieveEvent(Native::NativeEventPtr event){

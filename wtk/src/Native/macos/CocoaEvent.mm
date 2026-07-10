@@ -196,7 +196,13 @@ NativeEventPtr ns_event_to_omega_wtk_native_event(NSEvent *event, NSView *inView
             type = NativeEvent::RMouseUp;
             break;
         }
-        case NSEventTypeMouseMoved: {
+        case NSEventTypeMouseMoved:
+        // A move with the left button held arrives as mouseDragged, not
+        // mouseMoved. Map it to CursorMove too so a button-held drag (e.g.
+        // dragging a scroll-bar thumb) keeps producing position updates —
+        // otherwise the app sees no motion between LMouseDown and LMouseUp.
+        // WidgetTreeHost's pointer capture routes these to the drag owner.
+        case NSEventTypeLeftMouseDragged: {
             auto *p = new CursorMoveParams();
             fill_position_from_event(event, inView, p->position, p->screenPosition);
             p->modifiers = modifier_flags_from_ns(event.modifierFlags);

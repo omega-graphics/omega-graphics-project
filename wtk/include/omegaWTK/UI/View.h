@@ -252,6 +252,12 @@ namespace OmegaWTK {
         /// (FrameBuilder.cpp — "no subtree pruning at the node level")
         /// then re-folds the new `contentOffset()` into every descendant.
         void scheduleRepaint();
+        /// ScrollView-Interaction-Enhancements-Plan E2 — take / release
+        /// pointer capture through the owning host, so a drag this view
+        /// initiated keeps receiving mouse move/up after the cursor leaves
+        /// the view. No-ops when the view is not attached to a host.
+        void captureMouse();
+        void releaseMouse();
         /// UIView-Render-Redesign Phase G.3.3: same dirty-bit marking
         /// and ancestor `descendantDirty` propagation as `markDirty`,
         /// but DOES NOT bump `contentVersion()`. Used by the window

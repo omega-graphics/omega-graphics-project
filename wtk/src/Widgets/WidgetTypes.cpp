@@ -40,14 +40,19 @@ void WidgetInteractionDelegate::onMouseExit(Native::NativeEventPtr event) {
 }
 
 void WidgetInteractionDelegate::onLeftMouseDown(Native::NativeEventPtr event) {
-    (void)event;
+    // ScrollView-4.7-Integration-Plan V2.2, Invariant A: an interactive
+    // widget consumes the left-click it receives so it does not bubble to
+    // an ancestor (e.g. a Button inside a ScrollView must not let the click
+    // fall through). A disabled widget still absorbs the click — it does
+    // not fall through to something behind it — it just does not react.
+    if (event) event->handled = true;
     if (state == InteractiveState::Disabled) return;
     state = InteractiveState::Pressed;
     if (owner) owner->invalidate();
 }
 
 void WidgetInteractionDelegate::onLeftMouseUp(Native::NativeEventPtr event) {
-    (void)event;
+    if (event) event->handled = true;
     if (state == InteractiveState::Disabled) return;
     state = InteractiveState::Hovered;
     if (owner) owner->invalidate();
