@@ -90,6 +90,7 @@ namespace OmegaWTK {
         Composition::Point2D newOffset = owner->scrollOffset;
         bool consumed = false;
         Native::ScrollPhase wheelPhase = Native::ScrollPhase::None;
+        bool wheelOSMomentum = false;
 
         if(isWheel){
             auto *p = static_cast<Native::ScrollParams *>(event->params);
@@ -97,6 +98,23 @@ namespace OmegaWTK {
                 return;
             }
             wheelPhase = p->phase;
+            wheelOSMomentum = p->providesOSMomentum;
+            // E5 (richer contract): a trackpad gesture-end (GTK is_stop ->
+            // Ended) on a platform with no OS momentum carries zero deltas but
+            // must still fling. Handle it before the delta-based consume check
+            // below, which would otherwise drop a zero-delta event. On an
+            // OS-momentum platform (macOS) providesOSMomentum is true, so this
+            // is skipped and the OS drives the glide.
+            if(wheelPhase == Native::ScrollPhase::Ended && !wheelOSMomentum){
+                if(owner->trackpadGesture_){
+                    owner->cancelFling();
+                    owner->startFling(owner->trackpadVertical_,
+                                      owner->trackpadVelocity_);
+                    owner->trackpadGesture_ = false;
+                    event->handled = true;
+                }
+                return;
+            }
             // Invariant B (axis-aware consumption): consume the wheel only
             // on an axis this ScrollView actually scrolls — enabled AND has
             // range AND the wheel moved on that axis. An axis we do not
@@ -169,9 +187,7 @@ namespace OmegaWTK {
         // E5: momentum. A discrete mouse wheel (`phase == None`) carries no
         // OS inertia, so synthesize an app-side fling from the per-tick
         // velocity; rapid ticks re-project it further and, once ticks stop,
-        // the last fling coasts to rest. A TRACKPAD (any real phase) already
-        // streams its own decaying momentum deltas from the OS, so we simply
-        // apply those and never add app momentum on top (no double-glide).
+        // the last fling coasts to rest.
         if(isWheel && wheelPhase == Native::ScrollPhase::None){
             const double now = nowSeconds();
             const double dt = now - owner->wheelLastTimeSec_;
@@ -184,6 +200,46 @@ namespace OmegaWTK {
             // long pause (dt huge) is treated as a fresh start, not a fling.
             if(dt > 1e-4 && dt < 0.2 && std::fabs(d) > 0.f){
                 owner->startFling(flingVertical, d / static_cast<float>(dt));
+            }
+            // A discrete wheel cleanly ends any stale trackpad tracking so a
+            // later gesture re-seeds from scratch.
+            owner->trackpadGesture_ = false;
+        }
+        // E5 (richer contract): a trackpad user-drag (`Changed`) on a platform
+        // with NO OS momentum stream (GTK) — accumulate a smoothed offset
+        // velocity so the terminating `Ended` (is_stop) event flings with it.
+        // On an OS-momentum platform (macOS) `providesOSMomentum` is true, so
+        // we skip this and let the OS momentum deltas drive the glide.
+        else if(isWheel && !wheelOSMomentum &&
+                (wheelPhase == Native::ScrollPhase::Began ||
+                 wheelPhase == Native::ScrollPhase::Changed)){
+            const float dVy = newOffset.y - prevOffset.y;
+            const float dVx = newOffset.x - prevOffset.x;
+            const bool  vertical = std::fabs(dVy) >= std::fabs(dVx);
+            const float curAxis  = vertical ? newOffset.y : newOffset.x;
+            const double now = nowSeconds();
+            if(!owner->trackpadGesture_ || vertical != owner->trackpadVertical_){
+                // Gesture start, or an axis switch mid-gesture: (re)seed the
+                // sampler without emitting a velocity sample across the seam.
+                owner->trackpadGesture_     = true;
+                owner->trackpadVertical_    = vertical;
+                owner->trackpadVelocity_    = 0.f;
+                owner->trackpadLastOffset_  = curAxis;
+                owner->trackpadLastTimeSec_ = now;
+            }
+            else {
+                const double dt = now - owner->trackpadLastTimeSec_;
+                // A plausible inter-event gap only — a long pause (e.g. after a
+                // discrete-wheel interlude) reseeds instead of sampling a
+                // bogus velocity across the gap.
+                if(dt > 1e-4 && dt < 0.2){
+                    const float instV = (curAxis - owner->trackpadLastOffset_)
+                                      / static_cast<float>(dt);
+                    owner->trackpadVelocity_ =
+                        0.6f * instV + 0.4f * owner->trackpadVelocity_;
+                }
+                owner->trackpadLastOffset_  = curAxis;
+                owner->trackpadLastTimeSec_ = now;
             }
         }
 

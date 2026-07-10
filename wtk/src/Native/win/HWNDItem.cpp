@@ -81,6 +81,23 @@ namespace OmegaWTK::Native::Win {
         };
     };
 
+    void HWNDItem::setPointerCapture(bool capture){
+        if(capture){
+            SetCapture(hwnd);
+            pointerCaptured_ = true;
+        }
+        else {
+            // Clear the flag BEFORE ReleaseCapture so the WM_CAPTURECHANGED it
+            // synthesizes is recognised as a voluntary release (drag finished)
+            // and does not re-emit a synthetic LMouseUp. Guard the call so we
+            // never steal capture from another window that grabbed it since.
+            pointerCaptured_ = false;
+            if(GetCapture() == hwnd){
+                ReleaseCapture();
+            }
+        }
+    };
+
     LRESULT HWNDItem::ProcessWndMsg(UINT u_int,WPARAM wParam,LPARAM lParam){
         LRESULT result = 0;
         if(u_int == WM_NCDESTROY){
@@ -169,6 +186,28 @@ namespace OmegaWTK::Native::Win {
             pt.x = GET_X_LPARAM(lParam);
             pt.y = GET_Y_LPARAM(lParam);
             emitIfPossible(button_event_to_native_event(NativeEvent::RMouseUp,&pt,hwnd, FLOAT(currentDpi)/96.f));
+            break;
+        };
+        case WM_CAPTURECHANGED : {
+            // E2 native follow-up: our OS pointer grab was taken away while a
+            // drag was still live — Alt-Tab, a system dialog, or another
+            // window called SetCapture. Without the grab we will never see the
+            // WM_LBUTTONUP that ends the drag, so the app-level capture would
+            // be stuck and every later mouse move would keep routing to the
+            // dragging widget. Synthesize an LMouseUp so the capturer ends the
+            // drag and calls releaseMouse() cleanly. `pointerCaptured_` is
+            // already false for a voluntary ReleaseCapture (see
+            // setPointerCapture), so this only fires on an involuntary loss.
+            if(pointerCaptured_){
+                pointerCaptured_ = false;
+                POINT cp;
+                if(GetCursorPos(&cp)){
+                    ScreenToClient(hwnd,&cp);
+                } else {
+                    cp.x = 0; cp.y = 0;
+                }
+                emitIfPossible(button_event_to_native_event(NativeEvent::LMouseUp,&cp,hwnd, FLOAT(currentDpi)/96.f));
+            }
             break;
         };
         // Keyboard. The event is converted (VK -> KeyCode + Unicode via

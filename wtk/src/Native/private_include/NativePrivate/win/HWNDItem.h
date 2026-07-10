@@ -19,6 +19,11 @@ namespace OmegaWTK::Native {
             UINT currentDpi;
             bool isTracking;
             bool hovered;
+            /// E2 native follow-up: true while this window holds an app-driven
+            /// OS pointer grab (SetCapture). Distinguishes a voluntary
+            /// ReleaseCapture (drag finished) from an involuntary capture loss
+            /// (Alt-Tab, a system dialog) in the WM_CAPTURECHANGED handler.
+            bool pointerCaptured_ = false;
             virtual LRESULT ProcessWndMsg(UINT,WPARAM,LPARAM);
             virtual BOOL ProcessWndMsgImpl(HWND,UINT,WPARAM,LPARAM,LRESULT *);
             ATOM atom;
@@ -55,6 +60,11 @@ namespace OmegaWTK::Native {
             RECT getClientRect();
             HDC getDCFromHWND();
             void *getBinding() override{ return (void *)hwnd;};
+            /// ScrollView-Interaction-Enhancements-Plan (E2 native follow-up)
+            /// — install/remove an OS pointer grab so a thumb drag keeps
+            /// tracking once the cursor leaves the window (Windows stops
+            /// WM_MOUSEMOVE at the window edge). See HWNDItem.cpp.
+            void setPointerCapture(bool capture) override;
             /// @name ScrollView Methods
             /// @{
             void toggleHorizontalScrollBar(bool & state) override;

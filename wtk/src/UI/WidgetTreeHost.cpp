@@ -709,10 +709,19 @@ namespace OmegaWTK {
 
     void WidgetTreeHost::captureMouse(View * view){
         capturedView_ = view;
+        // E2 native follow-up: install an OS-level pointer grab so a drag
+        // keeps receiving motion after the cursor leaves the window. No-op on
+        // macOS / GTK4 (implicit button grab); calls SetCapture() on Win32.
+        if(rootNativeItem_ != nullptr){
+            rootNativeItem_->setPointerCapture(true);
+        }
     }
 
     void WidgetTreeHost::releaseMouse(){
         capturedView_ = nullptr;
+        if(rootNativeItem_ != nullptr){
+            rootNativeItem_->setPointerCapture(false);
+        }
     }
 
     View * WidgetTreeHost::hitTestOverlay(const Composition::Point2D &point) const{

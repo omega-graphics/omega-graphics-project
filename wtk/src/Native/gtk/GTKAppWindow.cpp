@@ -552,11 +552,27 @@ G_GNUC_END_IGNORE_DEPRECATIONS
         constexpr double epsilon = 0.0001;
         GdkScrollDirection dir = gdk_scroll_event_get_direction(event);
         if(dir == GDK_SCROLL_SMOOTH){
+            // E5 (richer contract): GTK/libinput ends a trackpad (kinetic)
+            // scroll with a single stop event carrying zero deltas, and — unlike
+            // macOS — streams NO OS inertia afterwards. Forward the stop as a
+            // phase-Ended ScrollWheel (deltas zero) so the ScrollView fires its
+            // own fling from the accumulated gesture velocity. providesOSMomentum
+            // stays false (default) so the ScrollView knows to synthesize it.
+            if(gdk_scroll_event_is_stop(event)){
+                auto *sp = new ScrollParams{0.f,0.f,scrollPos};
+                sp->phase = ScrollPhase::Ended;
+                emitEvent(NativeEvent::ScrollWheel,sp);
+                return FALSE;
+            }
             double dx = 0, dy = 0;
             gdk_scroll_event_get_deltas(event,&dx,&dy);
             if(std::fabs(dx) > epsilon || std::fabs(dy) > epsilon){
-                emitEvent(NativeEvent::ScrollWheel,
-                    new ScrollParams{(float)dx,(float)dy,scrollPos});
+                // A fingers-down smooth delta is a user-driven trackpad scroll:
+                // tag it Changed so the ScrollView accumulates velocity (for the
+                // Ended-fling) instead of treating it as a discrete-wheel tick.
+                auto *sp = new ScrollParams{(float)dx,(float)dy,scrollPos};
+                sp->phase = ScrollPhase::Changed;
+                emitEvent(NativeEvent::ScrollWheel,sp);
             }
             if(std::fabs(dx) > epsilon){
                 emitEvent(dx > 0.0 ? NativeEvent::ScrollRight : NativeEvent::ScrollLeft,

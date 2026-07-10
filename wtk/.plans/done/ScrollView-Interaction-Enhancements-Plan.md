@@ -123,12 +123,19 @@ as their own verifiable increment.
   forward — added the forwarder + mapped `NSEventTypeLeftMouseDragged` →
   `CursorMove` (CocoaEvent.mm). Backend audit: Win32 `WM_MOUSEMOVE` and GTK4
   `GDK_MOTION_NOTIFY` already fire during drags (no equivalent gap).
-- **Known Win32 gap:** dragging *outside* the window drops motion — Windows
-  needs an OS-level `SetCapture()`/`ReleaseCapture()` that the app-level E2
-  capture does not trigger. macOS (implicit drag grab) and GTK4 (implicit
-  button grab) continue delivering out-of-window motion. Wire
-  `WidgetTreeHost::captureMouse` → native `SetCapture` when the Win32 build
-  is next exercised.
+- **Win32 out-of-window drag DONE (built, awaiting Windows build + verify,
+  2026-07-10).** Wired `WidgetTreeHost::captureMouse/releaseMouse` → a new
+  `NativeItem::setPointerCapture(bool)` virtual (no-op default; macOS/GTK4 keep
+  their implicit grabs) overridden by `HWNDItem` to call
+  `SetCapture()`/`ReleaseCapture()`. Robustness: a `pointerCaptured_` flag +
+  `WM_CAPTURECHANGED` handler synthesizes an `LMouseUp` on **involuntary**
+  capture loss (Alt-Tab, system dialog) so a drag can never get stuck holding
+  the app-level capture; a voluntary `ReleaseCapture` clears the flag first so
+  it does not re-fire. `ReleaseCapture` is guarded by `GetCapture() == hwnd` so
+  it never steals another window's grab. On Win32 the root native item is the
+  `WinAppWindow` itself (an `HWNDItem`), so the grab targets the window HWND
+  that emits the mouse messages. **Needs a WSL Windows build + out-of-window
+  drag interaction check.**
 - **E4 DONE + verified (2026-06-26).** Drag-fling momentum via
   `AnimationScheduler::tween<float>` (EaseOut) to a projected/clamped
   landing; cancelled on any new input + in `~ScrollView`; bootstrapped with
@@ -141,7 +148,26 @@ as their own verifiable increment.
   per-tick velocity (rapid ticks re-project, last one coasts); a trackpad
   (any real phase) applies the OS's own decaying momentum deltas and adds
   NO app momentum (no double-glide). Reuses E4's `startFling` + `cancelFling`.
-  **Win32/GTK trackpad-gesture phase population is a native follow-up** —
-  they currently report `None`, so a precision touchpad there gets the
-  discrete-wheel app-momentum path (acceptable; refine when those backends
-  are exercised).
+
+- **E5 native phase follow-ups (2026-07-10).** Resolved the "Win32/GTK send
+  `None`" follow-up after finding the E5 consumer's binary contract (`phase ==
+  None` → app fling; any real phase → defer to OS momentum) does NOT transfer
+  cleanly to either backend:
+  - **GTK4 DONE (built on macOS + Linux-source-reviewed, awaiting Linux
+    run-verify).** GTK/libinput streams **no** OS inertia — it ends a trackpad
+    scroll with a single `is_stop` event — so tagging its scrolls with a real
+    phase under the old contract would have *killed* trackpad fling on Linux.
+    Fixed with a **richer contract**: added `ScrollParams::providesOSMomentum`
+    (macOS sets `true`; GTK/Win32 leave `false`). GTK now tags fingers-down
+    smooth deltas `Changed` and the `is_stop` event `Ended`; the `ScrollView`
+    EMA-accumulates gesture velocity across `Changed` and **synthesizes** the
+    fling on `Ended` *only when* `providesOSMomentum == false`. macOS is
+    unchanged (it sets `providesOSMomentum = true`, so its `Ended` defers to the
+    OS momentum stream — no double glide). Consumer lives in `ScrollView.cpp`
+    `DefaultScrollHandler::onRecieveEvent`; backend in
+    `GTKAppWindow::handleScroll`.
+  - **Win32 DEFERRED to a dedicated plan.** `WM_MOUSEWHEEL` carries no phase or
+    source flag, so real precision-touchpad phase needs **DirectManipulation**
+    (a COM subsystem, not a small follow-up). Win32 keeps `phase == None`
+    (app-momentum path) for now — see
+    [future/Win32-DirectManipulation-Scroll-Phase-Plan.md](future/Win32-DirectManipulation-Scroll-Phase-Plan.md).

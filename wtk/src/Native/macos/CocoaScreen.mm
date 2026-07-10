@@ -108,8 +108,15 @@ public:
             screen = [NSScreen mainScreen];
         }
         if(screen != nil){
-            link_ = [screen displayLinkWithTarget:proxy_
-                                          selector:@selector(displayLinkDidFire:)];
+            // MRR target (no -fobjc-arc): displayLinkWithTarget: returns an
+            // AUTORELEASED, non-owned CADisplayLink. We must retain it so its
+            // lifetime is owned by this wrapper, NOT by the run loop (which
+            // only holds it while subscribed) or the source NSScreen. Without
+            // this +1, disconnecting the source display — e.g. entering
+            // clamshell mode — releases the link out from under us and the
+            // next subscribe()/unsubscribe() messages a freed object (crash).
+            link_ = [[screen displayLinkWithTarget:proxy_
+                                          selector:@selector(displayLinkDidFire:)] retain];
         }
 
         // Seed the nominal interval from the screen's max FPS so
@@ -124,12 +131,17 @@ public:
     }
 
     ~CocoaDisplayLink() override {
+        // MRR: invalidate stops the link and removes it from any run loop,
+        // then release balances the +1 taken in the ctor. proxy_ was +1 from
+        // alloc]init] and must be released too (it was previously leaked).
         if(link_ != nil){
             [link_ invalidate];
+            [link_ release];
             link_ = nil;
         }
         if(proxy_ != nil){
             proxy_.owner = nullptr;
+            [proxy_ release];
             proxy_ = nil;
         }
     }

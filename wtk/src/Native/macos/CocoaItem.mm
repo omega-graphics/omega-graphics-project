@@ -162,6 +162,11 @@
         phase = ScrollPhase::Ended;
     }
     p->phase = phase;
+    // macOS streams its own decaying momentum deltas after fingers lift, so
+    // the ScrollView must NOT add an app-side fling on `Ended` (it would
+    // double the glide). Declaring this keeps the OS as the sole momentum
+    // source on macOS, distinct from GTK where the app synthesizes it.
+    p->providesOSMomentum = true;
     self.delegate->sendEventToEmitter(OmegaWTK::Native::NativeEventPtr(
             new OmegaWTK::Native::NativeEvent(
                     OmegaWTK::Native::NativeEvent::ScrollWheel, p)));

@@ -52,8 +52,20 @@ class OMEGAWTK_EXPORT ScrollView : public View {
 
     // E5: timestamp of the last discrete-wheel tick, for computing wheel
     // velocity so a mouse wheel (no OS momentum) gets an app-side fling.
-    // Trackpad scrolling carries its own OS momentum and is left alone.
+    // A trackpad on an OS-momentum platform (macOS) is left alone.
     double wheelLastTimeSec_ = 0.0;
+
+    // E5 (richer contract): trackpad-gesture velocity tracking for platforms
+    // that stream NO OS momentum (GTK/libinput). While `trackpadGesture_` is
+    // true we are mid two-finger scroll: each `Changed` event EMA-accumulates
+    // the offset velocity, and the terminating `Ended` (is_stop) event flings
+    // with it. On an OS-momentum platform these fields stay untouched — the
+    // ScrollView defers to the OS stream and never enters this path.
+    bool   trackpadGesture_     = false;
+    bool   trackpadVertical_    = false;
+    float  trackpadVelocity_    = 0.f;
+    float  trackpadLastOffset_  = 0.f;
+    double trackpadLastTimeSec_ = 0.0;
 
     /// E1: the thumb rectangle for one axis in this view's LOCAL space, or
     /// a zero-size rect when that axis does not overflow (no bar). Shared

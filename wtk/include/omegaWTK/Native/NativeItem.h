@@ -38,6 +38,18 @@ namespace OmegaWTK {
             virtual void resizeNativeLayer(const Composition::Rect & newRect, float scale){
                 (void)newRect; (void)scale;
             }
+
+            /// ScrollView-Interaction-Enhancements-Plan (E2 native follow-up)
+            /// — pointer capture. When the app-level `WidgetTreeHost` grabs
+            /// the mouse for a drag (a scroll-bar thumb, a future slider or
+            /// splitter), it forwards the request to the root native item so a
+            /// backend that needs an explicit OS grab can install one. Windows
+            /// stops delivering `WM_MOUSEMOVE` the moment the cursor leaves the
+            /// window, so the Win32 item calls `SetCapture()`/`ReleaseCapture()`
+            /// here; macOS and GTK4 already hold an implicit button grab for the
+            /// lifetime of a drag, so they keep this no-op default.
+            virtual void setPointerCapture(bool capture){ (void)capture; }
+
             INTERFACE_METHOD void * getBinding() ABSTRACT;
 
             INTERFACE_METHOD void enable() ABSTRACT;

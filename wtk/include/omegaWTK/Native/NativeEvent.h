@@ -85,9 +85,11 @@ struct OMEGAWTK_EXPORT ViewResize {
 /// Scroll gesture phase (ScrollView-Interaction-Enhancements-Plan E5).
 /// A discrete mouse wheel reports `None`; a trackpad reports the gesture
 /// lifecycle so the ScrollView can tell user-driven scrolling from the
-/// OS-generated momentum (fling) stream and avoid layering app-side
-/// momentum on top of the OS's. Populated on macOS from NSEvent phase /
-/// momentumPhase; Win32 / GTK send `None` today.
+/// OS-generated momentum (fling) stream and decide whether to synthesize
+/// its own app-side momentum. Populated on macOS from NSEvent phase /
+/// momentumPhase and on GTK4 from the smooth-scroll / is-stop events;
+/// Win32 sends `None` today (true precision-touchpad phase needs
+/// DirectManipulation — see wtk/.plans/future/).
 enum class ScrollPhase : std::uint8_t {
     None = 0,        ///< discrete wheel — no gesture phase
     Began,           ///< trackpad fingers-down, scroll starting
@@ -103,6 +105,13 @@ struct OMEGAWTK_EXPORT ScrollParams {
     float deltaY;
     Composition::Point2D position;
     ScrollPhase phase = ScrollPhase::None;
+    /// E5: does the OS stream its own decaying momentum (fling) deltas after
+    /// the user lifts their fingers? macOS does (NSEvent momentumPhase), so
+    /// the ScrollView leaves inertia to the OS. GTK/libinput does NOT — it
+    /// ends a trackpad gesture with a single `is_stop` event and no inertia —
+    /// so on `Ended` the ScrollView synthesizes its own fling. Defaults to
+    /// false; only the macOS backend sets it true.
+    bool providesOSMomentum = false;
 };
 
 struct OMEGAWTK_EXPORT WindowWillResize {
