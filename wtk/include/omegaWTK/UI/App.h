@@ -171,6 +171,19 @@ public:
     /// custom theme's variant and the row-4 clear fallback.
     Native::ThemeAppearance activeAppearance() const;
 
+    /// Native-Theme-Application-Plan Tier 4 (2026-07-01): resolve a theme
+    /// variable NAME to the cached OS theme's matching color, or empty if
+    /// the name is not a known theme color. This is the fallback data
+    /// source the `StyleResolver` consults for `Var{name}` when no custom
+    /// `Theme` / `setThemeVars` binds the name — so the user-agent
+    /// stylesheet's `var(foreground)` etc. track the OS with zero app
+    /// setup. Recognized names: `foreground`, `background`, `accent`,
+    /// `control-background`, `control-foreground`, `separator`,
+    /// `selection`. (Reads `nativeTheme().colors`, i.e. the OS's current
+    /// appearance; a forced appearance without a custom theme cannot flip
+    /// these because only the one live OS palette is cached.)
+    Core::Optional<Composition::Color> nativeThemeVar(const OmegaCommon::String & name) const;
+
     ~AppInst();
 };
 

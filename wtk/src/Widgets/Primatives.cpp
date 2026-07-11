@@ -258,21 +258,7 @@ void Separator::setProps(const SeparatorProps & props) {
 
 Label::Label(Composition::Rect rect, const LabelProps & props)
     : Widget(ViewPtr(new UIView(rect, nullptr, "label"))),
-      props_(props) {
-    // Seed the theme so a followThemeForeground label picks the current
-    // Light/Dark foreground on its first paint — onThemeSet only fires on
-    // a later *change*. Mirrors Button's construction-time seed.
-    theme_ = Native::queryCurrentTheme();
-}
-
-void Label::onThemeSet(Native::ThemeDesc & desc) {
-    theme_ = desc;
-    // Only theme-following labels care about the OS color; a label with a
-    // fixed textColor is left untouched (and avoids a needless rebuild).
-    if(props_.followThemeForeground){
-        rebuildContent();
-    }
-}
+      props_(props) {}
 
 void Label::onMount() {
     rebuildContent();
@@ -329,13 +315,11 @@ void Label::rebuildContent() {
     // cascade — the UA sheet is now the source of truth for a default
     // Label, not a shadowed safety net.
     //
-    // Color has three cases: `followThemeForeground` wins (dynamic per OS
-    // theme, so it cannot live in the static sheet and must be written
-    // inline every rebuild); an explicitly authored `textColor` is honored;
-    // otherwise the cell is left to the UA sheet (black).
-    if (props_.followThemeForeground) {
-        ss->textColor("label", theme_.colors.foreground);
-    } else if (props_.textColor) {
+    // Color: an explicitly authored `textColor` is honored; otherwise the
+    // cell is left to the UA sheet, whose `label` default is now
+    // `var(foreground)` (Tier 4) — so a bare Label tracks the OS/custom
+    // theme foreground with no inline write here.
+    if (props_.textColor) {
         ss->textColor("label", *props_.textColor);
     }
     if (props_.alignment) {

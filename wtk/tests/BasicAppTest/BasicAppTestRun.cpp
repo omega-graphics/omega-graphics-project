@@ -18,6 +18,16 @@ using namespace OmegaWTK;
 static AppWindow *g_mainWindow = nullptr;
 static SharedHandle<NotificationCenter> nc;
 
+// Keep the dialogs alive past the menu / button callbacks. openFSDialog()
+// and openAlertDialog() only *build* the panel; getResult() is what presents
+// the sheet, and the sheet resolves asynchronously — so the handle must
+// outlive the callback or the panel is destroyed before it can be shown.
+// openNoteDialog() presents on construction, but the handle owns the NSAlert,
+// so it must be held too.
+static SharedHandle<Native::NativeFSDialog> g_fsDialog;
+static SharedHandle<Native::NativeNoteDialog> g_noteDialog;
+static SharedHandle<Native::NativeAlertDialog> g_alertDialog;
+
 // Native-Theme-Application-Plan Tier 3 demo: a custom Theme with an
 // obviously non-OS surface color per variant so the "Theme" menu below
 // makes row 2 (custom surface override) + appearance forcing visible.
@@ -29,10 +39,22 @@ public:
     void onSelectItem(unsigned itemIndex) override {
         switch (itemIndex) {
         case 0:
-            // "Open" — show a file dialog
+            // "Open" — show a file dialog. openFSDialog() constructs the
+            // panel; getResult() is what actually presents the sheet. Hold
+            // the handle in a file-scope SharedHandle so it survives past
+            // this callback. Do NOT call getResult().get() here: it blocks
+            // on the promise the sheet's completion handler sets, and that
+            // handler runs on this same main thread — blocking would deadlock
+            // the run loop the sheet depends on.
             if (g_mainWindow) {
-                g_mainWindow->openFSDialog(
-                    {Native::NativeFSDialog::Read, "."});
+                // Full aggregate init: Descriptor's default ctor is deleted
+                // (its FS::Path member isn't default-constructible), and
+                // naming every field also silences -Wmissing-field-initializers.
+                // Fields: {type, openLocation, filters, allowMultiple}.
+                Native::NativeFSDialog::Descriptor openDesc{
+                    Native::NativeFSDialog::Read, ".", {}, false};
+                g_fsDialog = g_mainWindow->openFSDialog(openDesc);
+                g_fsDialog->getResult();
             }
             break;
         case 2:
@@ -55,8 +77,14 @@ public:
 class HelpMenuDelegate final : public MenuDelegate {
 public:
     void onSelectItem(unsigned itemIndex) override {
-        if (itemIndex == 0) {
-            nc->send({"BasicAppTest", "OmegaWTK Widget & Menu Integration Test"});
+        // "About" — present a NativeNoteDialog (a modal informational sheet
+        // with a single OK button and no result). openNoteDialog() shows it
+        // on construction; g_noteDialog keeps the underlying NSAlert alive.
+        if (itemIndex == 0 && g_mainWindow) {
+            Native::NativeNoteDialog::Descriptor aboutDesc;
+            aboutDesc.title = "About BasicAppTest";
+            aboutDesc.str = "OmegaWTK Widget & Menu Integration Test";
+            g_noteDialog = g_mainWindow->openNoteDialog(aboutDesc);
         }
     }
 };
@@ -116,7 +144,9 @@ public:
 // ---------------------------------------------------------------------------
 
 int RunBasicAppTest(AppInst *app) {
-    Composition::Rect windowRect{{0, 0}, 600, 640};
+    // Widened 600 -> 720 so the button row still fits after adding the
+    // "Alert" button below (six buttons + spacing).
+    Composition::Rect windowRect{{0, 0}, 720, 640};
 
     auto window = make<AppWindow>(windowRect, new TestWindowDelegate());
     g_mainWindow = window.get();
@@ -177,10 +207,9 @@ int RunBasicAppTest(AppInst *app) {
     // Title
     LabelProps titleProps;
     titleProps.text = U"BasicAppTest — Widget Integration";
-    // Follow the OS theme foreground so the title stays legible in both
-    // Light and Dark and transitions with the appearance flip (was a
-    // hardcoded white that vanished on a light background).
-    titleProps.followThemeForeground = true;
+    // No textColor set: falls through to the UA sheet's `label` default,
+    // which is var(foreground) (Tier 4) — so the title tracks OS/custom
+    // theme (black on light, white on dark) automatically.
     titleProps.alignment = Composition::TextLayoutDescriptor::MiddleCenter;
     titleProps.wrapping = Composition::TextLayoutDescriptor::None;
     auto titleLabel = make<Label>(
@@ -267,9 +296,7 @@ int RunBasicAppTest(AppInst *app) {
                      U"Ellipse), text (Label), layout (VStack/HStack), the Button widget "
                      U"with hover transitions, and the app menu system "
                      U"(File > Open, Help > About).";
-    // Follow the OS theme foreground (was a fixed light gray that only
-    // happened to read on both backgrounds).
-    descProps.followThemeForeground = true;
+    // No textColor: UA sheet var(foreground) drives it (Tier 4).
     descProps.alignment = Composition::TextLayoutDescriptor::LeftUpper;
     descProps.wrapping = Composition::TextLayoutDescriptor::WrapByWord;
     auto descLabel = make<Label>(
@@ -364,6 +391,47 @@ int RunBasicAppTest(AppInst *app) {
     disabledBtn->setTooltip("This button is disabled");
     buttonRow->addChild(disabledBtn);
 
+    // Alert — opens a NativeAlertDialog (Yes/No/Cancel). Unlike the note
+    // dialog, an alert reports which button was pressed. getResult() presents
+    // the sheet and returns an Async<Result>; we must NOT block on it from
+    // this main-thread callback (the sheet's completion handler that fulfils
+    // the promise also runs on the main thread — .get() here would deadlock
+    // the run loop). Instead a detached worker blocks on the Async and reports
+    // the outcome via a notification once the user dismisses the sheet.
+    ButtonProps alertProps;
+    alertProps.text = U"Alert";
+    auto alertBtn = make<Button>(
+        Composition::Rect{{0, 0}, 80.f, 32.f}, alertProps);
+    alertBtn->viewRef().setCursorShape(Native::CursorShape::PointingHand);
+    alertBtn->setTooltip("Open a Yes/No/Cancel alert dialog");
+    alertBtn->setOnPress([](){
+        if (!g_mainWindow) return;
+        Native::NativeAlertDialog::Descriptor alertDesc;
+        alertDesc.title = "Confirm";
+        alertDesc.message = "This is a NativeAlertDialog. Pick a button to "
+                            "test the result round-trip.";
+        alertDesc.style = Native::NativeAlertDialog::Style::Warning;
+        alertDesc.buttonLabels = {"Yes", "No", "Cancel"};
+        g_alertDialog = g_mainWindow->openAlertDialog(alertDesc);
+        auto result = g_alertDialog->getResult();
+        OmegaCommon::Thread([result]() mutable {
+            Native::NativeAlertDialog::Result r = result.get();
+            const char *label = "Cancel";
+            switch (r) {
+            case Native::NativeAlertDialog::Result::OK:     label = "OK";     break;
+            case Native::NativeAlertDialog::Result::Cancel: label = "Cancel"; break;
+            case Native::NativeAlertDialog::Result::Yes:    label = "Yes";    break;
+            case Native::NativeAlertDialog::Result::No:     label = "No";     break;
+            }
+            if (nc) {
+                OmegaCommon::String body = "Alert dismissed with: ";
+                body += label;
+                nc->send({"BasicAppTest", body});
+            }
+        }).detach();
+    });
+    buttonRow->addChild(alertBtn);
+
     StackSlot buttonRowSlot;
     buttonRowSlot.flexGrow = 0.f;
     root->addChild(buttonRow, buttonRowSlot);
@@ -383,7 +451,7 @@ int RunBasicAppTest(AppInst *app) {
 
     LabelProps mirrorProps;
     mirrorProps.text = U"(nothing typed yet)";
-    mirrorProps.followThemeForeground = true;
+    // No textColor: UA sheet var(foreground) drives it (Tier 4).
     mirrorProps.alignment = Composition::TextLayoutDescriptor::LeftCenter;
     mirrorProps.wrapping = Composition::TextLayoutDescriptor::None;
     auto mirrorLabel = make<Label>(

@@ -313,6 +313,18 @@ Native::ThemeAppearance AppInst::activeAppearance() const {
                                          : nativeTheme_.appearance;
 }
 
+Core::Optional<Composition::Color> AppInst::nativeThemeVar(const OmegaCommon::String & name) const {
+    const auto & c = nativeTheme_.colors;
+    if(name == "foreground")         { return c.foreground; }
+    if(name == "background")         { return c.background; }
+    if(name == "accent")             { return c.accent; }
+    if(name == "control-background") { return c.controlBackground; }
+    if(name == "control-foreground") { return c.controlForeground; }
+    if(name == "separator")          { return c.separator; }
+    if(name == "selection")          { return c.selection; }
+    return Core::Optional<Composition::Color>{};
+}
+
 };
 
 #ifdef TARGET_WIN32 

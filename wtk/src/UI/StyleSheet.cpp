@@ -192,8 +192,14 @@ SharedHandle<StyleSheet> BuildUserAgentStyleSheet(){
     {
         StyleRule rule;
         rule.selector.tag = "label";
-        rule.setTextColor(Composition::Color::create8Bit(
-            Composition::Color::Black8));
+        // Native-Theme-Application-Plan Tier 4 (2026-07-01): the default
+        // label text color is the theme `foreground` var, not hardcoded
+        // black. The resolver substitutes it from the active custom Theme
+        // (if any) else the cached OS theme (`AppInst::nativeThemeVar`),
+        // so a bare Label tracks OS light/dark — black on light, white on
+        // dark — with no widget or app code. An app that sets
+        // `LabelProps::textColor` still wins (inline beats the UA sheet).
+        rule.declarations[PropertyKey::TextColor] = StyleValue{Var{"foreground"}};
         Composition::TextLayoutDescriptor layout {};
         layout.alignment = Composition::TextLayoutDescriptor::LeftUpper;
         layout.wrapping  = Composition::TextLayoutDescriptor::WrapByWord;
@@ -215,8 +221,10 @@ SharedHandle<StyleSheet> BuildUserAgentStyleSheet(){
     {
         StyleRule rule;
         rule.selector.tag = "icon";
-        rule.setTextColor(Composition::Color::create8Bit(
-            Composition::Color::Black8));
+        // Tier 4: icon glyphs default to the theme `foreground` var too
+        // (see the `label` rule above). Button's icon sub-element authors
+        // its color inline and is unaffected.
+        rule.declarations[PropertyKey::TextColor] = StyleValue{Var{"foreground"}};
         Composition::TextLayoutDescriptor layout {};
         layout.alignment = Composition::TextLayoutDescriptor::MiddleCenter;
         layout.wrapping  = Composition::TextLayoutDescriptor::None;

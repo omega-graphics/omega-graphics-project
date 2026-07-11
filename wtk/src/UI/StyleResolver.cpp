@@ -139,24 +139,36 @@ void forEachDeclaration(const StyleRule & rule, Apply && applyOne){
 /// give a clean fallthrough: if no Var was bound, the resolver writes
 /// nothing for that cell, and the inline-Style pass that runs after
 /// the resolver still gets the chance to author the property.
-StyleValue resolveVar(const StyleValue & value, const ThemeVars * theme){
+StyleValue resolveVar(const StyleValue & value, const ThemeVars * theme,
+                      AppInst * appInst){
     const auto * varRef = std::get_if<Var>(&value);
     if(varRef == nullptr){
         return value;
     }
-    if(theme == nullptr){
-        return StyleValue{std::monostate{}};
+    // Layer 1: the installed ThemeVars — a custom Theme's active variant
+    // vars, or the standalone setThemeVars map (whichever themeVars()
+    // returned). A concrete binding here wins.
+    if(theme != nullptr){
+        auto bound = theme->lookup(varRef->name);
+        if(bound.has_value() &&
+           !std::holds_alternative<Var>(*bound) &&
+           !std::holds_alternative<std::monostate>(*bound)){
+            return *bound;
+        }
     }
-    auto bound = theme->lookup(varRef->name);
-    if(!bound.has_value()){
-        return StyleValue{std::monostate{}};
+    // Layer 2 (Tier 4): fall back to the cached OS theme so the built-in
+    // user-agent stylesheet's `var(foreground)` etc. resolve to the OS
+    // color with no app setup — the mechanism that lets a bare widget
+    // track OS light/dark. Only theme-color names resolve here; anything
+    // else stays unbound (monostate) and the inline-Style pass gets its
+    // fallthrough chance, exactly as before.
+    if(appInst != nullptr){
+        if(auto nativeColor = appInst->nativeThemeVar(varRef->name);
+           nativeColor.has_value()){
+            return StyleValue{*nativeColor};
+        }
     }
-    // (c) chain rejection + (d) monostate passthrough.
-    if(std::holds_alternative<Var>(*bound) ||
-       std::holds_alternative<std::monostate>(*bound)){
-        return StyleValue{std::monostate{}};
-    }
-    return *bound;
+    return StyleValue{std::monostate{}};
 }
 
 } // namespace
@@ -386,9 +398,15 @@ void StyleResolver::apply(UIView & view){
     // safe: theme swaps go through `setThemeVars` which dirties this
     // window's cascade and runs a fresh `apply()` pass; mid-pass
     // mutations are not part of D7.1's contract.
+    AppInst * appInst = AppInst::inst();
     const ThemeVars * theme = nullptr;
-    if(auto * appInst = AppInst::inst(); appInst != nullptr){
-        theme = appInst->themeVars().get();
+    SharedHandle<ThemeVars> themeHandle;
+    if(appInst != nullptr){
+        // Hold the handle for the loop's lifetime: themeVars() may return
+        // a custom Theme's variant vars, a temporary the theme owns — a
+        // bare .get() could dangle if the theme were swapped mid-pass.
+        themeHandle = appInst->themeVars();
+        theme = themeHandle.get();
     }
 
     for(const auto & entry : winners){
@@ -396,7 +414,7 @@ void StyleResolver::apply(UIView & view){
         // bindings in a lambda is C++20, this repo is C++17 (see
         // AGENTS.md).
         const auto cellKey  = entry.first;
-        const auto resolved = resolveVar(entry.second.value, theme);
+        const auto resolved = resolveVar(entry.second.value, theme, appInst);
         // Type-erased visit — write whatever variant alternative the
         // rule declared. The `std::monostate` slot is treated as "no
         // value" and skipped (a sheet rule declaring a property with

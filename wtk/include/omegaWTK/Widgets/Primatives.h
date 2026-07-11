@@ -142,21 +142,20 @@ struct OMEGAWTK_EXPORT LabelProps {
     Core::Optional<Composition::TextLayoutDescriptor::Alignment> alignment {};
     Core::Optional<Composition::TextLayoutDescriptor::Wrapping> wrapping {};
     Core::Optional<unsigned> lineLimit {};
-    /// When true, the label ignores `textColor` and paints in the OS
-    /// theme's foreground color, updating on every OS light/dark flip
-    /// (via onThemeSet). Opt-in so existing labels that set an explicit
-    /// `textColor` keep their fixed color. This is the interim hook until
-    /// the Style plan's UA stylesheet binds label color to a theme var.
-    bool followThemeForeground = false;
+    // Native-Theme-Application-Plan Tier 4 (2026-07-01): the interim
+    // `followThemeForeground` opt-in was removed. A Label that does not
+    // set `textColor` now falls through to the user-agent stylesheet's
+    // `label` default, which is `var(foreground)` — so bare labels track
+    // the OS/custom theme automatically. Set `textColor` to override.
 };
 
 class OMEGAWTK_EXPORT Label : public Widget {
     LabelProps props_;
-    // Cached OS theme, seeded at construction and refreshed by
-    // onThemeSet. Only consulted when props_.followThemeForeground.
-    Native::ThemeDesc theme_ {};
 protected:
-    void onThemeSet(Native::ThemeDesc & desc) override;
+    // Tier 4: no per-widget theme reaction needed. A theme change dirties
+    // the cascade (AppWindow::onThemeSet → applyCascadeChange), which
+    // re-resolves the UA `var(foreground)` against the new theme.
+    void onThemeSet(Native::ThemeDesc & desc) override { (void)desc; }
     void onMount() override;
     // Tier B / B4: (re)build the element list + style from props_. Runs
     // at model-change time (onMount / setProps / resize), never during

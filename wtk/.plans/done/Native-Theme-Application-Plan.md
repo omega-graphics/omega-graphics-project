@@ -1,9 +1,10 @@
 # Native Theme Application Plan
 
-**Status:** Tier 1 implemented (2026-06-30). Tier 2 implemented + verified
-on macOS/Windows/Linux (2026-07-01). Tier 3 implemented (2026-07-01, macOS
-built; awaiting visual verification via the BasicAppTest "Theme" menu).
-Tier 4 remains proposal.
+**Status:** COMPLETE (2026-07-01). Tier 1 (observer), Tier 2 (themed clear,
+verified macOS/Windows/Linux), Tier 3 (custom Theme + appearance forcing),
+Tier 4 (UA stylesheet binds to theme vars) all implemented; macOS built +
+full-tree clean. Tier 3/4 live behavior awaits a screenshot pass via the
+BasicAppTest "Theme" menu. Move to `.plans/done/` once that pass confirms.
 **Scope:** Close the cross-platform asymmetry where a `UIView` with no
 explicit background color sometimes inherits the underlying OS window's
 themed surface color and sometimes renders pitch black. Define the
@@ -659,6 +660,49 @@ configuration and the app theme in opted-in configuration.
 
 This is more of a consequence than a step — it's the Style plan's Tier
 3 with this plan as the data source. No new code lives here.
+
+#### What actually shipped (2026-07-01)
+
+It needed a bit more than "no new code," because the UA sheet defaults
+were hardcoded and nothing exposed the OS theme as `Var`-resolvable data:
+
+- **`AppInst::nativeThemeVar(name)`** maps a theme-var name
+  (`foreground`, `background`, `accent`, `control-background`,
+  `control-foreground`, `separator`, `selection`) to the cached OS
+  theme's color. This is the fallback data source.
+- **`StyleResolver::resolveVar` gained a second layer.** It already
+  consulted `AppInst::themeVars()` (custom Theme variant vars / the
+  `setThemeVars` map — layer 1); now, when that doesn't bind the name,
+  it falls back to `nativeThemeVar` (layer 2). So `var(foreground)`
+  resolves to the OS color with zero app setup, and a custom Theme's
+  variant `vars` override it when present. (Also hardened: the resolver
+  now holds the `themeVars()` `SharedHandle` for the whole pass instead
+  of a bare `.get()`, so a mid-pass theme swap can't dangle it.)
+- **UA stylesheet** (`BuildUserAgentStyleSheet`): `label` and `icon`
+  `textColor` defaults changed from hardcoded black to
+  `StyleValue{Var{"foreground"}}`. A bare `Label`/`Icon` (no inline
+  color) now tracks OS/custom-theme foreground — black on Light, white
+  on Dark — automatically. An app-set `LabelProps::textColor` still wins
+  (inline beats the UA sheet). No repaint hook needed on the widget: a
+  theme flip already dirties the cascade (Tier 1 → `applyCascadeChange`)
+  and the UA `var` re-resolves.
+- **Removed the interim `LabelProps::followThemeForeground`** opt-in
+  (added earlier this session) — Tier 4's UA `var(foreground)` +
+  Phase L's presence-aware optional `textColor` make it redundant.
+  BasicAppTest's title / description / input-mirror labels reverted to
+  bare (no `textColor`).
+- **`Button`/`TextInput` intentionally unchanged** — they compute
+  per-state colors from `theme_.colors` (Style plan closed Button's
+  static-cascade approach as won't-do) and already track the OS via
+  `onThemeSet`. Tier 4 is only the static text primitives.
+
+**Known limitation:** `nativeThemeVar` reads `nativeTheme().colors` (the
+one live OS palette), so `setForcedAppearance(Dark)` on a Light OS with
+NO custom theme does not flip `var(foreground)` — only surface + a custom
+theme's variant follow the forced bit. A custom `Theme` that wants forced
+appearance to drive text color supplies `foreground` etc. in its variant
+`vars`. Caching both OS palettes to make bare forcing flip text is a
+possible follow-up, not built.
 
 ---
 
