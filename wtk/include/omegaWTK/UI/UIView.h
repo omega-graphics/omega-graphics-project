@@ -459,6 +459,30 @@ public:
     /// once per actual change, not once per frame.
     TextMeasurement measureText(const UIElementTag & tag, float availWidthDp);
 
+    /// Substring / arbitrary-text overload: measure `text` laid out with the
+    /// font + `TextLayoutDescriptor` resolved for `tag` (rather than the tag
+    /// element's own text). This is **uncached** — it lays out on every call —
+    /// because callers measure values that change per edit (e.g. a caret
+    /// prefix `text[0..caret)`); the cached overload above is keyed on
+    /// `(tag, availWidthDp)` only and would return a stale extent when the text
+    /// changes but the width does not. Returns `{0, 0}` for empty `text` or
+    /// when no font / shaper is available.
+    TextMeasurement measureText(const UIElementTag & tag,
+                                const OmegaCommon::UString & text,
+                                float availWidthDp);
+
+    /// Vertical font metrics (dp) of the font resolved for `tag` — the same
+    /// font its text is shaped with. `ascent` + `descent` is the glyph ink
+    /// height; `lineGap` is the extra leading. Callers that paint their own
+    /// vertically-aligned marks alongside the text (e.g. a caret) use these to
+    /// match the engine's baseline placement. Zeroed when no font resolves.
+    struct TextVMetrics {
+        float ascent  = 0.f;
+        float descent = 0.f;
+        float lineGap = 0.f;
+    };
+    TextVMetrics resolvedTextMetrics(const UIElementTag & tag);
+
 private:
     // Tier B / B3: the per-phase methods that update() orchestrates in
     // order, flipping the window FrameBuilder's currentPhase_ around each.

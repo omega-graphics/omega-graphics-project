@@ -334,6 +334,21 @@ int RunBasicAppTest(AppInst *app) {
     snapBtn->viewRef().setCursorShape(Native::CursorShape::PointingHand);
     buttonRow->addChild(snapBtn);
 
+    // Icon + label — exercises the "icon" element geometry (left, square,
+    // vertically centered, to the left of the label). Regression probe for
+    // the view-local-coords fix (2026-07-10): before it, the positioned icon
+    // square was clamped to the wrong spot by clampRectToParent because its
+    // rect was authored in absolute window coords. The glyph should now sit
+    // vertically centered at the field's left inset, ahead of "Icon".
+    ButtonProps iconProps;
+    iconProps.text = U"Icon";
+    iconProps.iconToken = "+";
+    auto iconBtn = make<Button>(
+        Composition::Rect{{0, 0}, 100.f, 32.f}, iconProps);
+    iconBtn->viewRef().setCursorShape(Native::CursorShape::PointingHand);
+    iconBtn->setTooltip("Button with a leading icon glyph");
+    buttonRow->addChild(iconBtn);
+
     // Disabled — dimmed at 0.4 alpha, never enters hover/pressed.
     ButtonProps disabledProps;
     disabledProps.text = U"Disabled";

@@ -111,6 +111,10 @@ private:
 
     void onThemeSetRecurse(Native::ThemeDesc &desc);
     void handleHostResize(const Composition::Rect & rect);
+    /// Wires `view->onLayoutResolved` to this widget's `resize()` so a
+    /// layout-driven size change re-authors content (stretch-to-fill).
+    /// Called once from each constructor. See Widget.Core.cpp.
+    void subscribeLayoutRebuild();
 
     using Native::NativeThemeObserver::onThemeSet;
 protected:

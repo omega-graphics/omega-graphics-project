@@ -19,16 +19,11 @@
 // so a click (M1 click-focus) or Tab (F4 traversal) selects it and the
 // FocusManager routes KeyDown events to its delegate.
 //
-// Caret X — approximation, on purpose. The caret is placed with a fixed
-// per-glyph advance (kApproxCharAdvance) rather than measured glyph widths.
-// A measured caret would call `UIView::measureText` on the "label" tag, but
-// that memo is keyed on (tag, availWidth) and only invalidated a frame later
-// in `resolveStyles()`; measuring synchronously right after an edit returns
-// the *previous* text's width (one keystroke stale), which looks worse than a
-// clean approximation. Per-glyph-exact caret is a follow-up that needs
-// `measureText` driven from the layout phase (or a content-revision cache
-// key) — the width field added to `LayoutResult` (Text-Measurement-API-Plan
-// §6) is the metric it will consume.
+// Caret X is measured: the advance of the prefix text_[0..caretPosition_) via
+// `UIView::measureText("label", prefix, …)`, the substring overload that lays
+// the prefix out fresh in the label's font (uncached, so it can't return a
+// stale extent). Caret blink is a repeating NativeTimer that toggles the caret
+// element's color while focused.
 // ---------------------------------------------------------------------------
 
 namespace OmegaWTK {
@@ -42,9 +37,9 @@ constexpr float kBorderWidth     = 1.f;   // resting hairline outline
 constexpr float kFocusRingWidth  = 2.f;   // accent ring when focused
 constexpr float kDisabledAlpha   = 0.4f;
 constexpr float kPlaceholderAlpha = 0.5f;
-// Placeholder per-glyph advance for caret math. ~0.5em of the Arial-18 UA
-// fallback the field renders in. See the file header for why this is not a
-// measured advance in v0.
+constexpr float kCaretBlinkSec   = 0.5f;  // half-period of the caret blink
+// Fallback per-glyph advance, used only if measurement is unavailable (no
+// font/shaper resolved yet). Real caret placement measures the prefix.
 constexpr float kApproxCharAdvance = 9.f;
 
 } // anonymous namespace
@@ -107,6 +102,10 @@ TextInput::TextInput(Composition::Rect rect, const TextInputProps & props)
 }
 
 TextInput::~TextInput() {
+    // Stop the blink timer before members tear down so its `this`-capturing
+    // callback can never fire against a half-destroyed field. (Dropping the
+    // handle would also stop it, but being explicit documents the ordering.)
+    stopCaretBlink();
     // delegate_ (UniquePtr) destroys after view; the view's raw delegate
     // pointer cannot dangle since both are Widget-owned members.
 }
@@ -148,14 +147,23 @@ void TextInput::rebuildContent() {
     // safely only because its element set never changes on a state change.)
     UIViewLayoutV2 layout;
 
+    // Element geometry is authored in VIEW-LOCAL space (origin {0,0}); paint
+    // clamps against the view's local bounds and then lifts everything into
+    // window space by the view offset (UIView.Update.cpp paint: "authored /
+    // clamped in view-local space"). Only the *size* of rect() is used here —
+    // its absolute pos must NOT leak into element coords, or clampRectToParent
+    // mangles small elements (the caret) differently from full-size ones (bg /
+    // label clamp-to-fill and look fine, hiding the bug).
     const Composition::Rect r = rect();
+    const float w = r.w;
+    const float h = r.h;
 
     // bg — full-rect RoundedRect (fill + border come from Style).
     {
         Composition::RoundedRect bg{};
-        bg.pos = r.pos;
-        bg.w = r.w;
-        bg.h = r.h;
+        bg.pos = Composition::Point2D{0.f, 0.f};
+        bg.w = w;
+        bg.h = h;
         bg.rad_x = props_.cornerRadius;
         bg.rad_y = props_.cornerRadius;
 
@@ -165,8 +173,8 @@ void TextInput::rebuildContent() {
         layout.element(spec);
     }
 
-    const float contentLeft = r.pos.x + kHPad;
-    const float contentW = std::max(0.f, r.w - kHPad * 2.f);
+    const float contentLeft = kHPad;
+    const float contentW = std::max(0.f, w - kHPad * 2.f);
 
     // label — the typed text, or the placeholder when empty. Color +
     // alignment are applied in rebuildStyle().
@@ -176,19 +184,42 @@ void TextInput::rebuildContent() {
         spec.tag = "label";
         spec.text = showPlaceholder ? props_.placeholder : text_;
         spec.textRect = Composition::Rect{
-            Composition::Point2D{contentLeft, r.pos.y}, contentW, r.h};
+            Composition::Point2D{contentLeft, 0.f}, contentW, h};
         layout.element(spec);
     }
 
-    // caret — a thin vertical Rect, authored only while focused + enabled.
-    // Absent otherwise, so nothing paints when the field is not being edited.
-    if(focused_ && props_.enabled) {
-        const float caretX = std::min(
-            contentLeft + static_cast<float>(caretPosition_) * kApproxCharAdvance,
-            r.pos.x + r.w - kHPad);
-        const float caretH = std::max(0.f, r.h - kCaretVPad * 2.f);
+    // caret — a thin vertical Rect. Authored only on the visible half of the
+    // blink cycle (gated on caretVisible_): the blink toggles the element's
+    // *presence* via this rebuild rather than its color, because a Style-only
+    // color flip did not reliably repaint the caret after the first toggle
+    // (content-cache staleness on a scoped Style change); re-authoring routes
+    // through setLayoutV2's full markAllElementsDirty + coherent re-submit.
+    //   X = measured advance of the text before the caret (clamped to field).
+    //   Height/Y = the glyph ink box at the engine's baseline (below).
+    if(focused_ && props_.enabled && caretVisible_) {
+        const float caretX = std::min(contentLeft + caretAdvanceDp(),
+                                      w - kHPad);
+        // Match the glyph ink exactly: the engine seats LeftCenter text with
+        // baseline = ascent + (h - lineHeight)/2, ink = [ascent, descent] about
+        // it, and the line gap trailing *below* the ink. A full-lineHeight box
+        // would therefore hang below the text by the gap. So span the caret
+        // over the ink box only, at the engine's baseline.
+        const auto vm = viewAs<UIView>().resolvedTextMetrics("label");
+        const float lineH = vm.ascent + vm.descent + vm.lineGap;
+        float caretY;
+        float caretH;
+        if(lineH > 0.f) {
+            const float extra = h - lineH;
+            const float baseline = vm.ascent + (extra > 0.f ? extra * 0.5f : 0.f);
+            caretY = baseline - vm.ascent;               // top of the ascent
+            caretH = std::min(vm.ascent + vm.descent, h);
+        } else {
+            // No metrics yet — fall back to a centered inset box.
+            caretH = std::max(0.f, h - kCaretVPad * 2.f);
+            caretY = (h - caretH) * 0.5f;
+        }
         Composition::Rect caretRect{
-            Composition::Point2D{caretX, r.pos.y + kCaretVPad}, kCaretWidth, caretH};
+            Composition::Point2D{caretX, caretY}, kCaretWidth, caretH};
 
         UIElementLayoutSpec spec;
         spec.tag = "caret";
@@ -237,12 +268,66 @@ void TextInput::rebuildStyle() {
     ss->textAlignment("label", Composition::TextLayoutDescriptor::LeftCenter);
     ss->textWrapping("label", Composition::TextLayoutDescriptor::None);
 
-    // caret color (cell is inert when the caret element is absent).
+    // caret color — always solid foreground. The blink is driven by the
+    // caret element's presence in rebuildContent (gated on caretVisible_),
+    // not by its color, so this cell is inert whenever the caret is absent.
     ss->elementBrush("caret",
                      Composition::ColorBrush(cols.controlForeground),
                      false, 0.f);
 
     viewAs<UIView>().setStyle(ss);
+}
+
+// ---------------------------------------------------------------------------
+// Caret placement + blink
+// ---------------------------------------------------------------------------
+
+float TextInput::caretAdvanceDp() {
+    if(caretPosition_ == 0 || text_.empty()) {
+        return 0.f;
+    }
+    const OmegaCommon::UString prefix = text_.substr(0, caretPosition_);
+    // Uncached substring overload: lays `prefix` out fresh in the label's font
+    // so the advance tracks the exact glyphs, edit by edit. Large avail width
+    // = no wrap (the field is single-line anyway).
+    const float measured =
+        viewAs<UIView>().measureText("label", prefix, 1.0e6f).width;
+    if(measured > 0.f) {
+        return measured;
+    }
+    // Font/shaper not resolvable yet (e.g. pre-first-frame): fall back to the
+    // monospace estimate rather than collapsing the caret to the left edge.
+    return static_cast<float>(caretPosition_) * kApproxCharAdvance;
+}
+
+void TextInput::startCaretBlink() {
+    caretVisible_ = true;
+    // Repeating timer on the main run loop. Capturing `this` is safe: the
+    // timer is a member stopped in stopCaretBlink() / the destructor before
+    // `this` goes away, and it only ever fires on the UI thread.
+    blinkTimer_ = Native::make_native_timer(kCaretBlinkSec, /*repeats=*/true,
+        [this](){
+            caretVisible_ = !caretVisible_;
+            rebuildContent();                     // toggles the caret element
+            invalidate(PaintReason::StateChanged);
+        });
+}
+
+void TextInput::stopCaretBlink() {
+    if(blinkTimer_ != nullptr) {
+        blinkTimer_->stop();
+        blinkTimer_ = nullptr;
+    }
+    caretVisible_ = false;
+}
+
+void TextInput::resetCaretBlink() {
+    // Editing snaps the caret solid and restarts the interval so it does not
+    // blink off immediately after a keystroke (matches native fields).
+    caretVisible_ = true;
+    if(blinkTimer_ != nullptr) {
+        blinkTimer_->start();   // restart from now
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +339,13 @@ void TextInput::setFocused(bool focused) {
         return;
     }
     focused_ = focused;
+    // Start/stop the blink around the state flip so caretVisible_ is settled
+    // before rebuildContent authors (and rebuildStyle colors) the caret.
+    if(focused_) {
+        startCaretBlink();
+    } else {
+        stopCaretBlink();
+    }
     // Re-author so the caret element appears / disappears and the border
     // switches between the focus ring and the resting hairline.
     rebuildContent();
@@ -317,6 +409,7 @@ void TextInput::handleKey(const Native::KeyDownParams & params) {
     }
 
     if(textChanged || caretMoved) {
+        resetCaretBlink();   // snap caret solid + restart interval on any edit
         rebuildContent();
         invalidate(PaintReason::StateChanged);
     }

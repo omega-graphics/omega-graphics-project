@@ -105,6 +105,15 @@ struct Widget::Impl {
 
     OmegaCommon::Vector<WidgetObserverPtr> observers;
 
+    /// Last view size (w,h) seen by the `onLayoutResolved` rebuild hook
+    /// (Widget.Core.cpp). The hook re-authors content (`resize()`) only
+    /// when the box changes SIZE — a stretch-to-fill / clamp — not when the
+    /// layout merely repositions the widget (element geometry is authored
+    /// view-local and is offset-invariant, so a move needs no re-author).
+    /// -1 = uninitialised (no resolve seen yet).
+    float lastResolvedW = -1.f;
+    float lastResolvedH = -1.f;
+
     /// Native-API §2.3a T1: per-widget tooltip text. Empty = no tooltip
     /// (the hover dispatcher in `WidgetTreeHost` skips widgets with an
     /// empty string). Set via `Widget::setTooltip`, cleared via

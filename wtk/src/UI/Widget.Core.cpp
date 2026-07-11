@@ -4,6 +4,7 @@
 #include "WidgetTreeHost.h"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace OmegaWTK {
@@ -17,6 +18,7 @@ Widget::Widget(Composition::Rect rect):
     // element / sub-views keep a null owner and the dispatcher walks the
     // parent chain to the nearest non-null.
     view->setOwnerWidget(this);
+    subscribeLayoutRebuild();
 }
 
 Widget::Widget(ViewPtr view):
@@ -25,6 +27,50 @@ Widget::Widget(ViewPtr view):
     // §2.3a T1: see the rect ctor above. `this->view` because the
     // parameter shadows the member.
     this->view->setOwnerWidget(this);
+    subscribeLayoutRebuild();
+}
+
+void Widget::subscribeLayoutRebuild(){
+    // Wire the backing View's layout-resolved signal to the Widget's
+    // content rebuild. This is the connection the parent LayoutManager
+    // relies on: FlexLayout / FillLayout arrange children by calling
+    // `View::resize(...)`, which fires `onLayoutResolved` — but nothing
+    // routed that back to the owning Widget, so a stretched child
+    // (Separator, TextInput, …) never re-authored its element geometry and
+    // its content froze at mount size (visible bug: separators stopped
+    // stretching and appeared to vanish once the window grew past ~2× their
+    // authored width). The signal was designed for exactly this ("for
+    // NativeViewHost *and any other subscriber* to pick up" — View.Core.cpp)
+    // and had no Widget subscriber until now.
+    //
+    // Gate on a SIZE change, not any resolve: the rebuild is the
+    // stretch-to-fill response. When the layout merely repositions the
+    // widget (pos changes, size constant — e.g. a fixed-size Button being
+    // re-centred), no re-author is needed because element geometry is
+    // authored in view-local space and is offset-invariant; the paint path
+    // lifts it by the live view offset. Rebuilding on every move would be
+    // wasted work (and would fight fixed-size widgets that must keep their
+    // intrinsic content).
+    if(view == nullptr){
+        return;
+    }
+    const auto & r0 = view->getRect();
+    impl_->lastResolvedW = r0.w;
+    impl_->lastResolvedH = r0.h;
+    view->onLayoutResolved.subscribe([this](const Composition::Rect & resolved){
+        const bool sizeChanged =
+            std::fabs(resolved.w - impl_->lastResolvedW) > 0.5f ||
+            std::fabs(resolved.h - impl_->lastResolvedH) > 0.5f;
+        impl_->lastResolvedW = resolved.w;
+        impl_->lastResolvedH = resolved.h;
+        // Only after mount: pre-mount the derived widget hasn't authored
+        // its initial content yet (onMount does the first rebuild), and
+        // resize() may touch not-yet-ready state.
+        if(sizeChanged && impl_->hasMounted){
+            Composition::Rect nr = resolved;
+            this->resize(nr);   // virtual → derived rebuildContent()
+        }
+    });
 }
 
 OmegaCommon::ArrayRef<WidgetPtr> Widget::childWidgets(){

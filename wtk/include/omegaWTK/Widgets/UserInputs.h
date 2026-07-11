@@ -4,6 +4,7 @@
 #include "omegaWTK/Composition/Brush.h"
 #include "omegaWTK/Native/NativeTheme.h"
 #include "omegaWTK/Native/NativeEvent.h"
+#include "omegaWTK/Native/NativeTimer.h"
 #include "omegaWTK/Core/Core.h"
 #include <functional>
 #include <memory>
@@ -50,6 +51,11 @@ namespace OmegaWTK {
         std::size_t                                        caretPosition_ = 0;
         Native::ThemeDesc                                  theme_ {};
         bool                                               focused_ = false;
+        // Caret blink: the caret element stays authored while focused; this
+        // toggles its color between the foreground and transparent so the
+        // blink is a cheap Style-only change (no element-set churn).
+        bool                                               caretVisible_ = true;
+        Native::NativeTimerPtr                             blinkTimer_ {};
         std::function<void(const OmegaCommon::UString &)>  onValueChange_ {};
         Core::UniquePtr<TextInputDelegate>                 delegate_;
 
@@ -61,9 +67,18 @@ namespace OmegaWTK {
         void resize(Composition::Rect & newRect) override;
 
         // rebuildContent(): element list (bg / label / caret) + sub-rects.
-        // rebuildStyle():   theme-driven colors + focus-ring on/off.
+        // rebuildStyle():   theme-driven colors + focus-ring + caret blink.
         void rebuildContent();
         void rebuildStyle();
+
+        // Caret X (dp) from the field's left edge for the current caret
+        // position — the measured advance of text_[0..caretPosition_).
+        float caretAdvanceDp();
+
+        // Caret blink lifecycle (backed by a repeating NativeTimer).
+        void startCaretBlink();   // on focus: show solid, begin toggling
+        void stopCaretBlink();    // on blur: cancel + hide
+        void resetCaretBlink();   // on edit: snap solid, restart interval
 
         // Focus in/out — flips focused_, re-authors the caret, invalidates.
         void setFocused(bool focused);

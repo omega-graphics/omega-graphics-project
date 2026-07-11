@@ -204,16 +204,26 @@ void Separator::onMount() {
 }
 
 void Separator::rebuildContent() {
-    Composition::Rect r = rect();
+    // Element geometry is authored in VIEW-LOCAL space (origin {0,0}); paint
+    // clamps against the view's local bounds and lifts to window space by the
+    // view offset. Only the *size* of rect() is used — leaking rect().pos
+    // (absolute window coords) here made clampRectToParent strand the line
+    // once the view grew past its authored size (same class of bug fixed in
+    // Button/TextInput). Now that Widget subscribes to onLayoutResolved
+    // (Widget.Core.cpp), this rebuild re-runs on every stretch, so the line
+    // tracks the live view width.
+    const Composition::Rect r = rect();
+    const float w = r.w;
+    const float h = r.h;
     Composition::Rect line;
     if (props_.orientation == Orientation::Horizontal) {
-        float center = r.pos.y + r.h * 0.5f - props_.thickness * 0.5f;
-        line = {Composition::Point2D{r.pos.x + props_.inset, center},
-                r.w - props_.inset * 2.f, props_.thickness};
+        float center = h * 0.5f - props_.thickness * 0.5f;
+        line = {Composition::Point2D{props_.inset, center},
+                w - props_.inset * 2.f, props_.thickness};
     } else {
-        float center = r.pos.x + r.w * 0.5f - props_.thickness * 0.5f;
-        line = {Composition::Point2D{center, r.pos.y + props_.inset},
-                props_.thickness, r.h - props_.inset * 2.f};
+        float center = w * 0.5f - props_.thickness * 0.5f;
+        line = {Composition::Point2D{center, props_.inset},
+                props_.thickness, h - props_.inset * 2.f};
     }
 
     auto & lv2 = viewAs<UIView>().layoutV2();

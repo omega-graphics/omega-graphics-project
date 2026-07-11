@@ -250,6 +250,39 @@ TextInput caret X (Phase 4B) — so this small feature lands it:
   single-line (`ABC` → 30), multi-line (`AB\nCDE` → widest line 30), and empty
   (→ 0) cases; all 29 tests pass. Full WTK build (incl. `BasicAppTest`) clean.
 
+### 6.1 Substring / arbitrary-text overload (added 2026-07-10)
+
+The height-only concern in §3 and the width field above both measure the
+element's *own* text via the per-`(tag, availWidth)` memo. A caret needs the
+width of a *prefix* that changes every edit while the width stays constant —
+the memo would return the prior text's extent. So a second overload landed:
+
+> `UIView::measureText(tag, text, availWidthDp) -> {width, height}`
+
+It resolves the same font + `TextLayoutDescriptor` as `tag`'s element but lays
+out the *given* `text`, **uncached** (fresh layout per call). The resolution +
+`TextLayoutEngine::layout` call was extracted into
+`UIView::Impl::layoutTaggedText(tag, text, width)`, which `ensureTextLayout`
+now also calls (element's own text + cache) — one resolution path, so a
+substring measure uses byte-identical font/shaping to what the element paints.
+First consumer: `TextInput`'s caret X (Widget-Stub §4B), which measures
+`text[0..caret)`. Verified via `BasicAppTest` (caret tracks proportional glyph
+advances); Label wrapping unchanged (same `ensureTextLayout` behavior).
+
+Also added `UIView::resolvedTextMetrics(tag) -> {ascent, descent, lineGap}`
+(shares the `resolveTagFont` font-resolution helper), so a caller drawing its
+own vertically-aligned marks can match the engine's baseline. The TextInput
+caret uses it to span the glyph *ink* box (`ascent+descent`) at the engine's
+`LeftCenter` baseline (`ascent + (h - lineHeight)/2`) — a full-`lineHeight` box
+hangs below the text by the line gap. **Coordinate gotcha (cost two wrong
+iterations):** the caret was *also* misplaced because the widget authored its
+`UIElementLayoutSpec` geometry in absolute (`rect().pos`) coords, but paint
+authors/clamps in **view-local** space (origin `{0,0}`) — see
+`UIView.Update.cpp` paint (`localBounds` / `paintOffset`). Full-size elements
+clamp-to-fill and look fine; small positioned ones (the caret) get clamped
+wrong. Widget element geometry must use only `rect()`'s *size*, positions from
+0. (Button has the same latent bug for its icon — separate follow-up.)
+
 ## 4 Cross-links
 
 - `Resize-Clamping-Plan.md` §1.6 (slot-vs-widget model — the spacer slot

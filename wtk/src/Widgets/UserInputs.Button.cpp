@@ -148,14 +148,24 @@ void Button::rebuildContent() {
     auto & lv2 = uv.layoutV2();
     lv2.clear();
 
+    // Element geometry is authored in VIEW-LOCAL space (origin {0,0}); paint
+    // clamps against the view's local bounds and then lifts everything into
+    // window space by the view offset (UIView.Update.cpp paint: "authored /
+    // clamped in view-local space"). Only the *size* of rect() is used here —
+    // its absolute pos must NOT leak into element coords, or clampRectToParent
+    // mangles small elements (the icon square) differently from full-size ones
+    // (bg / label clamp-to-fill and look fine, hiding the bug). This was the
+    // TextInput-caret misplacement root cause (fixed 2026-07-10).
     const Composition::Rect r = rect();
+    const float w = r.w;
+    const float h = r.h;
 
     // bg — full-rect RoundedRect.
     {
         Composition::RoundedRect bg{};
-        bg.pos = r.pos;
-        bg.w = r.w;
-        bg.h = r.h;
+        bg.pos = Composition::Point2D{0.f, 0.f};
+        bg.w = w;
+        bg.h = h;
         bg.rad_x = props_.cornerRadius;
         bg.rad_y = props_.cornerRadius;
 
@@ -167,11 +177,11 @@ void Button::rebuildContent() {
 
     // Compute content sub-rects: icon (left, square, vertically centered)
     // followed by label (fills remaining horizontal space).
-    float cursorX = r.pos.x + kHPad;
-    const float availW = std::max(0.f, r.w - kHPad * 2.f);
+    float cursorX = kHPad;
+    const float availW = std::max(0.f, w - kHPad * 2.f);
 
     if(!props_.iconToken.empty()) {
-        const float iconSide = std::min(r.h - 4.f, 16.f);
+        const float iconSide = std::min(h - 4.f, 16.f);
         UIElementLayoutSpec iconSpec;
         iconSpec.tag = "icon";
         // The text element renders the token glyph; per Phase 2B (deferred),
@@ -179,7 +189,7 @@ void Button::rebuildContent() {
         iconSpec.text = OmegaCommon::UString(props_.iconToken.begin(),
                                              props_.iconToken.end());
         iconSpec.textRect = Composition::Rect{
-            Composition::Point2D{cursorX, r.pos.y + (r.h - iconSide) * 0.5f},
+            Composition::Point2D{cursorX, (h - iconSide) * 0.5f},
             iconSide, iconSide
         };
         lv2.element(iconSpec);
@@ -189,13 +199,13 @@ void Button::rebuildContent() {
     // label — fills whatever's left of the content rect.
     {
         const float labelX = cursorX;
-        const float labelW = std::max(0.f, (r.pos.x + r.w - kHPad) - labelX);
+        const float labelW = std::max(0.f, (w - kHPad) - labelX);
         UIElementLayoutSpec labelSpec;
         labelSpec.tag = "label";
         labelSpec.text = props_.text;
         labelSpec.textRect = Composition::Rect{
-            Composition::Point2D{labelX, r.pos.y},
-            labelW, r.h
+            Composition::Point2D{labelX, 0.f},
+            labelW, h
         };
         (void)availW; // referenced for future flex math; quiet -Wunused
         lv2.element(labelSpec);

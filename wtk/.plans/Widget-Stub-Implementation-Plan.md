@@ -820,9 +820,9 @@ The delegate is owned by the Button (via `UniquePtr`) and outlives the view's ra
 > [Native-API-Completion-Proposal §2.3a status row](Native-API-Completion-Proposal.md#completion-status):
 > macOS/Win32 had no keyboard delivery wired (only GTK did), the macOS
 > `key_code_from_ns` special-key table was mismapped, and M1 click-focus did
-> not resign focus on a click-miss. macOS + GTK paths are complete; **Win32 key
-> delivery is written but still needs a WSL build to verify** (backend parity
-> item, tracked in that status row — it does not gate the widget itself). The
+> not resign focus on a click-miss. all three backends
+> (macOS, GTK, **Win32 — verified on Windows 2026-07-10**) now deliver
+> keyboard input. The
 > follow-ups below (caret blink, measured caret X, selection, clipboard, IME,
 > multi-line) remain out of v0 scope.
 >
@@ -896,17 +896,20 @@ v0 scope:
 - Caret X is computed from `props_.font` size × `caretPosition_` with a `* 0.6f` mono-approximation until Phase 2A `Font::measureText` ships. Accurate caret positioning is Phase 4B+.
 - Caret blink: deferred to a follow-up that introduces a timer surface (see [Native-API-Completion-Proposal §2.4 `NativeTimer`](Native-API-Completion-Proposal.md#24-nativeapp--lifecycle-arguments-timers)).
 
-Out of scope for the base — each is its own follow-up:
+Follow-ups (status as of 2026-07-10):
 
-| Follow-up               | Depends on                                          |
-|-------------------------|------------------------------------------------------|
-| Caret blink             | `NativeTimer` (§2.4)                                |
-| Accurate caret X        | Phase 2A `Font::measureText`                         |
-| Selection (Shift+arrow, double-click word, click+drag) | accurate caret X |
-| Clipboard (Cmd/Ctrl+C/V/X) | `NativeClipboard` (§2.6)                        |
-| IME pre-edit + commit   | platform IME bridges (separate plan)                 |
-| Tab-traversal sequencing | `FocusManager::focusNext/Previous`                  |
-| Multi-line (`TextArea`) | line breaking + scroll                               |
+| Follow-up               | Depends on                                          | Status |
+|-------------------------|------------------------------------------------------|--------|
+| Caret blink             | `NativeTimer` (§2.4)                                | **DONE** — repeating 0.5s timer toggles the caret element's color (Style-only; solid-on-edit reset). |
+| Accurate caret X        | Text-Measurement-API-Plan §6.1 (substring `measureText`) | **DONE** — measures `text[0..caret)` in the label font (uncached overload; not the mono `*0.6` sketch above). |
+| Selection (Shift+arrow, double-click word, click+drag) | accurate caret X | pending (now unblocked) |
+| Clipboard (Cmd/Ctrl+C/V/X) | `NativeClipboard` (§2.6)                        | pending |
+| IME pre-edit + commit   | platform IME bridges (separate plan)                 | pending |
+| Tab-traversal sequencing | `FocusManager::focusNext/Previous`                  | pending |
+| Multi-line (`TextArea`) | line breaking + scroll                               | pending |
+
+(The v0-scope bullet above still names the `*0.6f` mono caret and deferred
+blink — that was the sketch; both shipped as noted here.)
 
 ### TextArea
 

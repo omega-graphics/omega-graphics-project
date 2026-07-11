@@ -1,4 +1,5 @@
 #include "UIViewImpl.h"
+#include "ViewImpl.h"   // canonical ViewInternal::suspiciousDimensionPair / kMaxViewDimension
 #include "omegaWTK/Composition/DisplayList.h"
 #include "omegaWTK/Composition/TextLayoutEngine.h"   // Text-Measurement-API-Plan §3: measureText reuses the CPU-only layout core.
 #include "omegaWTK/UI/AppWindow.h"
@@ -8,44 +9,6 @@
 namespace OmegaWTK {
 
 namespace UIViewInternal {
-
-namespace {
-
-bool isValidDimension(float v){
-    return std::isfinite(v) && v > 0.f;
-}
-
-float clampDrawableDimension(float v){
-#if defined(TARGET_MACOS)
-    constexpr float kMaxDrawableDimension = 8192.f;
-#else
-    constexpr float kMaxDrawableDimension = 16384.f;
-#endif
-    if(!std::isfinite(v)){
-        return 1.f;
-    }
-    return std::clamp(v,1.f,kMaxDrawableDimension);
-}
-
-bool isSuspiciousDimensionPair(float w,float h){
-    if(!std::isfinite(w) || !std::isfinite(h) || w <= 0.f || h <= 0.f){
-        return true;
-    }
-    const float maxDim = std::max(w,h);
-    const float minDim = std::min(w,h);
-    if(maxDim >= 4096.f && minDim <= 1.5f){
-        return true;
-    }
-    if(maxDim >= 1024.f && minDim > 0.f){
-        const float aspect = maxDim / minDim;
-        if(aspect > 256.f){
-            return true;
-        }
-    }
-    return false;
-}
-
-}
 
 Composition::Rect localBoundsFromView(UIView *view){
     // UIView-Render-Redesign-Plan Tier 2 Phase 2.2: per-call
@@ -76,19 +39,22 @@ Composition::Rect localBoundsFromView(UIView *view){
     // owns the single tree now). The View::rect is the only source of
     // local bounds; an invalid rect falls through to the constant
     // fallback below.
-    const bool viewValid = isValidDimension(viewWidth) &&
-                           isValidDimension(viewHeight) &&
-                           !isSuspiciousDimensionPair(viewWidth,viewHeight);
-    if(!viewValid){
+    //
+    // Validity + the "is this rect garbage" heuristic are the single
+    // canonical `ViewInternal::suspiciousDimensionPair` (ViewImpl.h) — it
+    // already rejects non-finite / <=0 dims, so it subsumes the old local
+    // `isValidDimension`. A previous *duplicate* of this heuristic here
+    // still carried an aspect-ratio test that collapsed wide separators to
+    // the fallback; the copies are now one to keep them from diverging
+    // again.
+    if(ViewInternal::suspiciousDimensionPair(viewWidth,viewHeight)){
         return kFallbackRect;
     }
-    const float width = viewWidth;
-    const float height = viewHeight;
 
     return Composition::Rect{
             Composition::Point2D{0.f,0.f},
-            clampDrawableDimension(width),
-            clampDrawableDimension(height)
+            std::clamp(viewWidth,  1.f, ViewInternal::kMaxViewDimension),
+            std::clamp(viewHeight, 1.f, ViewInternal::kMaxViewDimension)
     };
 }
 
@@ -575,29 +541,48 @@ UIView::Impl::ensureTextLayout(const UIElementTag & tag, float availWidthDp){
         return nullptr;
     }
 
-    // Effective font: resolved `TextFont` cell, else the Arial-18 fallback —
-    // byte-for-byte the resolution the paint branch uses. The fallback lives
-    // on `Impl`, which is why the public entry point belongs on UIView.
-    const auto elementNodeId = ensureElementNodeId(tag);
-    auto fontHandle = resolved<SharedHandle<Composition::Font>>(
-        elementNodeId, PropertyKey::TextFont,
-        SharedHandle<Composition::Font>{nullptr});
-    auto font = fontHandle != nullptr ? fontHandle : resolveFallbackTextFont();
-    if(font == nullptr){
+    // Lay the element's own text out (shared resolution + engine call) and
+    // cache it keyed by width. `layoutTaggedText` returns an empty result when
+    // the font/shaper is unavailable — treat that as "nothing cached".
+    auto layout = layoutTaggedText(tag, *textSpec->text, availWidthDp);
+    if(layout.lineBaselines.empty() && layout.glyphs.empty()
+       && layout.layoutHeight <= 0.f){
         return nullptr;
     }
+    auto & slot = textLayoutCache_[tag];
+    slot.availWidthDp = availWidthDp;
+    slot.layout = std::move(layout);
+    return &slot.layout;
+}
+
+Composition::LayoutResult
+UIView::Impl::layoutTaggedText(const UIElementTag & tag,
+                              const OmegaCommon::UString & text,
+                              float availWidthDp){
+    Composition::LayoutResult empty{};
+    if(availWidthDp <= 0.f || text.empty()){
+        return empty;
+    }
+
+    // Effective font: resolved `TextFont` cell, else the Arial-18 fallback —
+    // byte-for-byte the resolution the paint branch uses.
+    auto font = resolveTagFont(tag);
+    if(font == nullptr){
+        return empty;
+    }
+    const auto elementNodeId = ensureElementNodeId(tag);
 
     // Shaper + fallback driver off the process-wide FontEngine. Without a
     // shaper there is no layout to run.
     auto * engine = Composition::FontEngine::inst();
     auto * shaper = (engine != nullptr) ? engine->shaper() : nullptr;
     if(engine == nullptr || shaper == nullptr){
-        return nullptr;
+        return empty;
     }
 
     // Descriptor (horizontal alignment / wrapping) + line limit, resolved as
-    // paint does. Vertical alignment is neutralized to Upper so the cached
-    // glyphs are top-origin (paint re-applies the real vertical offset).
+    // paint does. Vertical alignment is neutralized to Upper so the glyphs are
+    // top-origin (paint re-applies the real vertical offset).
     auto textLayout = resolved<Composition::TextLayoutDescriptor>(
         elementNodeId, PropertyKey::TextLayout,
         Composition::TextLayoutDescriptor{
@@ -609,8 +594,8 @@ UIView::Impl::ensureTextLayout(const UIElementTag & tag, float availWidthDp){
     textLayout.alignment = upperVariant(textLayout.alignment);
 
     auto unicodeText = OmegaCommon::UniString::fromUTF32(
-        reinterpret_cast<const OmegaCommon::Unicode32Char *>(textSpec->text->data()),
-        static_cast<int32_t>(textSpec->text->size()));
+        reinterpret_cast<const OmegaCommon::Unicode32Char *>(text.data()),
+        static_cast<int32_t>(text.size()));
 
     // Only `rect.w` drives wrapping; with Upper alignment `rect.h` no longer
     // affects glyph positions, so a large height is a safe sentinel. Units are
@@ -621,12 +606,18 @@ UIView::Impl::ensureTextLayout(const UIElementTag & tag, float availWidthDp){
     const Composition::Rect layoutRect{
         Composition::Point2D{0.f, 0.f}, availWidthDp, kLayoutHeight};
 
-    auto & slot = textLayoutCache_[tag];
-    slot.availWidthDp = availWidthDp;
-    slot.layout = Composition::TextLayoutEngine::layout(
+    return Composition::TextLayoutEngine::layout(
         unicodeText, font, metrics, layoutRect, textLayout, *shaper,
         engine->fallback());
-    return &slot.layout;
+}
+
+SharedHandle<Composition::Font>
+UIView::Impl::resolveTagFont(const UIElementTag & tag){
+    const auto elementNodeId = ensureElementNodeId(tag);
+    auto fontHandle = resolved<SharedHandle<Composition::Font>>(
+        elementNodeId, PropertyKey::TextFont,
+        SharedHandle<Composition::Font>{nullptr});
+    return fontHandle != nullptr ? fontHandle : resolveFallbackTextFont();
 }
 
 UIView::TextMeasurement UIView::measureText(const UIElementTag & tag,
@@ -645,6 +636,40 @@ UIView::TextMeasurement UIView::measureText(const UIElementTag & tag,
     measured.width  = layout->layoutWidth;
     measured.height = layout->layoutHeight;
     return measured;
+}
+
+UIView::TextMeasurement UIView::measureText(const UIElementTag & tag,
+                                            const OmegaCommon::UString & text,
+                                            float availWidthDp){
+    // Substring / arbitrary-text overload: measure `text` (not the element's
+    // own text) using the tag's resolved font + descriptor. Unlike the
+    // element-text overload this is uncached — it lays out on every call — so
+    // a caller measuring a value that changes each edit (e.g. a caret prefix)
+    // gets a fresh, correct result instead of the per-(tag,width) memo, which
+    // is keyed on width alone and would return the prior text's extent.
+    const auto layout = impl_->layoutTaggedText(tag, text, availWidthDp);
+    TextMeasurement measured;
+    measured.width  = layout.layoutWidth;
+    measured.height = layout.layoutHeight;
+    return measured;
+}
+
+UIView::TextVMetrics UIView::resolvedTextMetrics(const UIElementTag & tag){
+    // Vertical font metrics for the tag's effective font. A caller that draws
+    // its own vertically-aligned marks (e.g. a TextInput caret) needs these to
+    // line up with the glyph ink: the layout engine seats `LeftCenter` text at
+    // baseline = ascent + (rectH - lineHeight)/2, so the ink box is
+    // [ascent, descent] around that baseline with the line gap trailing below.
+    TextVMetrics out;
+    auto font = impl_->resolveTagFont(tag);
+    if(font == nullptr){
+        return out;
+    }
+    const Composition::FontMetrics m = font->getMetrics();
+    out.ascent  = m.ascent;
+    out.descent = m.descent;
+    out.lineGap = m.lineGap;
+    return out;
 }
 
 void UIView::update(){

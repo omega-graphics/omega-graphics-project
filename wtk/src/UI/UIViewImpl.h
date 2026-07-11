@@ -353,6 +353,24 @@ struct UIView::Impl {
     const Composition::LayoutResult * ensureTextLayout(const UIElementTag & tag,
                                                        float availWidthDp);
 
+    // Core layout shared by `ensureTextLayout` (element's own text, cached)
+    // and `UIView::measureText(tag, text, width)` (arbitrary text, uncached).
+    // Resolves the tag's effective font + descriptor + metrics the same way,
+    // then lays out `text` top-origin at `availWidthDp`, returning the result
+    // by value. Keeping the resolution in one place is what guarantees a
+    // substring measure (e.g. a caret prefix) uses the same font/shaping the
+    // element renders with. Returns an empty result when `text` is empty or no
+    // font / shaper is available.
+    Composition::LayoutResult layoutTaggedText(const UIElementTag & tag,
+                                               const OmegaCommon::UString & text,
+                                               float availWidthDp);
+
+    // Effective font for a tag's text: the resolved `TextFont` cell, else the
+    // Arial-18 fallback — the same resolution paint / layout use. Returns null
+    // only if even the fallback is unavailable. Shared by `layoutTaggedText`
+    // and `UIView::resolvedTextMetrics`.
+    SharedHandle<Composition::Font> resolveTagFont(const UIElementTag & tag);
+
     // Widget-View-Paint-Lifecycle-Plan Tier D / D5 (2026-06-03):
     // resolved-style cache, re-shaped from the pre-D5 aggregates
     // (`resolvedViewStyle_` + per-element `computedStyles_`) to one
