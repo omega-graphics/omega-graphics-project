@@ -12,6 +12,10 @@
 #include <mutex>
 #include <utility>
 
+#ifdef _WIN32
+#include <objbase.h>  // CoInitializeEx/CoUninitialize for the frame worker thread
+#endif
+
 namespace OmegaWTK::Composition {
 
 void Compositor::observeLayerTree(LayerTree *tree, std::uint64_t /*syncLaneId*/){
@@ -81,6 +85,13 @@ CompositorFrameWorker::CompositorFrameWorker(Compositor * compositor):
 compositor(compositor),
 shutdown(false),
 t([this](Compositor *compositor){
+#ifdef _WIN32
+    // COM apartments are per-thread. The UI thread runs STA (needed for shell
+    // dialogs — see target/win32/mmain.cpp); this render thread wants the MTA
+    // for free-threaded Direct2D/DirectComposition/DirectWrite work. Make that
+    // membership explicit so it no longer piggybacks on the UI thread's choice.
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+#endif
     while(true){
         bool frameWake = false;
         {
@@ -102,6 +113,9 @@ t([this](Compositor *compositor){
             compositor->drainWindowSurfaces();
         }
     }
+#ifdef _WIN32
+    CoUninitialize();
+#endif
 }, compositor){
 }
 

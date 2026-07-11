@@ -84,6 +84,62 @@ UniString UniString::fromUTF32(const Unicode32Char * utf32, std::int32_t length)
     return UniString(utf16FromUChars(buffer.data(),utf16Length));
 }
 
+String UniString::toUTF8() const {
+    if(data_.empty()){
+        return {};
+    }
+
+    const UChar * src = reinterpret_cast<const UChar *>(data_.data());
+    const auto srcLength = static_cast<int32_t>(data_.size());
+
+    UErrorCode err = U_ZERO_ERROR;
+    int32_t utf8Length = 0;
+    u_strToUTF8(nullptr,0,&utf8Length,src,srcLength,&err);
+    if(err != U_BUFFER_OVERFLOW_ERROR && U_FAILURE(err)){
+        return {};
+    }
+
+    String out;
+    out.resize(static_cast<size_t>(utf8Length));
+    err = U_ZERO_ERROR;
+    u_strToUTF8(out.empty() ? nullptr : &out[0],utf8Length,&utf8Length,src,srcLength,&err);
+    if(U_FAILURE(err)){
+        return {};
+    }
+
+    return out;
+}
+
+UString UniString::toUTF32() const {
+    if(data_.empty()){
+        return {};
+    }
+
+    const UChar * src = reinterpret_cast<const UChar *>(data_.data());
+    const auto srcLength = static_cast<int32_t>(data_.size());
+
+    UErrorCode err = U_ZERO_ERROR;
+    int32_t utf32Length = 0;
+    u_strToUTF32(nullptr,0,&utf32Length,src,srcLength,&err);
+    if(err != U_BUFFER_OVERFLOW_ERROR && U_FAILURE(err)){
+        return {};
+    }
+
+    std::vector<UChar32> buffer(static_cast<size_t>(utf32Length));
+    err = U_ZERO_ERROR;
+    u_strToUTF32(buffer.data(),utf32Length,&utf32Length,src,srcLength,&err);
+    if(U_FAILURE(err)){
+        return {};
+    }
+
+    UString out;
+    out.resize(static_cast<size_t>(utf32Length));
+    for(int32_t i = 0; i < utf32Length; ++i){
+        out[static_cast<size_t>(i)] = static_cast<Unicode32Char>(buffer[i]);
+    }
+    return out;
+}
+
 std::int32_t UniString::length() const {
     return static_cast<std::int32_t>(data_.size());
 }

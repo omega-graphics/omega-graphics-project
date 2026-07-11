@@ -61,7 +61,7 @@ struct AQParticleCollider {
     float              restitution = 0.f;
 };
 
-struct AQParticleSystem {
+struct AQUA_EXPORT AQParticleSystem {
     std::uint64_t id       = 0;   ///< matches AQParticleSystemHandle.id (never 0 when live)
     std::uint32_t capacity = 0;   ///< fixed backing size (§10 — bounded at creation)
 
@@ -247,7 +247,7 @@ struct AQLongRangeAttachment {
     float         maxDist = 0.f;
 };
 
-struct AQXPBDBody {
+struct AQUA_EXPORT AQXPBDBody {
     std::uint64_t id = 0;   ///< matches AQXPBDBodyHandle.id (never 0 when live)
 
     // Particle SoA — stable indices, sized once per addParticles batch.

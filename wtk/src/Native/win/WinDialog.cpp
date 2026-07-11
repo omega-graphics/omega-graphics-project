@@ -79,7 +79,10 @@ namespace OmegaWTK::Native::Win {
                 hr = CoCreateInstance(CLSID_FileOpenDialog,NULL,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog_ty_1));
             else
                 hr = CoCreateInstance(CLSID_FileSaveDialog,NULL,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog_ty_2));
-            (void)hr;
+            if(!SUCCEEDED(hr))
+                std::cerr << "[WTK] WinFSDialog: CoCreateInstance failed (hr=0x"
+                          << std::hex << (unsigned)hr << std::dec
+                          << "); the file dialog will not appear." << std::endl;
         };
         ~WinFSDialog();
         OmegaCommon::Async<OmegaCommon::Vector<OmegaCommon::FS::Path>> getResult() override;
@@ -232,142 +235,38 @@ namespace OmegaWTK::Native::Win {
     }
 
 
+    // An informational modal with a single OK button and no result. Built on
+    // TaskDialogIndirect — the same proven API WinAlertDialog uses — rather than
+    // a hand-rolled in-memory DLGTEMPLATE (which was fragile enough to produce an
+    // access violation, a stack overflow, and a silent no-show across successive
+    // fixes). The descriptor only carries title + body text, which is exactly
+    // what a task dialog renders, so nothing is lost by the switch.
     class WinNoteDialog : public NativeNoteDialog {
-        static INT_PTR DlgProc(HWND , UINT, WPARAM, LPARAM);
-        HGLOBAL hgbl;
-        public:
+    public:
         WinNoteDialog(const Descriptor & desc,NWH nativeWindow);
-        ~WinNoteDialog();
-        void show();
-        void close();
     };
-
-    LPWORD lpwAlign(LPWORD lpIn)
-    {
-        ULONG ul;
-
-        ul = (ULONG)lpIn;
-        ul ++;
-        ul >>=2;
-        ul <<=2;
-        return (LPWORD)ul;
-    }
-
-    INT_PTR CALLBACK WinNoteDialog::DlgProc(HWND hDlg,UINT msg,WPARAM wParam,LPARAM lParam){
-        /// LParam is ptr to WinNoteDialog!
-        INT_PTR res = FALSE;
-        switch (msg) {
-            case WM_INITDIALOG: {
-                // SetWindowLongPtrA(hDlg,DWLP_USER,lParam);
-                res = TRUE;
-                break;
-            }
-            case WM_COMMAND: {
-                if (LOWORD(wParam) == IDOK){
-                    EndDialog(hDlg, LOWORD(wParam));
-                    res = TRUE;
-                };
-                break;
-            }
-            default: {
-                return DefDlgProcA(hDlg,msg,wParam,lParam);
-                break;
-            }
-        }
-        return res;
-    };
-
-    #define ID_TEXT 4
 
     WinNoteDialog::WinNoteDialog(const Descriptor &desc,NWH nativeWindow):NativeNoteDialog(nativeWindow){
-        auto message_str = OmegaCommon::UniString::fromUTF8(desc.title.c_str());
-        LPDLGTEMPLATE lpdt;
-        LPDLGITEMTEMPLATE lpdtItem;
-        LPWORD lpw;
-        LPWSTR wstr;
-        UINT nchar;
-        hgbl = GlobalAlloc(GMEM_ZEROINIT,1024);
-        if (!hgbl) {
-            std::cout << "Failed to Allocate Mem For Template" << std::endl;
-            MessageBoxA(GetForegroundWindow(),"Failed to Allocate Mem For Template",NULL,MB_OK);
-            exit(1);
-        }
-        MessageBoxA(GetForegroundWindow(),"Locking HGLOBAL",NULL,MB_OK);
-        lpdt = (LPDLGTEMPLATE)GlobalLock(hgbl);
-        lpdt->style = WS_POPUP | WS_BORDER | WS_SYSMENU | DS_MODALFRAME | WS_CAPTION;
-        lpdt->cdit = 2;
-        lpdt->x  = 10;  lpdt->y  = 10;
-        lpdt->cx = 200; lpdt->cy = 200;
-        lpw = (LPWORD)(lpdt + 1);
-        *lpw++ = 0;             // No menu
-        *lpw++ = 0;
+        // Present on construction, matching CocoaNoteDialog. Modal: blocks until
+        // the user dismisses it (OK / Esc / close box).
+        HWND hwnd = parentHwnd(parentWindow);
 
+        std::wstring title = widen(desc.title);
+        std::wstring content = widen(desc.str);
 
-        wstr = (LPWSTR)lpw;
-        nchar = 1 + MultiByteToWideChar(CP_ACP, 0,desc.title.c_str(), -1,wstr,50);
-        lpw += nchar;
+        TASKDIALOGCONFIG cfg{};
+        cfg.cbSize = sizeof(cfg);
+        cfg.hwndParent = hwnd;
+        cfg.dwCommonButtons = TDCBF_OK_BUTTON;
+        cfg.pszWindowTitle = title.c_str();
+        cfg.pszMainInstruction = title.c_str();
+        cfg.pszContent = content.c_str();
+        cfg.pszMainIcon = TD_INFORMATION_ICON;
 
-
-         MessageBoxA(GetForegroundWindow(),"Created Dialog Frame",NULL,MB_OK);
-        /**
-         Define an OK button.
-        */
-        lpw = lpwAlign(lpw);    // Align DLGITEMTEMPLATE on DWORD boundary
-        MessageBoxA(GetForegroundWindow(),"Aligned DWORD ",NULL,MB_OK);
-        lpdtItem = (LPDLGITEMTEMPLATE)lpw;
-        lpdtItem->x  = 10;
-        MessageBoxA(GetForegroundWindow(),"Getting DLG Item Template and Setting First Vals ",NULL,MB_OK);
-        lpdtItem->y  = 10;
-        lpdtItem->cx = 80; lpdtItem->cy = 20;
-        lpdtItem->id = IDOK;       // OK button identifier
-        lpdtItem->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON;
-
-        MessageBoxA(GetForegroundWindow(),"Setting DLG Item Template ",NULL,MB_OK);
-
-        lpw = (LPWORD)(lpdtItem + 1);
-        *lpw++ = 0xFFFF;
-        *lpw++ = 0x0080;        // Button class
-
-         MessageBoxA(GetForegroundWindow(),"Created Button Without Text",NULL,MB_OK);
-
-        wstr = (LPWSTR)lpw;
-        nchar = 1 + MultiByteToWideChar(CP_ACP, 0, "OK", -1, wstr, 50);
-        lpw += nchar;
-        *lpw++ = 0;
-
-        MessageBoxA(GetForegroundWindow(),"Created OK Button",NULL,MB_OK);
-
-        lpw = lpwAlign(lpw);    // Align DLGITEMTEMPLATE on DWORD boundary
-        lpdtItem = (LPDLGITEMTEMPLATE)lpw;
-        lpdtItem->x  = 10; lpdtItem->y  = 10;
-        lpdtItem->cx = 40; lpdtItem->cy = 20;
-        lpdtItem->id = ID_TEXT;    // Text identifier
-        lpdtItem->style = WS_CHILD | WS_VISIBLE | SS_LEFT;
-
-        lpw = (LPWORD)(lpdtItem + 1);
-        *lpw++ = 0xFFFF;
-        *lpw++ = 0x0082;        // Static class
-
-        auto msg_ptr = reinterpret_cast<const WCHAR *>(message_str.getBuffer());
-
-        for (wstr = (LPWSTR)lpw;(*wstr++ = *msg_ptr++) != 0;);
-        lpw = (LPWORD)wstr;
-        *lpw++ = 0;
-
-        MessageBoxA(GetForegroundWindow(),"Created Description Text",NULL,MB_OK);
-
-        GlobalUnlock(hgbl);
-        MessageBoxA(GetForegroundWindow(),"Unlocked HGLOBAL",NULL,MB_OK);
-    };
-
-    WinNoteDialog::~WinNoteDialog(){
-        GlobalFree(hgbl);
-    };
-
-
-
-    void WinNoteDialog::show(){
-        DialogBoxIndirectA(HWNDFactory::appFactoryInst->hInst,(LPDLGTEMPLATE)hgbl,std::dynamic_pointer_cast<HWNDItem>(parentWindow)->hwnd,WinNoteDialog::DlgProc);
+        HRESULT hr = TaskDialogIndirect(&cfg, nullptr, nullptr, nullptr);
+        if(!SUCCEEDED(hr))
+            std::cerr << "[WTK] WinNoteDialog: TaskDialogIndirect failed (hr=0x"
+                      << std::hex << (unsigned)hr << std::dec << ")" << std::endl;
     };
 }
 

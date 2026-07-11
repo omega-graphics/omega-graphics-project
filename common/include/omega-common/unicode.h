@@ -29,6 +29,13 @@ namespace OmegaCommon {
         static UniString fromUTF8(const char * utf8);
         static UniString fromUTF32(const Unicode32Char * utf32, std::int32_t length);
 
+        /// Encode the contents as a UTF-8 byte string. Round-trips with
+        /// fromUTF8. Returns an empty string on an encoding error.
+        String toUTF8() const;
+        /// Encode the contents as a UTF-32 code-point string. Round-trips
+        /// with fromUTF32. Returns an empty string on an encoding error.
+        UString toUTF32() const;
+
         std::int32_t length() const;
         const UnicodeChar * getBuffer() const;
     };

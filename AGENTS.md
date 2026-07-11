@@ -45,9 +45,14 @@
       (small-buffer-optimized via a custom `HeapAllocator`), `SetVector<T>`
       (insertion-ordered unique sequence), `ArrayRef<T>` / `Span<T>` (non-owning
       sequence views), `Result<T>` (value-or-error), and the `ARC` / `ARCAny`
-      runtime-object reference-counting helpers. Some of these (e.g. `Span`) are
-      defined but not yet used anywhere — prefer the ones with existing uptake
-      unless you have a concrete reason.
+      runtime-object reference-counting helpers. A codebase-wide effort is
+      underway to move every raw `std::` ADT to its OmegaCommon equivalent, so
+      types that had little or no uptake (e.g. `Span`) are now actively being
+      adopted — reach for the OmegaCommon type where it fits rather than the
+      `std::` one, and it is fine to be the first caller of a previously-unused
+      ADT. When a needed conversion or method is missing from one of these types
+      (e.g. `UniString` gained `toUTF8`/`toUTF32`), extend the shared definition
+      rather than working around it at the call site.
 
     Caveat — boundaries. At a native / third-party API boundary (Vulkan, D3D12,
     Metal, FFmpeg, etc.) use whatever that API hands you or requires; the

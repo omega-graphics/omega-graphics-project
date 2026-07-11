@@ -15,7 +15,11 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,  PSTR lpCmdLi
 
     HRESULT hr;
     
-    hr = CoInitializeEx(NULL,COINIT_MULTITHREADED);
+    // STA (apartment-threaded) is required on the UI thread: the Windows
+    // Common Item Dialog (IFileOpenDialog/IFileSaveDialog), OLE drag/drop and
+    // the clipboard all fail on an MTA thread. Background render threads that
+    // want the MTA initialize their own apartment (see CompositorFrameWorker).
+    hr = CoInitializeEx(NULL,COINIT_APARTMENTTHREADED);
     if(!SUCCEEDED(hr))
     {
         //Handle Error!
