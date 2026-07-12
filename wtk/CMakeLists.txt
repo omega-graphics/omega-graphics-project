@@ -164,7 +164,9 @@ endif()
 # wtk owns only libxml2 and ffmpeg now.
 
 set(THIRD_PARTY_SRC_DIR ${OMEGAWTK_SOURCE_DIR}/deps)
-set(THIRD_PARTY_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/deps)
+# Shared+keyed across build dirs when OMEGA_THIRD_PARTY_BUILD_DIR is set, else
+# this module's own build tree (unchanged default). See omega_third_party_root.
+omega_third_party_root(THIRD_PARTY_OUTPUT_DIR)
 
 # libxml2 needs zlib found at configure time and ICU's headers on its
 # include path. Both live in OmegaCommon's deps install root now.

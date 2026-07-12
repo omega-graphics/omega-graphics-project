@@ -573,6 +573,43 @@ endfunction()
 
 include(ExternalProject)
 
+# Root for third-party dependency BUILD + INSTALL trees.
+#
+# By default each module builds its deps under its own build tree
+# (${CMAKE_CURRENT_BINARY_DIR}/deps), so a fresh build directory rebuilds every
+# dep from scratch. Point OMEGA_THIRD_PARTY_BUILD_DIR at a stable location and
+# every build dir on this machine reuses the SAME already-built deps — build
+# once, reuse for any number of build dirs (e.g. a Debug tree and a
+# RelWithDebInfo tree side by side).
+#
+# Deps are always built Release regardless of the parent CMAKE_BUILD_TYPE (see
+# add_third_party's hardcoded -DCMAKE_BUILD_TYPE=Release), so config type is
+# intentionally NOT part of the cache key — that is exactly why one cache safely
+# serves every config. What DOES change a dep's ABI is the platform, the
+# architecture and the compiler, so the shared root is keyed by those: two
+# toolchains never collide on the same install path, and switching compilers
+# builds a fresh keyed tree instead of silently reusing ABI-incompatible
+# binaries (or fighting the compiler-drift cache wipe below). The key is
+# computed lazily inside the function, not at include time, because
+# CMAKE_CXX_COMPILER_ID/VERSION are only populated after project().
+set(OMEGA_THIRD_PARTY_BUILD_DIR "" CACHE PATH
+    "Stable root to build+install third-party deps once and reuse across build dirs; empty = per-build-tree (default)")
+
+# omega_third_party_root(<out_var>) — set <out_var> to the third-party root for
+# the CALLING directory. When OMEGA_THIRD_PARTY_BUILD_DIR is set, returns a
+# toolchain-keyed subdir under it (shared across build dirs); otherwise returns
+# the caller's ${CMAKE_CURRENT_BINARY_DIR}/deps (today's per-build-tree default).
+function(omega_third_party_root out_var)
+    if(OMEGA_THIRD_PARTY_BUILD_DIR)
+        string(MAKE_C_IDENTIFIER
+            "${CMAKE_SYSTEM_NAME}_${CMAKE_SYSTEM_PROCESSOR}_${CMAKE_CXX_COMPILER_ID}_${CMAKE_CXX_COMPILER_VERSION}"
+            _key)
+        set(${out_var} "${OMEGA_THIRD_PARTY_BUILD_DIR}/${_key}" PARENT_SCOPE)
+    else()
+        set(${out_var} "${CMAKE_CURRENT_BINARY_DIR}/deps" PARENT_SCOPE)
+    endif()
+endfunction()
+
 function(add_third_party)
 
     cmake_parse_arguments(

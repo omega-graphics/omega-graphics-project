@@ -54,7 +54,9 @@ if(TARGET_LINUX)
 endif()
 
 set(OMEGAVA_THIRD_PARTY_SRC_DIR ${OMEGAVA_SOURCE_DIR}/deps)
-set(OMEGAVA_THIRD_PARTY_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/deps)
+# Shared+keyed across build dirs when OMEGA_THIRD_PARTY_BUILD_DIR is set, else
+# this module's own build tree (unchanged default). See omega_third_party_root.
+omega_third_party_root(OMEGAVA_THIRD_PARTY_OUTPUT_DIR)
 
 add_custom_target(OmegaVAThirdParty)
 

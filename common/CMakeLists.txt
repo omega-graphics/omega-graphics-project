@@ -61,6 +61,13 @@ if(NOT WIN32)
 	endif()
 endif()
 
+# Third-party dep build+install root. Shared+keyed across build dirs when
+# OMEGA_THIRD_PARTY_BUILD_DIR is set, else this module's own build tree
+# (unchanged default). Every dep below derives its BINARY_DIR/INSTALL_DIR from
+# this so they all relocate together. Re-published as CACHE INTERNAL at the ICU
+# section below (wtk's libxml2 build consumes it).
+omega_third_party_root(OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR)
+
 # --- Third-party: PCRE2 ---
 set(PCRE2_VERSION "10.47")
 if(DEFINED OMEGACOMMON_PCRE2_SOURCE_ROOT)
@@ -68,12 +75,12 @@ if(DEFINED OMEGACOMMON_PCRE2_SOURCE_ROOT)
 else()
 	set(PCRE2_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/pcre2/code/pcre2-${PCRE2_VERSION}")
 endif()
-set(PCRE2_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/pcre2")
+set(PCRE2_OUTPUT_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/pcre2")
 
 add_third_party(
 	NAME pcre2
 	SOURCE_DIR "${PCRE2_SOURCE_DIR}"
-	BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/pcre2-build"
+	BINARY_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}/pcre2-build"
 	INSTALL_DIR "${PCRE2_OUTPUT_DIR}"
 	CMAKE_BUILD_ARGS
 		-DPCRE2_BUILD_PCRE2_8=ON
@@ -173,7 +180,9 @@ endif()
 # variables defined below. Image deps (libpng, libjpeg-turbo, libtiff, zlib)
 # remain SHARED in Phase 1a and switch to STATIC in Phase 1b.
 set(OMEGACOMMON_THIRD_PARTY_SRC_DIR    "${CMAKE_CURRENT_SOURCE_DIR}/deps")
-set(OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps" CACHE INTERNAL "Common-owned third-party install root (consumed by wtk libxml2 build)" FORCE)
+# Value computed by omega_third_party_root() near the PCRE2 section above;
+# re-publish it as CACHE INTERNAL so wtk's libxml2 build can consume it.
+set(OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR "${OMEGACOMMON_THIRD_PARTY_OUTPUT_DIR}" CACHE INTERNAL "Common-owned third-party install root (consumed by wtk libxml2 build)" FORCE)
 
 # --- ICU ---
 set(ICU_DEP_ROOT    "${OMEGACOMMON_THIRD_PARTY_SRC_DIR}/icu")
