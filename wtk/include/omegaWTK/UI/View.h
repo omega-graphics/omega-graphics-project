@@ -43,6 +43,9 @@ namespace OmegaWTK {
         // heavy `NativeWindow.h` (and its X11 `CursorShape` macro dance).
         // The full definition lives in NativeWindow.h; ViewImpl.h /
         // View.Core.cpp include it where the enumerators are needed.
+        #ifdef CursorShape
+        #undef CursorShape
+        #endif
         enum class CursorShape : int;
     }
 

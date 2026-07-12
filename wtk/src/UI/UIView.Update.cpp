@@ -1,3 +1,5 @@
+
+
 #include "UIViewImpl.h"
 #include "ViewImpl.h"   // canonical ViewInternal::suspiciousDimensionPair / kMaxViewDimension
 #include "omegaWTK/Composition/DisplayList.h"
@@ -392,7 +394,7 @@ void UIView::paint(Composition::PaintContext & pc){
                         // the idempotent setStroke/close/setPathBrush — make
                         // translate() ACCUMULATE paintOffset every repaint.
                         auto pathCopy = std::make_shared<Composition::Path>(*shapeToDraw.path);
-                        pathCopy->setStroke(shapeToDraw.pathStrokeWidth);
+                        pathCopy->setStroke(float(shapeToDraw.pathStrokeWidth));
                         if(shapeToDraw.closePath){
                             pathCopy->close();
                         }

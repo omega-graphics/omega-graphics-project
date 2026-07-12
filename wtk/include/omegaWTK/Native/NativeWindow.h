@@ -6,15 +6,16 @@
 
 #include <functional>
 
-#ifndef OMEGAWTK_NATIVE_NATIVEWINDOW_H
-#define OMEGAWTK_NATIVE_NATIVEWINDOW_H
-
 // X11's <X.h> defines a `CursorShape` macro (largest cursor size). It can
 // be pulled into a translation unit transitively via Vulkan's xlib/xcb
 // platform headers or GTK. Undef it so our enum survives.
 #ifdef CursorShape
 #undef CursorShape
 #endif
+
+#ifndef OMEGAWTK_NATIVE_NATIVEWINDOW_H
+#define OMEGAWTK_NATIVE_NATIVEWINDOW_H
+
 
 namespace OmegaWTK {
     class AppWindow;

@@ -10,6 +10,15 @@
 
 #include "OmegaWTKExport.h"
 
+// X11 macros that need to undefined
+#ifdef None 
+#undef None
+#endif
+
+#ifdef CursorShape
+#undef CursorShape
+#endif
+
 
 #ifndef OMEGAWTK_CORE_CORE_H
 #define OMEGAWTK_CORE_CORE_H
@@ -18,10 +27,6 @@
 #define OMEGAWTK_NODISCARD [[nodiscard]]
 #else
 #define OMEGAWTK_NODISCARD 
-#endif
-// X11 Pulls in this
-#ifdef None
-#undef None 
 #endif
 
 /// @brief OmegaWTK

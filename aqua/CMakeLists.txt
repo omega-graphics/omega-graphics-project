@@ -145,10 +145,13 @@ add_dependencies(AQUA AQUAKernelLib)
 # `/DNDEBUG` strips `assert()` the same way `-DNDEBUG` does in the
 # GCC/Clang branch. clang-cl maps `/O2` onto the same LLVM passes as
 # `-O2`, so the physics hot-path recovery is the same as on Linux.
-if(MSVC)
-    target_compile_options(AQUA PRIVATE $<$<NOT:$<CONFIG:Debug>>:/O2 /DNDEBUG>)
-else()
-    target_compile_options(AQUA PRIVATE $<$<NOT:$<CONFIG:Debug>>:-O2 -DNDEBUG>)
+option(AQUA_BUILD_DEBUG "Build AQUA in DEBUG mode" OFF)
+if(NOT AQUA_BUILD_DEBUG)
+    if(MSVC)
+        target_compile_options(AQUA PRIVATE /O2 /DNDEBUG>)
+    else()
+        target_compile_options(AQUA PRIVATE -O2 -DNDEBUG>)
+    endif()
 endif()
 
 # NOTE: No third-party physics SDK is currently vendored. Whether AQUA grows its

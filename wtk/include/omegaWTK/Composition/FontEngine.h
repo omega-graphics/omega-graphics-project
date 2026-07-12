@@ -8,8 +8,10 @@
 #include <memory>
 
 
+
 #ifndef OMEGAWTK_COMPOSITION_FONTENGINE_H
 #define OMEGAWTK_COMPOSITION_FONTENGINE_H
+
 
  namespace OmegaCommon {
     class AssetBundle;

@@ -1,3 +1,5 @@
+#include "omegaWTK/Core/Core.h"
+
 #ifndef OMEGAWTK_UI_VIEWIMPL_H
 #define OMEGAWTK_UI_VIEWIMPL_H
 
@@ -11,6 +13,10 @@
 #include <memory>
 #include <unordered_set>
 #include <utility>
+
+#ifdef CursorShape 
+#undef CursorShape
+#endif
 
 namespace OmegaWTK {
 
