@@ -264,23 +264,37 @@ int main() {
               "split-impulse pseudoLinear shifts position by pseudo*dt per sub-step");
     }
 
-    // ---- Within-path determinism: re-run byte-identical (deliverable #4) ----
+    // ---- Within-path determinism: repeated re-runs byte-identical (deliverable #4) ----
+    // Several BACK-TO-BACK re-runs from identical initial state must all match
+    // the first GPU run byte-for-byte. More than one re-run is deliberate: the
+    // GED3D12 commit-fence race this test caught let the FIRST sync per queue
+    // read correct results while later syncs returned before the GPU finished,
+    // so a single re-run could pass by luck. Multiple consecutive syncs are
+    // what expose a "first call happens to pass" regression.
     {
-        AQBodySoA soa2;
-        soa2.gatherFrom(bodies, N);
-        for (std::size_t i = 0; i < N; ++i) {
-            soa2.pseudoLinX[i] = pseudo[i][0][0];
-            soa2.pseudoLinY[i] = pseudo[i][1][0];
-            soa2.pseudoLinZ[i] = pseudo[i][2][0];
+        const std::string reference = soaBytes(gpuOut);
+        constexpr int kReRuns = 3;
+        bool rerunOk = true;
+        bool allIdentical = true;
+        for (int r = 0; r < kReRuns; ++r) {
+            AQBodySoA soaR;
+            soaR.gatherFrom(bodies, N);
+            for (std::size_t i = 0; i < N; ++i) {
+                soaR.pseudoLinX[i] = pseudo[i][0][0];
+                soaR.pseudoLinY[i] = pseudo[i][1][0];
+                soaR.pseudoLinZ[i] = pseudo[i][2][0];
+            }
+            bool ok = backend->uploadBodies(soaR) &&
+                      backend->encodeIntegrate(dt, g, N, kSubsteps);
+            AQBodySoA outR;
+            outR.resize(N);
+            ok = ok && backend->downloadBodies(outR);
+            rerunOk = rerunOk && ok;
+            allIdentical = allIdentical && (soaBytes(outR) == reference);
         }
-        bool rerunOk = backend->uploadBodies(soa2) &&
-                       backend->encodeIntegrate(dt, g, N, kSubsteps);
-        AQBodySoA gpuOut2;
-        gpuOut2.resize(N);
-        rerunOk = rerunOk && backend->downloadBodies(gpuOut2);
-        check(rerunOk, "GPU re-run from identical initial state completes");
-        check(soaBytes(gpuOut) == soaBytes(gpuOut2),
-              "two GPU runs are byte-identical (within-path determinism)");
+        check(rerunOk, "GPU re-runs from identical initial state complete");
+        check(allIdentical,
+              "repeated GPU runs are byte-identical (within-path determinism)");
     }
 
     OmegaGTE::Close(gte);

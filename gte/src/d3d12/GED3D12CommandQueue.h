@@ -372,7 +372,14 @@ _NAMESPACE_BEGIN_
         // drives the fire itself via commitToGPUAndWait.
         void commitTimedAsyncImpl(const GECommitCompletionHandler & onComplete, bool autonomousWaiter);
 
+        // Dedicated CPU-wait fence for commitToGPUAndWait. Advanced
+        // monotonically (one fresh value per wait) — NOT toggled 0/1. The old
+        // binary scheme raced: a reused target of 1 with a queued reset-to-0
+        // let SetEventOnCompletion(1) fire on a *stale* value the GPU had not
+        // yet reset, so the wait returned before the just-submitted batch
+        // finished and readbacks caught the buffers mid-execution.
         ComPtr<ID3D12Fence> fence;
+        std::uint64_t       waitFenceValue = 0;
 
         HANDLE cpuEvent;
         std::uint64_t traceResourceId = 0;

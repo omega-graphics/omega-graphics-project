@@ -96,8 +96,8 @@ GED3D12CommandQueue::GED3D12CommandQueue(GED3D12Engine *engine, const GECommandQ
     };
 
     cpuEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-
-    fence->SetEventOnCompletion(1, cpuEvent);
+    // commitToGPUAndWait registers the completion event per-call against a
+    // fresh monotonic value; no pre-registration against a fixed value here.
 
     D3D12_COMMAND_QUEUE_DESC d3dDesc;
     d3dDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
@@ -2770,10 +2770,17 @@ void GED3D12CommandQueue::commitToGPU() {
 
 void GED3D12CommandQueue::commitToGPUAndWait() {
     commitToGPU();
-    fence->SetEventOnCompletion(1, cpuEvent);
-    commandQueue->Signal(fence.Get(), 1);
-    WaitForSingleObject(cpuEvent, INFINITE);
-    commandQueue->Signal(fence.Get(), 0);
+    // Wait on a FRESH, monotonically-increasing fence value. The GPU signals
+    // it only after the batch just flushed by commitToGPU() completes, so the
+    // wait cannot be satisfied by a stale value from a prior call (the old
+    // toggle-to-1-then-reset-to-0 scheme raced here, letting readbacks run
+    // while the GPU was still executing — see the header note on `fence`).
+    const std::uint64_t target = ++waitFenceValue;
+    commandQueue->Signal(fence.Get(), target);
+    if (fence->GetCompletedValue() < target) {
+        fence->SetEventOnCompletion(target, cpuEvent);
+        WaitForSingleObject(cpuEvent, INFINITE);
+    }
     for (const auto traceId : submittedTraceCommandBufferIds) {
         ResourceTracking::Event completeEvent{};
         completeEvent.backend = ResourceTracking::Backend::D3D12;

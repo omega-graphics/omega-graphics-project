@@ -1225,11 +1225,23 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                 _buffer->uploadDirtyBytes =
                     std::max<UINT64>(_buffer->uploadDirtyBytes, currentOffset);
                 if(_buffer->cpuSideResource && _data_buffer != nullptr){
+                    // Map with an empty read range — this is a write-only mirror,
+                    // we never read the companion here.
+                    const D3D12_RANGE noRead{0, 0};
                     void *readbackMap = nullptr;
-                    if(SUCCEEDED(_buffer->cpuSideResource->Map(0, nullptr, &readbackMap))){
+                    if(SUCCEEDED(_buffer->cpuSideResource->Map(0, &noRead, &readbackMap))){
                         memcpy(readbackMap, _data_buffer, currentOffset);
-                        D3D12_RANGE written{0, static_cast<SIZE_T>(currentOffset)};
-                        _buffer->cpuSideResource->Unmap(0, &written);
+                        // Unmap with an EMPTY written range. This mirror lives on
+                        // the READBACK companion purely so a CPU GEBufferReader that
+                        // runs before any dispatch sees the upload; the GPU never
+                        // consumes a readback heap (it is stuck in COPY_DEST). That
+                        // memory is CPU-cache-coherent, so the memcpy above is
+                        // already visible to a later CPU Map-for-read regardless of
+                        // the range hint. Declaring an empty range states the truth
+                        // — none of this is for the GPU — and silences D3D12 WARN
+                        // id=929 (non-empty written range on a readback heap).
+                        const D3D12_RANGE nothingForGPU{0, 0};
+                        _buffer->cpuSideResource->Unmap(0, &nothingForGPU);
                     }
                 }
             }
