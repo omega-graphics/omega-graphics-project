@@ -1,0 +1,25 @@
+// §5 negative — `dispatchMesh` is amplification-stage-only. A mesh shader
+// cannot dispatch further mesh threadgroups; it is already the leaf of the
+// dispatch tree.
+
+#requires(MESH_SHADERS)
+
+struct MeshletPayload {
+    uint baseTriangle;
+};
+
+struct MeshletVertex internal {
+    float4 pos : Position;
+};
+
+mesh(max_vertices=3, max_primitives=1, topology=triangle)
+void meshFunc(uint3 gid : ThreadGroupID,
+              in payload MeshletPayload p,
+              out vertices MeshletVertex verts[3],
+              out indices  uint3         tris[1]){
+    verts[0].pos = float4(-0.5, -0.5, 0.0, 1.0);
+    verts[1].pos = float4( 0.5, -0.5, 0.0, 1.0);
+    verts[2].pos = float4( 0.0,  0.5, 0.0, 1.0);
+    tris[0] = uint3(0, 1, 2);
+    dispatchMesh(1u, 1u, 1u, p);
+}

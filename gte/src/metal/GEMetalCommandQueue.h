@@ -114,7 +114,20 @@ _NAMESPACE_BEGIN_
         void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned id,
                                           const TextureSwizzle & swizzle) override;
         void bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned id) override;
+        /// §5 — amplification-stage binds. Metal calls it the OBJECT stage, so
+        /// these route to `setObjectBuffer:` / `setObjectTexture:` /
+        /// `setObjectSamplerState:` with `MTLRenderStageObject` fences — the same
+        /// shape 4c.5 landed for the mesh stage, one stage over.
+        void bindResourceAtAmplificationShader(SharedHandle<GEBuffer> &buffer, unsigned id) override;
+        void bindResourceAtAmplificationShader(SharedHandle<GETexture> &texture, unsigned id,
+                                               const TextureSwizzle & swizzle) override;
+        void bindResourceAtAmplificationShader(SharedHandle<GESamplerState> &sampler, unsigned id) override;
         void setRenderConstants(const void *data, unsigned size, unsigned offset) override;
+
+        /// §5 — shared guard for the three `bindResourceAtAmplificationShader`
+        /// overloads: the bound pipeline must be a mesh PSO that actually carries
+        /// an amplification stage. `what` names the caller for the diagnostic.
+        bool amplificationValidForBind(const char *what);
         void setViewports(std::vector<GEViewport> viewports) override;
         void setScissorRects(std::vector<GEScissorRect> scissorRects) override;
         void setStencilRef(unsigned ref) override;

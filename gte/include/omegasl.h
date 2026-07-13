@@ -248,8 +248,15 @@ enum omegasl_shader_type : int {
     /// `GL_EXT_mesh_shader`). Appended at the tail so the numeric value of
     /// every pre-existing stage is preserved in serialized `.omegasllib`
     /// archives. Gated at load time by OMEGASL_FEATURE_BIT_MESH_SHADERS.
-    /// The amplification/task stage will append after this when it lands.
-    OMEGASL_SHADER_MESH
+    OMEGASL_SHADER_MESH,
+    /// §5 — mesh-shader pipeline amplification stage (SM6.5 `as` /
+    /// MSL `[[object]]` / `GL_EXT_mesh_shader` task stage). Optional upstream
+    /// half of a mesh pipeline: it runs first, fills a payload, and dispatches
+    /// the mesh threadgroups that consume it. Appended at the tail for the same
+    /// archive-compatibility reason as OMEGASL_SHADER_MESH. Shares the
+    /// OMEGASL_FEATURE_BIT_MESH_SHADERS gate — no backend ships an amplification
+    /// stage without a mesh stage.
+    OMEGASL_SHADER_AMPLIFICATION
 };
 
 /// Per-shader feature requirements. Each bit names a runtime feature that
@@ -326,6 +333,30 @@ struct omegasl_mesh_shader_desc {
     int topology = 0;
 };
 
+/// §5 — mesh-pipeline payload descriptor. Written for BOTH the amplification
+/// entry (which produces the payload) and the mesh entry (which consumes it);
+/// `size == 0` means "this stage declares no payload," which is the normal
+/// state for a mesh shader dispatched without an amplification stage.
+///
+/// `size` is the payload struct's byte size as the backends lay it out,
+/// deliberately over-approximated by the compiler (vec3 = 16B, struct rounded
+/// to 16B — see `ast::payloadStructSize`). It has two consumers:
+///
+///   1. Metal's `MTLMeshRenderPipelineDescriptor.payloadMemoryLength`, which is
+///      a threadgroup-memory ALLOCATION size. Too large wastes a few bytes; too
+///      small is undefined behavior. Hence the over-approximation.
+///   2. The amp↔mesh agreement check every backend's `makeMeshPipelineState`
+///      runs: an amplification stage whose payload size disagrees with the mesh
+///      stage's means the two shaders were built against different payload
+///      structs, and the mesh side would read garbage. Caught at pipeline build
+///      with a precise diagnostic rather than as corrupt geometry at draw time.
+///
+/// Appended at the tail of the shader struct so pre-existing fields keep their
+/// position (see the ShaderArchive writer/reader).
+struct omegasl_payload_desc {
+    unsigned size = 0;
+};
+
 /// §16 Phase E — tessellation descriptor. Serialized onto the `omegasl_shader`
 /// record of a `hull` (and mirrored onto its paired `domain`) so the runtime
 /// can build a tessellation pipeline without re-parsing the shader: the
@@ -355,6 +386,9 @@ struct omegasl_shader {
     omegasl_compute_shader_params_desc computeShaderParamsDesc;
     omegasl_compute_shader_threadgroup_desc threadgroupDesc;
     omegasl_mesh_shader_desc meshDesc;
+    /// §5 — populated for OMEGASL_SHADER_AMPLIFICATION entries and for
+    /// OMEGASL_SHADER_MESH entries that declare an `in payload` (see above).
+    omegasl_payload_desc payloadDesc;
     /// §16 Phase E — populated only for hull/domain entries (see above).
     omegasl_tessellation_desc tessellationDesc;
     omegasl_shader_layout_desc *pLayout;
@@ -392,7 +426,18 @@ struct omegasl_shader {
 /// followed by the existing body (libname_size, libname, entry_count, …).
 #define OMEGASLLIB_MAGIC "OSLL"
 #define OMEGASLLIB_MAGIC_LEN 4
-#define OMEGASLLIB_FORMAT_VERSION 1u
+/// Version history:
+///   1 — initial container.
+///   2 — §5 (mesh-shader amplification stage): the OMEGASL_SHADER_MESH record
+///       gained a trailing `payloadDesc.size`, and OMEGASL_SHADER_AMPLIFICATION
+///       records exist at all. A v1 archive holding a mesh entry is NOT
+///       forward-readable: the v2 reader would consume 4 bytes of the following
+///       record as the payload size and desynchronize the whole stream. The
+///       version bump is what turns that silent misparse into a clean
+///       "unsupported container format version" rejection. Archives are compiled
+///       from source at build time (`add_omegasl_lib`), so nothing shipped needs
+///       migrating — a stale one just gets rebuilt.
+#define OMEGASLLIB_FORMAT_VERSION 2u
 
 /// Backend that produced a `.omegasllib`. Numeric values match
 /// `omegasl::Target::Kind` (HLSL=0, MSL=1, GLSL=2) so the writer casts

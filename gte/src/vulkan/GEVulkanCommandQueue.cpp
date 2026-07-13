@@ -1295,6 +1295,138 @@ _NAMESPACE_BEGIN_
         }
     };
 
+    // ── §5 — amplification-stage resource binding ───────────────────────────
+    //
+    // The amplification (task) stage owns descriptor SET 2. That index is not a
+    // convention picked here — it falls out of `makeMeshPipelineState` passing
+    // `{mesh, fragment, amplification}` to `createPipelineLayoutFromShaderDescs`,
+    // which creates one set per shader in array order. Mesh keeps set 0 and
+    // fragment keeps set 1 precisely so the existing vertex/fragment bind paths
+    // (which hardcode those indices) keep working untouched.
+    //
+    // Like the fragment sets, set 2 always goes through the fallback ring: Vulkan
+    // permits at most ONE push-descriptor set per pipeline layout, and set 0 has
+    // it.
+    //
+    // `amplificationValidForBind` is the shared guard. Reaching any of these
+    // three without an amplification stage bound means the caller believes the
+    // pipeline has a stage it does not have — a resource that silently goes
+    // nowhere is far worse than an assert, because the amp would then read
+    // uninitialized descriptors and dispatch a garbage child grid.
+
+    bool GEVulkanCommandBuffer::amplificationValidForBind(const char *what){
+        const bool ok = renderPipelineState != nullptr
+                        && renderPipelineState->isMesh
+                        && renderPipelineState->amplificationShader != nullptr;
+        if(!ok){
+            DEBUG_STREAM(what << ": no amplification stage on the bound pipeline "
+                              "(bind a mesh pipeline built with `amplificationFunc`)");
+        }
+        assert(ok && "bindResourceAtAmplificationShader: bound pipeline has no amplification stage");
+        return ok;
+    }
+
+    void GEVulkanCommandBuffer::bindResourceAtAmplificationShader(SharedHandle<GEBuffer> &buffer, unsigned id){
+        if(!amplificationValidForBind("bindResourceAtAmplificationShader(GEBuffer)")) return;
+        auto & ampShader = renderPipelineState->amplificationShader->internal;
+
+        auto vk_buffer = (GEVulkanBuffer *)buffer.get();
+        trackBuffer(buffer);
+
+        insertResourceBarrierIfNeeded(vk_buffer,id,ampShader);
+
+        VkDescriptorBufferInfo bufferInfo {};
+        bufferInfo.buffer = vk_buffer->buffer;
+        bufferInfo.offset = 0;
+        bufferInfo.range = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writeInfo.dstBinding = getBindingForResourceID(id,ampShader);
+        writeInfo.descriptorCount = 1;
+        writeInfo.descriptorType = getBufferDescriptorTypeForResourceID(id,ampShader);
+        writeInfo.pNext = nullptr;
+        writeInfo.dstArrayElement = 0;
+        writeInfo.pBufferInfo = &bufferInfo;
+        writeInfo.pImageInfo = nullptr;
+        writeInfo.pTexelBufferView = nullptr;
+
+        VkDescriptorSet target = acquireOrUpdateFallbackSet(2);
+        if(target != VK_NULL_HANDLE){
+            writeInfo.dstSet = target;
+            vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
+        }
+    };
+
+    void GEVulkanCommandBuffer::bindResourceAtAmplificationShader(SharedHandle<GETexture> &texture, unsigned id,
+                                                                  const TextureSwizzle & swizzle){
+        if(!amplificationValidForBind("bindResourceAtAmplificationShader(GETexture)")) return;
+        auto & ampShader = renderPipelineState->amplificationShader->internal;
+
+        auto vk_texture = (GEVulkanTexture *)texture.get();
+        trackTexture(texture);
+
+        checkTextureBindAgainstShader(id, ampShader, *vk_texture);
+
+        auto ioMode = getResourceIOModeForResourceID(id,ampShader);
+
+        insertResourceBarrierIfNeeded(vk_texture,id,ampShader);
+
+        TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, id, ampShader);
+
+        VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writeInfo.dstBinding = getBindingForResourceID(id,ampShader);
+        writeInfo.descriptorCount = 1;
+
+        VkDescriptorImageInfo imgInfo {};
+        imgInfo.sampler = VK_NULL_HANDLE;
+        imgInfo.imageView = vk_texture->getOrCreateSwizzledView(effective);
+        imgInfo.imageLayout = vk_texture->layout;
+
+        writeInfo.descriptorType = (ioMode == OMEGASL_SHADER_DESC_IO_IN)
+                                       ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                                       : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writeInfo.pNext = nullptr;
+        writeInfo.dstArrayElement = 0;
+        writeInfo.pBufferInfo = nullptr;
+        writeInfo.pImageInfo = &imgInfo;
+
+        VkDescriptorSet target = acquireOrUpdateFallbackSet(2);
+        if(target != VK_NULL_HANDLE){
+            writeInfo.dstSet = target;
+            vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
+        }
+    };
+
+    void GEVulkanCommandBuffer::bindResourceAtAmplificationShader(SharedHandle<GESamplerState> &sampler, unsigned id){
+        if(!amplificationValidForBind("bindResourceAtAmplificationShader(GESamplerState)")) return;
+        auto & ampShader = renderPipelineState->amplificationShader->internal;
+
+        auto *vk_sampler = (GEVulkanSamplerState *)sampler.get();
+        bool ok = checkSamplerBindAgainstShader(id, ampShader);
+        assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+        if(!ok) return;
+
+        VkDescriptorImageInfo imgInfo {};
+        imgInfo.sampler = vk_sampler->sampler;
+        imgInfo.imageView = VK_NULL_HANDLE;
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VkWriteDescriptorSet writeInfo {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writeInfo.dstBinding = getBindingForResourceID(id,ampShader);
+        writeInfo.descriptorCount = 1;
+        writeInfo.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        writeInfo.pNext = nullptr;
+        writeInfo.dstArrayElement = 0;
+        writeInfo.pBufferInfo = nullptr;
+        writeInfo.pImageInfo = &imgInfo;
+        writeInfo.pTexelBufferView = nullptr;
+
+        VkDescriptorSet target = acquireOrUpdateFallbackSet(2);
+        if(target != VK_NULL_HANDLE){
+            writeInfo.dstSet = target;
+            vkUpdateDescriptorSets(parentQueue->engine->device,1,&writeInfo,0,nullptr);
+        }
+    };
 
 
     static VkPrimitiveTopology vulkanTopologyForPolygonType(GECommandBuffer::PolygonType polygonType){
@@ -1460,6 +1592,33 @@ _NAMESPACE_BEGIN_
         return false;
     }
 
+    // §5 — the Vulkan stage bit a shader's push-constant range rides on, derived
+    // from the shader's own serialized TYPE rather than from which pipeline slot
+    // it happens to occupy.
+    //
+    // That distinction is load-bearing. `GEVulkanRenderPipelineState::vertexShader`
+    // holds the MESH shader on a mesh pipeline (the slot-doubling trick Phase 4a
+    // took from D3D12/Metal), so keying the stage bit off the slot name pushed
+    // constants with `VK_SHADER_STAGE_VERTEX_BIT` while the pipeline layout's
+    // range was built with `VK_SHADER_STAGE_MESH_BIT_EXT` — the two disagreed,
+    // which violates the per-byte/per-stage rule of
+    // VUID-vkCmdPushConstants-offset-01795. It happened to survive because most
+    // drivers write the push block regardless of the stage mask, but it was one
+    // strict driver away from a mesh shader silently reading a stale MVP.
+    // `omegasl_shader::type` is the ground truth; ask it.
+    static VkShaderStageFlags pushConstantStageBitFor(const omegasl_shader &shader){
+        switch(shader.type){
+            case OMEGASL_SHADER_FRAGMENT: return VK_SHADER_STAGE_FRAGMENT_BIT;
+            case OMEGASL_SHADER_HULL:     return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+            case OMEGASL_SHADER_DOMAIN:   return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+        #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
+            case OMEGASL_SHADER_MESH:          return VK_SHADER_STAGE_MESH_BIT_EXT;
+            case OMEGASL_SHADER_AMPLIFICATION: return VK_SHADER_STAGE_TASK_BIT_EXT;
+        #endif
+            default: return VK_SHADER_STAGE_VERTEX_BIT;
+        }
+    }
+
     void GEVulkanCommandBuffer::setRenderConstants(const void *data, unsigned size, unsigned offset){
         assert(renderPipelineState && "setRenderConstants requires a bound render pipeline");
         // Push to exactly the stages that declared `[in pc]`; this must equal
@@ -1467,10 +1626,19 @@ _NAMESPACE_BEGIN_
         // (the union of using stages), satisfying the per-byte stage rule.
         VkShaderStageFlags stages = 0;
         if(shaderDeclaresPushConstant(renderPipelineState->vertexShader->internal)){
-            stages |= VK_SHADER_STAGE_VERTEX_BIT;
+            stages |= pushConstantStageBitFor(renderPipelineState->vertexShader->internal);
         }
         if(shaderDeclaresPushConstant(renderPipelineState->fragmentShader->internal)){
-            stages |= VK_SHADER_STAGE_FRAGMENT_BIT;
+            stages |= pushConstantStageBitFor(renderPipelineState->fragmentShader->internal);
+        }
+        // §5 — the amplification stage is an ADDITIONAL stage (it does not
+        // occupy either slot above), so it needs its own test. This is what lets
+        // one `setRenderConstants` call feed a `constant<T>` declared `[in pc]`
+        // on both the amp and the mesh shader — the normal shape for handing a
+        // batch count or an MVP to both halves of a mesh pipeline.
+        if(renderPipelineState->amplificationShader != nullptr
+           && shaderDeclaresPushConstant(renderPipelineState->amplificationShader->internal)){
+            stages |= pushConstantStageBitFor(renderPipelineState->amplificationShader->internal);
         }
         assert(stages != 0 && "setRenderConstants: bound pipeline declares no `constant<T>` push constant");
         if(stages == 0){ return; }

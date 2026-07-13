@@ -1,6 +1,7 @@
 #include "GTEBase.h"
 #include "GTEMath.h"
 #include "GE.h"
+#include "GEMesh.h"
 
 #ifndef OMEGAGTE_GESPACE_H
 #define OMEGAGTE_GESPACE_H
@@ -8,9 +9,9 @@
 _NAMESPACE_BEGIN_
 
     /// @brief A stable handle to an object placed in a GESpace, returned by
-    /// `addObject()` (and, from Phase 3, `addMesh()`). Handles are never reused
-    /// within a space, so a stale handle reads as invalid rather than silently
-    /// addressing a different object.
+    /// `addObject()` / `addMesh()`. Handles are never reused within a space —
+    /// not even after `remove()` — so a stale handle reads as invalid rather
+    /// than silently addressing whatever object took its slot.
     typedef uint32_t GESpaceObjectID;
 
     /// @brief The handle value that never names an object. Returned by failed
@@ -113,8 +114,42 @@ _NAMESPACE_BEGIN_
         /// handle. The object carries no geometry — it is a pure transform node
         /// (an anchor, or a placeholder to be given a mesh later).
         ///
-        /// `addMesh()` (Phase 3) is this plus a geometry reference.
+        /// `addMesh()` is this plus a geometry reference.
         GESpaceObjectID addObject(const GESpaceTransform & transform = GESpaceTransform());
+
+        /// @brief Place an existing GEMesh in the space and return its handle.
+        ///
+        /// The mesh is **referenced, never copied or re-baked**: its vertex
+        /// buffer stays in its own local space and is shared with every other
+        /// holder of that handle. Placing the same GEMesh twice is legitimate
+        /// and is how you get two instances of one piece of geometry — they
+        /// carry independent transforms and share one GPU buffer.
+        ///
+        /// This is the whole point of GESpace: `addMesh()` → `translate()` /
+        /// `rotate()` / `scale()` → `objectTransform()` → draw. A mesh's own
+        /// local extent (`GEMesh::bounds`) is what lets you pick those
+        /// transform values without guessing a scale.
+        ///
+        /// A null mesh is rejected with an error log and returns
+        /// `GESpaceInvalidObject`; every mutator on that handle then degrades
+        /// loudly rather than moving a phantom.
+        GESpaceObjectID addMesh(const SharedHandle<GEMesh> & mesh,
+                                const GESpaceTransform & transform = GESpaceTransform());
+
+        /// @brief The mesh placed at `id`, or null if the handle is unknown or
+        /// names a transform-only object (`addObject`). Not an error either
+        /// way — a transform node legitimately has no geometry.
+        OMEGA_NODISCARD SharedHandle<GEMesh> meshOf(GESpaceObjectID id) const;
+
+        /// @brief Remove an object from the space, dropping this space's
+        /// reference to its mesh. The handle is retired, never recycled.
+        /// Removing an unknown handle logs and is otherwise a no-op.
+        void remove(GESpaceObjectID id);
+
+        /// @brief Every live object handle, in the order the objects were
+        /// added. Deterministic, so a renderer iterating this draws in a
+        /// stable order frame to frame.
+        OMEGA_NODISCARD OmegaCommon::Vector<GESpaceObjectID> objects() const;
 
         /// @brief Whether `id` names a live object in this space.
         OMEGA_NODISCARD bool contains(GESpaceObjectID id) const;
@@ -163,7 +198,7 @@ _NAMESPACE_BEGIN_
         /// (i.e. the object treated as untransformed), never a garbage matrix.
         OMEGA_NODISCARD FMatrix<4,4> objectTransform(GESpaceObjectID id) const;
 
-        // Geometry placement (addMesh / addPrimitive) arrives in Phases 3-4.
+        // Primitive placement (addPrimitive) arrives in Phase 4.
 
     private:
         struct Impl;

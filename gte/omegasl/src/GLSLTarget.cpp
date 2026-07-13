@@ -32,6 +32,13 @@ namespace omegasl {
             case ast::ShaderDecl::Hull:     return ".tesc";
             case ast::ShaderDecl::Domain:   return ".tese";
             case ast::ShaderDecl::Mesh:     return ".mesh";
+            /// §5 — Vulkan calls the amplification stage the "task" stage; the
+            /// extension's own spelling is what glslc's `-fshader-stage` wants,
+            /// and the shared derivation in `compileShader` strips the dot to
+            /// get it. (OmegaSL says `amplification` at the source level — see
+            /// the plan's Terminology note — but the toolchain flag has to speak
+            /// the backend's name.)
+            case ast::ShaderDecl::Amplification: return ".task";
         }
         return "";
     }
@@ -70,7 +77,7 @@ namespace omegasl {
         /// outright. Pinning the target to Vulkan 1.2 (SPIR-V 1.4) is
         /// the minimum that lights up the extension and leaves room for
         /// every other mesh-specific builtin / decoration to lower.
-        if (stage == ast::ShaderDecl::Mesh) {
+        if (stage == ast::ShaderDecl::Mesh || stage == ast::ShaderDecl::Amplification) {
             out << " --target-env=vulkan1.2";
         }
 
@@ -115,6 +122,8 @@ namespace omegasl {
             case ast::ShaderDecl::Fragment: shader_kind = shaderc_glsl_fragment_shader; break;
             case ast::ShaderDecl::Compute:  shader_kind = shaderc_glsl_compute_shader; break;
             case ast::ShaderDecl::Mesh:     shader_kind = shaderc_glsl_mesh_shader;    break;
+            /// §5 — the amplification stage is Vulkan's "task" stage.
+            case ast::ShaderDecl::Amplification: shader_kind = shaderc_glsl_task_shader; break;
             /// §16 Phase G — a hull compiles as a `.tesc` (tessellation control)
             /// and a domain as a `.tese` (tessellation evaluation). Without the
             /// right kind shaderc treats the source as compute and produces
@@ -128,7 +137,7 @@ namespace omegasl {
         /// need at least Vulkan 1.2 / SPIR-V 1.4 for the
         /// `SPV_EXT_mesh_shader` capability. shaderc defaults to
         /// SPIR-V 1.0 and rejects the `#extension` otherwise.
-        if (stage == ast::ShaderDecl::Mesh) {
+        if (stage == ast::ShaderDecl::Mesh || stage == ast::ShaderDecl::Amplification) {
             shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan,
                                                    shaderc_env_version_vulkan_1_2);
             shaderc_compile_options_set_target_spirv(options, shaderc_spirv_version_1_4);
@@ -401,6 +410,7 @@ namespace omegasl {
             case ast::ShaderDecl::Hull:     return_val_replacement = "gl_Position"; break;
             case ast::ShaderDecl::Domain:   return_val_replacement = "gl_Position"; break;
             case ast::ShaderDecl::Mesh:     break;
+            case ast::ShaderDecl::Amplification: break;
         }
         activeReturnReplacement = return_val_replacement;
 
@@ -450,12 +460,27 @@ namespace omegasl {
                 << ", " << topoStr << ") out;" << std::endl;
         }
 
+        /// §5 — task (amplification) stage prologue. Same extension + workgroup
+        /// shape as the mesh stage above; a task shader has no `out` layout of
+        /// its own because it emits no primitives — it emits a *grid* (via
+        /// `EmitMeshTasksEXT`, from the body) plus a payload (declared below).
+        if (_decl->shaderType == ast::ShaderDecl::Amplification) {
+            out << "#extension GL_EXT_mesh_shader : require" << std::endl;
+            shader_entry.threadgroupDesc.x = _decl->threadgroupDesc.x;
+            shader_entry.threadgroupDesc.y = _decl->threadgroupDesc.y;
+            shader_entry.threadgroupDesc.z = _decl->threadgroupDesc.z;
+            out << "layout(local_size_x = " << _decl->threadgroupDesc.x
+                << ", local_size_y = " << _decl->threadgroupDesc.y
+                << ", local_size_z = " << _decl->threadgroupDesc.z << ") in;" << std::endl;
+        }
+
         shader_entry.type = _decl->shaderType == ast::ShaderDecl::Vertex   ? OMEGASL_SHADER_VERTEX
                           : _decl->shaderType == ast::ShaderDecl::Fragment ? OMEGASL_SHADER_FRAGMENT
                           : _decl->shaderType == ast::ShaderDecl::Compute  ? OMEGASL_SHADER_COMPUTE
                           : _decl->shaderType == ast::ShaderDecl::Hull     ? OMEGASL_SHADER_HULL
                           : _decl->shaderType == ast::ShaderDecl::Domain   ? OMEGASL_SHADER_DOMAIN
-                                                                            : OMEGASL_SHADER_MESH;
+                          : _decl->shaderType == ast::ShaderDecl::Mesh     ? OMEGASL_SHADER_MESH
+                                                                            : OMEGASL_SHADER_AMPLIFICATION;
         shader_entry.name = new char[_decl->name.size() + 1];
         std::copy(_decl->name.begin(), _decl->name.end(), (char *)shader_entry.name);
         ((char *)shader_entry.name)[_decl->name.size()] = '\0';
@@ -489,6 +514,33 @@ namespace omegasl {
                 } else if (p.meshOutput == ast::AttributedFieldDecl::Indices) {
                     meshIndicesParamName = p.name;
                 }
+            }
+        }
+
+        /// §5 — the mesh-pipeline payload. Both stages declare it identically in
+        /// GLSL: one file-scope `taskPayloadSharedEXT <Struct> <name>;`, writable
+        /// on the task side and read-only on the mesh side (the extension infers
+        /// the direction from the stage, so there is nothing to spell out). The
+        /// declaration carries the user's own parameter name, which is why the
+        /// body needs no rewriting whatsoever — `p.baseTriangle` in the source is
+        /// already `p.baseTriangle` against this global. The parameter itself is
+        /// suppressed from `void main()` further down (a declaration, not an arg).
+        ///
+        /// The payload's struct type is a plain (non-`internal`) struct, so
+        /// `emitShaderUsedStructs` has already emitted its definition above this
+        /// point — the ordering is what makes this decl legal.
+        payloadParamName.clear();
+        if (_decl->shaderType == ast::ShaderDecl::Mesh
+            || _decl->shaderType == ast::ShaderDecl::Amplification) {
+            for (auto &p : _decl->params) {
+                if (p.payload == ast::AttributedFieldDecl::NotPayload) continue;
+                payloadParamName = p.name;
+                out << "taskPayloadSharedEXT " << p.typeExpr->name << " " << p.name << ";" << std::endl;
+                auto sit = structDeclMap.find(p.typeExpr->name);
+                if (sit != structDeclMap.end()) {
+                    shader_entry.payloadDesc.size = ast::payloadStructSize(sit->second);
+                }
+                break;
             }
         }
 
@@ -680,16 +732,20 @@ namespace omegasl {
                     }
                 }
             }
-        } else if (_decl->shaderType == ast::ShaderDecl::Mesh) {
-            /// §2a — mesh shares compute's thread-ID model (`local_size_*`
-            /// already emitted above with the mesh prologue). The
-            /// `out vertices` / `out indices` params have no presence in
-            /// `void main()` — they're addressed via builtins at body
-            /// emission — so they're skipped here. Everything else with
-            /// an attribute bridges from its `gl_*` builtin into a local
-            /// of the user's chosen name, identical to the compute path.
+        } else if (_decl->shaderType == ast::ShaderDecl::Mesh
+                   || _decl->shaderType == ast::ShaderDecl::Amplification) {
+            /// §2a / §5 — mesh and amplification both share compute's thread-ID
+            /// model (`local_size_*` already emitted above with each stage's
+            /// prologue). Three kinds of parameter get suppressed from
+            /// `void main()` because GLSL expresses them as declarations rather
+            /// than arguments: `out vertices` / `out indices` (addressed via the
+            /// `gl_Mesh*EXT` builtins at body emission) and the payload (the
+            /// `taskPayloadSharedEXT` global emitted above). Everything else with
+            /// an attribute bridges from its `gl_*` builtin into a local of the
+            /// user's chosen name, identical to the compute path.
             for (auto &arg : _decl->params) {
                 if (arg.meshOutput != ast::AttributedFieldDecl::NotMeshOutput) continue;
+                if (arg.payload != ast::AttributedFieldDecl::NotPayload) continue;
                 if (arg.attributeName.has_value()) {
                     const char *builtin = nullptr;
                     if (arg.attributeName.value() == ATTRIBUTE_GLOBALTHREAD_ID) {
@@ -1023,6 +1079,7 @@ namespace omegasl {
         meshVertsStructDecl = nullptr;
         meshMaxVertices = 0;
         meshMaxPrimitives = 0;
+        payloadParamName.clear();
         controlPointArrayParams.clear();
     }
 
@@ -1719,6 +1776,23 @@ namespace omegasl {
                                         ast::CallExpr *_expr,
                                         OmegaCommon::StrRef name,
                                         std::ostream &out) {
+        /// §5 — `dispatchMesh(x, y, z, payload)` → `EmitMeshTasksEXT(x, y, z)`.
+        /// A rewrite rather than a rename because the payload argument has no
+        /// place at the GLSL call site: the payload is the file-scope
+        /// `taskPayloadSharedEXT` global emitted in `emitShaderEntryHeader`, and
+        /// `EmitMeshTasksEXT` picks it up implicitly. Sema has already proven
+        /// the 4th argument names exactly that payload parameter, so dropping it
+        /// here loses nothing.
+        if (name == BUILTIN_DISPATCH_MESH) {
+            if (_expr->args.size() != 4) return false;
+            out << "EmitMeshTasksEXT(";
+            for (unsigned i = 0; i < 3; i++) {
+                if (i > 0) out << ", ";
+                cg.generateExpr(_expr->args[i]);
+            }
+            out << ")";
+            return true;
+        }
         /// §5.3: GLSL's `bitCount` returns a signed iN even for a uint
         /// operand, so wrap it in a cast back to the operand type to honor
         /// countbits' operand-typed return contract. The operand resolved

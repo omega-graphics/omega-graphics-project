@@ -21,6 +21,9 @@ namespace omegasl {
         /// (`vertices`, `indices`) stay contextual identifiers, matched
         /// positionally by the parser.
         (subject == KW_MESH) ||
+        /// §5 — amplification (task/object) stage. Hard keyword; the
+        /// `payload` param qualifier stays contextual (see Toks.def).
+        (subject == KW_AMPLIFICATION) ||
         (subject == KW_IF) ||
         (subject == KW_ELSE) ||
         (subject == KW_FOR) ||

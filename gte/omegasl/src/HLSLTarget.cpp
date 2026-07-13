@@ -91,6 +91,12 @@ namespace omegasl {
             /// Off-platform on this Linux host (DXC ships on Windows);
             /// see `gte/docs/Mesh-Shader-Implementation-Plan.md` §2b.
             out << "ms_6_5";
+        } else if (stage == ast::ShaderDecl::Amplification) {
+            /// §5 — the amplification stage shares the mesh stage's SM 6.5 floor
+            /// (`DispatchMesh`, the `payload` qualifier). Same reasoning as
+            /// `ms_6_5` above: force the profile regardless of the FLOAT16 gate,
+            /// because SM 5.x / 6.2 do not recognize the spelling at all.
+            out << "as_6_5";
         }
         out << " -E" << name.data() << " -Fo "
             << OmegaCommon::FS::Path(outDir).append(name).concat(".cso").absPath();
@@ -137,9 +143,9 @@ namespace omegasl {
         /// runtime mesh compile is structurally impossible here. Fail
         /// loud rather than silently emit garbage — same fail-loud
         /// pattern as the FLOAT16 gate above.
-        if (stage == ast::ShaderDecl::Mesh) {
+        if (stage == ast::ShaderDecl::Mesh || stage == ast::ShaderDecl::Amplification) {
             std::cerr << "error: runtime D3DCompile path cannot compile '" << name.data()
-                      << "' — mesh shaders need SM 6.5 (dxc), but the runtime uses "
+                      << "' — mesh and amplification shaders need SM 6.5 (dxc), but the runtime uses "
                          "D3DCompile (SM 5.1 max). Use the offline pipeline." << std::endl;
             return;
         }
@@ -371,8 +377,28 @@ namespace omegasl {
 
         out << " " << res_desc->name;
 
-        auto fragmentSpace = [&]() -> const char * {
-            return shader->shaderType == ast::ShaderDecl::Fragment ? "1" : "0";
+        /// Per-stage register space. Every stage that can appear in the SAME
+        /// pipeline as another must get its own space, or two stages declaring
+        /// the same OmegaSL resource emit the same `register(bN, spaceM)` twice
+        /// and D3D12 rejects the root signature for a duplicate binding.
+        ///
+        ///   0 — vertex / mesh / compute / hull / domain (the "geometry" slot;
+        ///       vertex and mesh never coexist, since mesh REPLACES vertex)
+        ///   1 — fragment
+        ///   2 — amplification (§5)
+        ///
+        /// Amplification is why this is a function and not a two-way ternary:
+        /// it is the first stage that coexists with another space-0 stage (mesh)
+        /// in the same pipeline, so `[in pc]` on both — the normal way to hand
+        /// the same push constant to the amp and the mesh stage — would have
+        /// emitted `register(b0, space0)` twice. The D3D12 root-signature builder
+        /// mirrors this mapping.
+        auto registerSpace = [&]() -> const char * {
+            switch (shader->shaderType) {
+                case ast::ShaderDecl::Fragment:      return "1";
+                case ast::ShaderDecl::Amplification: return "2";
+                default:                             return "0";
+            }
         };
 
         if (isSResource && res_desc->isStatic) {
@@ -384,7 +410,7 @@ namespace omegasl {
             layoutDesc.sampler_desc.w_address_mode = res_desc->staticSamplerDesc->wAddressMode;
             layoutDesc.sampler_desc.max_anisotropy = res_desc->staticSamplerDesc->maxAnisotropy;
             layoutDesc.location = res_desc->registerNumber;
-            out << ": register(s" << sResourceCount << ",space" << fragmentSpace() << ");" << std::endl;
+            out << ": register(s" << sResourceCount << ",space" << registerSpace() << ");" << std::endl;
             sResourceCount += 1;
         }
 
@@ -408,7 +434,7 @@ namespace omegasl {
                 layoutDesc.gpu_relative_loc = uResourceCount;
                 ++uResourceCount;
             }
-            out << ",space" << fragmentSpace() << ");" << std::endl;
+            out << ",space" << registerSpace() << ");" << std::endl;
         }
     }
 
@@ -544,6 +570,12 @@ namespace omegasl {
         /// up only needs to add the body emission, not chase down this
         /// follow-up builtin separately.
         if (name == BUILTIN_SET_MESH_OUTPUTS)    return "SetMeshOutputCounts";
+        /// §5 — amplification child dispatch. HLSL is the ONE backend where a
+        /// plain rename suffices: `DispatchMesh(x, y, z, payload)` takes all four
+        /// arguments exactly as OmegaSL spells them, so the shared `(args)` print
+        /// does the lowering. GLSL and MSL both have to drop the payload argument
+        /// and therefore rewrite the call in `tryEmitBuiltinCall` instead.
+        if (name == BUILTIN_DISPATCH_MESH)       return "DispatchMesh";
         if (name == BUILTIN_MAKE_FLOAT2)   return "float2";
         if (name == BUILTIN_MAKE_FLOAT3)   return "float3";
         if (name == BUILTIN_MAKE_FLOAT4)   return "float4";
@@ -1176,7 +1208,8 @@ namespace omegasl {
                           : _decl->shaderType == ast::ShaderDecl::Compute  ? OMEGASL_SHADER_COMPUTE
                           : _decl->shaderType == ast::ShaderDecl::Hull     ? OMEGASL_SHADER_HULL
                           : _decl->shaderType == ast::ShaderDecl::Domain   ? OMEGASL_SHADER_DOMAIN
-                                                                           : OMEGASL_SHADER_MESH;
+                          : _decl->shaderType == ast::ShaderDecl::Mesh     ? OMEGASL_SHADER_MESH
+                                                                           : OMEGASL_SHADER_AMPLIFICATION;
         shaderDesc.name = new char[_decl->name.size() + 1];
         std::copy(_decl->name.begin(), _decl->name.end(), (char *)shaderDesc.name);
         ((char *)shaderDesc.name)[_decl->name.size()] = '\0';
@@ -1184,8 +1217,48 @@ namespace omegasl {
         /// Resources land at file scope ahead of the function header.
         cg.emitResourcesAndFillLayout(_decl, shaderDesc, out);
 
+        /// §5 — the mesh-pipeline payload. The two stages spell it differently
+        /// on HLSL, which is why this is not one shared branch:
+        ///
+        ///   amplification — the payload is a file-scope `groupshared` global.
+        ///     `DispatchMesh(x, y, z, <payload>)` takes it BY NAME as its fourth
+        ///     argument (the only backend where the payload appears at the call
+        ///     site at all), and SM 6.5 requires the object it names to be
+        ///     groupshared. So the parameter is suppressed from the signature and
+        ///     re-declared here.
+        ///
+        ///   mesh — the payload is a real `in payload T name` PARAMETER, emitted
+        ///     inline in the param loop below like any other. Nothing to do here.
+        ///
+        /// Both stages serialize the payload size for the runtime's amp<->mesh
+        /// agreement check (and Metal's payloadMemoryLength).
+        payloadParamName.clear();
+        if (_decl->shaderType == ast::ShaderDecl::Amplification
+            || _decl->shaderType == ast::ShaderDecl::Mesh) {
+            for (auto &p : _decl->params) {
+                if (p.payload == ast::AttributedFieldDecl::NotPayload) continue;
+                payloadParamName = p.name;
+                auto sit = structDeclMap.find(p.typeExpr->name);
+                if (sit != structDeclMap.end()) {
+                    shaderDesc.payloadDesc.size = ast::payloadStructSize(sit->second);
+                }
+                if (_decl->shaderType == ast::ShaderDecl::Amplification) {
+                    out << "groupshared " << p.typeExpr->name << " ";
+                    writeIdentifier(p.name, out);
+                    out << ";" << std::endl;
+                }
+                break;
+            }
+        }
+
         /// 3. Stage decorators.
-        if (_decl->shaderType == ast::ShaderDecl::Compute) {
+        if (_decl->shaderType == ast::ShaderDecl::Compute
+            || _decl->shaderType == ast::ShaderDecl::Amplification) {
+            /// §5 — an amplification (AS) entry carries exactly the same
+            /// `[numthreads(x,y,z)]` decorator a compute entry does, and nothing
+            /// else: SM 6.5 gives the AS no output-topology or count decorator,
+            /// because its only output is the payload + the child grid, both
+            /// expressed in the body via `DispatchMesh`.
             shaderDesc.threadgroupDesc.x = _decl->threadgroupDesc.x;
             shaderDesc.threadgroupDesc.y = _decl->threadgroupDesc.y;
             shaderDesc.threadgroupDesc.z = _decl->threadgroupDesc.z;
@@ -1339,6 +1412,20 @@ namespace omegasl {
         }
 
         for (auto p_it = _decl->params.begin(); p_it != _decl->params.end(); p_it++) {
+            /// §5 — an amplification shader's `out payload` param has no place in
+            /// the HLSL signature: it is the file-scope `groupshared` global
+            /// emitted above, named again at the `DispatchMesh` call site. Skip
+            /// it BEFORE the separator is written, or the suppressed param leaves
+            /// a dangling comma behind it.
+            ///
+            /// The mesh side is the opposite and needs no skip — there the
+            /// payload IS a parameter (`in payload T name`), spelled in the
+            /// qualifier block further down.
+            if (_decl->shaderType == ast::ShaderDecl::Amplification
+                && p_it->payload != ast::AttributedFieldDecl::NotPayload) {
+                continue;
+            }
+
             if (!firstParam) {
                 out << ",";
             }
@@ -1391,6 +1478,19 @@ namespace omegasl {
                 out << " ";
                 writeIdentifier(p_it->name, out);
                 cg.writeDeclTypeSuffix(p_it->typeExpr, out);
+                continue;
+            }
+
+            /// §5 — the mesh stage's `in payload` param. SM 6.5 spells it exactly
+            /// as OmegaSL does, which is where OmegaSL's spelling came from. (The
+            /// amplification side never reaches here — it was skipped at the top
+            /// of the loop; its payload is a groupshared global.)
+            if (p_it->payload == ast::AttributedFieldDecl::InPayload) {
+                out << "in payload ";
+                writeTypeName(cg.typeResolver->resolveTypeWithExpr(p_it->typeExpr),
+                              p_it->typeExpr->pointer, out);
+                out << " ";
+                writeIdentifier(p_it->name, out);
                 continue;
             }
 
@@ -1485,6 +1585,9 @@ namespace omegasl {
             meshMaxVertices = 0;
             meshMaxPrimitives = 0;
         }
+        /// §5 — the payload rides BOTH stages, so its reset is unconditional
+        /// rather than folded into the mesh-only block above.
+        payloadParamName.clear();
     }
 
     void HLSLTarget::emitTextureSample(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {

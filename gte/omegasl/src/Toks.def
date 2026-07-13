@@ -86,6 +86,13 @@ namespace omegasl {
 /// tessellation descriptor matches `partitioning` / `outputtopology` — so
 /// they remain legal identifiers everywhere else.
 #define KW_MESH KW("mesh")
+/// Mesh-shader pipeline amplification (a.k.a. task / object) stage — §5.
+/// Hard keyword, like every other stage keyword. The payload qualifier
+/// (`payload`) stays a contextual identifier, consumed by the parser only
+/// when it directly follows an `in` / `out` access qualifier on a shader
+/// parameter — the same trick `vertices` / `indices` use — so `payload`
+/// remains a legal identifier everywhere else.
+#define KW_AMPLIFICATION KW("amplification")
 #define KW_IF KW("if")
 #define KW_ELSE KW("else")
 #define KW_FOR KW("for")

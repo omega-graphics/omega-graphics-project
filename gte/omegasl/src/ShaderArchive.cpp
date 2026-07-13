@@ -259,8 +259,23 @@ bool ReadShaderArchive(std::istream &in, OmegaSLShaderArchive &out, std::string 
                 !readValue(in, rec.threadgroupDesc.z) ||
                 !readValue(in, rec.meshDesc.max_vertices) ||
                 !readValue(in, rec.meshDesc.max_primitives) ||
-                !readValue(in, rec.meshDesc.topology)) {
+                !readValue(in, rec.meshDesc.topology) ||
+                /// §5 — payload size (0 when the mesh stage declares no
+                /// `in payload`). Appended AFTER the pre-existing mesh fields so
+                /// the on-disk order of everything before it is unchanged.
+                !readValue(in, rec.payloadDesc.size)) {
                 err = "could not read mesh descriptor" + at;
+                return false;
+            }
+        } else if (rec.type == OMEGASL_SHADER_AMPLIFICATION && !isStub) {
+            /// §5 — an amplification stage dispatches like compute (its
+            /// `[numthreads]` rides `threadgroupDesc`, same as compute and mesh)
+            /// and always carries a payload. Order mirrors the writer.
+            if (!readValue(in, rec.threadgroupDesc.x) ||
+                !readValue(in, rec.threadgroupDesc.y) ||
+                !readValue(in, rec.threadgroupDesc.z) ||
+                !readValue(in, rec.payloadDesc.size)) {
+                err = "could not read amplification descriptor" + at;
                 return false;
             }
         } else if (rec.type == OMEGASL_SHADER_HULL && !isStub) {
@@ -394,6 +409,15 @@ bool WriteShaderArchive(std::ostream &out, const OmegaSLShaderArchive &lib, std:
                 writeValue(out, shader.meshDesc.max_vertices);
                 writeValue(out, shader.meshDesc.max_primitives);
                 writeValue(out, shader.meshDesc.topology);
+                /// §5 — payload size (0 when the mesh stage declares no
+                /// `in payload`). Appended after the pre-existing mesh fields.
+                writeValue(out, shader.payloadDesc.size);
+            } else if (shader.type == OMEGASL_SHADER_AMPLIFICATION) {
+                /// §5 — threadgroup size + payload size (reader mirrors this order).
+                writeValue(out, shader.threadgroupDesc.x);
+                writeValue(out, shader.threadgroupDesc.y);
+                writeValue(out, shader.threadgroupDesc.z);
+                writeValue(out, shader.payloadDesc.size);
             } else if (shader.type == OMEGASL_SHADER_HULL) {
                 /// §16 Phase E — hull threadgroup size (dispatched one thread per
                 /// patch) + tessellation descriptor (reader mirrors this order).

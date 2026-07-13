@@ -40,6 +40,18 @@ public:
     /// asserts on this flag before issuing `vkCmdDrawMeshTasksEXT`.
     bool isMesh = false;
 
+    /// §5 — the optional amplification (task) stage of a mesh pipeline. Null on
+    /// every other pipeline kind, and on a mesh pipeline built without one.
+    ///
+    /// This gets its OWN slot rather than doubling onto an existing one (the way
+    /// the mesh shader doubles onto `vertexShader`) because amplification does
+    /// not replace any stage — it is an additional stage that coexists with the
+    /// mesh stage, with its own resource table and its own descriptor set. There
+    /// is nothing for it to double onto. `bindResourceAtAmplificationShader` and
+    /// `setRenderConstants` read `internal` off this handle to resolve the amp's
+    /// bindings.
+    SharedHandle<GTEShader> amplificationShader;
+
     /// §16 Phase G — tessellation-pipeline flag + per-patch control-point
     /// count. Set by `makeRenderPipelineState` after construction when the
     /// descriptor carried `hullFunc`/`domainFunc`. `GEVulkanCommandBuffer::

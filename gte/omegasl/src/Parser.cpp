@@ -765,6 +765,65 @@ namespace omegasl {
                     }
                 }
             }
+            else if(t.str == KW_AMPLIFICATION){
+                auto _s = (ast::ShaderDecl *)node;
+                _s->shaderType = ast::ShaderDecl::Amplification;
+                /// §5 — parse the amplification descriptor:
+                ///   amplification(x=.., y=.., z=..)
+                /// Same key=value loop shape as the mesh descriptor above (and
+                /// unlike compute's rigid positional `(x, y, z)` form, which
+                /// predates it). The dims are the per-amplification-group local
+                /// workgroup size and land in `threadgroupDesc`, exactly as they
+                /// do for compute and mesh — every stage that dispatches like
+                /// compute stores its `[numthreads]` in the same place, so the
+                /// runtime reads one field regardless of stage.
+                _s->threadgroupDesc.x = 1;
+                _s->threadgroupDesc.y = 1;
+                _s->threadgroupDesc.z = 1;
+                t = lexer->nextTok();
+                if(t.type != TOK_LPAREN){
+                    delete _s;
+                    auto e = std::make_unique<UnexpectedToken>("Expected `(` after amplification keyword");
+                    e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+                t = lexer->nextTok();
+                while(t.type != TOK_RPAREN){
+                    if(t.type != TOK_ID && t.type != TOK_KW){
+                        delete _s;
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Expected property name in amplification descriptor, got `") + t.str + "`");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    auto propName = t.str;
+                    t = lexer->nextTok();
+                    if(t.type != TOK_OP || t.str != OP_EQUAL){
+                        delete _s;
+                        auto e = std::make_unique<UnexpectedToken>("Expected `=` after amplification property name");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    t = lexer->nextTok();
+                    auto propValue = t.str;
+                    if(propName == "x"){ _s->threadgroupDesc.x = std::stoul(propValue); }
+                    else if(propName == "y"){ _s->threadgroupDesc.y = std::stoul(propValue); }
+                    else if(propName == "z"){ _s->threadgroupDesc.z = std::stoul(propValue); }
+                    else {
+                        delete _s;
+                        auto e = std::make_unique<UnexpectedToken>(std::string("Unknown amplification descriptor property `") + propName + "` (expected x, y, or z)");
+                        e->loc = ErrorLoc{ t.line, t.line, t.colStart, t.colEnd };
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                    t = lexer->nextTok();
+                    if(t.type == TOK_COMMA){
+                        t = lexer->nextTok();
+                    }
+                }
+            }
             else if(t.str == KW_STATIC) {
                 node = (ast::Decl *)new ast::ResourceDecl();
                 node->type = RESOURCE_DECL;
@@ -925,6 +984,12 @@ namespace omegasl {
                     /// (`const in T`, `in const T`). A repeated `const` is a
                     /// duplicate error.
                     bool paramConst = false;
+                    /// §5 — whether an access qualifier was spelled out. `In` is
+                    /// the default value of `paramAccess`, so "access == In"
+                    /// cannot distinguish `in payload T p` from a bare
+                    /// `payload T p`; the `payload` qualifier below needs the
+                    /// explicit spelling, so record it.
+                    bool sawAccessQualifier = false;
                     for (;;) {
                         if (t.type == TOK_KW && t.str == KW_CONST) {
                             if (paramConst) {
@@ -941,6 +1006,7 @@ namespace omegasl {
                             if (t.str == KW_IN)         paramAccess = ast::AttributedFieldDecl::In;
                             else if (t.str == KW_OUT)   paramAccess = ast::AttributedFieldDecl::Out;
                             else                        paramAccess = ast::AttributedFieldDecl::Inout;
+                            sawAccessQualifier = true;
                             t = lexer->nextTok();
                         } else {
                             break;
@@ -960,6 +1026,27 @@ namespace omegasl {
                         meshOutKind = (t.str == "vertices")
                             ? ast::AttributedFieldDecl::Vertices
                             : ast::AttributedFieldDecl::Indices;
+                        t = lexer->nextTok();
+                    }
+
+                    /// §5 — mesh-pipeline payload qualifier: `out payload T name`
+                    /// on an amplification shader, `in payload T name` on a mesh
+                    /// shader. `payload` is contextual, consumed only when it
+                    /// directly follows an explicit `in` / `out` — the same
+                    /// treatment `vertices` / `indices` get above, so `payload`
+                    /// stays a legal identifier everywhere else. Note this reads
+                    /// `paramAccess` rather than "an `in`/`out` token was seen":
+                    /// `In` is also the DEFAULT access, so a bare `payload T p`
+                    /// (no qualifier) would otherwise be silently accepted as an
+                    /// input payload. `sawAccessQualifier` pins it to the
+                    /// explicit spelling; Sema then checks the direction against
+                    /// the stage.
+                    ast::AttributedFieldDecl::PayloadKind payloadKind =
+                        ast::AttributedFieldDecl::NotPayload;
+                    if (sawAccessQualifier && t.type == TOK_ID && t.str == "payload") {
+                        payloadKind = (paramAccess == ast::AttributedFieldDecl::Out)
+                            ? ast::AttributedFieldDecl::OutPayload
+                            : ast::AttributedFieldDecl::InPayload;
                         t = lexer->nextTok();
                     }
 
@@ -1063,10 +1150,12 @@ namespace omegasl {
                         }
                         ast::AttributedFieldDecl _p{var_ty, var_id, attr_name, attr_index, paramAccess, paramConst};
                         _p.meshOutput = meshOutKind;
+                        _p.payload = payloadKind;
                         funcDecl->params.push_back(_p);
                     } else {
                         ast::AttributedFieldDecl _p{var_ty, var_id, {}, {}, paramAccess, paramConst};
                         _p.meshOutput = meshOutKind;
+                        _p.payload = payloadKind;
                         funcDecl->params.push_back(_p);
                     }
 

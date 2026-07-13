@@ -427,8 +427,15 @@ bool parseMesh(const std::string &path,
     }
     out.packed.clear();
     out.baseColorTexturePath.clear();
+
+    // The format parsers below append each vertex's components back to back, so
+    // they produce the TIGHT layout. The GPU reads a `buffer<T>` at its
+    // backend's own stride (std430 pads a lone float3 to 16B on Vulkan), so the
+    // stream is re-laid into that layout once, at the end, before anyone
+    // uploads it. Parse in tight units; publish in GPU units.
+    const size_t tightStride = geMeshTightStrideFor(desc.attributes);
     out.stride = geMeshStrideFor(desc.attributes);
-    if (out.stride == 0) {
+    if (out.stride == 0 || tightStride == 0) {
         std::cerr << "[MeshParser] empty vertex layout." << std::endl;
         return false;
     }
@@ -451,7 +458,11 @@ bool parseMesh(const std::string &path,
         std::cerr << "[MeshParser] no triangles produced from " << path << std::endl;
         return false;
     }
-    out.vertexCount = (unsigned)((out.packed.size() * sizeof(float)) / out.stride);
+    // Count in the layout the parsers actually wrote, THEN convert. Counting
+    // against out.stride here would divide tight bytes by the padded stride and
+    // silently drop a quarter of a Position-only mesh.
+    out.vertexCount = (unsigned)((out.packed.size() * sizeof(float)) / tightStride);
+    out.packed = geMeshRepackToGPULayout(out.packed, desc.attributes, out.vertexCount);
     return true;
 }
 

@@ -1333,15 +1333,28 @@ _NAMESPACE_BEGIN_
         rtPipelineFeatures.pNext = nullptr;
 
     #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
-        /// Mesh-Shader-Plan Phase 4a — request the mesh-stage feature
-        /// itself. `taskShader` is held at FALSE here because the
-        /// amplification stage is Phase 5; enabling it now without the
-        /// codegen plumbing would advertise a capability we can't
-        /// honor. The struct is chained into `features2.pNext` only
-        /// when the extension is enabled (the chain below).
+        /// Mesh-Shader-Plan Phase 4a/§5 — request the mesh-stage feature and,
+        /// since §5, the task (amplification) stage alongside it. Phase 4a held
+        /// `taskShader` at FALSE deliberately: enabling a stage the codegen could
+        /// not emit would have advertised a capability we could not honor. §5
+        /// lands that codegen, so the flag now follows the device.
+        ///
+        /// `taskShader` is queried, not assumed. `VK_EXT_mesh_shader` mandates
+        /// `meshShader` but leaves `taskShader` optional, so a device can expose
+        /// the extension with mesh-only support. Hard-coding VK_TRUE here would
+        /// fail `vkCreateDevice` outright on such a device — taking the whole
+        /// engine down, not just the amplification stage. `hasTaskShaderFeature`
+        /// is what `makeMeshPipelineState` then checks before accepting an
+        /// `amplificationFunc`.
+        VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatureQuery {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 meshFeatureQuery2 {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        meshFeatureQuery2.pNext = &meshShaderFeatureQuery;
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &meshFeatureQuery2);
+        hasTaskShaderFeature = (meshShaderFeatureQuery.taskShader == VK_TRUE);
+
         VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
         meshShaderFeatures.meshShader = VK_TRUE;
-        meshShaderFeatures.taskShader = VK_FALSE;
+        meshShaderFeatures.taskShader = hasTaskShaderFeature ? VK_TRUE : VK_FALSE;
         meshShaderFeatures.pNext = nullptr;
     #endif
 
@@ -2824,6 +2837,14 @@ _NAMESPACE_BEGIN_
                         else if(s.type == OMEGASL_SHADER_DOMAIN){ stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT; }
                     #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
                         else if(s.type == OMEGASL_SHADER_MESH){ stage = VK_SHADER_STAGE_MESH_BIT_EXT; }
+                        /// §5 — the amplification stage is Vulkan's TASK stage.
+                        /// This is what lets a `constant<T>` declared `[in pc]`
+                        /// on BOTH the amplification and the mesh shader reach
+                        /// both: push constants are a single range whose
+                        /// `stageFlags` is the union over every stage that
+                        /// declared the block, so the task bit has to be in that
+                        /// union or `vkCmdPushConstants` never reaches the amp.
+                        else if(s.type == OMEGASL_SHADER_AMPLIFICATION){ stage = VK_SHADER_STAGE_TASK_BIT_EXT; }
                     #endif
                         pushStages |= stage;
                         hasPushConstant = true;
@@ -2874,6 +2895,21 @@ _NAMESPACE_BEGIN_
             /// needs to know which stage to expose it to.
             else if(s.type == OMEGASL_SHADER_MESH){
                 shaderStageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+            }
+            /// §5 — descriptor bindings used by the amplification stage need
+            /// `VK_SHADER_STAGE_TASK_BIT_EXT`, or the descriptor is invisible to
+            /// the task shader at draw time and the validator says so.
+            ///
+            /// The amplification shader's set index is NOT arbitrary: this loop
+            /// creates one descriptor set per shader IN ARRAY ORDER, and
+            /// `bindResourceAtVertexShader` / `bindResourceAtFragmentShader`
+            /// hardcode sets 0 and 1. `makeMeshPipelineState` therefore passes
+            /// `{mesh, fragment, amplification}` — appending the amp at the TAIL
+            /// keeps mesh at set 0 and fragment at set 1 exactly where every
+            /// existing bind expects them, and puts the amp at set 2, which is
+            /// what `bindResourceAtAmplificationShader` writes.
+            else if(s.type == OMEGASL_SHADER_AMPLIFICATION){
+                shaderStageFlags = VK_SHADER_STAGE_TASK_BIT_EXT;
             }
         #endif
 
@@ -3878,29 +3914,67 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         if(!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)){
             return nullptr;
         }
-        /// Phase 5 hard-stop, matching the D3D12 (4b) / Metal (4c)
-        /// precedent. Amplification (Task) stage needs payload + child
-        /// dispatch plumbing the front-end hasn't grown yet.
-        if(desc.amplificationFunc){
+        /// §5 — amplification (Task) stage. Optional: a mesh pipeline runs
+        /// perfectly well without one, so a null `amplificationFunc` is the
+        /// normal case and everything below degrades to the Phase-4a shape.
+        const bool hasAmplification = (desc.amplificationFunc != nullptr);
+        if(hasAmplification){
             if(!_checkPipelineShader(desc.amplificationFunc, "amplification", desc.name)){
                 return nullptr;
             }
-            DEBUG_STREAM("makeMeshPipelineState: amplification stage is Phase 5 "
-                         "(payload + dispatch-children machinery pending); "
-                         "passing `amplificationFunc` is not supported yet ('"
-                         << desc.name << "')");
-            return nullptr;
+            if(!hasTaskShaderFeature){
+                /// The device exposed VK_EXT_mesh_shader but not its optional
+                /// `taskShader` feature — mesh-only hardware. Fail loud at
+                /// pipeline build rather than hand the driver a TASK stage it
+                /// never agreed to run.
+                DEBUG_STREAM("makeMeshPipelineState: device does not support the "
+                             "VK_EXT_mesh_shader `taskShader` feature, so an amplification "
+                             "stage cannot be bound ('" << desc.name << "')");
+                return nullptr;
+            }
+            /// The amp and the mesh stage must agree on the payload struct. They
+            /// are compiled independently — nothing but this check stops a caller
+            /// pairing an amplification shader with a mesh shader built against a
+            /// DIFFERENT payload type, in which case the mesh side would read the
+            /// amp's bytes through the wrong layout and silently render garbage.
+            /// Comparing the serialized size is the cheap, sufficient test: a
+            /// mismatch always means different structs.
+            const unsigned ampPayload  = desc.amplificationFunc->internal.payloadDesc.size;
+            const unsigned meshPayload = desc.meshFunc->internal.payloadDesc.size;
+            if(ampPayload == 0){
+                DEBUG_STREAM("makeMeshPipelineState: amplification shader declares no `out payload` ('"
+                             << desc.name << "')");
+                return nullptr;
+            }
+            if(ampPayload != meshPayload){
+                DEBUG_STREAM("makeMeshPipelineState: payload mismatch between the amplification stage ("
+                             << ampPayload << " bytes) and the mesh stage (" << meshPayload
+                             << " bytes) — the two shaders were built against different payload structs ('"
+                             << desc.name << "')");
+                return nullptr;
+            }
         }
 
     #ifdef VK_EXT_MESH_SHADER_EXTENSION_NAME
-        omegasl_shader shaders[] = {desc.meshFunc->internal,desc.fragmentFunc->internal};
+        /// Shader-array ORDER is load-bearing, not cosmetic:
+        /// `createPipelineLayoutFromShaderDescs` creates one descriptor set per
+        /// shader in this order, and `bindResourceAtVertexShader` /
+        /// `bindResourceAtFragmentShader` write sets 0 and 1 by hard-coded index.
+        /// Appending the amplification shader at the TAIL keeps mesh at set 0 and
+        /// fragment at set 1 — putting it first would silently redirect every
+        /// existing mesh-stage bind into the amp's set.
+        omegasl_shader shaders[] = {desc.meshFunc->internal,
+                                    desc.fragmentFunc->internal,
+                                    hasAmplification ? desc.amplificationFunc->internal
+                                                     : omegasl_shader{}};
+        const unsigned shaderCount = hasAmplification ? 3u : 2u;
 
         OmegaCommon::Vector<VkDescriptorSetLayout> descLayouts;
         OmegaCommon::Vector<VkDescriptorSet> descs;
         VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
         OmegaCommon::Vector<VkSampler> immutableSamplers;
 
-        VkPipelineLayout layout = createPipelineLayoutFromShaderDescs(2,shaders,&descriptorPool,descs,descLayouts,immutableSamplers);
+        VkPipelineLayout layout = createPipelineLayoutFromShaderDescs(shaderCount,shaders,&descriptorPool,descs,descLayouts,immutableSamplers);
         if(layout == VK_NULL_HANDLE){
             for(auto & descLayout : descLayouts){
                 if(descLayout != VK_NULL_HANDLE){
@@ -4017,7 +4091,28 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         fragmentStage.pName = "main";
         fragmentStage.pSpecializationInfo = nullptr;
 
-        VkPipelineShaderStageCreateInfo stages[] = {meshStage,fragmentStage};
+        /// §5 — the task stage runs BEFORE the mesh stage, so it goes first in
+        /// the stages array. (Vulkan does not actually require a particular
+        /// order here — it keys off `stage` — but writing them in execution order
+        /// is what the next reader will expect.)
+        VkPipelineShaderStageCreateInfo taskStage {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        if(hasAmplification){
+            auto *ampShader = (GTEVulkanShader *)desc.amplificationFunc.get();
+            taskStage.pNext = nullptr;
+            taskStage.flags = 0;
+            taskStage.stage = VK_SHADER_STAGE_TASK_BIT_EXT;
+            taskStage.module = ampShader->shaderModule;
+            taskStage.pName = "main";
+            taskStage.pSpecializationInfo = nullptr;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[3] = {};
+        uint32_t stageCount = 0;
+        if(hasAmplification){
+            stages[stageCount++] = taskStage;
+        }
+        stages[stageCount++] = meshStage;
+        stages[stageCount++] = fragmentStage;
 
         VkPipelineVertexInputStateCreateInfo vertexInputState {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vertexInputState.vertexBindingDescriptionCount = 0;
@@ -4145,7 +4240,7 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         createInfo.renderPass = compatibilityRenderPass;
         createInfo.subpass = 0;
         createInfo.pStages = stages;
-        createInfo.stageCount = 2;
+        createInfo.stageCount = stageCount;
         createInfo.pDynamicState = &dynamicState;
         createInfo.pRasterizationState = &rasterState;
         createInfo.pVertexInputState = &vertexInputState;     // ignored when mesh stage present
@@ -4195,6 +4290,12 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
                                             descLayouts,
                                             immutableSamplers,
                                             /*meshVariant=*/true));
+        /// §5 — stamped after construction (rather than threaded through the
+        /// already-11-argument constructor) because it is optional and every
+        /// other mesh-PSO field is not.
+        if(hasAmplification){
+            result->amplificationShader = desc.amplificationFunc;
+        }
         trackResource(result);
         return result;
     #endif

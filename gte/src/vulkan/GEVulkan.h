@@ -64,6 +64,16 @@ _NAMESPACE_BEGIN_
         /// records "we asked the driver to turn it on".
         bool hasMeshShaderExt = false;
 
+        /// §5 — the device's `VkPhysicalDeviceMeshShaderFeaturesEXT::taskShader`
+        /// value, queried before `vkCreateDevice` and requested only when true.
+        /// `VK_EXT_mesh_shader` MANDATES `meshShader` but leaves `taskShader`
+        /// optional, so a device can legitimately expose the extension with no
+        /// task (amplification) stage. Distinct from `hasMeshShaderExt`: that one
+        /// says "we turned the extension on," this one says "the amplification
+        /// half of it is actually usable." `makeMeshPipelineState` checks this
+        /// before accepting a non-null `amplificationFunc`.
+        bool hasTaskShaderFeature = false;
+
         /// CommandQueue-Typed-Pool follow-up — `VK_KHR_global_priority` is
         /// enabled on the device. Drives whether the device-create loop
         /// chained `VkDeviceQueueGlobalPriorityCreateInfoKHR` per

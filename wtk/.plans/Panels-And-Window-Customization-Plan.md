@@ -378,11 +378,11 @@ Replaced by:
 NativeSurface 
 2. **Panel registry.** Do panels live in `AppWindowManager` alongside windows, or in a separate `AppPanelManager`? Lifetime is tied to a parent window in the common case but standalone panels (no parent) also need an owner for the run loop.
 
-They can live in alongisde Windows in AppWindowManager.
+They can live in an AppPanelManager.
 
 3. **`NativeScreen` dependency.** Absolute/multi-monitor panel placement (A2) really wants `NativeScreen` (§2.9, not started). Do we land panels with parent-screen-only placement first and layer multi-monitor on later, or pull `NativeScreen` forward as a prerequisite?
 
-
+NativeScreen is completed.
 
 4. **Wayland anchored popups.** `xdg-popup` has strict anchoring/grab semantics (a popup must be anchored to a parent surface and is dismissed by the compositor). Does the GTK panel backend expose enough control, or do popups need a distinct "anchored" code path from free-floating palettes?
 

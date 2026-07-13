@@ -255,13 +255,14 @@ ctest green after the shared-math change.
 
 ---
 
-## Phase 3: Placing GEMeshes
+## Phase 3: Placing GEMeshes — ✅ IMPLEMENTED
 
 Let callers drop an existing GEMesh into the space and transform it. The GEMesh is
 referenced (shared), never copied or rebaked.
 
 ```cpp
-GESpaceObjectID GESpace::addMesh(const SharedHandle<GEMesh> & mesh);
+GESpaceObjectID GESpace::addMesh(const SharedHandle<GEMesh> & mesh,
+                                 const GESpaceTransform & transform = GESpaceTransform());
 SharedHandle<GEMesh> GESpace::meshOf(GESpaceObjectID) const;
 void GESpace::remove(GESpaceObjectID);
 OmegaCommon::Vector<GESpaceObjectID> GESpace::objects() const;
@@ -271,9 +272,135 @@ This is the direct answer to "GEMesh should be able to be translated/rotated/sca
 can see it in a scene": `addMesh` → `translate`/`rotate`/`scale` → `objectTransform` →
 draw. We deliberately add **no** transform methods to `GEMesh` itself — under the
 matrix-only decision, GEMesh stays an immutable GPU resource and the transform lives on
-the space object.
+the space object. Placing one GEMesh twice is legitimate and is how instancing falls out:
+two objects, independent transforms, one shared GPU buffer. `remove()` retires a handle
+without recycling it, so a stale ID stays loudly invalid rather than quietly addressing
+whatever object is added next.
 
-**Files**: `GESpace.h`, `GESpace.cpp`.
+### 3.1 Enabler: `GEMesh::bounds` (local-space AABB)
+
+**Confirmed with the developer before implementing.** Phase 3 as written can place a mesh
+but not *see* it: GESpace maps space units → NDC linearly through the viewport, so putting
+a loaded asset on screen means choosing a scale, and nothing in GTE knew how big a GEMesh
+was. `GEMesh` carries buffers and counts; the CPU vertex stream lives only inside
+`MeshParser` and is dropped after upload. Without bounds, the fit scale in any consumer is
+a magic number tuned by eye to one asset.
+
+So `GEMesh` gains a `GEMeshBounds bounds` (min / max / `valid`, plus `center()`,
+`extent()`, `longestExtent()`), populated at load time by a shared
+`geMeshComputeBounds(packed, vertexCount, stride)` that reads the Position attribute (always
+the first `float3` of a vertex). All three asset backends already funnel through a packed
+CPU float stream, so it is one call site each (Metal's `buildFromPacked` covers both its
+Model I/O and FBX paths), and `buildMeshFromTriangulation` accumulates the same box while
+it writes vertices. An empty mesh reports `valid == false` rather than a degenerate box at
+the origin, which a caller would happily divide by.
+
+Scope: ~90 lines across `GEMesh.h/.cpp` + the three loaders — a small feature, so per
+AGENTS.md it gets this note rather than its own phase breakdown. It is not GESpace-specific:
+Phase 4 primitives and Kreate need the same thing.
+
+### Finding D — a space viewport's depth range is in SPACE UNITS, not [0,1]
+
+`GEViewport` does double duty and the two jobs disagree on what `nearDepth`/`farDepth`
+mean. As the **rasterizer** viewport (`setViewports`) they are the hardware depth range and
+must lie within [0,1]. As a **space** viewport (`GESpace`) they are the extent of the space
+along Z, in the same units as `width`/`height`.
+
+Reuse the rasterizer's `{near=0, far=1}` for the space and any fit scale sized in pixels
+(the tennis racket's is 252×) multiplies the model's Z straight through the far plane: the
+mesh is clipped away entirely and the window is blank — with every matrix correct and no
+error anywhere. A pixel-space viewport needs a pixel-scaled depth range; MeshAndRaytracing
+uses `[-1000, +1000]`, symmetric about 0 so a centered model sits at NDC depth 0.5 with
+room on both sides to rotate.
+
+This was caught by the Phase 3 unit test, not by reasoning — the fit assertion failed with
+`z = 12060` where `0.5` was expected. It applies to every future GESpace consumer, which is
+why it is recorded here: **Phase 4** (a primitive placed in a pixel-space viewport) and
+**Phase 5** (Kreate's 2D/UI scene) hit the identical trap. The corollary for the fit itself:
+center the model on **all three** axes, not just X/Y.
+
+**Files**: `GESpace.h`, `GESpace.cpp`, `GEMesh.h`, `GEMesh.cpp`, the three
+`GE*MeshAsset` loaders, `gte/tests/gespace_test.cpp`.
+
+**Verification**: `omegagte_gespace` grew Phase 3 coverage — the mesh is referenced not
+copied (`meshOf(id) == mesh`, and the space holds a reference), one mesh placed twice keeps
+independent transforms, `objects()` enumerates in insertion order, `remove()` releases the
+mesh reference and retires the handle without recycling it, `addMesh(nullptr)` is refused,
+bounds read only the Position attribute (a Position+Normal stride whose normals sit far
+outside the position range must not poison the box), an all-negative mesh is not stretched
+to the origin, and the fit-to-viewport workflow lands the model's center at NDC (0,0,0.5)
+with all eight bounds corners inside the clip volume. 15/15 GTE + 26/26 AQUA ctest green.
+
+**Consumer**: `gte/tests/MeshAndRaytracingTest` — see below.
+
+### Finding E — `geMeshStrideFor` was a second, wrong copy of the buffer layout
+
+Found by *looking at the frame*, which is the only reason it was found at all: with the
+mesh correctly placed, the racket rendered as a shredded diamond. It was malformed before
+GESpace too — the model happens to span ≈[-0.95, 0.95] × [-0.41, 0.41], already inside the
+clip volume, so the pre-GESpace test was drawing the same garbage, just smaller. Nothing in
+the plan predicted this and no unit test caught it; it is invisible to anything short of a
+screenshot.
+
+**The bug.** `geMeshStrideFor()` computed a vertex's stride by summing its attributes'
+component sizes — 12 bytes for Position-only. But a `buffer<T>` element is laid out by the
+backend's buffer standard, and under **std430 a `float3` has a 16-byte base alignment**, so
+the struct rounds up: the compiled SPIR-V decorates the array `ArrayStride = 16` (verified
+by disassembling `meshFunc.spv`, not by reading the spec). The GPU therefore read vertex
+*i* at byte `16i` while `MeshParser` had packed it at `12i` — each vertex drifting 4 more
+bytes off than the last, reading a blend of its neighbours' components. That shreds the
+triangles while roughly preserving the silhouette, which is exactly what it looked like.
+
+**The root cause is a second source of truth.** GTE already had a correct, backend-aware
+layout authority — `omegaSLStructStride()` returns 16 for `{float3}` under std430, 12 for
+D3D12's scalar `StructuredBuffer`, 16 for Metal's `simd_float3`. `geMeshStrideFor` ignored
+it and re-derived the number by hand, wrongly. The shader file asserted the wrong rule out
+loud in a comment ("a lone `float3` needs no padding so we're aligned"), which is how it
+survived review.
+
+**The fix deletes the disagreement rather than adding a third opinion.** `geMeshStrideFor`
+now defers to `omegaSLStructStride`, so it is automatically right on every backend. Format
+parsers still emit tightly-packed vertices (the natural thing when walking a file — that is
+`geMeshTightStrideFor`), and `geMeshRepackToGPULayout()` re-lays the stream into the GPU
+layout once before upload, placing each attribute at the offset reported by a new
+`omegaSLStructMemberOffsets()` that mirrors the stride function branch for branch. Where
+the two layouts already agree (D3D12), the repack is a straight copy.
+
+**Blast radius is wider than this test:** every `GEMeshAsset`-loaded mesh (glTF, OBJ, FBX)
+on **Vulkan and Metal** was being read at the wrong stride. D3D12's scalar layout happens to
+match the tight packing, which is likely why it went unnoticed — MeshAndRaytracingTest was
+written as a D3D12 test. `buildMeshFromTriangulation` was never affected: it drives a
+`GEBufferWriter`, which already applies the standard's align-then-place internally.
+
+**Follow-up (not done here):** `GEMeshDescriptor` combinations beyond Position are now
+laid out correctly by construction, but none are exercised by a test. A Position+Normal mesh
+(tight 24B → std430 32B, normal at offset 16) is the case most likely to regress; it wants
+a unit test against `omegaSLStructMemberOffsets`.
+
+### 3.2 First consumer: MeshAndRaytracingTest
+
+The test loaded an FBX and handed its raw local coordinates to the rasterizer as if they
+were already clip space, so the racket (authored around unit scale, ~1.90 × 0.81 × 0.17)
+drew as a speck-to-nothing against the clear color. It now places the mesh through GESpace:
+
+- The mesh shader takes the MVP as a push constant (`constant<MeshTransform> pc : 0` +
+  `[in pc]` on the `mesh(...)` stage — OmegaSL and the Vulkan backend both already support
+  push constants on a mesh stage; `GEVulkan.cpp:2826` maps `OMEGASL_SHADER_MESH` to
+  `VK_SHADER_STAGE_MESH_BIT_EXT` in the push range). The vertex buffer moved to slot 1.
+- The C++ side builds a `GESpace` from an 800×600 pixel-space viewport (depth `[-1000,
+  +1000]`, per Finding D), calls `addMesh`, and fits the model from its own
+  `GEMesh::bounds`: uniform scale to 80% of the viewport's shorter axis, centered on all
+  three axes. No per-asset constant anywhere.
+- `objectTransform(id)` is flattened column-major into the push constant each frame.
+
+The bounds also settled a question that would otherwise have been a guess: the racket is
+thin in **Z**, so it already faces the viewer and needs no reorientation — an "upright"
+quarter-turn about X, which a Z-up model would want, would have turned it edge-on.
+
+Still open (not GESpace's): the test window's render target has **no depth attachment**, so
+the draw runs with no depth test and 389k triangles resolve in dispatch order — back faces
+can paint over front ones. Placement and silhouette are unaffected; proper occlusion needs
+a depth buffer on `GENativeRenderTarget`.
 
 ---
 
@@ -397,10 +524,15 @@ This phase is scoped in the Kreate module and should get its own short note in a
 
 | File | Changes |
 |---|---|
-| New `gte/include/omegaGTE/GESpace.h` | ✅ Phase 1: `GESpace` (viewport + `spaceToNDC`). ✅ Phase 2: `GESpaceObjectID`, `GESpaceTransform`, `addObject`, TRS mutators, `objectTransform` |
-| New `gte/src/common/GESpace.cpp` | ✅ Phase 1: space→NDC matrix. ✅ Phase 2: object table + transforms + retrieval (all composition via one `applyThen` helper). Geometry placement in Phases 3-4 |
+| New `gte/include/omegaGTE/GESpace.h` | ✅ Phase 1: `GESpace` (viewport + `spaceToNDC`). ✅ Phase 2: `GESpaceObjectID`, `GESpaceTransform`, `addObject`, TRS mutators, `objectTransform`. ✅ Phase 3: `addMesh`, `meshOf`, `remove`, `objects` |
+| New `gte/src/common/GESpace.cpp` | ✅ Phase 1: space→NDC matrix. ✅ Phase 2: object table + transforms + retrieval (all composition via one `applyThen` helper). ✅ Phase 3: objects hold a shared GEMesh reference; handles retired, never recycled. Primitive placement in Phase 4 |
 | `gte/include/omegaGTE/GTEMath.h` | ✅ Phase 1: `transformPoint` fixed to apply `M·v` column-major (was applying `Mᵀ` — Finding A). ✅ Phase 2: `rotationEuler` fixed to compose X→Y→Z (was composing Z→Y→X — Finding C) |
-| `gte/tests/gespace_test.cpp`, `gte/tests/CMakeLists.txt` | ✅ Phase 1: `omegagte_gespace` unit test (13/13 GTE suite green) |
+| `gte/include/omegaGTE/GEMesh.h`, `gte/src/common/GEMesh.cpp` | ✅ Phase 3.1: `GEMeshBounds` (local-space AABB + `center`/`extent`/`longestExtent`), `geMeshComputeBounds()`, `GEMesh::bounds`; `buildMeshFromTriangulation` populates it. ✅ Finding E: `geMeshStrideFor` now defers to `omegaSLStructStride` (was hand-summing, wrongly); new `geMeshTightStrideFor` + `geMeshRepackToGPULayout` |
+| `gte/include/omegaGTE/GTEShader.h`, `gte/src/GTEBase.cpp` | ✅ Finding E: new `omegaSLStructMemberOffsets()` — per-member byte offsets under the same backend-aware standard `omegaSLStructStride` sizes with |
+| `gte/src/common/MeshParser.cpp` | ✅ Finding E: parsers emit tight, then the stream is re-laid into the GPU layout once before it is published |
+| `gte/src/{vulkan,d3d12,metal}/GE*MeshAsset.{cpp,mm}` | ✅ Phase 3.1: each loader fills `GEMesh::bounds` from the packed stream it already holds (one call site each). ✅ Finding E: Metal's Model I/O path repacks its own tight stream (the other two go through MeshParser) |
+| `gte/tests/gespace_test.cpp`, `gte/tests/CMakeLists.txt` | ✅ Phase 1: `omegagte_gespace` unit test. ✅ Phase 3: mesh placement, instancing, handle retirement, bounds, and fit-to-viewport (15/15 GTE suite green) |
+| `gte/tests/MeshAndRaytracingTest/main.cpp`, `gte/tests/assets/MeshAndRaytracingTest/meshAndRaytracing.omegasl` | ✅ Phase 3.2: first consumer — push-constant MVP on the mesh stage, fed by `GESpace::objectTransform()`; mesh fitted to the viewport from its own bounds |
 | ~~`gte/CMakeLists.txt`~~ | Not needed — `file(GLOB COMMON_SRCS src/common/*.cpp)` already picks it up |
 | `gte/include/omegaGTE/TE.h` | `TEMesh` / `TETriangulationResult` `translate`/`rotate`/`scale` marked `OMEGA_DEPRECATED` (superseded — see below) |
 | `kreate/src/Scene.cpp`, `kreate/src/Object.cpp`, `kreate/include/kreate/*.h` | Delegate transform/space to GESpace (Phase 5; Kreate-owned) |
@@ -426,13 +558,14 @@ and any future callers migrate; track it as a follow-up, not part of this plan.
 ## Implementation Order
 
 ```
-Phase 1 (Core + space→NDC matrix)
+Phase 1 (Core + space→NDC matrix)                     ✅
     │
-Phase 2 (Object model + transforms + objectTransform retrieval)
+Phase 2 (Object model + transforms + objectTransform retrieval)   ✅
     │
-Phase 3 (Place GEMeshes)     ◄── unblocks GEMesh-in-a-scene immediately
+Phase 3 (Place GEMeshes + GEMesh::bounds)             ✅ ◄── GEMesh-in-a-scene, shipped
+    │        └── consumer: MeshAndRaytracingTest      ✅
     │
-    │   TE Phase 9.6 (local-space triangulation) ── prerequisite, TE-plan-owned
+    │   TE Phase 9.6 (local-space triangulation) ── prerequisite, TE-plan-owned ✅
     │        │
     ▼        ▼
 Phase 4 (Place 3D primitives — needs TE 9.6)
@@ -442,7 +575,8 @@ Phase 5 (Kreate integration)
 Phase 6 (Testing)
 ```
 
-Phases 1–3 are self-contained in GTE and unblock the GEMesh-in-a-scene use case
-immediately (place an existing mesh, transform it, retrieve the matrix). Phase 4's only
-external dependency is TE Phase 9.6 (local-space triangulation). Phase 5 is the Kreate
-consumer and can begin as soon as Phases 1–3 land.
+Phases 1–3 are self-contained in GTE and are **done**: an existing GEMesh can be placed,
+transformed, and drawn from `objectTransform()`, and MeshAndRaytracingTest does exactly
+that. Phase 4's only external dependency is TE Phase 9.6 (local-space triangulation), which
+has landed. Phase 5 is the Kreate consumer and can begin now — note Finding D applies to it
+directly (Kreate's 2D/UI scene is a pixel-space viewport).

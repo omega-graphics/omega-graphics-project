@@ -911,9 +911,117 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             [rp setFragmentBytes:data length:size atIndex:idx];
             any = true;
         }
+        // §5 — the amplification (object) stage is an ADDITIONAL stage: it
+        // occupies neither the vertex/mesh slot nor the fragment slot, so it
+        // needs its own test and its own `setObjectBytes:`. This is what lets one
+        // setRenderConstants call feed a `constant<T>` declared `[in pc]` on both
+        // the amp and the mesh shader — the normal shape for handing a batch
+        // count or an MVP to both halves of a mesh pipeline.
+        if(renderPipelineState->amplificationShader != nullptr
+           && findPushConstantBufferIndex(renderPipelineState->amplificationShader->internal, idx)){
+            [rp setObjectBytes:data length:size atIndex:idx];
+            any = true;
+        }
         metalRequireOrReturn(any, DEBUG_DOMAIN_PIPELINE,
                      "setRenderConstants: bound pipeline declares no constant<T> push constant");
         (void)any;
+    };
+
+    // ── §5 — amplification (object) stage resource binding ──────────────────
+    //
+    // This is 4c.5.1–4c.5.4 landed verbatim with the Object selectors, which is
+    // exactly what the Phase 4c.5 trade-off note said would happen "when Phase 5
+    // wires the amplification stage."
+    //
+    // `MTLRenderStageObject` (not Vertex, not Mesh) is the right fence stage for
+    // the same reason `MTLRenderStageMesh` was for the mesh binds: Metal tracks
+    // the object/mesh/fragment pipeline stages independently, so tagging the
+    // wait/signal with the stage that actually consumes the resource lets the
+    // driver schedule the barrier at the real stage boundary instead of at a
+    // vertex-fetch that never happens in this pipeline.
+
+    // Spelled out rather than using `metalRequireOrReturn`: that macro returns
+    // void, and this guard has to hand a bool back to its three callers so they
+    // can bail themselves.
+    bool GEMetalCommandBuffer::amplificationValidForBind(const char *what){
+        const bool ok = renderPipelineState != nullptr
+                        && renderPipelineState->isMesh
+                        && renderPipelineState->amplificationShader != nullptr;
+        if(!ok){
+            DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, what
+                     << ": no amplification stage on the bound pipeline "
+                        "(bind a mesh pipeline built with `amplificationFunc`)");
+            assert(ok && "GTE caller-contract violation; see the CRITICAL log line above");
+        }
+        return ok;
+    }
+
+    void GEMetalCommandBuffer::bindResourceAtAmplificationShader(SharedHandle<GEBuffer> & buffer,unsigned _id){
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtAmplificationShader(GEBuffer): called outside an active render pass");
+        if(!amplificationValidForBind("bindResourceAtAmplificationShader(GEBuffer)")) return;
+        auto & ampShader = renderPipelineState->amplificationShader->internal;
+
+        auto *metalBuffer = (GEMetalBuffer *)buffer.get();
+        metalBuffer->metalBuffer.assertExists();
+
+        checkBufferRoleAgainstShader(_id, ampShader, *metalBuffer);
+
+        if(metalBuffer->needsBarrier){
+            [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalBuffer->resourceBarrier.handle()) beforeStages:MTLRenderStageObject];
+            metalBuffer->needsBarrier = false;
+        }
+
+        unsigned index = getResourceLocalIndexFromGlobalIndex(_id,ampShader);
+        [rp setObjectBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metalBuffer->metalBuffer.handle()) offset:0 atIndex:index];
+
+        if(shaderHasWriteAccessForResource(_id,ampShader)){
+            metalBuffer->needsBarrier = true;
+            [rp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalBuffer->resourceBarrier.handle()) afterStages:MTLRenderStageObject];
+        }
+    };
+
+    void GEMetalCommandBuffer::bindResourceAtAmplificationShader(SharedHandle<GETexture> & texture,unsigned _id,
+                                                                 const TextureSwizzle & swizzle){
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtAmplificationShader(GETexture): called outside an active render pass");
+        if(!amplificationValidForBind("bindResourceAtAmplificationShader(GETexture)")) return;
+        auto & ampShader = renderPipelineState->amplificationShader->internal;
+
+        auto *metalTexture = (GEMetalTexture *)texture.get();
+
+        checkTextureBindAgainstShader(_id, ampShader, *metalTexture);
+
+        if(metalTexture->needsBarrier){
+            [rp waitForFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) beforeStages:MTLRenderStageObject];
+            metalTexture->needsBarrier = false;
+        }
+
+        unsigned index = getResourceLocalIndexFromGlobalIndex(_id,ampShader);
+        TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, _id, ampShader);
+        id<MTLTexture> view = metalTexture->getOrCreateSwizzledView(effective);
+        [rp setObjectTexture:view atIndex:index];
+
+        if(shaderHasWriteAccessForResource(_id,ampShader)){
+            metalTexture->needsBarrier = true;
+            [rp updateFence:NSOBJECT_OBJC_BRIDGE(id<MTLFence>,metalTexture->resourceBarrier.handle()) afterStages:MTLRenderStageObject];
+        }
+    };
+
+    void GEMetalCommandBuffer::bindResourceAtAmplificationShader(SharedHandle<GESamplerState> & sampler,unsigned _id){
+        metalRequireOrReturn(rp && cp == nil, DEBUG_DOMAIN_RESOURCE,
+                     "bindResourceAtAmplificationShader(GESamplerState): called outside an active render pass");
+        if(!amplificationValidForBind("bindResourceAtAmplificationShader(GESamplerState)")) return;
+        auto & ampShader = renderPipelineState->amplificationShader->internal;
+
+        auto *metalSampler = (GEMetalSamplerState *)sampler.get();
+        bool ok = checkSamplerBindAgainstShader(_id, ampShader);
+        assert(ok && "Extension 8: sampler bound to a static or non-sampler slot");
+        if(!ok) return;
+        unsigned index = getResourceLocalIndexFromGlobalIndex(_id,ampShader);
+        // Samplers don't ride a fence (the GPU treats them as stateless), so the
+        // routing here is purely the selector choice.
+        [rp setObjectSamplerState:NSOBJECT_OBJC_BRIDGE(id<MTLSamplerState>,metalSampler->samplerState.handle()) atIndex:index];
     };
 
     void GEMetalCommandBuffer::setViewports(std::vector<GEViewport> viewports){
@@ -1268,14 +1376,31 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         auto & meshShader = renderPipelineState->vertexShader;
         auto & tg = meshShader->internal.threadgroupDesc;
 
-        /// `threadsPerObjectThreadgroup` is ignored when no object
-        /// (amplification) shader is bound — Metal SDK explicitly
-        /// documents this; the Phase 4c hard-stop at
-        /// `makeMeshPipelineState` keeps that always true today. When
-        /// Phase 5 lands amplification, this becomes the object-stage's
-        /// `[numthreads(...)]` from a sibling field on the PSO.
+        /// §5 — `threadsPerObjectThreadgroup` is the object (amplification)
+        /// stage's own `[numthreads(...)]`, read from its serialized
+        /// `threadgroupDesc` — the same field compute and mesh use, because every
+        /// stage that dispatches like compute stores its threadgroup size there.
+        ///
+        /// Phase 4c pinned this at (1,1,1) and was right to: Metal documents the
+        /// argument as ignored when no object function is bound, and back then
+        /// none could be. Now that one can, passing (1,1,1) would silently run
+        /// every amplification threadgroup single-threaded regardless of what the
+        /// shader declared — the shader would still "work", just at 1/Nth of its
+        /// declared width, which is exactly the kind of quiet wrongness that
+        /// never shows up as a failure.
+        MTLSize objectThreadgroup = MTLSizeMake(1,1,1);
+        if(renderPipelineState->amplificationShader != nullptr){
+            auto & atg = renderPipelineState->amplificationShader->internal.threadgroupDesc;
+            objectThreadgroup = MTLSizeMake(atg.x,atg.y,atg.z);
+        }
+
+        /// NOTE: with an object stage bound, `groupCount*` counts OBJECT
+        /// threadgroups — each of which then decides how many mesh threadgroups
+        /// to launch via `set_threadgroups_per_grid`. Without one it counts mesh
+        /// threadgroups directly. Same call, two meanings; that is Metal's model
+        /// (and D3D12's `DispatchMesh` / Vulkan's `vkCmdDrawMeshTasksEXT` agree).
         [rp drawMeshThreadgroups:MTLSizeMake(groupCountX,groupCountY,groupCountZ)
-        threadsPerObjectThreadgroup:MTLSizeMake(1,1,1)
+        threadsPerObjectThreadgroup:objectThreadgroup
           threadsPerMeshThreadgroup:MTLSizeMake(tg.x,tg.y,tg.z)];
     }
 

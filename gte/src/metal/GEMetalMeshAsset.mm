@@ -141,8 +141,13 @@ public:
         }
 
         const uint32_t attrs = options.desiredDescriptor.attributes;
+        // The GPU-visible stride (Metal's `float3` is a 16-byte simd_float3, so
+        // this is NOT the sum of the components) and the tight stride the
+        // Model I/O walk below actually writes. They differ, and conflating them
+        // is what shredded every loaded mesh.
         const size_t stride = geMeshStrideFor(attrs);
-        if (stride == 0) {
+        const size_t tightStride = geMeshTightStrideFor(attrs);
+        if (stride == 0 || tightStride == 0) {
             DEBUG_CRITICAL(DEBUG_DOMAIN_ASSET, "empty vertex layout.");
             return false;
         }
@@ -150,6 +155,7 @@ public:
         // FBX is the one common format Model I/O cannot load — route it through
         // the shared backend-neutral MeshParser (ufbx), then build the GEMesh
         // from the packed stream exactly as the Model I/O path does below.
+        // MeshParser already publishes its stream in the GPU layout.
         if (lowerExt(path) == "fbx") {
             MeshParser::ParsedMesh parsed;
             if (!MeshParser::parseMesh(path, options.desiredDescriptor, parsed)) {
@@ -278,7 +284,12 @@ public:
                 }
             }
 
-            return buildFromPacked(packed, stride, baseColorPath, options);
+            // The walk above appended components back to back — the tight
+            // layout. Re-lay it at the GPU's stride before upload.
+            const unsigned vertexCount =
+                (unsigned)((packed.size() * sizeof(float)) / tightStride);
+            auto gpuPacked = geMeshRepackToGPULayout(packed, attrs, vertexCount);
+            return buildFromPacked(gpuPacked, stride, baseColorPath, options);
         }
     }
 
@@ -335,6 +346,11 @@ private:
         m->vertexCount = vertexCount;
         m->vertexStride = stride;
         m->descriptor = options.desiredDescriptor;
+        // Bound the mesh while the CPU stream is still in hand — it is dropped
+        // the moment this function returns, and a caller placing the mesh in a
+        // scene has no other way to learn its size. Both entry paths (Model I/O
+        // and the shared FBX parser) funnel through here, so both get bounds.
+        m->bounds = geMeshComputeBounds(packed.data(), vertexCount, stride);
 
         // Resolve material textures into TextureAsset and wire into
         // GEMesh.textureBindings.

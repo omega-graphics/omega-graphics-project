@@ -1679,6 +1679,27 @@ namespace omegasl {
                     }
                 }
 
+                /// §5 — `dispatchMesh(uint x, uint y, uint z, <payload>)`.
+                /// Amplification-stage-only, void return, exactly once per
+                /// shader (the "and it must be last" half of the rule is
+                /// checked in the SHADER_DECL structural gate, which can see
+                /// the body's statement order — here we only see one call).
+                /// The stage check mirrors the barrier / setMeshOutputs paths
+                /// above; the type and duplicate checks happen after arg sema.
+                bool isDispatchMesh = (fname == BUILTIN_DISPATCH_MESH);
+                if(isDispatchMesh){
+                    expectedArgs = 4;
+                    bool inAmp = funcContext && funcContext->type == SHADER_DECL
+                        && ((ast::ShaderDecl *)funcContext)->shaderType == ast::ShaderDecl::Amplification;
+                    if(!inAmp){
+                        auto e = std::make_unique<InvalidAttribute>(
+                            std::string("`") + std::string(fname) + "` is only valid inside an amplification shader");
+                        e->loc = _expr->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                }
+
                 /// `>= 0` (not `> 0`) so the 0-arg barriers get their arg
                 /// count enforced too; -1 (unknown function) still skips.
                 if(expectedArgs >= 0 && (int)_expr->args.size() != expectedArgs){
@@ -1904,6 +1925,57 @@ namespace omegasl {
                         }
                     }
                     sdecl->meshHasUserSetMeshOutputsCall = true;
+                    return ast::TypeExpr::Create(ast::builtins::void_type);
+                }
+
+                /// §5 — `dispatchMesh(x, y, z, payload)` type rules. The three
+                /// grid dimensions must be scalar `uint` (same reasoning as
+                /// setMeshOutputs: an `int` would sign-extend differently per
+                /// backend and silently launch the wrong grid). The fourth
+                /// argument must name THE shader's `out payload` parameter —
+                /// not merely something of the payload's type, because on GLSL
+                /// and MSL the payload is not passed at the call site at all
+                /// (it is a `taskPayloadSharedEXT` global / an `object_data&`
+                /// reference), so any other expression there would be silently
+                /// dropped rather than dispatched. Requiring the exact
+                /// parameter name is what keeps the OmegaSL source honest about
+                /// what actually crosses the stage boundary.
+                if(isDispatchMesh){
+                    auto *sdecl = (ast::ShaderDecl *)funcContext;
+                    for(unsigned i = 0; i < 3; i++){
+                        auto argTy = resolveTypeWithExpr(performSemForExpr(_expr->args[i], funcContext));
+                        if(argTy != ast::builtins::uint_type){
+                            reportBoolErr("`dispatchMesh` requires three scalar `uint` grid dimensions (x, y, z) followed by the shader's `out payload` parameter.");
+                            return nullptr;
+                        }
+                    }
+                    /// Find the shader's `out payload` param so we can compare
+                    /// the 4th argument against it by name.
+                    ast::AttributedFieldDecl *payloadParam = nullptr;
+                    for(auto & p : sdecl->params){
+                        if(p.payload == ast::AttributedFieldDecl::OutPayload){
+                            payloadParam = &p;
+                            break;
+                        }
+                    }
+                    if(payloadParam == nullptr){
+                        reportBoolErr("`dispatchMesh` requires the amplification shader to declare an `out payload` parameter to dispatch.");
+                        return nullptr;
+                    }
+                    if(_expr->args[3]->type != ID_EXPR
+                       || ((ast::IdExpr *)_expr->args[3])->id != payloadParam->name){
+                        reportBoolErr(std::string("`dispatchMesh`'s fourth argument must be the shader's `out payload` parameter `")
+                                      + payloadParam->name
+                                      + "` itself. On GLSL and Metal the payload is not passed at the call site (it is a "
+                                        "workgroup-shared declaration / a reference parameter), so any other expression here "
+                                        "would be silently ignored rather than dispatched.");
+                        return nullptr;
+                    }
+                    if(sdecl->ampHasDispatchMeshCall){
+                        reportBoolErr("`dispatchMesh` may be called at most once per amplification shader (GLSL's `EmitMeshTasksEXT` is a terminating instruction and HLSL's `DispatchMesh` must be reached exactly once, group-uniformly).");
+                        return nullptr;
+                    }
+                    sdecl->ampHasDispatchMeshCall = true;
                     return ast::TypeExpr::Create(ast::builtins::void_type);
                 }
 
@@ -3684,6 +3756,7 @@ namespace omegasl {
                             : shaderType == ast::ShaderDecl::Compute? AttributeContext::ComputeShaderArgument
                             : shaderType == ast::ShaderDecl::Hull? AttributeContext::HullShaderArgument
                             : shaderType == ast::ShaderDecl::Mesh? AttributeContext::MeshShaderArgument
+                            : shaderType == ast::ShaderDecl::Amplification? AttributeContext::AmplificationShaderArgument
                             : AttributeContext::DomainShaderArgument;
                         if(!isValidAttributeInContext(p.attributeName.value(),context)){
                             auto e = std::make_unique<InvalidAttribute>(std::string("Attribute `") + p.attributeName.value() + "` is not valid in parameter context.");
@@ -3935,11 +4008,144 @@ namespace omegasl {
                     }
                 }
 
+                /// §5 — payload structural validation, shared by both stages of
+                /// the mesh pipeline. The direction encodes the stage: an
+                /// amplification shader PRODUCES the payload (`out payload`), a
+                /// mesh shader CONSUMES it (`in payload`). Getting that backwards
+                /// is the single most likely authoring mistake here, so it fails
+                /// with a message that names the right spelling rather than a
+                /// downstream codegen surprise.
+                ///
+                /// The two stages are checked together because the rules are the
+                /// same rules — at most one payload, a plain struct, never an
+                /// array — and splitting them into two near-identical blocks is
+                /// how they drift apart.
+                if(shaderType == ast::ShaderDecl::Amplification
+                   || shaderType == ast::ShaderDecl::Mesh){
+                    const bool isAmp = (shaderType == ast::ShaderDecl::Amplification);
+                    const char *stageName = isAmp ? "Amplification" : "Mesh";
+                    const auto wantKind = isAmp ? ast::AttributedFieldDecl::OutPayload
+                                                : ast::AttributedFieldDecl::InPayload;
+                    const char *wantSpelling = isAmp ? "out payload" : "in payload";
+                    const char *wrongSpelling = isAmp ? "in payload" : "out payload";
+
+                    ast::AttributedFieldDecl *payloadParam = nullptr;
+                    for(auto & p : _decl->params){
+                        if(p.payload == ast::AttributedFieldDecl::NotPayload){
+                            continue;
+                        }
+                        if(p.payload != wantKind){
+                            auto e = std::make_unique<TypeError>(std::string(stageName) + " shader `" + _decl->name
+                                + "`: parameter `" + p.name + "` is declared `" + wrongSpelling
+                                + "`, but a " + (isAmp ? "amplification" : "mesh")
+                                + " shader " + (isAmp ? "produces" : "consumes")
+                                + " its payload — use `" + wantSpelling + "`.");
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return false;
+                        }
+                        if(payloadParam){
+                            auto e = std::make_unique<TypeError>(std::string(stageName) + " shader `" + _decl->name
+                                + "` declares more than one `" + wantSpelling + "` parameter.");
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return false;
+                        }
+                        payloadParam = &p;
+                    }
+
+                    if(payloadParam){
+                        /// A payload is a flat block of threadgroup-shared data.
+                        /// An array payload has no spelling on any of the three
+                        /// backends (each wraps the payload in its own storage
+                        /// qualifier, which does not compose with an array
+                        /// parameter), and a builtin scalar/vector payload is
+                        /// legal on some but not all — so require the one shape
+                        /// all three agree on: a single plain struct.
+                        if(!payloadParam->typeExpr->arrayDims.empty()){
+                            auto e = std::make_unique<TypeError>(std::string(stageName) + " shader `" + _decl->name
+                                + "`: payload `" + payloadParam->name
+                                + "` must be a single struct, not an array. Put the array INSIDE the payload struct instead.");
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return false;
+                        }
+                        auto payloadTy = resolveTypeWithExpr(payloadParam->typeExpr);
+                        if(payloadTy == nullptr || payloadTy->builtin){
+                            auto e = std::make_unique<TypeError>(std::string(stageName) + " shader `" + _decl->name
+                                + "`: payload `" + payloadParam->name + "` must be a struct type, not `"
+                                + payloadParam->typeExpr->name + "`.");
+                            e->loc = _decl->loc.value_or(ErrorLoc{});
+                            diagnostics->addError(std::move(e));
+                            return false;
+                        }
+                    }
+
+                    /// An amplification shader with no payload has nothing to
+                    /// hand its children and no reason to exist — the mesh stage
+                    /// could have been dispatched directly. Reject it rather than
+                    /// emit a stage that does nothing.
+                    if(isAmp && payloadParam == nullptr){
+                        auto e = std::make_unique<TypeError>(std::string("Amplification shader `") + _decl->name
+                            + "` must declare exactly one `out payload` parameter (a struct handed to the mesh "
+                              "threadgroups it dispatches). An amplification stage with no payload has nothing to "
+                              "pass its children — dispatch the mesh stage directly instead.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                }
+
                 /// 3. Check function block.
                 auto eval_result = performSemForBlock(*_decl->block,_decl);
 
                 if(eval_result == nullptr){
                     return false;
+                }
+
+                /// §5 — an amplification shader must dispatch its children, and
+                /// `dispatchMesh` must be the LAST statement of the body. The
+                /// "exactly once" half was stamped during body sem (CALL_EXPR);
+                /// the "and last" half needs the statement order, which only this
+                /// post-body point can see.
+                ///
+                /// The rule is the intersection of what the three backends
+                /// require, not what any one of them requires: GLSL's
+                /// `EmitMeshTasksEXT` is a *terminating* instruction — nothing
+                /// may execute after it, and glslc rejects source that tries —
+                /// while HLSL's `DispatchMesh` must be reached exactly once and
+                /// group-uniformly. Source that satisfies only the looser
+                /// backend compiles there and fails on the other, which is
+                /// exactly the class of surprise the front-end exists to prevent.
+                if(shaderType == ast::ShaderDecl::Amplification){
+                    if(!_decl->ampHasDispatchMeshCall){
+                        auto e = std::make_unique<TypeError>(std::string("Amplification shader `") + _decl->name
+                            + "` must call `dispatchMesh(x, y, z, <payload>)` to launch its mesh threadgroups. "
+                              "Without it the stage runs and dispatches nothing.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
+                    bool lastIsDispatchMesh = false;
+                    if(!_decl->block->body.empty()){
+                        auto *lastStmt = _decl->block->body.back();
+                        if(lastStmt->type == CALL_EXPR){
+                            auto *call = (ast::CallExpr *)lastStmt;
+                            if(call->callee && call->callee->type == ID_EXPR
+                               && ((ast::IdExpr *)call->callee)->id == BUILTIN_DISPATCH_MESH){
+                                lastIsDispatchMesh = true;
+                            }
+                        }
+                    }
+                    if(!lastIsDispatchMesh){
+                        auto e = std::make_unique<TypeError>(std::string("Amplification shader `") + _decl->name
+                            + "`: `dispatchMesh(...)` must be the final statement of the body. GLSL lowers it to "
+                              "`EmitMeshTasksEXT`, which terminates the task shader — any statement after it is "
+                              "unreachable on Vulkan even though HLSL and Metal would accept it.");
+                        e->loc = _decl->loc.value_or(ErrorLoc{});
+                        diagnostics->addError(std::move(e));
+                        return false;
+                    }
                 }
 
 
@@ -3961,9 +4167,12 @@ namespace omegasl {
                     }
                 }
 
-                if(shaderType == ast::ShaderDecl::Compute || shaderType == ast::ShaderDecl::Mesh){
+                if(shaderType == ast::ShaderDecl::Compute || shaderType == ast::ShaderDecl::Mesh
+                   || shaderType == ast::ShaderDecl::Amplification){
                     if(!_decl->returnType->compare(ast::TypeExpr::Create(ast::builtins::void_type))){
-                        const char *stageName = shaderType == ast::ShaderDecl::Mesh ? "Mesh" : "Compute";
+                        const char *stageName = shaderType == ast::ShaderDecl::Mesh ? "Mesh"
+                                              : shaderType == ast::ShaderDecl::Amplification ? "Amplification"
+                                                                                             : "Compute";
                         auto e = std::make_unique<TypeError>(std::string(stageName) + " shader `" + _decl->name + "` must return void, not " + _decl->returnType->name);
                         e->loc = _decl->loc.value_or(ErrorLoc{});
                         diagnostics->addError(std::move(e));

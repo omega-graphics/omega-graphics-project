@@ -25,6 +25,17 @@ public:
      /// before issuing `DispatchMesh`; `drawPolygons` family is a
      /// logic error against a mesh PSO and assertion-bound the same way.
      bool isMesh = false;
+     /// §5 — the optional amplification (AS) stage of a mesh pipeline. Null on
+     /// every other pipeline kind, and on a mesh pipeline built without one.
+     ///
+     /// Its own slot rather than a doubling onto an existing one (the way the
+     /// mesh shader doubles onto `vertexShader`) because amplification does not
+     /// REPLACE any stage — it runs upstream of the mesh stage and coexists with
+     /// it, with its own resource table and its own register space (space2).
+     /// There is nothing for it to double onto.
+     /// `bindResourceAtAmplificationShader` and `setRenderConstants` read
+     /// `internal` off this handle to resolve the amp's root parameters.
+     SharedHandle<GTEShader> amplificationShader;
      /// §16 Phase H — tessellation-pipeline flag + per-patch control-point
      /// count. Set by `makeRenderPipelineState` after construction when the
      /// descriptor carried `hullFunc`/`domainFunc` (the PSO was built with

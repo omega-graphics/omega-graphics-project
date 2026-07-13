@@ -1,0 +1,80 @@
+// §5 — mesh-shader amplification (task/object) stage.
+//
+// The canonical two-stage mesh pipeline: an amplification shader fills a
+// payload and dispatches a *computed* number of mesh threadgroups; each of
+// those mesh threadgroups reads the payload back and emits one meshlet.
+//
+// The variable child count is the point. A fixed `dispatchMesh(N, 1u, 1u)`
+// would still compile and run with a completely dead payload — every batch
+// would silently emit the same geometry. Here the count is derived from the
+// payload's own base index, so a payload that never crossed the stage boundary
+// changes what gets dispatched, not just what gets shaded.
+//
+// The payload is a plain (non-`internal`) struct: it carries no interstage
+// semantics — no Position, no Color — it is just a block of workgroup-shared
+// data. `internal` is for structs whose fields need semantics.
+
+#requires(MESH_SHADERS)
+
+struct BatchInfo {
+    uint triCount;
+};
+
+struct MeshletPayload {
+    uint baseTriangle;
+    uint batchSize;
+};
+
+constant<BatchInfo> pc : 0;
+
+struct MeshletVertex internal {
+    float4 pos   : Position;
+    float4 color : TexCoord;
+};
+
+// One amplification threadgroup per 32-triangle batch. Single-threaded
+// (x=1) so the payload write needs no cross-thread coordination — a
+// compacting cull would want threadgroup scratch + a barrier + an atomic,
+// which Sema currently reserves for compute shaders (see the Phase 5
+// trade-off note in the plan).
+[in pc]
+amplification(x=1, y=1, z=1)
+void ampFunc(uint3 gid : ThreadGroupID,
+             out payload MeshletPayload p){
+    uint base = gid.x * 32u;
+    uint remaining = pc.triCount - base;
+    uint count = remaining < 32u ? remaining : 32u;
+
+    p.baseTriangle = base;
+    p.batchSize    = count;
+
+    // Must be the final statement: GLSL lowers this to EmitMeshTasksEXT,
+    // which terminates the task shader.
+    dispatchMesh(count, 1u, 1u, p);
+}
+
+// `gid.x` here is the CHILD index within the grid the amplification stage
+// dispatched — not a global triangle index. Recovering the global index is
+// exactly what the payload is for.
+[in pc]
+mesh(max_vertices=3, max_primitives=1, topology=triangle)
+void meshFunc(uint3 gid : ThreadGroupID,
+              in payload MeshletPayload p,
+              out vertices MeshletVertex verts[3],
+              out indices  uint3         tris[1]){
+    uint tri = p.baseTriangle + gid.x;
+    float shade = float(tri % 8u) / 8.0;
+
+    verts[0].pos   = float4(-0.5, -0.5, 0.0, 1.0);
+    verts[0].color = float4(shade, 0.0, 0.0, 1.0);
+    verts[1].pos   = float4( 0.5, -0.5, 0.0, 1.0);
+    verts[1].color = float4(0.0, shade, 0.0, 1.0);
+    verts[2].pos   = float4( 0.0,  0.5, 0.0, 1.0);
+    verts[2].color = float4(0.0, 0.0, shade, 1.0);
+
+    tris[0] = uint3(0, 1, 2);
+}
+
+fragment float4 fragFunc(MeshletVertex raster){
+    return raster.color;
+}

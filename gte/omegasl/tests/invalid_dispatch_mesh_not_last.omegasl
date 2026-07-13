@@ -1,0 +1,34 @@
+// §5 negative — `dispatchMesh` must be the FINAL statement of an amplification
+// body. GLSL lowers it to `EmitMeshTasksEXT`, a terminating instruction: nothing
+// may execute after it. HLSL and Metal would happily accept the trailing write
+// below, which is exactly why the front-end rejects it — otherwise this source
+// would compile on two backends and fail on the third.
+
+#requires(MESH_SHADERS)
+
+struct MeshletPayload {
+    uint baseTriangle;
+};
+
+struct MeshletVertex internal {
+    float4 pos : Position;
+};
+
+amplification(x=1, y=1, z=1)
+void ampFunc(uint3 gid : ThreadGroupID,
+             out payload MeshletPayload p){
+    p.baseTriangle = gid.x;
+    dispatchMesh(1u, 1u, 1u, p);
+    p.baseTriangle = 0u;
+}
+
+mesh(max_vertices=3, max_primitives=1, topology=triangle)
+void meshFunc(uint3 gid : ThreadGroupID,
+              in payload MeshletPayload p,
+              out vertices MeshletVertex verts[3],
+              out indices  uint3         tris[1]){
+    verts[0].pos = float4(-0.5, -0.5, 0.0, 1.0);
+    verts[1].pos = float4( 0.5, -0.5, 0.0, 1.0);
+    verts[2].pos = float4( 0.0,  0.5, 0.0, 1.0);
+    tris[0] = uint3(0, 1, 2);
+}

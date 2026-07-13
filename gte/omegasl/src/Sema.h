@@ -22,6 +22,8 @@ namespace omegasl {
         HullShaderArgument,
         DomainShaderArgument,
         MeshShaderArgument,
+        /// §5 — mesh-pipeline amplification (task/object) stage.
+        AmplificationShaderArgument,
         StructField
     };
 
@@ -42,9 +44,17 @@ namespace omegasl {
         else if(context == AttributeContext::VertexShaderArgument || context == AttributeContext::HullShaderArgument){
             return (subject == ATTRIBUTE_VERTEX_ID);
         }
-        else if(context == AttributeContext::ComputeShaderArgument || context == AttributeContext::MeshShaderArgument){
-            /// Mesh shaders dispatch like compute (a 3D workgroup), so the
-            /// thread-ID attributes carry over unchanged.
+        else if(context == AttributeContext::ComputeShaderArgument
+                || context == AttributeContext::MeshShaderArgument
+                || context == AttributeContext::AmplificationShaderArgument){
+            /// Mesh and amplification shaders both dispatch like compute (a 3D
+            /// workgroup), so the thread-ID attributes carry over unchanged.
+            /// Note what `ThreadGroupID` MEANS differs per stage and that is the
+            /// point: on an amplification shader it is the index within the
+            /// grid the host passed to `drawMeshTasks`, while on a mesh shader
+            /// launched by an amplification stage it is the index within the
+            /// children that stage's `dispatchMesh` launched. The attribute is
+            /// the same; the grid it indexes is whichever one launched you.
             return (subject == ATTRIBUTE_GLOBALTHREAD_ID) || (subject == ATTRIBUTE_THREADGROUP_ID) || (subject == ATTRIBUTE_LOCALTHREAD_ID);
         }
         else if(context == AttributeContext::FragmentShaderArgument){

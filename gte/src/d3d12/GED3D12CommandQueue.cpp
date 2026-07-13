@@ -403,9 +403,22 @@ unsigned int GED3D12CommandBuffer::getRootParameterIndexOfResource(unsigned int 
         }
     }
 
+    // Per-stage register space. MUST match both the HLSL codegen
+    // (`HLSLTarget::emitResourceBinding`'s `registerSpace` lambda) and the root
+    // signature builder (`createRootSignatureFromOmegaSLShaders`) — all three
+    // read the same `omegasl_shader::type`, and a disagreement between any two
+    // of them resolves a resource to the wrong root parameter (or to none).
+    //
+    //   0 — vertex / mesh / compute / hull / domain
+    //   1 — fragment
+    //   2 — amplification (§5): the first stage that COEXISTS with another
+    //       space-0 stage (mesh) in one pipeline, so it needs its own space or a
+    //       `constant<T>` declared `[in pc]` on both would collide at b0/space0.
     unsigned regSpace;
     if (shader.type == OMEGASL_SHADER_FRAGMENT) {
         regSpace = 1;
+    } else if (shader.type == OMEGASL_SHADER_AMPLIFICATION) {
+        regSpace = 2;
     } else {
         regSpace = 0;
     }
@@ -1866,6 +1879,135 @@ void GED3D12CommandBuffer::bindResourceAtFragmentShader(SharedHandle<GESamplerSt
     commandList->SetGraphicsRootDescriptorTable(rootParam, d3d12_sampler->samplerHandle.gpu);
 };
 
+// ── §5 — amplification-stage resource binding ───────────────────────────────
+//
+// Structurally identical to the vertex/fragment binds above; the only thing
+// that changes is WHICH shader's `omegasl_shader` the root-parameter lookup
+// reads. D3D12's root signature is unified (D3D12_SHADER_VISIBILITY_ALL) and
+// the amplification stage's resources live at register space 2, so
+// `getRootParameterIndexOfResource` resolves them without any extra plumbing —
+// the register space is what keeps them from aliasing the mesh stage's space-0
+// registers.
+//
+// `amplificationValidForBind` is the shared guard: reaching any of these
+// without an amplification stage bound means the caller thinks the pipeline has
+// a stage it doesn't, and a resource that silently goes nowhere is worse than a
+// loud failure — the amp would read an unwritten root parameter and dispatch a
+// garbage child grid.
+
+bool GED3D12CommandBuffer::amplificationValidForBind(const char *what) {
+    const bool ok = currentRenderPipeline != nullptr
+                    && currentRenderPipeline->isMesh
+                    && currentRenderPipeline->amplificationShader != nullptr;
+    d3d12RequireOrReturn(ok, DEBUG_DOMAIN_RESOURCE, what
+                         << ": no amplification stage on the bound pipeline "
+                            "(bind a mesh pipeline built with `amplificationFunc`)");
+    return ok;
+}
+
+void GED3D12CommandBuffer::bindResourceAtAmplificationShader(SharedHandle<GEBuffer> &buffer, unsigned int index) {
+    d3d12RequireOrReturn(!inComputePass && !inBlitPass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtAmplificationShader(buffer) called outside a render pass");
+    if (!amplificationValidForBind("bindResourceAtAmplificationShader(buffer)")) return;
+    auto &ampShader = currentRenderPipeline->amplificationShader->internal;
+    auto *d3d12_buffer = (GED3D12Buffer *)buffer.get();
+
+    auto required_state = getRequiredResourceStateForResourceID(index, ampShader);
+
+    if (d3d12_buffer->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::UAV(d3d12_buffer->buffer.Get());
+        commandList->ResourceBarrier(1, &barrier);
+    }
+
+    if (!(d3d12_buffer->currentState & required_state)) {
+        if (inRenderPass) {
+            reportTransitionInsideRenderPass("buffer", d3d12_buffer->currentState, required_state);
+        } else {
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                d3d12_buffer->buffer.Get(), d3d12_buffer->currentState, required_state);
+            commandList->ResourceBarrier(1, &barrier);
+            d3d12_buffer->currentState = required_state;
+        }
+    }
+
+    const auto rootParam = getRootParameterIndexOfResource(index, ampShader);
+
+    if (d3d12_buffer->role == BufferDescriptor::Uniform) {
+        commandList->SetGraphicsRootConstantBufferView(rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
+    } else if (d3d12_buffer->currentState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
+        commandList->SetGraphicsRootShaderResourceView(rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
+    } else {
+        commandList->SetGraphicsRootUnorderedAccessView(rootParam, d3d12_buffer->buffer->GetGPUVirtualAddress());
+    }
+};
+
+void GED3D12CommandBuffer::bindResourceAtAmplificationShader(SharedHandle<GETexture> &texture, unsigned int index,
+                                                             const TextureSwizzle & swizzle) {
+    d3d12RequireOrReturn(!inComputePass && !inBlitPass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtAmplificationShader(texture) called outside a render pass");
+    if (!amplificationValidForBind("bindResourceAtAmplificationShader(texture)")) return;
+    auto &ampShader = currentRenderPipeline->amplificationShader->internal;
+    auto *d3d12_texture = (GED3D12Texture *)texture.get();
+
+    checkTextureBindAgainstShader(index, ampShader, *d3d12_texture);
+
+    if (d3d12_texture->needsValidation()) {
+        auto buffer = std::dynamic_pointer_cast<GED3D12CommandBuffer>(parentQueue->getAvailableBuffer());
+        d3d12_texture->updateAndValidateStatus(buffer->commandList.Get());
+        buffer->commandList->Close();
+        parentQueue->commandQueue->ExecuteCommandLists(1,
+                                                       (ID3D12CommandList *const *)buffer->commandList.GetAddressOf());
+    }
+
+    auto required_state = getRequiredResourceStateForResourceID(index, ampShader);
+
+    if (d3d12_texture->currentState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::UAV(d3d12_texture->resource.Get());
+        commandList->ResourceBarrier(1, &barrier);
+    }
+
+    if (!(d3d12_texture->currentState & required_state)) {
+        if (inRenderPass) {
+            reportTransitionInsideRenderPass("texture", d3d12_texture->currentState, required_state);
+        } else {
+            D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                d3d12_texture->resource.Get(), d3d12_texture->currentState, required_state);
+            commandList->ResourceBarrier(1, &barrier);
+            d3d12_texture->currentState = required_state;
+        }
+    }
+
+    D3D12DescriptorHandle effHandle{};
+    TextureSwizzle effective = resolveEffectiveSwizzle(swizzle, index, ampShader);
+    if (d3d12_texture->currentState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
+        effHandle = effective.isIdentity()
+            ? d3d12_texture->srvHandle
+            : d3d12_texture->getOrCreateSwizzledSrvHandle(parentQueue->engine, effective);
+    } else {
+        effHandle = d3d12_texture->uavHandle;
+    }
+    currentResourceDescHeap = parentQueue->engine->resourceDescriptorAllocator->heap(effHandle.block);
+    rebindDescriptorHeaps();
+    unsigned idx = getRootParameterIndexOfResource(index, ampShader);
+    commandList->SetGraphicsRootDescriptorTable(idx, effHandle.gpu);
+};
+
+void GED3D12CommandBuffer::bindResourceAtAmplificationShader(SharedHandle<GESamplerState> &sampler, unsigned int id) {
+    d3d12RequireOrReturn(!inComputePass && !inBlitPass, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtAmplificationShader(sampler) called outside a render pass");
+    if (!amplificationValidForBind("bindResourceAtAmplificationShader(sampler)")) return;
+    auto &ampShader = currentRenderPipeline->amplificationShader->internal;
+    auto *d3d12_sampler = (GED3D12SamplerState *)sampler.get();
+    bool ok = checkSamplerBindAgainstShader(id, ampShader);
+    d3d12RequireOrReturn(ok, DEBUG_DOMAIN_RESOURCE,
+                         "bindResourceAtAmplificationShader(sampler): sampler bound to a static or non-sampler slot");
+    if (!ok) return;
+    currentSamplerDescHeap = parentQueue->engine->samplerDescriptorAllocator->heap(d3d12_sampler->samplerHandle.block);
+    rebindDescriptorHeaps();
+    unsigned rootParam = getRootParameterIndexOfResource(id, ampShader);
+    commandList->SetGraphicsRootDescriptorTable(rootParam, d3d12_sampler->samplerHandle.gpu);
+};
+
 void GED3D12CommandBuffer::setStencilRef(unsigned int ref) {
     commandList->OMSetStencilRef(ref);
 }
@@ -1905,6 +2047,19 @@ void GED3D12CommandBuffer::setRenderConstants(const void *data, unsigned size, u
     if (findPushConstantLocation(currentRenderPipeline->fragmentShader->internal, loc)) {
         commandList->SetGraphicsRoot32BitConstants(
             getRootParameterIndexOfResource(loc, currentRenderPipeline->fragmentShader->internal),
+            size / 4, data, offset / 4);
+        any = true;
+    }
+    // §5 — the amplification stage is an ADDITIONAL stage (it occupies neither
+    // slot above), so it gets its own test and its own root-constants param
+    // (space2). This is what lets one setRenderConstants call feed a
+    // `constant<T>` declared `[in pc]` on both the amp and the mesh shader — the
+    // normal shape for handing a batch count or an MVP to both halves of a mesh
+    // pipeline.
+    if (currentRenderPipeline->amplificationShader != nullptr
+        && findPushConstantLocation(currentRenderPipeline->amplificationShader->internal, loc)) {
+        commandList->SetGraphicsRoot32BitConstants(
+            getRootParameterIndexOfResource(loc, currentRenderPipeline->amplificationShader->internal),
             size / 4, data, offset / 4);
         any = true;
     }

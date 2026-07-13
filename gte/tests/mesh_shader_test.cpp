@@ -5,7 +5,7 @@
 /// Phase 4a is pending). Headless: renders to an offscreen 8x8 RGBA8 target,
 /// no window.
 ///
-/// Two phases:
+/// Three phases:
 ///
 ///   A. No-input meshlet (Phase 4c.4 baseline). A single hardcoded NDC triangle,
 ///      pure R/G/B vertex colors → center pixel ≈ (85, 85, 85, 255). Proves
@@ -22,8 +22,16 @@
 ///      contributed" check) so a silent bind failure — Metal returning
 ///      zeros / leftover state — would show up as a different readback.
 ///
-/// PASS criterion: both phases produce the expected center-pixel color
-/// within tolerance.
+///   C. Amplification stage (§5). One amplification threadgroup writes a tint
+///      into a payload and dispatches TWO mesh threadgroups; each child paints
+///      its own half of the viewport from the payload, tagged with its child
+///      index. Samples two pixels instead of one so the three ways this can
+///      break — payload never crossed, only one child ran, child index wrong —
+///      each produce a DIFFERENT wrong output rather than all collapsing to
+///      "black". See the shader comment for the failure table.
+///
+/// PASS criterion: all three phases produce their expected pixels within
+/// tolerance.
 
 #include <omegaGTE/GTEDevice.h>
 #include <omegaGTE/GECommandQueue.h>
@@ -105,6 +113,64 @@ void meshBufFunc(uint3 tid : GlobalThreadID,
     tris[0] = uint3(0, 1, 2);
 }
 
+// ── Phase C: amplification (task/object) stage — §5 ─────────────────────
+//
+// The amplification shader writes a tint into the payload and dispatches
+// TWO mesh threadgroups. Each of those children reads the payload back and
+// paints one half of the viewport — its own half, chosen by its threadgroup
+// index within the grid the amplification stage launched.
+//
+// The split is deliberate. A payload-only test (one child, one color) proves
+// the payload arrived but says nothing about the dispatch; a dispatch-only
+// test proves children ran but not that they were handed anything. Painting
+// each half from the payload, keyed by child index, fails distinguishably for
+// all three failure modes:
+//
+//   payload never crossed   -> tint reads as zero, both halves are black
+//   only one child ran      -> the other half stays at the clear color
+//   child index is wrong    -> both halves get the same red channel
+
+struct AmpPayload {
+    float4 tint;
+};
+
+amplification(x=1, y=1, z=1)
+void ampFunc(uint3 gid : ThreadGroupID,
+             out payload AmpPayload p){
+    // Strong blue. Nothing downstream can synthesize this value on its own,
+    // so its presence in the readback is proof the payload made the trip.
+    p.tint = float4(0.0, 0.0, 0.9, 1.0);
+    dispatchMesh(2u, 1u, 1u, p);
+}
+
+// A 2-primitive meshlet: one quad (4 verts, 2 tris) covering this child's
+// half of the viewport. `gid.x` is the index within the amplification
+// stage's child grid, NOT a global thread id.
+mesh(max_vertices=4, max_primitives=2, topology=triangle)
+void meshAmpFunc(uint3 gid : ThreadGroupID,
+                 in payload AmpPayload p,
+                 out vertices MeshletVertex verts[4],
+                 out indices  uint3        tris[2]){
+    float x0 = -1.0 + float(gid.x);   // child 0 -> [-1, 0], child 1 -> [0, 1]
+    float x1 = x0 + 1.0;
+
+    // Red carries the child index so the two halves are told apart by color,
+    // not just by position. Blue comes from the payload.
+    float4 c = float4(float(gid.x), 0.0, p.tint.z, 1.0);
+
+    verts[0].pos = float4(x0, -1.0, 0.0, 1.0);
+    verts[0].color = c;
+    verts[1].pos = float4(x1, -1.0, 0.0, 1.0);
+    verts[1].color = c;
+    verts[2].pos = float4(x1,  1.0, 0.0, 1.0);
+    verts[2].color = c;
+    verts[3].pos = float4(x0,  1.0, 0.0, 1.0);
+    verts[3].color = c;
+
+    tris[0] = uint3(0, 1, 2);
+    tris[1] = uint3(0, 2, 3);
+}
+
 fragment float4 fragFunc(MeshletVertex raster){
     return raster.color;
 }
@@ -159,18 +225,23 @@ bool approx(std::uint8_t got, std::uint8_t want, int tol = 30) {
     return std::abs(int(got) - int(want)) <= tol;
 }
 
-/// Render one mesh dispatch into `rt`, copy to `readback`, return the
-/// center pixel. The `bindMesh` callback receives the command buffer
-/// AFTER `setRenderPipelineState` so it can attach mesh-stage resources
-/// for Phase B (no-op for Phase A).
-void renderAndReadCenter(GTE &gte,
-                         SharedHandle<GECommandQueue> &queue,
-                         SharedHandle<GERenderPipelineState> &pipeline,
-                         SharedHandle<GETexture> &rt,
-                         SharedHandle<GETextureRenderTarget> &target,
-                         SharedHandle<GETexture> &readback,
-                         const std::function<void(SharedHandle<GECommandBuffer> &)> &bindMesh,
-                         std::uint8_t outRGBA[4]) {
+/// Render one mesh dispatch into `rt`, copy to `readback`, and return the
+/// whole 8x8 RGBA image. The `bindMesh` callback receives the command buffer
+/// AFTER `setRenderPipelineState` so it can attach stage resources (no-op for
+/// Phase A, the vertex buffer for Phase B).
+///
+/// `groupCountX` is the dispatch width. Its MEANING depends on the pipeline:
+/// with no amplification stage it counts mesh threadgroups; with one, it counts
+/// AMPLIFICATION threadgroups, and each of those decides for itself how many
+/// mesh children to launch. Phase C dispatches 1 amp group that fans out to 2.
+std::vector<std::uint8_t> renderAndRead(GTE &gte,
+                                        SharedHandle<GECommandQueue> &queue,
+                                        SharedHandle<GERenderPipelineState> &pipeline,
+                                        SharedHandle<GETexture> &rt,
+                                        SharedHandle<GETextureRenderTarget> &target,
+                                        SharedHandle<GETexture> &readback,
+                                        const std::function<void(SharedHandle<GECommandBuffer> &)> &bindMesh,
+                                        uint32_t groupCountX = 1) {
     using ColorAttachment = GERenderPassDescriptor::ColorAttachment;
     auto cb = queue->getAvailableBuffer();
 
@@ -187,7 +258,7 @@ void renderAndReadCenter(GTE &gte,
     cb->setViewports({vp});
     cb->setScissorRects({sr});
     bindMesh(cb);
-    cb->drawMeshTasks(1, 1, 1);
+    cb->drawMeshTasks(groupCountX, 1, 1);
     cb->finishRenderPass();
 
     cb->startBlitPass();
@@ -199,9 +270,24 @@ void renderAndReadCenter(GTE &gte,
 
     std::vector<std::uint8_t> pixels(kRTSize * kRTSize * 4, 0);
     readback->getBytes(pixels.data(), kRTSize * 4);
-    const unsigned cx = kRTSize / 2, cy = kRTSize / 2;
-    const std::uint8_t *p = &pixels[(cy * kRTSize + cx) * 4];
-    std::memcpy(outRGBA, p, 4);
+    return pixels;
+}
+
+/// Pixel (x, y) out of a `renderAndRead` image.
+const std::uint8_t *pixelAt(const std::vector<std::uint8_t> &pixels, unsigned x, unsigned y) {
+    return &pixels[(y * kRTSize + x) * 4];
+}
+
+void renderAndReadCenter(GTE &gte,
+                         SharedHandle<GECommandQueue> &queue,
+                         SharedHandle<GERenderPipelineState> &pipeline,
+                         SharedHandle<GETexture> &rt,
+                         SharedHandle<GETextureRenderTarget> &target,
+                         SharedHandle<GETexture> &readback,
+                         const std::function<void(SharedHandle<GECommandBuffer> &)> &bindMesh,
+                         std::uint8_t outRGBA[4]) {
+    auto pixels = renderAndRead(gte, queue, pipeline, rt, target, readback, bindMesh);
+    std::memcpy(outRGBA, pixelAt(pixels, kRTSize / 2, kRTSize / 2), 4);
 }
 
 /// Build the Phase-B buffer: three vertices, each `{float4 pos, float4
@@ -319,6 +405,87 @@ bool runPhaseB(GTE &gte,
     return ok;
 }
 
+/// Phase C — amplification stage (§5).
+///
+/// One amplification threadgroup writes a blue tint into the payload and
+/// dispatches TWO mesh threadgroups. Each child paints its own half of the
+/// viewport, colored from the payload, with its child index in the red channel.
+///
+/// So the pass criterion samples two pixels rather than one:
+///
+///   left  (2, 4)  ->  (  0, 0, ~230, 255)   child 0: red = 0
+///   right (6, 4)  ->  (~255, 0, ~230, 255)  child 1: red = 1
+///
+/// Blue near 230 on BOTH sides is the payload check — a payload that never
+/// crossed the stage boundary reads as zero and both halves come back black.
+/// The differing red channel is the child-index check. And a half still holding
+/// the clear color means only one child ran, i.e. `dispatchMesh`'s count was
+/// dropped. Each failure mode is distinguishable from the others in the output.
+bool runPhaseC(GTE &gte,
+               SharedHandle<GTEShaderLibrary> &lib,
+               SharedHandle<GECommandQueue> &queue) {
+    MeshPipelineDescriptor desc{};
+    desc.name = "MeshShaderTest.PhaseC";
+    desc.amplificationFunc = lib->shaders["ampFunc"];
+    desc.meshFunc          = lib->shaders["meshAmpFunc"];
+    desc.fragmentFunc      = lib->shaders["fragFunc"];
+    desc.colorPixelFormats = {PixelFormat::RGBA8Unorm};
+    desc.depthAndStencilDesc = {false, false};
+    desc.cullMode = RasterCullMode::None;
+    desc.triangleFillMode = TriangleFillMode::Solid;
+    desc.rasterSampleCount = 1;
+
+    auto pipeline = gte.graphicsEngine->makeMeshPipelineState(desc);
+    if (!pipeline) {
+        std::cerr << "[PhaseC] FAIL: makeMeshPipelineState (with amplification) returned null\n";
+        return false;
+    }
+    std::cout << "[PhaseC] makeMeshPipelineState (amplification + mesh) -> live PSO\n";
+
+    auto rt = makeRenderTargetTexture(gte);
+    auto readback = makeReadbackTexture(gte);
+    TextureRenderTargetDescriptor trtDesc{};
+    trtDesc.renderToExistingTexture = true;
+    trtDesc.texture = rt;
+    auto target = gte.graphicsEngine->makeTextureRenderTarget(trtDesc);
+
+    // ONE amplification threadgroup. It is the shader, not this call, that
+    // decides two mesh children get launched.
+    auto pixels = renderAndRead(gte, queue, pipeline, rt, target, readback,
+                                [](SharedHandle<GECommandBuffer> & /*cb*/) {},
+                                /*groupCountX=*/1);
+
+    const std::uint8_t *l = pixelAt(pixels, 2, kRTSize / 2);
+    const std::uint8_t *r = pixelAt(pixels, 6, kRTSize / 2);
+    std::cout << "[PhaseC] left  pixel = (" << int(l[0]) << "," << int(l[1]) << "," << int(l[2]) << "," << int(l[3]) << ")\n";
+    std::cout << "[PhaseC] right pixel = (" << int(r[0]) << "," << int(r[1]) << "," << int(r[2]) << "," << int(r[3]) << ")\n";
+
+    // Blue is index 2 in RGBA8 and never swaps with red under a BGRA readback
+    // in a way that would hide a zero — but red DOES, so the child-index check
+    // reads whichever of channel 0 / 2 is not the payload's blue. Keep it
+    // simple: assert the payload's blue is present on both sides (that is the
+    // §5 contract) and that the two halves differ (that is the child index).
+    const bool payloadReachedLeft  = approx(l[2], 230, 40);
+    const bool payloadReachedRight = approx(r[2], 230, 40);
+    const bool bothChildrenRan     = (l[3] >= 200 && r[3] >= 200);
+    const bool childrenDiffer      = (std::abs(int(l[0]) - int(r[0])) > 100);
+
+    const bool ok = payloadReachedLeft && payloadReachedRight
+                    && bothChildrenRan && childrenDiffer;
+    if (!ok) {
+        if (!payloadReachedLeft || !payloadReachedRight) {
+            std::cerr << "[PhaseC] payload did not reach the mesh stage "
+                         "(expected blue ~230 on both halves)\n";
+        }
+        if (!childrenDiffer) {
+            std::cerr << "[PhaseC] the two mesh children are indistinguishable "
+                         "(ThreadGroupID is not the child index within the amp's dispatch)\n";
+        }
+    }
+    std::cout << (ok ? "[PhaseC] PASS" : "[PhaseC] FAIL") << "\n";
+    return ok;
+}
+
 }  // namespace
 
 GTE_TEST_ENTRY_POINT {
@@ -356,6 +523,7 @@ GTE_TEST_ENTRY_POINT {
 
     const bool a = runPhaseA(gte, lib, queue);
     const bool b = runPhaseB(gte, lib, queue, writer);
+    const bool c = runPhaseC(gte, lib, queue);
 
     // Negative: `#include` in runtime-compiled source must be rejected by
     // the preprocessor (no file-system context at runtime). Compile a
@@ -373,7 +541,7 @@ GTE_TEST_ENTRY_POINT {
                   : "[Negative] FAIL: #include was not rejected")
               << "\n";
 
-    const int rc = (a && b && includeRejected) ? 0 : 1;
+    const int rc = (a && b && c && includeRejected) ? 0 : 1;
     std::cout << (rc == 0 ? "PASS: mesh shader test" : "FAIL: mesh shader test") << "\n";
 
     OmegaGTE::Close(gte);

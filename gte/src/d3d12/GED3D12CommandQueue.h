@@ -197,6 +197,14 @@ _NAMESPACE_BEGIN_
         void bindResourceAtFragmentShader(SharedHandle<GETexture> &texture, unsigned int id,
                                           const TextureSwizzle & swizzle) override;
         void bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned int id) override;
+        /// §5 — amplification-stage binds. Resolve through the amp's own
+        /// `omegasl_shader` at register space 2 (see
+        /// `getRootParameterIndexOfResource`), under the same unified
+        /// `D3D12_SHADER_VISIBILITY_ALL` root signature every other stage uses.
+        void bindResourceAtAmplificationShader(SharedHandle<GEBuffer> &buffer, unsigned int id) override;
+        void bindResourceAtAmplificationShader(SharedHandle<GETexture> &texture, unsigned int id,
+                                               const TextureSwizzle & swizzle) override;
+        void bindResourceAtAmplificationShader(SharedHandle<GESamplerState> &sampler, unsigned int id) override;
         void setRenderConstants(const void *data, unsigned size, unsigned offset) override;
         void setStencilRef(unsigned int ref) override;
        
@@ -295,6 +303,11 @@ _NAMESPACE_BEGIN_
         // destructors to defer descriptor-slot frees behind GPU completion.
         Retention::FenceGate gateForRetiredSubmissions() const;
     private:
+
+        /// §5 — shared guard for the three `bindResourceAtAmplificationShader`
+        /// overloads: the bound pipeline must be a mesh PSO that actually carries
+        /// an amplification stage. `what` names the caller for the diagnostic.
+        bool amplificationValidForBind(const char *what);
 
         // Move every accumulated retained command buffer / descriptor heap
         // into the engine retention queue under `gate`, then clear the local

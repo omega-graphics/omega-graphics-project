@@ -63,12 +63,23 @@ FMatrix<4,4> GESpaceTransform::modelMatrix() const {
 }
 
 struct GESpace::Impl {
+    /// A placed object: a transform, plus the geometry it transforms. The mesh
+    /// is a SharedHandle and stays one — GESpace never copies or re-bakes
+    /// vertices, so placing one GEMesh in two spaces (or twice in one space)
+    /// shares a single GPU buffer between the instances.
+    struct Object {
+        GESpaceTransform transform;
+        /// Null for a transform-only object (`addObject`).
+        SharedHandle<GEMesh> mesh;
+    };
+
     GEViewport viewport;
     FMatrix<4,4> spaceToNDC = FMatrix<4,4>::Identity();
 
     /// Insertion-ordered (IDs are monotonic and Map is ordered), so `objects()`
-    /// in Phase 3 enumerates deterministically.
-    OmegaCommon::Map<GESpaceObjectID, GESpaceTransform> objects;
+    /// enumerates deterministically — a renderer walking it draws in a stable
+    /// order frame to frame.
+    OmegaCommon::Map<GESpaceObjectID, Object> objects;
     GESpaceObjectID nextID = 1;   // 0 is GESpaceInvalidObject
 
     explicit Impl(const GEViewport & vp):viewport(vp){
@@ -78,9 +89,14 @@ struct GESpace::Impl {
     /// Null for an unknown handle. Callers log and degrade; nothing here throws.
     GESpaceTransform * find(GESpaceObjectID id){
         auto it = objects.find(id);
-        return it == objects.end() ? nullptr : &it->second;
+        return it == objects.end() ? nullptr : &it->second.transform;
     }
     const GESpaceTransform * find(GESpaceObjectID id) const {
+        auto it = objects.find(id);
+        return it == objects.end() ? nullptr : &it->second.transform;
+    }
+
+    const Object * findObject(GESpaceObjectID id) const {
         auto it = objects.find(id);
         return it == objects.end() ? nullptr : &it->second;
     }
@@ -138,8 +154,60 @@ FMatrix<4,4> GESpace::spaceToNDC() const {
 
 GESpaceObjectID GESpace::addObject(const GESpaceTransform & transform){
     const GESpaceObjectID id = impl->nextID++;
-    impl->objects[id] = transform;
+    Impl::Object obj;
+    obj.transform = transform;
+    impl->objects[id] = obj;
     return id;
+}
+
+GESpaceObjectID GESpace::addMesh(const SharedHandle<GEMesh> & mesh,
+                                 const GESpaceTransform & transform){
+    if(mesh == nullptr){
+        // Handing back a live handle for a null mesh would let the caller
+        // transform and draw nothing, and only find out at the (blank) frame.
+        // Refuse it here, where the stack still says who did it.
+        std::cerr << "[GESpace] error: addMesh() called with a null mesh; "
+                     "returning GESpaceInvalidObject." << std::endl;
+        return GESpaceInvalidObject;
+    }
+    const GESpaceObjectID id = impl->nextID++;
+    Impl::Object obj;
+    obj.transform = transform;
+    obj.mesh = mesh;
+    impl->objects[id] = obj;
+    return id;
+}
+
+SharedHandle<GEMesh> GESpace::meshOf(GESpaceObjectID id) const {
+    const auto * obj = impl->findObject(id);
+    // Deliberately quiet: a transform-only object having no mesh is normal, and
+    // so is probing a handle you are about to discard. The mutators are the loud
+    // ones, because there a bad handle means work silently going nowhere.
+    return obj == nullptr ? nullptr : obj->mesh;
+}
+
+void GESpace::remove(GESpaceObjectID id){
+    auto it = impl->objects.find(id);
+    if(it == impl->objects.end()){
+        std::cerr << "[GESpace] error: remove() on unknown object " << id
+                  << "; ignoring." << std::endl;
+        return;
+    }
+    // nextID is never rewound, so this handle is retired for the life of the
+    // space: a caller still holding it gets the loud unknown-handle path, not a
+    // silent hit on whatever object is added next.
+    impl->objects.erase(it);
+}
+
+OmegaCommon::Vector<GESpaceObjectID> GESpace::objects() const {
+    OmegaCommon::Vector<GESpaceObjectID> ids;
+    ids.reserve(impl->objects.size());
+    for(const auto & entry : impl->objects){
+        ids.push_back(entry.first);
+    }
+    // OmegaCommon::Map is ordered and IDs are monotonic, so this comes out in
+    // insertion order for free.
+    return ids;
 }
 
 bool GESpace::contains(GESpaceObjectID id) const {

@@ -1089,7 +1089,8 @@ namespace omegasl {
                                 : _decl->shaderType == ast::ShaderDecl::Compute  ? OMEGASL_SHADER_COMPUTE
                                 : _decl->shaderType == ast::ShaderDecl::Hull     ? OMEGASL_SHADER_HULL
                                 : _decl->shaderType == ast::ShaderDecl::Domain   ? OMEGASL_SHADER_DOMAIN
-                                                                                 : OMEGASL_SHADER_MESH;
+                                : _decl->shaderType == ast::ShaderDecl::Mesh     ? OMEGASL_SHADER_MESH
+                                                                                 : OMEGASL_SHADER_AMPLIFICATION;
                     auto *nameBuf = new char[_decl->name.size() + 1];
                     std::copy(_decl->name.begin(), _decl->name.end(), nameBuf);
                     nameBuf[_decl->name.size()] = '\0';

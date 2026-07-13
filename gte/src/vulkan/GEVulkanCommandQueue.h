@@ -105,6 +105,11 @@ _NAMESPACE_BEGIN_
         void releaseFallbackDescriptorSets();
         void resetFallbackDescriptorSetsForNewPipeline();
 
+        /// §5 — shared guard for the three `bindResourceAtAmplificationShader`
+        /// overloads: the bound pipeline must be a mesh PSO that actually carries
+        /// an amplification stage. `what` names the caller for the diagnostic.
+        bool amplificationValidForBind(const char *what);
+
         void beginRenderPassIfDeferred();
         void bindDescriptorSetsIfPending();
 
@@ -194,6 +199,16 @@ _NAMESPACE_BEGIN_
                                           const TextureSwizzle & swizzle) override;
 
         void bindResourceAtFragmentShader(SharedHandle<GESamplerState> &sampler, unsigned index) override;
+
+        /// §5 — amplification-stage binds. These write descriptor SET 2 (the amp
+        /// is passed last to `createPipelineLayoutFromShaderDescs`, which makes
+        /// one set per shader in array order, so mesh=0 / fragment=1 / amp=2).
+        void bindResourceAtAmplificationShader(SharedHandle<GEBuffer> &buffer, unsigned index) override;
+
+        void bindResourceAtAmplificationShader(SharedHandle<GETexture> &texture, unsigned index,
+                                               const TextureSwizzle & swizzle) override;
+
+        void bindResourceAtAmplificationShader(SharedHandle<GESamplerState> &sampler, unsigned index) override;
 
         void setRenderConstants(const void *data, unsigned size, unsigned offset) override;
 

@@ -68,6 +68,20 @@ struct GTEShaderLibrary {
 size_t OMEGAGTE_EXPORT omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> fields,
                                            BufferDescriptor::Role role = BufferDescriptor::Storage) noexcept;
 
+/// @brief Byte offset of each field within one struct in a GPU buffer, under
+/// the same layout standard `omegaSLStructStride` sizes with.
+/// @paragraph The companion to `omegaSLStructStride`: that gives the stride
+/// between elements, this gives where each member sits inside one. Both apply
+/// the identical align-then-place rule and the identical per-backend standard
+/// (std430 / DX-scalar / Metal-native), so a caller that packs bytes by hand
+/// lands exactly where the shader reads them. Use it whenever you build a
+/// vertex/element stream yourself instead of driving a `GEBufferWriter` (which
+/// already applies this internally).
+/// @returns One offset per field, in the order given.
+OmegaCommon::Vector<size_t> OMEGAGTE_EXPORT omegaSLStructMemberOffsets(
+        OmegaCommon::Vector<omegasl_data_type> fields,
+        BufferDescriptor::Role role = BufferDescriptor::Storage) noexcept;
+
 struct OMEGAGTE_EXPORT GEBufferWriter {
     OMEGACOMMON_CLASS("OmegaGTE.GEBufferWriter")
     virtual void setOutputBuffer(SharedHandle<GEBuffer> & buffer) = 0;

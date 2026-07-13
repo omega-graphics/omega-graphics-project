@@ -36,6 +36,18 @@ public:
     /// flag before issuing `drawMeshThreadgroups:`. Matches the
     /// `isMesh` flag on the D3D12 sibling at GED3D12Pipeline.h:27.
     bool isMesh = false;
+    /// §5 — the optional amplification stage of a mesh pipeline (Metal calls it
+    /// the OBJECT stage). Null on every other pipeline kind, and on a mesh
+    /// pipeline built without one.
+    ///
+    /// Its own slot rather than a doubling onto an existing one (the way the
+    /// mesh shader doubles onto `vertexShader`) because amplification does not
+    /// REPLACE any stage — it runs upstream of the mesh stage and coexists with
+    /// it, with its own per-stage binding table (`setObjectBuffer:` &c.). There
+    /// is nothing for it to double onto. `drawMeshTasks` also reads its
+    /// `threadgroupDesc` for `threadsPerObjectThreadgroup:`, which Phase 4c had
+    /// to pin at (1,1,1) precisely because no object stage could be bound.
+    SharedHandle<GTEShader> amplificationShader;
     /// §16 Phase E — tessellation-pipeline variant. When true, `vertexShader`
     /// holds the DOMAIN (post-tessellation vertex) shader and the fields below
     /// carry the hull compute stage + tessellation config the deferred

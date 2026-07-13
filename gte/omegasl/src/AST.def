@@ -482,6 +482,29 @@ typedef int ASTType;
 ///                                            the `nv` argument is dropped)
 #define BUILTIN_SET_MESH_OUTPUTS "setMeshOutputs"
 
+/// §5 — amplification-stage child dispatch. `dispatchMesh(x, y, z, payload)`
+/// launches an (x, y, z) grid of mesh threadgroups and hands them `payload`
+/// (the shader's `out payload` parameter). Amplification-stage-only,
+/// void-returning, `(uint, uint, uint, <payload struct>)`.
+///
+/// Sema requires EXACTLY ONE call, and requires it to be the FINAL statement
+/// of the amplification body. That is stricter than any single backend needs,
+/// and deliberately so: GLSL's `EmitMeshTasksEXT` is a *terminating*
+/// instruction (nothing may execute after it) and HLSL's `DispatchMesh` must
+/// be a group-uniform call reached exactly once, so the intersection of the
+/// three backends' rules is "once, last." Enforcing the intersection in the
+/// front-end is what keeps one OmegaSL source portable to all three.
+///
+/// Cross-backend lowering is NOT 1:1 — the payload argument is real on HLSL
+/// and dropped on the other two, which reach the payload through a shared
+/// declaration instead (see Mesh-Shader-Implementation-Plan.md → Phase 5):
+///   GLSL — EmitMeshTasksEXT(x, y, z)                       (payload dropped;
+///          it is a file-scope `taskPayloadSharedEXT` global)
+///   HLSL — DispatchMesh(x, y, z, payload)                  (all four args)
+///   MSL  — <grid>.set_threadgroups_per_grid(uint3(x,y,z))  (payload dropped;
+///          it is an `object_data T& [[payload]]` reference parameter)
+#define BUILTIN_DISPATCH_MESH "dispatchMesh"
+
 //Internal Shader Attributes
 #define ATTRIBUTE_VERTEX_ID "VertexID"
 #define ATTRIBUTE_INSTANCE_ID "InstanceID"

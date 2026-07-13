@@ -76,4 +76,66 @@ size_t omegaSLStructStride(OmegaCommon::Vector<omegasl_data_type> data,
 #endif
 }
 
+OmegaCommon::Vector<size_t> omegaSLStructMemberOffsets(OmegaCommon::Vector<omegasl_data_type> data,
+                                                       BufferDescriptor::Role role) noexcept {
+    /// Mirrors `omegaSLStructStride` branch for branch — same standard per
+    /// backend, same align-then-place walk. It has to: the two are read
+    /// together (stride to size the allocation, offsets to place the members
+    /// inside it), and any drift between them is a silent buffer-layout bug of
+    /// exactly the kind this function exists to prevent.
+    OmegaCommon::Vector<size_t> offsets;
+    offsets.reserve(data.size());
+
+#if !defined(TARGET_METAL)
+    const BufferLayoutStd layout =
+        (role == BufferDescriptor::Uniform) ? BufferLayoutStd::Std140 :
+    #if defined(TARGET_DIRECTX)
+            BufferLayoutStd::DXStructured;
+    #else
+            BufferLayoutStd::Std430;
+    #endif
+    size_t off = 0;
+    for(auto d : data){
+        const size_t align = memberBaseAlignment(d, layout);
+        size_t size;
+        if(isMatrixDataType(d)){
+            auto [cols, rows] = matrixDims(d);
+            size = matrixSize(cols, rows, layout);
+        }
+        else {
+            size = std140ScalarVec(d).second; // scalar/vec size is standard-independent
+        }
+        off = alignOffset(off, align);
+        offsets.push_back(off);
+        off += size;
+    }
+#else
+    (void)role;
+    size_t off = 0;
+    for(auto d : data){
+        const size_t align = memberBaseAlignment(d, BufferLayoutStd::Std430);
+        size_t size;
+        if(isMatrixDataType(d)){
+            auto [cols, rows] = matrixDims(d);
+            size = std430MatrixSize(cols, rows);
+        }
+        else {
+            switch (d) {
+                case OMEGASL_FLOAT2 : case OMEGASL_INT2 : case OMEGASL_UINT2 :
+                    size = sizeof(simd_float2); break;
+                case OMEGASL_FLOAT3 : case OMEGASL_INT3 : case OMEGASL_UINT3 :
+                    size = sizeof(simd_float3); break; // 16, not std430's 12
+                case OMEGASL_FLOAT4 : case OMEGASL_INT4 : case OMEGASL_UINT4 :
+                    size = sizeof(simd_float4); break;
+                default : size = sizeof(float); break; // scalar
+            }
+        }
+        off = alignOffset(off, align);
+        offsets.push_back(off);
+        off += size;
+    }
+#endif
+    return offsets;
+}
+
 _NAMESPACE_END_

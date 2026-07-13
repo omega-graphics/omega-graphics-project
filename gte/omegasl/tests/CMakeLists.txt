@@ -198,6 +198,18 @@ add_omegasl_compile_test(omegasl_compile_pbr_metallic        pbr_metallic.omegas
 add_omegasl_compile_test(omegasl_compile_post_process        post_process.omegasl)
 add_omegasl_compile_test(omegasl_compile_particle_sim        particle_sim.omegasl)
 
+# Mesh-shader pipeline (Mesh-Shader-Implementation-Plan.md).
+#
+# `mesh_basic` predates these registrations — Phases 2a/2b/2c verified it by
+# hand in-session and never wired it into CTest, so the mesh codegen path had no
+# standing regression coverage at all. Registering it here closes that gap.
+#
+# `amplification_basic` (§5) is the two-stage amp -> mesh pipeline: an
+# amplification shader fills a payload and dispatches a computed number of mesh
+# threadgroups, each of which reads the payload back.
+add_omegasl_compile_test(omegasl_compile_mesh_basic           mesh_basic.omegasl)
+add_omegasl_compile_test(omegasl_compile_amplification_basic amplification_basic.omegasl)
+
 # =============================================================
 # 3. Negative compilation tests (expected to fail)
 # =============================================================
@@ -283,6 +295,36 @@ add_omegasl_fail_test(omegasl_invalid_reserved_name          invalid_reserved_na
 # unattributed field is expressible only on GLSL, so Sema rejects it for all
 # backends.
 add_omegasl_fail_test(omegasl_invalid_internal_unattributed_field invalid_internal_unattributed_field.omegasl)
+
+# --- Mesh-shader pipeline (Mesh-Shader-Implementation-Plan.md) --------------
+# These fixtures also predate their registration: §2a/§2b landed them and
+# verified them by hand, so like `mesh_basic` above they had no standing CTest
+# coverage. Wired up here alongside the §5 amplification negatives.
+#
+# §2b — `topology=point` is a portability gate, not a capability gap: GLSL and
+# Metal support it natively, HLSL SM 6.5 has no `[outputtopology("point")]`.
+add_omegasl_fail_test(omegasl_invalid_topology_point         invalid_topology_point.omegasl)
+# §2a follow-up — `setMeshOutputs` diagnostics (stage / types / duplicate / bounds).
+add_omegasl_fail_test(omegasl_invalid_set_mesh_outputs_outside_mesh invalid_set_mesh_outputs_outside_mesh.omegasl)
+add_omegasl_fail_test(omegasl_invalid_set_mesh_outputs_wrong_types  invalid_set_mesh_outputs_wrong_types.omegasl)
+add_omegasl_fail_test(omegasl_invalid_set_mesh_outputs_duplicate    invalid_set_mesh_outputs_duplicate.omegasl)
+add_omegasl_fail_test(omegasl_invalid_set_mesh_outputs_exceeds_max  invalid_set_mesh_outputs_exceeds_max.omegasl)
+# §5 — amplification-stage diagnostics. The `dispatchMesh` must-be-last rule is
+# the interesting one: it is the INTERSECTION of the three backends' rules, not
+# any one backend's, so the diag test pins the message that explains why (GLSL's
+# EmitMeshTasksEXT terminates the shader; HLSL and Metal would accept the
+# trailing statement). Without that reasoning in the message the rule reads as
+# arbitrary pedantry to whoever trips it.
+add_omegasl_fail_test(omegasl_invalid_dispatch_mesh_not_last    invalid_dispatch_mesh_not_last.omegasl)
+add_omegasl_diag_test(omegasl_invalid_dispatch_mesh_not_last_diag invalid_dispatch_mesh_not_last.omegasl
+                      "must be the final statement of the body")
+add_omegasl_fail_test(omegasl_invalid_dispatch_mesh_outside_amp invalid_dispatch_mesh_outside_amp.omegasl)
+add_omegasl_diag_test(omegasl_invalid_dispatch_mesh_outside_amp_diag invalid_dispatch_mesh_outside_amp.omegasl
+                      "only valid inside an amplification shader")
+add_omegasl_fail_test(omegasl_invalid_amp_no_payload            invalid_amp_no_payload.omegasl)
+add_omegasl_fail_test(omegasl_invalid_payload_wrong_direction   invalid_payload_wrong_direction.omegasl)
+add_omegasl_diag_test(omegasl_invalid_payload_wrong_direction_diag invalid_payload_wrong_direction.omegasl
+                      "use `in payload`")
 
 # =============================================================
 # 4. ShaderArchive Read->Write byte-identical round-trip (Phase 1)

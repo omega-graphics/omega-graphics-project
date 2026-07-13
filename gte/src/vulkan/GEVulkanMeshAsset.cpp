@@ -76,6 +76,11 @@ public:
         m->vertexCount  = parsed.vertexCount;
         m->vertexStride = parsed.stride;
         m->descriptor   = options.desiredDescriptor;
+        // Bound the mesh while the CPU stream is still in hand — it is dropped
+        // the moment this function returns, and a caller placing the mesh in a
+        // scene has no other way to learn its size.
+        m->bounds       = geMeshComputeBounds(parsed.packed.data(),
+                                              parsed.vertexCount, parsed.stride);
 
         // Resolve material textures via TextureAsset. Same contract as
         // the Metal / D3D12 backends: first base-color path wins,

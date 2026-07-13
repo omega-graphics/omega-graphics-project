@@ -2,11 +2,123 @@
 #include "omegaGTE/GE.h"
 #include "omegaGTE/GTEShader.h"
 
+#include <algorithm>
 #include <iostream>
 
 _NAMESPACE_BEGIN_
 
+GPoint3D GEMeshBounds::center() const {
+    GPoint3D c;
+    c.x = (min.x + max.x) * 0.5f;
+    c.y = (min.y + max.y) * 0.5f;
+    c.z = (min.z + max.z) * 0.5f;
+    return c;
+}
+
+GPoint3D GEMeshBounds::extent() const {
+    GPoint3D e;
+    e.x = max.x - min.x;
+    e.y = max.y - min.y;
+    e.z = max.z - min.z;
+    return e;
+}
+
+float GEMeshBounds::longestExtent() const {
+    const GPoint3D e = extent();
+    return std::max(e.x, std::max(e.y, e.z));
+}
+
+GEMeshBounds geMeshComputeBounds(const float *packed,
+                                 unsigned vertexCount,
+                                 size_t vertexStride) {
+    GEMeshBounds b;
+    // A stride that cannot hold a float3 means the caller handed us a layout
+    // without a position — there is nothing to bound, and reading three floats
+    // anyway would walk off the end of the last vertex.
+    if (packed == nullptr || vertexCount == 0 || vertexStride < sizeof(float) * 3) {
+        return b;
+    }
+
+    const size_t floatsPerVertex = vertexStride / sizeof(float);
+    b.min = GPoint3D{packed[0], packed[1], packed[2]};
+    b.max = b.min;
+    for (unsigned i = 1; i < vertexCount; ++i) {
+        const float *p = packed + (static_cast<size_t>(i) * floatsPerVertex);
+        b.min.x = std::min(b.min.x, p[0]);
+        b.min.y = std::min(b.min.y, p[1]);
+        b.min.z = std::min(b.min.z, p[2]);
+        b.max.x = std::max(b.max.x, p[0]);
+        b.max.y = std::max(b.max.y, p[1]);
+        b.max.z = std::max(b.max.z, p[2]);
+    }
+    b.valid = true;
+    return b;
+}
+
+namespace {
+
+/// Grow `b` to contain `pt`. `valid` doubles as "has seen a point": the first
+/// point seeds both corners, so an all-negative mesh is not silently stretched
+/// to include the origin (which a zero-initialized box would do).
+void expandBounds(GEMeshBounds &b, const GPoint3D &pt) {
+    if (!b.valid) {
+        b.min = pt;
+        b.max = pt;
+        b.valid = true;
+        return;
+    }
+    b.min.x = std::min(b.min.x, pt.x);
+    b.min.y = std::min(b.min.y, pt.y);
+    b.min.z = std::min(b.min.z, pt.z);
+    b.max.x = std::max(b.max.x, pt.x);
+    b.max.y = std::max(b.max.y, pt.y);
+    b.max.z = std::max(b.max.z, pt.z);
+}
+
+}  // namespace
+
+namespace {
+
+/// The mesh's attributes as OmegaSL field types, in the fixed order
+/// `GEMeshVertexAttribute` documents. This is the bridge between GEMesh's
+/// attribute bitmask and the buffer-layout authority in GTEShader.h — the one
+/// place that knows what each backend's `buffer<T>` actually looks like.
+OmegaCommon::Vector<omegasl_data_type> geMeshFieldsFor(uint32_t attributes) {
+    OmegaCommon::Vector<omegasl_data_type> fields;
+    if (attributes & GEMeshAttrPosition) fields.push_back(OMEGASL_FLOAT3);
+    if (attributes & GEMeshAttrUV2)      fields.push_back(OMEGASL_FLOAT2);
+    if (attributes & GEMeshAttrUV3)      fields.push_back(OMEGASL_FLOAT3);
+    if (attributes & GEMeshAttrNormal)   fields.push_back(OMEGASL_FLOAT3);
+    if (attributes & GEMeshAttrColor)    fields.push_back(OMEGASL_FLOAT4);
+    return fields;
+}
+
+/// Component count of each field, parallel to geMeshFieldsFor().
+OmegaCommon::Vector<size_t> geMeshFieldComponents(uint32_t attributes) {
+    OmegaCommon::Vector<size_t> comps;
+    if (attributes & GEMeshAttrPosition) comps.push_back(3);
+    if (attributes & GEMeshAttrUV2)      comps.push_back(2);
+    if (attributes & GEMeshAttrUV3)      comps.push_back(3);
+    if (attributes & GEMeshAttrNormal)   comps.push_back(3);
+    if (attributes & GEMeshAttrColor)    comps.push_back(4);
+    return comps;
+}
+
+}  // namespace
+
 size_t geMeshStrideFor(uint32_t attributes) {
+    const auto fields = geMeshFieldsFor(attributes);
+    if (fields.empty()) {
+        return 0;
+    }
+    // Defer to the buffer-layout authority rather than summing component sizes.
+    // A `buffer<T>` element is laid out by the backend's standard, and under
+    // std430 a lone `float3` rounds up to a 16-byte stride — summing gives 12
+    // and every vertex after the first is then read from the wrong offset.
+    return omegaSLStructStride(fields, BufferDescriptor::Storage);
+}
+
+size_t geMeshTightStrideFor(uint32_t attributes) {
     size_t stride = 0;
     if (attributes & GEMeshAttrPosition) stride += sizeof(float) * 3;
     if (attributes & GEMeshAttrUV2)      stride += sizeof(float) * 2;
@@ -14,6 +126,45 @@ size_t geMeshStrideFor(uint32_t attributes) {
     if (attributes & GEMeshAttrNormal)   stride += sizeof(float) * 3;
     if (attributes & GEMeshAttrColor)    stride += sizeof(float) * 4;
     return stride;
+}
+
+OmegaCommon::Vector<float> geMeshRepackToGPULayout(const OmegaCommon::Vector<float> & tightPacked,
+                                                   uint32_t attributes,
+                                                   unsigned vertexCount) {
+    const size_t tightStride = geMeshTightStrideFor(attributes);
+    const size_t gpuStride   = geMeshStrideFor(attributes);
+    if (tightStride == 0 || gpuStride == 0 || vertexCount == 0) {
+        return OmegaCommon::Vector<float>();
+    }
+    // The layouts already agree (D3D12's scalar StructuredBuffer, or any layout
+    // that happens to need no padding) — nothing to move.
+    if (tightStride == gpuStride) {
+        return tightPacked;
+    }
+
+    const auto offsets = omegaSLStructMemberOffsets(geMeshFieldsFor(attributes),
+                                                    BufferDescriptor::Storage);
+    const auto comps   = geMeshFieldComponents(attributes);
+    const size_t tightFloats = tightStride / sizeof(float);
+    const size_t gpuFloats   = gpuStride / sizeof(float);
+
+    // Zero-filled, so the pad bytes the standard inserts are deterministic
+    // rather than whatever was on the heap — a NaN in padding is harmless today
+    // but not worth leaving for someone to trip over.
+    OmegaCommon::Vector<float> out(static_cast<size_t>(vertexCount) * gpuFloats, 0.f);
+    for (unsigned v = 0; v < vertexCount; ++v) {
+        const size_t src = static_cast<size_t>(v) * tightFloats;
+        const size_t dst = static_cast<size_t>(v) * gpuFloats;
+        size_t srcComp = 0;
+        for (size_t f = 0; f < comps.size(); ++f) {
+            const size_t dstComp = offsets[f] / sizeof(float);
+            for (size_t c = 0; c < comps[f]; ++c) {
+                out[dst + dstComp + c] = tightPacked[src + srcComp + c];
+            }
+            srcComp += comps[f];
+        }
+    }
+    return out;
 }
 
 namespace {
@@ -137,10 +288,14 @@ SharedHandle<GEMesh> buildMeshFromTriangulation(
         writer->setOutputBuffer(vbuf);
 
         bool warnedMissingAttachment = false;
+        GEMeshBounds bounds;
         for (auto &poly : result.mesh.vertexPolygons) {
             writeOneVertex(*writer, desc.attributes, poly.a.pt, poly.a.attachment, warnedMissingAttachment);
             writeOneVertex(*writer, desc.attributes, poly.b.pt, poly.b.attachment, warnedMissingAttachment);
             writeOneVertex(*writer, desc.attributes, poly.c.pt, poly.c.attachment, warnedMissingAttachment);
+            expandBounds(bounds, poly.a.pt);
+            expandBounds(bounds, poly.b.pt);
+            expandBounds(bounds, poly.c.pt);
         }
         writer->flush();
 
@@ -149,6 +304,7 @@ SharedHandle<GEMesh> buildMeshFromTriangulation(
         out->vertexCount = totalVerts;
         out->vertexStride = stride;
         out->descriptor = desc;
+        out->bounds = bounds;
         if (diffuseTexture) {
             out->textureBindings[diffuseSlot] = std::move(diffuseTexture);
         }
@@ -186,8 +342,10 @@ SharedHandle<GEMesh> buildMeshFromTriangulation(
     auto vwriter = GEBufferWriter::Create();
     vwriter->setOutputBuffer(vbuf);
     bool warnedMissingAttachment = false;
+    GEMeshBounds bounds;
     for (auto &v : indexed.vertices) {
         writeOneVertex(*vwriter, desc.attributes, v.pt, v.attachment, warnedMissingAttachment);
+        expandBounds(bounds, v.pt);
     }
     vwriter->flush();
 
@@ -223,6 +381,7 @@ SharedHandle<GEMesh> buildMeshFromTriangulation(
     out->indexCount = indexCount;
     out->vertexStride = stride;
     out->descriptor = desc;
+    out->bounds = bounds;
     if (diffuseTexture) {
         out->textureBindings[diffuseSlot] = std::move(diffuseTexture);
     }

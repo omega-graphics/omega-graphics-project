@@ -147,6 +147,32 @@ _NAMESPACE_BEGIN_
         /// slot in the fragment shader (Extension 8).
         virtual void bindResourceAtFragmentShader(SharedHandle<GESamplerState> & sampler,unsigned id) = 0;
 
+        /// @brief Bind a resource to the AMPLIFICATION stage of a bound mesh
+        /// pipeline (Mesh-Shader-Plan §5). @p id is the OmegaSL resource slot,
+        /// as declared by the amplification shader's `[in ...]` resource map.
+        ///
+        /// Why this is its own method, when a mesh shader's resources bind
+        /// through @c bindResourceAtVertexShader instead of a
+        /// `bindResourceAtMeshShader`: the mesh stage REPLACES the vertex stage
+        /// (it occupies the same pipeline slot, so the vertex-stage bind path
+        /// already addresses the right shader). The amplification stage does not
+        /// replace anything — it runs *upstream of* the mesh stage and coexists
+        /// with it, carrying its own resource table, its own descriptor set, and
+        /// its own register space. There is no existing slot for it to double
+        /// onto, so a resource has no way to name it without a method that says
+        /// so. The precedent is @c bindResourceAtFragmentShader, which exists for
+        /// exactly the same reason.
+        ///
+        /// Calling this without a mesh pipeline bound, or with one built with no
+        /// @c amplificationFunc, is a programmer error and asserts in debug
+        /// builds. Push constants are NOT bound through here — @c
+        /// setRenderConstants already reaches every stage that declared the
+        /// block, amplification included.
+        virtual void bindResourceAtAmplificationShader(SharedHandle<GEBuffer> & buffer,unsigned id) = 0;
+        virtual void bindResourceAtAmplificationShader(SharedHandle<GETexture> & texture,unsigned id,
+                                                       const TextureSwizzle & swizzle = TextureSwizzle::identity()) = 0;
+        virtual void bindResourceAtAmplificationShader(SharedHandle<GESamplerState> & sampler,unsigned id) = 0;
+
         /// @brief Set the push-constant data for the currently bound render
         /// pipeline (Pipeline-Completion §2.2 / OmegaSL §10.2 `constant<T>`).
         /// Small (≤128 bytes portable), updated per-draw without a buffer

@@ -748,8 +748,99 @@ namespace omegasl::ast {
             /// Compute barriers.
             BUILTIN_THREADGROUP_BARRIER, BUILTIN_DEVICE_BARRIER,
             /// §2a follow-up — mesh-shader runtime output-count call.
-            BUILTIN_SET_MESH_OUTPUTS
+            BUILTIN_SET_MESH_OUTPUTS,
+            /// §5 — amplification-stage child dispatch.
+            BUILTIN_DISPATCH_MESH
         };
         return reserved.count(std::string(name)) > 0;
+    }
+
+    unsigned payloadStructSize(StructDecl *decl) {
+        /// §5 — byte size of a mesh-pipeline payload struct, as the *backend*
+        /// lays it out. Its one consumer is Metal's
+        /// `MTLMeshRenderPipelineDescriptor.payloadMemoryLength`, which is an
+        /// allocation size for threadgroup memory, so this deliberately
+        /// OVER-approximates: `float3`/`int3`/`uint3` are sized and aligned at
+        /// 16 bytes (MSL's `simd_float3` rule, and HLSL/GLSL never pack a vec3
+        /// tighter than that inside a shared block either), and the struct
+        /// rounds up to a 16-byte multiple. Nothing indexes into the payload
+        /// using this number on any backend — a too-large value costs a few
+        /// bytes of threadgroup memory, a too-small one is undefined behavior,
+        /// so erring large is the safe direction.
+        ///
+        /// Keyed on the field's spelled type name rather than on a resolved
+        /// `ast::Type *` because the compiler has no size table for builtin
+        /// types anywhere else (`omegasl_data_type` and `structStride` live on
+        /// the runtime side of the wall, in BufferIO.h) and this is the only
+        /// place that needs one.
+        if (decl == nullptr) {
+            return 0;
+        }
+
+        auto sizeAndAlignFor = [](const OmegaCommon::String &ty,
+                                  unsigned &size, unsigned &align) -> bool {
+            struct Entry { const char *name; unsigned size, align; };
+            static const Entry table[] = {
+                {"bool",   4,  4}, {"bool2",   8,  8}, {"bool3",  16, 16}, {"bool4",  16, 16},
+                {"int",    4,  4}, {"int2",    8,  8}, {"int3",   16, 16}, {"int4",   16, 16},
+                {"uint",   4,  4}, {"uint2",   8,  8}, {"uint3",  16, 16}, {"uint4",  16, 16},
+                {"float",  4,  4}, {"float2",  8,  8}, {"float3", 16, 16}, {"float4", 16, 16},
+                {"half",   2,  2}, {"half2",   4,  4}, {"half3",   8,  8}, {"half4",   8,  8},
+                {"short",  2,  2}, {"short2",  4,  4}, {"short3",  8,  8}, {"short4",  8,  8},
+                {"ushort", 2,  2}, {"ushort2", 4,  4}, {"ushort3", 8,  8}, {"ushort4", 8,  8},
+                {"long",   8,  8}, {"long2",  16, 16}, {"long3",  32, 16}, {"long4",  32, 16},
+                {"ulong",  8,  8}, {"ulong2", 16, 16}, {"ulong3", 32, 16}, {"ulong4", 32, 16},
+                {"double", 8,  8}, {"double2",16, 16}, {"double3",32, 16}, {"double4",32, 16},
+                /// Matrices are C columns of a 4-wide row, the same shape every
+                /// backend gives them inside a struct.
+                {"float2x2", 32, 16}, {"float3x3", 48, 16}, {"float4x4", 64, 16},
+                {"float2x3", 32, 16}, {"float2x4", 32, 16}, {"float3x2", 48, 16},
+                {"float3x4", 48, 16}, {"float4x2", 64, 16}, {"float4x3", 64, 16},
+                {"int2x2",   32, 16}, {"int3x3",   48, 16}, {"int4x4",   64, 16},
+                {"int2x3",   32, 16}, {"int2x4",   32, 16}, {"int3x2",   48, 16},
+                {"int3x4",   48, 16}, {"int4x2",   64, 16}, {"int4x3",   64, 16},
+            };
+            for (auto &e : table) {
+                if (ty == e.name) {
+                    size = e.size;
+                    align = e.align;
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        unsigned offset = 0, maxAlign = 4;
+        for (auto &f : decl->fields) {
+            unsigned size = 0, align = 0;
+            if (!sizeAndAlignFor(f.typeExpr->name, size, align)) {
+                /// A field type this table doesn't model (a nested struct, say).
+                /// Sema rejects those on a payload before we get here, but if
+                /// one ever slips through, a 16-byte slot is the conservative
+                /// guess in the same "err large" direction as the rest.
+                size = 16;
+                align = 16;
+            }
+            /// An array field multiplies the element count; each element keeps
+            /// the element alignment (this is how all three backends stride an
+            /// array member of a shared block).
+            for (auto dim : f.typeExpr->arrayDims) {
+                size *= dim;
+            }
+            if (align > maxAlign) {
+                maxAlign = align;
+            }
+            if (offset % align != 0) {
+                offset += align - (offset % align);
+            }
+            offset += size;
+        }
+        /// Round the whole struct up to 16 — every backend gives a
+        /// threadgroup-shared block at least 16-byte granularity.
+        const unsigned structAlign = maxAlign < 16 ? 16 : maxAlign;
+        if (offset % structAlign != 0) {
+            offset += structAlign - (offset % structAlign);
+        }
+        return offset;
     }
 }

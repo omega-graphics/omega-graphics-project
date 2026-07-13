@@ -1723,21 +1723,35 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             if (!_checkPipelineShader(desc.fragmentFunc, "fragment", desc.name)) {
                 return nullptr;
             }
-            /// Phase 5 hard-stop, matching the D3D12 sibling. The
-            /// descriptor exposes `amplificationFunc` so callers can
-            /// write forward-compatible code, but per-backend AS/object
-            /// plumbing (payload-type matching, mesh-grid dispatch) does
-            /// not land until Phase 5. Fail loud here rather than
-            /// silently dropping the stage.
-            if (desc.amplificationFunc) {
+            /// §5 — amplification (object) stage. Optional: a mesh pipeline runs
+            /// fine without one, so a null `amplificationFunc` degrades to the
+            /// Phase-4c shape exactly as before.
+            const bool hasAmplification = (desc.amplificationFunc != nullptr);
+            if (hasAmplification) {
                 if (!_checkPipelineShader(desc.amplificationFunc, "amplification", desc.name)) {
                     return nullptr;
                 }
-                DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: amplification stage is Phase 5 "
-                             "(payload + object/mesh-grid machinery pending); "
-                             "passing `amplificationFunc` is not supported yet ('"
-                             << desc.name << "')");
-                return nullptr;
+                /// The two stages must agree on the payload struct. They compile
+                /// independently, so nothing else stops a caller pairing an
+                /// amplification shader with a mesh shader built against a
+                /// DIFFERENT payload type — the mesh side would then read the
+                /// amp's bytes through the wrong layout and render garbage with
+                /// no error anywhere. Comparing the serialized size is cheap and
+                /// sufficient: a mismatch always means the structs differ.
+                const unsigned ampPayload  = desc.amplificationFunc->internal.payloadDesc.size;
+                const unsigned meshPayload = desc.meshFunc->internal.payloadDesc.size;
+                if (ampPayload == 0) {
+                    DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: amplification shader declares no `out payload` ('"
+                                 << desc.name << "')");
+                    return nullptr;
+                }
+                if (ampPayload != meshPayload) {
+                    DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: payload mismatch between the amplification stage ("
+                                 << ampPayload << " bytes) and the mesh stage (" << meshPayload
+                                 << " bytes) — the two shaders were built against different payload structs ('"
+                                 << desc.name << "')");
+                    return nullptr;
+                }
             }
 
             metalDevice.assertExists();
@@ -1797,7 +1811,26 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             fragmentFunc->function.assertExists();
             pipelineDesc.meshFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,meshFunc->function.handle());
             pipelineDesc.fragmentFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,fragmentFunc->function.handle());
-            /// `objectFunction` left nil — amplification rejected above.
+
+            /// §5 — the object (amplification) stage. Left nil for a mesh-only
+            /// pipeline, which is how Metal spells "no object stage".
+            ///
+            /// `payloadMemoryLength` is REQUIRED whenever an object function is
+            /// set: it is the threadgroup-memory allocation backing the
+            /// `object_data T& [[payload]]` reference the object function writes
+            /// and its mesh children read. Metal does not derive it from the
+            /// function's signature — leave it 0 and the payload has nowhere to
+            /// live. The value comes from `ast::payloadStructSize`, serialized at
+            /// compile time onto the amplification entry, and is deliberately an
+            /// OVER-approximation (vec3 = 16B, struct rounded to 16B): too large
+            /// wastes a few bytes of threadgroup memory, too small is undefined
+            /// behavior, so erring large is the safe direction.
+            if (hasAmplification) {
+                auto ampFunc = (GEMetalShader *)desc.amplificationFunc.get();
+                ampFunc->function.assertExists();
+                pipelineDesc.objectFunction = NSOBJECT_OBJC_BRIDGE(id<MTLFunction>,ampFunc->function.handle());
+                pipelineDesc.payloadMemoryLength = desc.amplificationFunc->internal.payloadDesc.size;
+            }
 
             /// Color attachments + blend — identical loop to the graphics
             /// PSO (the field types differ: graphics
@@ -1882,11 +1915,19 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             NSSmartPtr pipelineState = NSObjectHandle{NSOBJECT_CPP_BRIDGE pipelineStateRaw};
 
             DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Mesh pipeline created: '" << desc.name << "'");
-            return std::shared_ptr<GERenderPipelineState>(
+            auto result = std::shared_ptr<GEMetalRenderPipelineState>(
                 new GEMetalRenderPipelineState(desc.meshFunc, desc.fragmentFunc,
                                                pipelineState, hasDepthStencilState,
                                                depthStencilState, rasterizerState,
                                                /*meshVariant=*/true));
+            /// §5 — stamped after construction (rather than threaded through the
+            /// constructor) because it is optional and every other mesh-PSO field
+            /// is not. `drawMeshTasks` reads its `threadgroupDesc` for
+            /// `threadsPerObjectThreadgroup:`.
+            if (hasAmplification) {
+                result->amplificationShader = desc.amplificationFunc;
+            }
+            return result;
         };
 
         SharedHandle<GEBlitPipelineState> makeBlitPipelineState(BlitPipelineDescriptor &desc) override {

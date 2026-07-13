@@ -258,6 +258,18 @@ namespace omegasl {
         /// the builtin dispatch in Sema and the `builtinFunctionMap`.
         bool isReservedBuiltinName(OmegaCommon::StrRef name);
 
+        struct StructDecl;
+
+        /// §5 — byte size of a mesh-pipeline payload struct as the backends lay
+        /// it out. Deliberately over-approximates (vec3 = 16B, struct rounded
+        /// to 16B): its one consumer is Metal's `payloadMemoryLength`, a
+        /// threadgroup-memory allocation size, so a value that is too large
+        /// wastes a few bytes while one that is too small is undefined
+        /// behavior. Serialized onto `omegasl_shader::payloadDesc` for both the
+        /// amplification and the mesh entry, where it doubles as the runtime
+        /// amp↔mesh payload-agreement check. See the definition in AST.cpp.
+        unsigned payloadStructSize(StructDecl *decl);
+
         /// @brief Refers to a type that already exists.
         struct TypeExpr {
             OmegaCommon::String name;
@@ -404,6 +416,25 @@ namespace omegasl {
             /// (checked in Sema's mesh-stage validation).
             enum MeshOutputKind { NotMeshOutput, Vertices, Indices };
             MeshOutputKind meshOutput = NotMeshOutput;
+
+            /// §5 — mesh-pipeline payload qualifier on a shader entry
+            /// parameter. Set by the parser when `out payload` (on an
+            /// `amplification` shader) or `in payload` (on a `mesh` shader)
+            /// prefixes the parameter; the `payload` word stays a contextual
+            /// identifier, consumed only in that position. Everything else
+            /// leaves this `NotPayload`.
+            ///
+            /// The element type is a plain (non-`internal`) struct — the
+            /// payload carries no interstage semantics, it is just a block of
+            /// threadgroup-shared data the amplification stage fills and the
+            /// mesh threadgroups it launches read back. No backend represents
+            /// it as an ordinary function parameter, so every target
+            /// SUPPRESSES it from the emitted entry signature and re-expresses
+            /// it in that backend's own shape (GLSL `taskPayloadSharedEXT`
+            /// global / HLSL `groupshared` global + `in payload` MS param /
+            /// MSL `object_data T& [[payload]]` reference param).
+            enum PayloadKind { NotPayload, InPayload, OutPayload };
+            PayloadKind payload = NotPayload;
         };
 
         struct VarDecl : public Decl {
@@ -532,7 +563,13 @@ namespace omegasl {
                 Compute,
                 Hull,
                 Domain,
-                Mesh
+                Mesh,
+                /// §5 — mesh-pipeline amplification (task/object) stage.
+                /// Appended at the tail so the numeric value of every
+                /// pre-existing stage is preserved (the value is mirrored into
+                /// `omegasl_shader_type`, which is serialized into
+                /// `.omegasllib` archives).
+                Amplification
             } Type;
             Type shaderType;
             struct ResourceMapDesc {
@@ -609,6 +646,13 @@ namespace omegasl {
             /// call ⇒ the auto-emit fires as before. Mesh-only; ignored on
             /// every other stage.
             bool meshHasUserSetMeshOutputsCall = false;
+            /// §5 — set by Sema in CALL_EXPR when the body of this
+            /// Amplification shader contains a `dispatchMesh(x, y, z, payload)`
+            /// call. Sema requires exactly one, as the final statement of the
+            /// body (see BUILTIN_DISPATCH_MESH in AST.def for why the rule is
+            /// the intersection of the three backends' rules rather than any
+            /// one of them). Amplification-only; ignored on every other stage.
+            bool ampHasDispatchMeshCall = false;
             /// §1.5 — early depth/stencil. Set by the parser when a
             /// `fragment(early_depth)` descriptor is present; only ever
             /// true on a Fragment shader (the parser accepts the

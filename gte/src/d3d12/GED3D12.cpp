@@ -2185,35 +2185,62 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         if(!_checkPipelineShader(desc.fragmentFunc,"fragment",desc.name)){
             return nullptr;
         }
-        /// Phase 5 hard-stop. The descriptor exposes `amplificationFunc`
-        /// so callers can write forward-compatible code, but the
-        /// per-backend AS/task plumbing (payload-type matching, the
-        /// dispatch-children builtins) does not land until Phase 5.
-        /// Fail loud here rather than silently dropping the stage.
-        if(desc.amplificationFunc){
-            DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: amplification stage is Phase 5 "
-                         "(payload + dispatch-children machinery pending); "
-                         "passing `amplificationFunc` is not supported yet ('"
-                         << desc.name << "')");
-            return nullptr;
-        }
-
         auto &meshShaderDesc = desc.meshFunc->internal;
         auto &fragmentDesc   = desc.fragmentFunc->internal;
         if(!(meshShaderDesc.type == OMEGASL_SHADER_MESH)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Mesh slot does not hold a mesh shader"); assert((meshShaderDesc.type == OMEGASL_SHADER_MESH) && "Mesh slot does not hold a mesh shader"); return nullptr; }
         if(!(fragmentDesc.type == OMEGASL_SHADER_FRAGMENT)){ DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Fragment slot does not hold a fragment shader"); assert((fragmentDesc.type == OMEGASL_SHADER_FRAGMENT) && "Fragment slot does not hold a fragment shader"); return nullptr; }
 
+        /// §5 — amplification (AS) stage. Optional: a mesh pipeline runs fine
+        /// without one, so a null `amplificationFunc` degrades to the Phase-4b
+        /// shape exactly as before.
+        const bool hasAmplification = (desc.amplificationFunc != nullptr);
+        if(hasAmplification){
+            if(!_checkPipelineShader(desc.amplificationFunc,"amplification",desc.name)){
+                return nullptr;
+            }
+            auto &ampDesc = desc.amplificationFunc->internal;
+            if(!(ampDesc.type == OMEGASL_SHADER_AMPLIFICATION)){
+                DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "Amplification slot does not hold an amplification shader");
+                assert((ampDesc.type == OMEGASL_SHADER_AMPLIFICATION) && "Amplification slot does not hold an amplification shader");
+                return nullptr;
+            }
+            /// The two stages must agree on the payload struct. They compile
+            /// independently, so nothing else stops a caller pairing an
+            /// amplification shader with a mesh shader built against a DIFFERENT
+            /// payload type — in which case the mesh side reads the amp's bytes
+            /// through the wrong layout and renders garbage with no error.
+            /// Comparing the serialized size is cheap and sufficient: a mismatch
+            /// always means the structs differ.
+            if(ampDesc.payloadDesc.size == 0){
+                DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: amplification shader declares no `out payload` ('"
+                             << desc.name << "')");
+                return nullptr;
+            }
+            if(ampDesc.payloadDesc.size != meshShaderDesc.payloadDesc.size){
+                DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: payload mismatch between the amplification stage ("
+                             << ampDesc.payloadDesc.size << " bytes) and the mesh stage ("
+                             << meshShaderDesc.payloadDesc.size
+                             << " bytes) — the two shaders were built against different payload structs ('"
+                             << desc.name << "')");
+                return nullptr;
+            }
+        }
+
         // DEBUG_STREAM("Making D3D12 mesh-shader pipeline '" << desc.name << "'");
 
-        /// Root signature — reuse the existing OmegaSL-driven builder
-        /// over {mesh, fragment}. Mesh shaders bind their resources
-        /// through the same root-parameter table the vertex path uses
-        /// today; the per-shader visibility is captured by the
-        /// underlying omegasl_shader and the builder fans it out.
-        omegasl_shader shaders[] = {meshShaderDesc, fragmentDesc};
+        /// Root signature — reuse the existing OmegaSL-driven builder over
+        /// {mesh, fragment} (+ amplification when present). Every stage binds
+        /// through the same root-parameter table; the builder fans the per-shader
+        /// layout out, and the register space keeps the stages from colliding
+        /// (mesh at space0, fragment at space1, amplification at space2).
+        omegasl_shader shaders[] = {meshShaderDesc,
+                                    fragmentDesc,
+                                    hasAmplification ? desc.amplificationFunc->internal
+                                                     : omegasl_shader{}};
+        const unsigned shaderCount = hasAmplification ? 3u : 2u;
         ID3D12RootSignature *signature = nullptr;
         D3D12_ROOT_SIGNATURE_DESC1 rootSigDesc{};
-        if(!createRootSignatureFromOmegaSLShaders(2, shaders, &rootSigDesc, &signature)){
+        if(!createRootSignatureFromOmegaSLShaders(shaderCount, shaders, &rootSigDesc, &signature)){
             DEBUG_ERROR(DEBUG_DOMAIN_PIPELINE, "makeMeshPipelineState: failed to create root signature ('"
                          << desc.name << "')");
             return nullptr;
@@ -2234,6 +2261,13 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         stream.pRootSignature = signature;
         stream.MS             = meshShader->shaderBytecode;
         stream.PS             = fragmentShader->shaderBytecode;
+        /// §5 — the AS subobject. The state stream always carries the slot; it
+        /// stays a zero-length bytecode when no amplification stage is bound,
+        /// which is how D3D12 spells "mesh-only pipeline".
+        if(hasAmplification){
+            auto *ampShader = (GED3D12Shader *)desc.amplificationFunc.get();
+            stream.AS = ampShader->shaderBytecode;
+        }
 
         // ── Blend ───────────────────────────────────────────────
         {
@@ -2350,10 +2384,17 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         ATL::CStringW wstr(desc.name.data());
         state->SetName(wstr);
         DEBUG_INFO(DEBUG_DOMAIN_PIPELINE, "Mesh pipeline created");
-        return SharedHandle<GERenderPipelineState>(
+        auto result = std::shared_ptr<GED3D12RenderPipelineState>(
             new GED3D12RenderPipelineState(desc.meshFunc, desc.fragmentFunc,
                                            state, signature, rootSigDesc,
                                            /*meshVariant=*/true));
+        /// §5 — stamped after construction (rather than threaded through the
+        /// constructor) because it is optional and every other mesh-PSO field
+        /// is not.
+        if(hasAmplification){
+            result->amplificationShader = desc.amplificationFunc;
+        }
+        return result;
     }
 
     SharedHandle<GEBlitPipelineState> GED3D12Engine::makeBlitPipelineState(BlitPipelineDescriptor &desc) {
@@ -3282,8 +3323,19 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         UINT registerSpace;
 
         for(auto & s : shaders){
+            /// Per-stage register space — must stay in lockstep with the HLSL
+            /// codegen (`HLSLTarget::emitResourceBinding`) and the bind-time
+            /// lookup (`getRootParameterIndexOfResource`). See the comment there.
             if(s.type == OMEGASL_SHADER_FRAGMENT){
                 registerSpace = 1;
+            }
+            else if(s.type == OMEGASL_SHADER_AMPLIFICATION){
+                /// §5 — the amplification stage coexists with the mesh stage in
+                /// one pipeline, so it cannot share space 0 with it: a
+                /// `constant<T>` declared `[in pc]` on both stages would emit two
+                /// root parameters at b0/space0 and CreateRootSignature would
+                /// fail on the duplicate register.
+                registerSpace = 2;
             }
             else {
                 registerSpace = 0;

@@ -14,6 +14,16 @@ namespace omegasl {
     void compileMTLShader(void *mtl_device, unsigned length, const char *string, void **pDest);
 #endif
 
+    /// §5 — the synthesized `mesh_grid_properties` parameter on an `[[object]]`
+    /// entry. MSL has no free-function child-dispatch call: launching the mesh
+    /// grid is a method on this handle, so the object function must take one.
+    /// Named in exactly two places (the signature in `emitShaderEntryHeader` and
+    /// the `dispatchMesh` lowering in `tryEmitBuiltinCall`), which is precisely
+    /// why it is a named constant — a typo in either would compile to a
+    /// use-of-undeclared-identifier only Metal's toolchain would catch, and only
+    /// on a macOS host.
+    static constexpr const char *MSL_MESH_GRID_HANDLE = "__omegasl_mesh_grid";
+
     MSLTarget::MSLTarget(MetalCodeOpts &opts) : Target(Target::MSL), opts(opts) {}
     MSLTarget::~MSLTarget() = default;
 
@@ -706,6 +716,17 @@ using namespace metal;
             shadermap_entry.meshDesc.max_vertices   = meshMaxVertices;
             shadermap_entry.meshDesc.max_primitives = meshMaxPrimitives;
             shadermap_entry.meshDesc.topology       = static_cast<int>(meshTopology);
+        } else if (_decl->shaderType == ast::ShaderDecl::Amplification) {
+            /// §5 — Metal calls the amplification stage the OBJECT stage.
+            /// `[[object]]` is a function attribute, same spelling shape as
+            /// `[[mesh]]`. It dispatches like compute, so its `[numthreads]`
+            /// equivalent rides `threadgroupDesc` exactly as compute's does —
+            /// the runtime reads that field for `threadsPerObjectThreadgroup:`.
+            out << "[[object]]";
+            shadermap_entry.type = OMEGASL_SHADER_AMPLIFICATION;
+            shadermap_entry.threadgroupDesc.x = _decl->threadgroupDesc.x;
+            shadermap_entry.threadgroupDesc.y = _decl->threadgroupDesc.y;
+            shadermap_entry.threadgroupDesc.z = _decl->threadgroupDesc.z;
         }
 
         out << " ";
@@ -737,6 +758,47 @@ using namespace metal;
             ++paramIndex;
         }
 
+        /// §5 — the mesh-pipeline payload. MSL is the only backend where the
+        /// payload is a genuine function PARAMETER on both stages, passed by
+        /// reference in the `object_data` address space:
+        ///
+        ///   object — `object_data T& p [[payload]]`, writable. Paired with a
+        ///     `mesh_grid_properties` handle, which is how MSL expresses the
+        ///     child dispatch: `dispatchMesh(x,y,z,p)` lowers to
+        ///     `__omegasl_mesh_grid.set_threadgroups_per_grid(uint3(x,y,z))` and
+        ///     the payload is not named at the call site at all (it is already
+        ///     bound by reference — the write already happened).
+        ///
+        ///   mesh — `const object_data T& p [[payload]]`, read-only. Emitted
+        ///     AFTER the mesh output handle, which must stay first.
+        ///
+        /// Both are injected here rather than in the generic param loop below
+        /// (which suppresses them) so `paramIndex` is bumped before
+        /// `emitResourcesAndFillLayout` runs — that is what makes the shared
+        /// resource emitter prepend its leading comma correctly.
+        payloadParamName.clear();
+        for (auto &p : _decl->params) {
+            if (p.payload == ast::AttributedFieldDecl::NotPayload) continue;
+            payloadParamName = p.name;
+            auto sit = structDeclMap.find(std::string(p.typeExpr->name));
+            if (sit != structDeclMap.end()) {
+                shadermap_entry.payloadDesc.size = ast::payloadStructSize(sit->second);
+            }
+            if (_decl->shaderType == ast::ShaderDecl::Amplification) {
+                out << "object_data " << p.typeExpr->name << "& " << p.name << " [[payload]]";
+                ++paramIndex;
+                out << ", mesh_grid_properties " << MSL_MESH_GRID_HANDLE;
+                ++paramIndex;
+                meshHandleEmitted = true;
+            } else if (_decl->shaderType == ast::ShaderDecl::Mesh) {
+                /// The mesh output handle was emitted immediately above, so this
+                /// always needs a separator.
+                out << ", const object_data " << p.typeExpr->name << "& " << p.name << " [[payload]]";
+                ++paramIndex;
+            }
+            break;
+        }
+
         /// Resources interleave with params inside the parameter list. The
         /// shared helper drives `emitResourceBinding` (which tracks
         /// `paramIndex` so it knows when to emit a leading comma) and
@@ -759,9 +821,15 @@ using namespace metal;
             return inHullShader && p.attributeName.has_value()
                    && p.attributeName.value() == ATTRIBUTE_VERTEX_ID;
         };
+        /// §5 — the payload param is injected above (in the `object_data`
+        /// address space), so like the mesh-output params it must NOT be counted
+        /// as a visible param here or the leading comma after the resource block
+        /// would be emitted for a param that never gets written.
         unsigned visibleParams = 0;
         for (auto &p : _decl->params) {
-            if (p.meshOutput == ast::AttributedFieldDecl::NotMeshOutput && !isHullVid(p)) ++visibleParams;
+            if (p.meshOutput == ast::AttributedFieldDecl::NotMeshOutput
+                && p.payload == ast::AttributedFieldDecl::NotPayload
+                && !isHullVid(p)) ++visibleParams;
         }
         if (visibleParams > 0
             && (!(_decl->resourceMap.empty()) || meshHandleEmitted)) {
@@ -774,6 +842,11 @@ using namespace metal;
             /// §2c — `out vertices` / `out indices` have no presence in
             /// the MSL signature (they route through the mesh handle).
             if (p.meshOutput != ast::AttributedFieldDecl::NotMeshOutput) {
+                continue;
+            }
+            /// §5 — the payload param was already injected above, in the
+            /// `object_data` address space with its `[[payload]]` attribute.
+            if (p.payload != ast::AttributedFieldDecl::NotPayload) {
                 continue;
             }
             /// §16 — hull VertexID becomes a per-patch loop local, not a param.
@@ -990,6 +1063,9 @@ using namespace metal;
             meshMaxVertices = 0;
             meshMaxPrimitives = 0;
         }
+        /// §5 — the payload rides BOTH mesh-pipeline stages, so its reset is
+        /// unconditional rather than folded into the mesh-only block above.
+        payloadParamName.clear();
         /// §16 — reset hull state so the next entry starts clean.
         inHullShader = false;
     }
@@ -1266,6 +1342,26 @@ using namespace metal;
             out << "__omegasl_mesh_output_handle.set_primitive_count(";
             cg.generateExpr(_expr->args[1]);
             out << ")";
+            return true;
+        }
+        /// §5 — amplification child dispatch. MSL expresses it as a method on the
+        /// `mesh_grid_properties` handle rather than a free call, and the payload
+        /// argument is DROPPED: on Metal the payload is already bound to the
+        /// object function by reference (`object_data T& [[payload]]`), so by the
+        /// time this call runs the writes have landed and there is nothing to
+        /// pass. Sema has already proven the 4th argument names exactly that
+        /// payload parameter, so dropping it here loses nothing.
+        ///
+        /// Same shape of divergence as `setMeshOutputs` above — see
+        /// Mesh-Shader-Implementation-Plan.md → Phase 5 for the three-way table.
+        if (name == BUILTIN_DISPATCH_MESH) {
+            if (_expr->args.size() != 4) return false;
+            out << MSL_MESH_GRID_HANDLE << ".set_threadgroups_per_grid(uint3(";
+            for (unsigned i = 0; i < 3; i++) {
+                if (i > 0) out << ", ";
+                cg.generateExpr(_expr->args[i]);
+            }
+            out << "))";
             return true;
         }
         /// §5.3 Phase B — firstbithigh / firstbitlow normalization on MSL.

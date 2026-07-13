@@ -581,6 +581,13 @@ namespace omegasl {
         ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
         unsigned meshMaxVertices = 0;
         unsigned meshMaxPrimitives = 0;
+        /// §5 — mesh-pipeline payload param name on either stage. On HLSL the two
+        /// stages diverge: the amplification side suppresses the param and
+        /// declares a `groupshared` global of this name (which `DispatchMesh`
+        /// then names as its 4th argument), while the mesh side keeps it as a
+        /// real `in payload T name` parameter. Set by `emitShaderEntryHeader`,
+        /// cleared at body close. Empty ⇒ this entry has no payload.
+        OmegaCommon::String payloadParamName;
     };
 
     struct MSLTarget final : Target {
@@ -736,6 +743,14 @@ namespace omegasl {
         ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
         unsigned meshMaxVertices = 0;
         unsigned meshMaxPrimitives = 0;
+
+        /// §5 — mesh-pipeline payload param name on either stage. MSL passes the
+        /// payload by reference in the `object_data` address space (writable on
+        /// the object stage, `const` on the mesh stage), so unlike GLSL there is
+        /// no shared global and unlike HLSL there is no `groupshared` — the
+        /// parameter IS the payload. Set by `emitShaderEntryHeader`, cleared at
+        /// body close. Empty ⇒ this entry has no payload.
+        OmegaCommon::String payloadParamName;
 
         /// §16 — tessellation hull-kernel state. Set by
         /// `emitShaderEntryHeader` for a `hull` shader, consumed by
@@ -893,6 +908,18 @@ namespace omegasl {
         ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
         unsigned meshMaxVertices = 0;
         unsigned meshMaxPrimitives = 0;
+
+        /// §5 — mesh-pipeline payload param name, on either stage (an
+        /// amplification shader's `out payload` or a mesh shader's `in payload`).
+        /// GLSL declares the payload the SAME way on both sides — a file-scope
+        /// `taskPayloadSharedEXT <Struct> <name>;` — so both stages need only
+        /// the name, and the user's `p.field` accesses then resolve against that
+        /// global with no member rerouting at all. Populated by
+        /// `emitShaderEntryHeader` (which also suppresses the parameter from
+        /// `void main()`'s signature, since the payload is a declaration rather
+        /// than an argument on this backend) and cleared at the end of
+        /// `emitShaderEntryBody`. Empty ⇒ "this entry has no payload."
+        OmegaCommon::String payloadParamName;
 
         /// §16 Phase G — tessellation control-point-array inputs. A hull /
         /// domain stage takes the post-vertex control points as an array
