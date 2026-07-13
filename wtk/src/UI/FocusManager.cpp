@@ -215,11 +215,39 @@ void FocusManager::setTabOrder(View * a, View * b){
     tabOrderNext_[a] = b;
 }
 
+void FocusManager::pushTabTrap(View * subtreeRoot){
+    // A null root would trap traversal to "nothing" (collectTabFocusable
+    // returns an empty set), stranding the Tab key. Ignore it — a Modal
+    // with no backing view has no focusable content to trap to anyway.
+    if(subtreeRoot == nullptr){
+        return;
+    }
+    tabTrapStack_.push_back(subtreeRoot);
+}
+
+void FocusManager::popTabTrap(){
+    if(tabTrapStack_.empty()){
+        return;
+    }
+    tabTrapStack_.pop_back();
+}
+
+View * FocusManager::traversalRoot() const {
+    // O5: the topmost active modal trap wins; with no trap, the whole
+    // tree under root_ is traversable (the F4 default).
+    if(!tabTrapStack_.empty()){
+        return tabTrapStack_.back();
+    }
+    return root_;
+}
+
 void FocusManager::buildTraversalOrder(OmegaCommon::Vector<View *> & out) const {
-    // Start from the F4 natural order: tab-focusable views under root_ in
-    // pre-order (DOM tab-order).
+    // Start from the F4 natural order: tab-focusable views under the
+    // effective traversal root in pre-order (DOM tab-order). The
+    // effective root is the whole tree (`root_`) normally, or the
+    // topmost modal subtree while a tab-trap is active (O5).
     OmegaCommon::Vector<View *> natural;
-    collectTabFocusable(root_, natural);
+    collectTabFocusable(traversalRoot(), natural);
 
     // Fast path: with no F6 overrides registered, the effective order is
     // exactly the natural order (byte-for-byte the F4 behavior).

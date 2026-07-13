@@ -1,9 +1,9 @@
 
 struct PathSegment {
     float4 startEnd;
-    float4 strokeWidthAndViewport;
+    float4 strokeWidthAndViewport;  // {strokeWidth, localSpace, width, height}
     float4 color;
-    float4 reserved;
+    float4 reserved;                // {origin.x, origin.y, swapBC, 0}
 };
 
 struct TessVertex {
@@ -24,8 +24,12 @@ void triangulate_path2d_kernel(uint3 tid : GlobalThreadID){
     float ex = segments[segIdx].startEnd[2];
     float ey = segments[segIdx].startEnd[3];
     float strokeWidth = segments[segIdx].strokeWidthAndViewport[0];
+    float localSpace  = segments[segIdx].strokeWidthAndViewport[1];
     float vw = segments[segIdx].strokeWidthAndViewport[2];
     float vh = segments[segIdx].strokeWidthAndViewport[3];
+    float vx = segments[segIdx].reserved[0];
+    float vy = segments[segIdx].reserved[1];
+    float swapBC = segments[segIdx].reserved[2];
     float4 col = segments[segIdx].color;
 
     float dx = ex - sx;
@@ -40,18 +44,51 @@ void triangulate_path2d_kernel(uint3 tid : GlobalThreadID){
         ny = dx / len * hw;
     }
 
+    // Stroke corners in the path's own authored units. The half-width offset
+    // (nx,ny) is applied in path space first, matching the CPU path's
+    // emitTriObj -> toDevicePoint order.
+    float c0x = sx + nx;  float c0y = sy + ny;
+    float c1x = sx - nx;  float c1y = sy - ny;
+    float c2x = ex + nx;  float c2y = ey + ny;
+    float c3x = ex - nx;  float c3y = ey - ny;
+
     // NDC conversion mirrors OmegaTriangulationEngineContext::translateCoordsDefaultImpl
-    // (TE.cpp): x maps [0,vw] -> [-1,1]; y maps [0,vh] -> [1,-1]. The stroke
-    // half-width offset (nx,ny) is applied in path/pixel space first, matching
-    // the CPU path's emitTriObj -> toDevicePoint order.
-    float p0x = ((2.0 * (sx + nx)) / vw) - 1.0;
-    float p0y = 1.0 - ((2.0 * (sy + ny)) / vh);
-    float p1x = ((2.0 * (sx - nx)) / vw) - 1.0;
-    float p1y = 1.0 - ((2.0 * (sy - ny)) / vh);
-    float p2x = ((2.0 * (ex + nx)) / vw) - 1.0;
-    float p2y = 1.0 - ((2.0 * (ey + ny)) / vh);
-    float p3x = ((2.0 * (ex - nx)) / vw) - 1.0;
-    float p3y = 1.0 - ((2.0 * (ey - ny)) / vh);
+    // (TE.cpp) exactly: the viewport origin is subtracted first, then x maps
+    // [vx, vx+vw] -> [-1,1] and y maps [vy, vy+vh] -> [1,-1].
+    float p0x = ((2.0 * (c0x - vx)) / vw) - 1.0;
+    float p0y = 1.0 - ((2.0 * (c0y - vy)) / vh);
+    float p1x = ((2.0 * (c1x - vx)) / vw) - 1.0;
+    float p1y = 1.0 - ((2.0 * (c1y - vy)) / vh);
+    float p2x = ((2.0 * (c2x - vx)) / vw) - 1.0;
+    float p2y = 1.0 - ((2.0 * (c2y - vy)) / vh);
+    float p3x = ((2.0 * (c3x - vx)) / vw) - 1.0;
+    float p3y = 1.0 - ((2.0 * (c3y - vy)) / vh);
+
+    // Local space (Phase 9.6): emit the authored units untouched, matching the
+    // CPU path's identity pass in _triangulatePriv.
+    if(localSpace > 0.5){
+        p0x = c0x;  p0y = c0y;
+        p1x = c1x;  p1y = c1y;
+        p2x = c2x;  p2y = c2y;
+        p3x = c3x;  p3y = c3y;
+    }
+
+    // Two triangles per segment: (p0, p1, p2) and (p2, p1, p3). Their b/c pairs
+    // are (p1,p2) and (p1,p3). `swapBC` carries every deviation from the baked
+    // {NDC, Clockwise} baseline: finalizeFlat (TE.cpp) decides the swap from the
+    // triangle's signed area, which the NDC map's Y-flip inverts -- so local
+    // space flips it, and a CounterClockwise request flips it too. The host XORs
+    // the two and sends the answer; this kernel just applies it.
+    float t0bx = p1x;  float t0by = p1y;
+    float t0cx = p2x;  float t0cy = p2y;
+    float t1bx = p1x;  float t1by = p1y;
+    float t1cx = p3x;  float t1cy = p3y;
+    if(swapBC > 0.5){
+        t0bx = p2x;  t0by = p2y;
+        t0cx = p1x;  t0cy = p1y;
+        t1bx = p3x;  t1by = p3y;
+        t1cx = p1x;  t1cy = p1y;
+    }
 
     uint base = segIdx * 6;
     TessVertex v;
@@ -59,14 +96,14 @@ void triangulate_path2d_kernel(uint3 tid : GlobalThreadID){
 
     v.pos = make_float4(p0x, p0y, 0.0, 1.0);
     vertices[base] = v;
-    v.pos = make_float4(p1x, p1y, 0.0, 1.0);
+    v.pos = make_float4(t0bx, t0by, 0.0, 1.0);
     vertices[base + 1] = v;
-    v.pos = make_float4(p2x, p2y, 0.0, 1.0);
+    v.pos = make_float4(t0cx, t0cy, 0.0, 1.0);
     vertices[base + 2] = v;
     v.pos = make_float4(p2x, p2y, 0.0, 1.0);
     vertices[base + 3] = v;
-    v.pos = make_float4(p1x, p1y, 0.0, 1.0);
+    v.pos = make_float4(t1bx, t1by, 0.0, 1.0);
     vertices[base + 4] = v;
-    v.pos = make_float4(p3x, p3y, 0.0, 1.0);
+    v.pos = make_float4(t1cx, t1cy, 0.0, 1.0);
     vertices[base + 5] = v;
 }

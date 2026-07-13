@@ -487,6 +487,26 @@ namespace OmegaWTK {
                 }
             }
         }
+
+        /// Is `target` `root` or one of its (transitive) sub-views? Pointer
+        /// comparison only — `target` is never dereferenced, so it is safe on
+        /// a pointer that may already be freed. Used to clear the dispatcher's
+        /// cached non-owning View pointers when an overlay subtree is torn
+        /// down (they would otherwise dangle into freed views).
+        bool viewIsInSubtree(View * root, View * target){
+            if(root == nullptr || target == nullptr){
+                return false;
+            }
+            if(root == target){
+                return true;
+            }
+            for(auto * sv : root->subviews()){
+                if(viewIsInSubtree(sv, target)){
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     void WidgetTreeHost::forceFullRepaint(){
@@ -724,6 +744,46 @@ namespace OmegaWTK {
         }
     }
 
+    namespace {
+        /// View-tree hit test for the overlay path: walk `root`'s VIEW
+        /// subtree (not the widget tree) in reverse z-order and return the
+        /// deepest view whose rect contains `point` (in `root`'s content
+        /// space). Overlays can host raw sub-views that back no child
+        /// Widget — a `ContextMenu`'s per-item rows are `UIView` sub-views
+        /// made with `makeSubView`, invisible to `hitTestWidget`'s
+        /// `childWidgets()` descent, so their hover / click delegates never
+        /// fired. Walking the view tree reaches them; and because a child
+        /// Widget's root view IS a sub-view of its parent's view, this also
+        /// covers the child-Widget case (a future Popover / Modal Container)
+        /// with no extra work. Returns nullptr when nothing deeper than
+        /// `root` claims the point (the caller then returns `root` itself).
+        View * hitTestOverlayViewSubtree(View * root,
+                                         const Composition::Point2D & point){
+            if(root == nullptr){
+                return nullptr;
+            }
+            auto subs = root->subviews();
+            for(auto i = subs.size(); i > 0; --i){
+                View * child = subs[i - 1];
+                if(child == nullptr){
+                    continue;
+                }
+                // `containsPoint` tests `point` (in the child's parent =
+                // `root`'s content space) against the child's own rect.
+                if(child->containsPoint(point)){
+                    const auto co = child->contentOffset();
+                    const Composition::Point2D childLocal {
+                        point.x - child->getRect().pos.x - co.x,
+                        point.y - child->getRect().pos.y - co.y
+                    };
+                    View * deeper = hitTestOverlayViewSubtree(child, childLocal);
+                    return deeper != nullptr ? deeper : child;
+                }
+            }
+            return nullptr;
+        }
+    }
+
     View * WidgetTreeHost::hitTestOverlay(const Composition::Point2D &point) const{
         if(overlayHost_ == nullptr){
             return nullptr;
@@ -734,18 +794,19 @@ namespace OmegaWTK {
         }
         // Overlay roots carry a window-space rect (set by
         // `OverlayHost::present` via `setRect`), so translate `point`
-        // into the overlay's own content space before reusing the
-        // main-tree descent — exactly as `hitTest` passes a window-space
-        // point straight to `hitTestWidget(root, ...)` because root sits
-        // at the window origin. `hitTestWidget` returns the overlay's
-        // own view when no deeper child claims the point, so a bare
+        // into the overlay's own content space before descending — exactly
+        // as `hitTest` passes a window-space point straight to the root
+        // descent because the main-tree root sits at the window origin.
+        // The descent walks the VIEW tree (not the widget tree) so an
+        // overlay's raw sub-views are reachable; it returns the overlay's
+        // own view when no deeper sub-view claims the point, so a bare
         // overlay background still hit-tests to itself.
         View & ov = ow->viewRef();
         Composition::Point2D local {
             point.x - ov.getRect().pos.x - ov.contentOffset().x,
             point.y - ov.getRect().pos.y - ov.contentOffset().y
         };
-        View * hit = hitTestWidget(ow, local);
+        View * hit = hitTestOverlayViewSubtree(&ov, local);
         return hit != nullptr ? hit : &ov;
     }
 
@@ -826,17 +887,52 @@ namespace OmegaWTK {
         // render target, then thread the host (which also wires the
         // compositor frontend + sync lane) down the subtree so
         // `buildFrame` can rasterize it. The overlay's root rect was
-        // already committed by `OverlayHost::present` (`setRect`), and
-        // the Style/Layout/Paint dirty bits it set drive the first paint.
+        // already committed by `OverlayHost::present` (`setRect`).
         if(windowRenderTarget_ != nullptr){
             propagateWindowRenderTargetRecurse(overlay);
         }
         overlay->setTreeHostRecurse(this);
+        // Mark the ENTIRE overlay subtree dirty, not just the root. The
+        // main tree gets this for free via `initWidgetTree` /
+        // `forceFullRepaint`; an overlay is mounted on its own, and
+        // `buildFrame`'s Style + Layout passes prune any subtree whose
+        // own `(dirtyBits | descendantDirty) & passBit == 0`. If only the
+        // root were marked (as `OverlayHost::present` does), an overlay's
+        // child sub-views — a ContextMenu's per-item rows, a Popover's
+        // child widgets — would be visited by the Paint pass (which walks
+        // the whole tree) but SKIPPED by Style/Layout, so they paint with
+        // unresolved styles and unlaid-out elements: invisible. Recursing
+        // here fixes every overlay that hosts sub-views, not just the
+        // widget that first hit it.
+        if(overlay->view != nullptr){
+            markFullRepaintRecurse(*overlay->view);
+        }
     }
 
     void WidgetTreeHost::unmountOverlay(Widget * overlay){
         if(overlay == nullptr){
             return;
+        }
+        // The input dispatcher caches non-owning View pointers across events
+        // — `hoveredView_` (for enter/exit synthesis) and `capturedView_`
+        // (for a drag). If either points into this overlay's subtree, it
+        // dangles the instant the overlay's `WidgetPtr` is released (right
+        // after this in the dismiss path), and the NEXT motion event
+        // dereferences it — `hoveredView_->setPseudoClassBits(...)` — for a
+        // use-after-free. The overlay's views are still alive here (erase
+        // happens after `unmountOverlay` returns), so clear the pointers now:
+        // drop the stale hover pseudo-class and null them so the dispatcher
+        // re-establishes hover from scratch on the next move. (Focus is the
+        // sibling case, handled by O4's popAndRestore + teardown guard.)
+        if(overlay->view != nullptr){
+            View * ov = overlay->view.get();
+            if(hoveredView_ != nullptr && viewIsInSubtree(ov, hoveredView_)){
+                hoveredView_->setPseudoClassBits(0x01U, false);
+                hoveredView_ = nullptr;
+            }
+            if(capturedView_ != nullptr && viewIsInSubtree(ov, capturedView_)){
+                capturedView_ = nullptr;
+            }
         }
         overlay->setTreeHostRecurse(nullptr);
     }
@@ -942,6 +1038,22 @@ namespace OmegaWTK {
             return;
         }
         using Native::NativeEvent;
+
+        // Drain any overlay that closed itself from within its own delegate
+        // (a ContextMenu item click) AFTER this whole dispatch has unwound —
+        // at every exit path. Tearing the overlay down synchronously inside
+        // the delegate frees the View + ViewDelegate still being dispatched
+        // (use-after-free); deferring to this scope-guard runs the teardown
+        // with the delegate/emit stack fully popped. Covers the KeyDown
+        // (Enter-activate) exits as well as the positional (mouse-up) ones.
+        struct DeferredDismissDrain {
+            OverlayHost * host;
+            ~DeferredDismissDrain(){
+                if(host != nullptr){
+                    host->drainDeferredDismissals();
+                }
+            }
+        } deferredDismissDrain{overlayHost_.get()};
 
         // Extract position for positional events.
         Composition::Point2D pos {};

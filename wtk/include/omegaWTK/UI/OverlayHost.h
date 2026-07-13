@@ -135,6 +135,23 @@ public:
     /// or zero handle.
     void dismiss(OverlayHandle handle);
 
+    /// Queue `handle` for dismissal at the next safe drain point instead
+    /// of tearing it down synchronously. An overlay that closes itself
+    /// from inside its own input handler — a `ContextMenu` item dismissing
+    /// the menu on click — must NOT be destroyed while the dispatch that
+    /// is running its delegate is still on the stack: that frees the very
+    /// `View` + `ViewDelegate` being dispatched (use-after-free). The
+    /// input dispatcher calls `drainDeferredDismissals()` once the event
+    /// has fully unwound. Requests a frame so a purely-programmatic caller
+    /// still converges. Safe / deduplicated on a repeat or stale handle.
+    void requestDeferredDismiss(OverlayHandle handle);
+
+    /// Dismiss every overlay queued by `requestDeferredDismiss`. Called by
+    /// `WidgetTreeHost::dispatchInputEvent` after event delivery unwinds,
+    /// so teardown runs with no delegate / view on the stack. No-op when
+    /// the queue is empty.
+    void drainDeferredDismissals();
+
     /// Remove every entry that hosts `overlay`. No-op if not present.
     void dismiss(Widget * overlay);
 

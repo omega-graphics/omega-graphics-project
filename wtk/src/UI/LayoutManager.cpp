@@ -1082,4 +1082,246 @@ LayoutSize FlexLayout::minSize(View & node){
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// GridLayout
+// ---------------------------------------------------------------------------
+
+GridLayout::GridLayout(const GridLayoutOptions & options): options_(options) {}
+
+void GridLayout::setOptions(const GridLayoutOptions & options){
+    options_ = options;
+}
+
+void GridLayout::setChildSpec(View * child, const GridChildSpec & spec){
+    if(child == nullptr){
+        return;
+    }
+    specs_[child] = spec;
+}
+
+void GridLayout::removeChildSpec(View * child){
+    if(child == nullptr){
+        return;
+    }
+    specs_.erase(child);
+}
+
+GridChildSpec GridLayout::childSpec(View * child) const{
+    auto it = specs_.find(child);
+    if(it == specs_.end()){
+        return {};
+    }
+    return it->second;
+}
+
+LayoutSize GridLayout::measure(View & node, const Composition::Rect & avail){
+    // The grid fills the rect it is given — the content-driven row-height
+    // math happens in arrange, not here. Returning `avail` keeps a parent
+    // flex from asking the grid to extend past the rect it was handed
+    // (same shape as the 4.5 built-ins' measure).
+    (void)node;
+    return {avail.w, avail.h};
+}
+
+void GridLayout::arrange(View & node, const Composition::Rect & finalRectLocal){
+    const auto subs = node.subviews();
+    if(subs.size() == 0){
+        return;
+    }
+
+    const Composition::Rect frame = sanitizeHostBounds(finalRectLocal);
+    const unsigned cols       = std::max(1u, options_.columns);
+    const float    colSpacing = std::max(0.f, safeFloat(options_.columnSpacing, 0.f));
+    const float    rowSpacing = std::max(0.f, safeFloat(options_.rowSpacing, 0.f));
+
+    // Uniform column width: the content width, minus the inter-column gaps,
+    // split evenly. Children are placed in this node's own (origin-0) space
+    // — the same convention FlexLayout uses so a nested grid is not shifted
+    // by its own offset.
+    const float totalColSpacing = colSpacing * static_cast<float>(cols - 1);
+    const float colW = std::max(1.f,
+        (frame.w - totalColSpacing) / static_cast<float>(cols));
+
+    // --- Placement: row-major first-fit into an occupancy grid. ---
+    struct GridCell {
+        View *   view  = nullptr;
+        unsigned r     = 0;
+        unsigned c     = 0;
+        unsigned cSpan = 1;
+        unsigned rSpan = 1;
+        float    prefW = 1.f;
+        float    prefH = 1.f;
+    };
+    OmegaCommon::Vector<GridCell> cells;
+    cells.reserve(subs.size());
+
+    OmegaCommon::Vector<OmegaCommon::Vector<char>> occ;
+    auto ensureRows = [&](std::size_t rows){
+        while(occ.size() < rows){
+            occ.emplace_back(static_cast<std::size_t>(cols), static_cast<char>(0));
+        }
+    };
+    auto blockFree = [&](unsigned r, unsigned c, unsigned cs, unsigned rs) -> bool {
+        ensureRows(static_cast<std::size_t>(r) + rs);
+        for(unsigned rr = r; rr < r + rs; ++rr){
+            for(unsigned cc = c; cc < c + cs; ++cc){
+                if(occ[rr][cc] != 0){
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+    auto markBlock = [&](unsigned r, unsigned c, unsigned cs, unsigned rs){
+        ensureRows(static_cast<std::size_t>(r) + rs);
+        for(unsigned rr = r; rr < r + rs; ++rr){
+            for(unsigned cc = c; cc < c + cs; ++cc){
+                occ[rr][cc] = 1;
+            }
+        }
+    };
+
+    unsigned rowCount = 0;
+    // A fresh (all-free) row always fits a block whose columnSpan <= cols, so
+    // placement terminates by the first empty row at worst. This bound is a
+    // backstop against a logic error, never hit in normal placement.
+    const unsigned rowSearchLimit =
+        static_cast<unsigned>(subs.size()) + cols + 2u;
+    for(auto * child : subs){
+        if(child == nullptr){
+            continue;
+        }
+        GridChildSpec spec {};
+        auto it = specs_.find(child);
+        if(it != specs_.end()){
+            spec = it->second;
+        }
+        const unsigned cSpan = std::clamp<unsigned>(spec.columnSpan, 1u, cols);
+        const unsigned rSpan = std::max<unsigned>(1u, spec.rowSpan);
+
+        unsigned pr = 0;
+        unsigned pc = 0;
+        bool placed = false;
+        for(unsigned r = 0; !placed && r < rowSearchLimit; ++r){
+            for(unsigned c = 0; c + cSpan <= cols; ++c){
+                if(blockFree(r, c, cSpan, rSpan)){
+                    pr = r;
+                    pc = c;
+                    placed = true;
+                    break;
+                }
+            }
+        }
+        markBlock(pr, pc, cSpan, rSpan);
+
+        const auto cr = child->getRect();
+        const float pw = std::clamp(std::isfinite(cr.w) ? cr.w : 1.f,
+                                    1.f, kMaxContainerDimension);
+        const float ph = std::clamp(std::isfinite(cr.h) ? cr.h : 1.f,
+                                    1.f, kMaxContainerDimension);
+
+        GridCell cell {};
+        cell.view  = child;
+        cell.r     = pr;
+        cell.c     = pc;
+        cell.cSpan = cSpan;
+        cell.rSpan = rSpan;
+        cell.prefW = pw;
+        cell.prefH = ph;
+        cells.push_back(cell);
+        rowCount = std::max(rowCount, pr + rSpan);
+    }
+
+    if(cells.empty()){
+        return;
+    }
+
+    // --- Row heights: single-row children set the base; a taller multi-row
+    // spanner grows the last row it covers so it fits. ---
+    OmegaCommon::Vector<float> rowH(static_cast<std::size_t>(rowCount), 0.f);
+    for(const auto & cell : cells){
+        if(cell.rSpan == 1){
+            rowH[cell.r] = std::max(rowH[cell.r], cell.prefH);
+        }
+    }
+    for(const auto & cell : cells){
+        if(cell.rSpan <= 1){
+            continue;
+        }
+        float have = rowSpacing * static_cast<float>(cell.rSpan - 1);
+        for(unsigned r = cell.r; r < cell.r + cell.rSpan; ++r){
+            have += rowH[r];
+        }
+        if(cell.prefH > have){
+            rowH[cell.r + cell.rSpan - 1] += (cell.prefH - have);
+        }
+    }
+    for(auto & h : rowH){
+        h = std::max(1.f, h);   // no zero-height rows
+    }
+
+    // Row Y offsets (prefix sums including inter-row spacing).
+    OmegaCommon::Vector<float> rowY(static_cast<std::size_t>(rowCount), 0.f);
+    float yAcc = 0.f;
+    for(unsigned r = 0; r < rowCount; ++r){
+        rowY[r] = yAcc;
+        yAcc += rowH[r] + rowSpacing;
+    }
+
+    const Composition::Rect contentBounds {
+        Composition::Point2D{0.f, 0.f}, frame.w, frame.h };
+
+    for(const auto & cell : cells){
+        const float cellX = static_cast<float>(cell.c) * (colW + colSpacing);
+        const float cellY = rowY[cell.r];
+        const float cellW = static_cast<float>(cell.cSpan) * colW +
+                            static_cast<float>(cell.cSpan - 1) * colSpacing;
+        float cellH = rowSpacing * static_cast<float>(cell.rSpan - 1);
+        for(unsigned r = cell.r; r < cell.r + cell.rSpan; ++r){
+            cellH += rowH[r];
+        }
+
+        float x = cellX;
+        float y = cellY;
+        float w = cellW;
+        float h = cellH;
+        if(options_.cellAlign != GridCellAlign::Stretch){
+            // Keep the child's own size, positioned within the cell block.
+            w = std::min(cell.prefW, cellW);
+            h = std::min(cell.prefH, cellH);
+            switch(options_.cellAlign){
+                case GridCellAlign::Start:
+                    break;
+                case GridCellAlign::Center:
+                    x = cellX + ((cellW - w) * 0.5f);
+                    y = cellY + ((cellH - h) * 0.5f);
+                    break;
+                case GridCellAlign::End:
+                    x = cellX + (cellW - w);
+                    y = cellY + (cellH - h);
+                    break;
+                case GridCellAlign::Stretch:
+                    break;   // unreachable (guarded above)
+            }
+        }
+
+        Composition::Rect targetRect {Composition::Point2D{x, y}, w, h};
+
+        ChildResizeSpec resizeSpec {};
+        resizeSpec.resizable      = true;
+        resizeSpec.policy         = ChildResizePolicy::FitContent;
+        resizeSpec.clamp.minWidth  = 1.f;
+        resizeSpec.clamp.minHeight = 1.f;
+        resizeSpec.clamp.maxWidth  = std::numeric_limits<float>::infinity();
+        resizeSpec.clamp.maxHeight = std::numeric_limits<float>::infinity();
+        targetRect = LayoutManager::clampRectToParent(targetRect,
+                                                      contentBounds,
+                                                      resizeSpec);
+
+        if(!ViewInternal::sameRect(cell.view->getRect(), targetRect)){
+            cell.view->resize(targetRect);
+        }
+    }
+}
+
 } // namespace OmegaWTK

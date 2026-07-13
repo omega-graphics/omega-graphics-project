@@ -353,25 +353,96 @@ void OmegaTriangulationEngineContext::translateCoordsDefaultImpl(float x, float 
     // edge of the viewport, y=height is the bottom edge. The mapping to
     // Y-up NDC (Metal / D3D12 native; Vulkan via negative-height viewport)
     // therefore inverts the Y term so y=0 lands at NDC +1.
-    *x_result = (2.f * x / viewport->width) - 1.f;
-    *y_result = 1.f - (2.f * y / viewport->height);
+    //
+    // The viewport ORIGIN is subtracted before the divide (Phase 9.3): a
+    // viewport anchored at (vp.x, vp.y) must map its own top-left corner to
+    // NDC (-1, +1), not the world origin. Without this, any viewport not at
+    // (0,0) — precisely what a render pass into a sub-rect configures —
+    // produces geometry shifted by the origin term.
+    const float width  = viewport->width  != 0.f ? viewport->width  : 1.f;
+    const float height = viewport->height != 0.f ? viewport->height : 1.f;
+
+    *x_result = (2.f * (x - viewport->x) / width) - 1.f;
+    *y_result = 1.f - (2.f * (y - viewport->y) / height);
+
     if(z_result != nullptr){
-        if(z > 0.0){
-            *z_result = (2.f * z / viewport->farDepth) - 1.f;
-        }
-        else if(z < 0.0){
-            *z_result = (2.f * z / viewport->nearDepth) - 1.f;
-        }
-        else {
-            *z_result = z;
-        };
+        // Depth maps LINEARLY to [0,1] — the range Vulkan, D3D12 and Metal all
+        // clip against. near -> 0, far -> 1.
+        //
+        // This replaces a three-branch map that was unusable for 3D geometry.
+        // It divided z>0 by farDepth and z<0 by *nearDepth*, and every viewport
+        // this engine builds has nearDepth = 0 (see makeViewport in each
+        // *TEContext) — so every vertex with negative z divided by zero and came
+        // out as -infinity, while z==0 fell through a third branch that returned
+        // z unchanged. The result was a torn mesh: any primitive straddling z=0
+        // (a sphere, torus, capsule, or prism centered on the origin plane) had
+        // half its vertices at infinity and a discontinuity across the seam.
+        // One continuous affine map has no branches, no seam, and no division by
+        // a depth bound that is always zero.
+        const float depthRange = viewport->farDepth - viewport->nearDepth;
+        *z_result = depthRange != 0.f ? ((z - viewport->nearDepth) / depthRange) : 0.f;
     };
 };
 
+// Phase 9.2 — the one place the coordinate space of a triangulation request is
+// decided. The CPU path below and every backend's triangulateOnGPU both call
+// this, so the GPU can never silently triangulate against a different space
+// than the CPU would have.
+GEViewport OmegaTriangulationEngineContext::resolveViewport(const TETriangulationParams & params, GEViewport * viewportArg){
+    // The coordinate space is a property of the geometry, so a viewport declared
+    // on the params is canonical and wins over the loose call argument; the
+    // argument is retained for the callers that predate the params field.
+    GEViewport fallback = getEffectiveViewport();
+    GEViewport resolved = fallback;
+    if(params.viewport.has_value()){
+        resolved = *params.viewport;
+    }
+    else if(viewportArg != nullptr){
+        resolved = *viewportArg;
+    }
+
+    // Local space ignores the viewport entirely, so an unusable one is not worth
+    // reporting there.
+    if(!params.localSpace && (resolved.width == 0.f || resolved.height == 0.f)){
+        std::cerr << "[TE] error: triangulation viewport has zero extent (width="
+                  << resolved.width << ", height=" << resolved.height
+                  << "); falling back to the effective viewport." << std::endl;
+        resolved = fallback;
+    }
+    return resolved;
+}
+
+// The winding counterpart of resolveViewport, and it exists for the same reason:
+// the GPU kernels bake a winding decision into their vertex emission order, so
+// they must be told the SAME winding the CPU would have normalized to.
+GTEPolygonFrontFaceRotation OmegaTriangulationEngineContext::resolveWinding(const TETriangulationParams & params, GTEPolygonFrontFaceRotation frontFaceRotationArg){
+    if(params.frontFaceRotation.has_value()){
+        return *params.frontFaceRotation;
+    }
+    return frontFaceRotationArg;
+}
+
 inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulationParams &params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETriangulationResult & result){
     assert(params.attachments.size() <= 2 && "At most 2 attachments are allowed for each tessellation params");
-    GEViewport fallbackViewport = getEffectiveViewport();
-    if (!viewport) viewport = &fallbackViewport;
+
+    GEViewport resolvedViewport = resolveViewport(params, viewport);
+    const bool localSpace = params.localSpace;
+    viewport = &resolvedViewport;
+
+    // The single coordinate seam every primitive below goes through. Local-space
+    // triangulation (Phase 9.6) is an identity pass here rather than a flag
+    // threaded into `translateCoords`, so no primitive can forget to honor it:
+    // there are 27 call sites and exactly one place that decides what they mean.
+    auto mapCoords = [&](float x, float y, float z, GEViewport * vp,
+                         float * x_result, float * y_result, float * z_result){
+        if(localSpace){
+            *x_result = x;
+            *y_result = y;
+            if(z_result != nullptr) *z_result = z;
+            return;
+        }
+        translateCoords(x, y, z, vp, x_result, y_result, z_result);
+    };
 
     const TETriangulationParams::Attachment * textureAttachment = nullptr;
     const TETriangulationParams::Attachment * colorAttachmentPtr = nullptr;
@@ -409,7 +480,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
     //
     // Back-face culling is currently off in every consumer, so the winding mode has
     // no visible effect today; it makes the output correct for when culling is on.
-    const bool wantCCWWinding = (frontFaceRotation == GTEPolygonFrontFaceRotation::CounterClockwise);
+    const bool wantCCWWinding = (resolveWinding(params, frontFaceRotation) == GTEPolygonFrontFaceRotation::CounterClockwise);
     auto deviceSignedArea = [](const TETriangulationResult::TEMesh::Polygon & p){
         return (p.b.pt.x - p.a.pt.x) * (p.c.pt.y - p.a.pt.y)
              - (p.b.pt.y - p.a.pt.y) * (p.c.pt.x - p.a.pt.x);
@@ -449,8 +520,8 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             TETriangulationResult::TEMesh::Polygon tri {};
             float x0,x1,y0,y1;
             float u,v;
-            translateCoords(object.pos.x,object.pos.y,0.f,viewport,&x0,&y0,nullptr);
-            translateCoords(object.pos.x + object.w,object.pos.y + object.h,0.f,viewport,&x1,&y1,nullptr);
+            mapCoords(object.pos.x,object.pos.y,0.f,viewport,&x0,&y0,nullptr);
+            mapCoords(object.pos.x + object.w,object.pos.y + object.h,0.f,viewport,&x1,&y1,nullptr);
 
             std::cout << "X0:" << x0 << ", X1:" << x1 << ", Y0:" << y0 << ", Y1:" << y1 << std::endl;
 
@@ -471,7 +542,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 }
                 else if(attachment.type == TETriangulationParams::Attachment::TypeTexture2D){
                     
-                    translateCoords(attachment.texture2DData.width,attachment.texture2DData.height,0, viewport,&u,&v,nullptr);
+                    mapCoords(attachment.texture2DData.width,attachment.texture2DData.height,0, viewport,&u,&v,nullptr);
                     auto texCoord = FVec<2>::Create();
 
                     texCoord[0][0] = 0;
@@ -560,7 +631,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     return;
                 }
                 float centerX,centerY;
-                translateCoords(start.x,start.y,0.f,viewport,&centerX,&centerY,nullptr);
+                mapCoords(start.x,start.y,0.f,viewport,&centerX,&centerY,nullptr);
                 GPoint3D pt_a {centerX,centerY,0.f};
                 float angle = angle_start;
                 while((_arcStep > 0.f) ? (angle < angle_end) : (angle > angle_end)){
@@ -582,7 +653,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
 
                     p.a.pt = pt_a;
                     float x_t,y_t;
-                    translateCoords(x_f,y_f,0.f,viewport,&x_t,&y_t,nullptr);
+                    mapCoords(x_f,y_f,0.f,viewport,&x_t,&y_t,nullptr);
                     p.b.pt = GPoint3D {x_t,y_t,0.f};
 
                     x_f = cosf(nextAngle) * ar_x;
@@ -591,7 +662,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     x_f += start.x;
                     y_f += start.y;
 
-                    translateCoords(x_f,y_f,0.f,viewport,&x_t,&y_t,nullptr);
+                    mapCoords(x_f,y_f,0.f,viewport,&x_t,&y_t,nullptr);
                     p.c.pt = GPoint3D {x_t,y_t,0.f};
                     if(colorAttachment){
                         p.a.attachment = p.b.attachment = p.c.attachment = colorAttachment;
@@ -634,8 +705,8 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
 
             if(textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture2D){
                 float dx0,dy0,dx1,dy1;
-                translateCoords(ox,oy,0.f,viewport,&dx0,&dy0,nullptr);
-                translateCoords(ox + object.w,oy + object.h,0.f,viewport,&dx1,&dy1,nullptr);
+                mapCoords(ox,oy,0.f,viewport,&dx0,&dy0,nullptr);
+                mapCoords(ox + object.w,oy + object.h,0.f,viewport,&dx1,&dy1,nullptr);
                 const float rangeX = (dx1 - dx0);
                 const float rangeY = (dy1 - dy0);
                 FVec<3> normal = makeVec3(0.f,0.f,1.f);
@@ -672,13 +743,13 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             const FVec<3> planarNormal = makeVec3(0.f,0.f,1.f);
 
             float centerX,centerY,centerZ;
-            translateCoords(object.x,object.y,object.z,viewport,&centerX,&centerY,&centerZ);
+            mapCoords(object.x,object.y,object.z,viewport,&centerX,&centerY,&centerZ);
 
             auto makePoint = [&](float angle){
                 float x = object.x + std::cos(angle) * object.rad_x;
                 float y = object.y + std::sin(angle) * object.rad_y;
                 float tx,ty,tz;
-                translateCoords(x,y,object.z,viewport,&tx,&ty,&tz);
+                mapCoords(x,y,object.z,viewport,&tx,&ty,&tz);
                 return GPoint3D{tx,ty,tz};
             };
 
@@ -752,8 +823,8 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             const bool hasTex3D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture3D;
 
             float x0,x1,y0,y1,z0,z1;
-            translateCoords(object.pos.x,object.pos.y,object.pos.z,viewport,&x0,&y0,&z0);
-            translateCoords(object.pos.x + object.w,
+            mapCoords(object.pos.x,object.pos.y,object.pos.z,viewport,&x0,&y0,&z0);
+            mapCoords(object.pos.x + object.w,
                             object.pos.y + object.h,
                             object.pos.z + object.d,
                              viewport,&x1,&y1,&z1);
@@ -871,7 +942,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
 
             auto toDevicePoint = [&](const GPoint2D &point){
                 float x,y;
-                translateCoords(point.x,point.y,0.f,viewport,&x,&y,nullptr);
+                mapCoords(point.x,point.y,0.f,viewport,&x,&y,nullptr);
                 return GPoint3D{x,y,0.f};
             };
 
@@ -1161,12 +1232,12 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             const bool hasTex3D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture3D;
 
             float ax,ay,az;
-            translateCoords(object.x, object.y + object.h, object.z, viewport, &ax, &ay, &az);
+            mapCoords(object.x, object.y + object.h, object.z, viewport, &ax, &ay, &az);
             GPoint3D apex {ax, ay, az};
 
             float bx0,by0,bz0, bx1,by1,bz1;
-            translateCoords(object.x - object.w * 0.5f, object.y, object.z - object.d * 0.5f, viewport, &bx0, &by0, &bz0);
-            translateCoords(object.x + object.w * 0.5f, object.y, object.z + object.d * 0.5f, viewport, &bx1, &by1, &bz1);
+            mapCoords(object.x - object.w * 0.5f, object.y, object.z - object.d * 0.5f, viewport, &bx0, &by0, &bz0);
+            mapCoords(object.x + object.w * 0.5f, object.y, object.z + object.d * 0.5f, viewport, &bx1, &by1, &bz1);
 
             GPoint3D b00 {bx0, by0, bz0};
             GPoint3D b10 {bx1, by0, bz0};
@@ -1271,8 +1342,8 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             const bool hasTex3D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture3D;
 
             float cx_bottom,cy_bottom,cz_bottom, cx_top,cy_top,cz_top;
-            translateCoords(object.pos.x, object.pos.y, object.pos.z, viewport, &cx_bottom, &cy_bottom, &cz_bottom);
-            translateCoords(object.pos.x, object.pos.y + object.h, object.pos.z, viewport, &cx_top, &cy_top, &cz_top);
+            mapCoords(object.pos.x, object.pos.y, object.pos.z, viewport, &cx_bottom, &cy_bottom, &cz_bottom);
+            mapCoords(object.pos.x, object.pos.y + object.h, object.pos.z, viewport, &cx_top, &cy_top, &cz_top);
 
             GPoint3D bottomCenter {cx_bottom, cy_bottom, cz_bottom};
             GPoint3D topCenter {cx_top, cy_top, cz_top};
@@ -1284,7 +1355,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 float px = object.pos.x + std::cos(a) * object.r;
                 float pz = object.pos.z + std::sin(a) * object.r;
                 float tx, ty, tz;
-                translateCoords(px, baseY, pz, viewport, &tx, &ty, &tz);
+                mapCoords(px, baseY, pz, viewport, &tx, &ty, &tz);
                 return GPoint3D{tx, ty, tz};
             };
 
@@ -1363,11 +1434,11 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
             const bool hasTex3D = textureAttachment != nullptr && textureAttachment->type == TETriangulationParams::Attachment::TypeTexture3D;
 
             float apex_tx,apex_ty,apex_tz;
-            translateCoords(object.x, object.y + object.h, object.z, viewport, &apex_tx, &apex_ty, &apex_tz);
+            mapCoords(object.x, object.y + object.h, object.z, viewport, &apex_tx, &apex_ty, &apex_tz);
             GPoint3D apex {apex_tx, apex_ty, apex_tz};
 
             float base_cx,base_cy,base_cz;
-            translateCoords(object.x, object.y, object.z, viewport, &base_cx, &base_cy, &base_cz);
+            mapCoords(object.x, object.y, object.z, viewport, &base_cx, &base_cy, &base_cz);
             GPoint3D baseCenter {base_cx, base_cy, base_cz};
 
             const float step = arcStep > 0.f ? arcStep : 0.01f;
@@ -1377,7 +1448,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 float px = object.x + std::cos(a) * object.r;
                 float pz = object.z + std::sin(a) * object.r;
                 float tx,ty,tz;
-                translateCoords(px, object.y, pz, viewport, &tx, &ty, &tz);
+                mapCoords(px, object.y, pz, viewport, &tx, &ty, &tz);
                 return GPoint3D{tx,ty,tz};
             };
 
@@ -1457,7 +1528,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 float wy = object.center.y + r * std::sin(phi);
                 float wz = object.center.z + ringR * std::sin(theta);
                 float tx,ty,tz;
-                translateCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
+                mapCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
                 return GPoint3D{tx,ty,tz};
             };
             auto makeNormal = [&](float theta, float phi) -> FVec<3> {
@@ -1544,7 +1615,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 float wy = object.center.y + rad * std::cos(thetaA);
                 float wz = object.center.z + ringR * std::sin(phiA);
                 float tx,ty,tz;
-                translateCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
+                mapCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
                 return GPoint3D{tx,ty,tz};
             };
             auto makeNormal = [&](float thetaA, float phiA) -> FVec<3> {
@@ -1666,7 +1737,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 float wy = centerY + r * std::cos(thetaA);
                 float wz = object.pos.z + ringR * std::sin(phiA);
                 float tx,ty,tz;
-                translateCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
+                mapCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
                 return GPoint3D{tx,ty,tz};
             };
             auto hemiV = [&](float centerY, float thetaA){ return vForY(centerY + r * std::cos(thetaA)); };
@@ -1734,7 +1805,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                 float wx = object.pos.x + r * std::cos(phiA);
                 float wz = object.pos.z + r * std::sin(phiA);
                 float tx,ty,tz;
-                translateCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
+                mapCoords(wx,wy,wz,viewport,&tx,&ty,&tz);
                 return GPoint3D{tx,ty,tz};
             };
             const float vBottom = vForY(bottomY);
@@ -1808,7 +1879,7 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
 
             auto toDevice3D = [&](const GPoint3D & point) -> GPoint3D {
                 float tx,ty,tz;
-                translateCoords(point.x, point.y, point.z, viewport, &tx, &ty, &tz);
+                mapCoords(point.x, point.y, point.z, viewport, &tx, &ty, &tz);
                 return GPoint3D{tx,ty,tz};
             };
 

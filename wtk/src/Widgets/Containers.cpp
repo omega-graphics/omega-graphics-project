@@ -50,6 +50,34 @@ inline FlexOptions toFlexOptions(StackAxis axis, const StackOptions & opts){
     return out;
 }
 
+// Grid: the public GridOptions / GridSlot surface maps one-for-one onto
+// the GridLayout-family equivalents, the same way Stack* maps onto Flex*.
+inline GridCellAlign toGridCellAlign(StackCrossAlign align){
+    switch(align){
+        case StackCrossAlign::Start:   return GridCellAlign::Start;
+        case StackCrossAlign::Center:  return GridCellAlign::Center;
+        case StackCrossAlign::End:     return GridCellAlign::End;
+        case StackCrossAlign::Stretch: return GridCellAlign::Stretch;
+    }
+    return GridCellAlign::Start;
+}
+
+inline GridLayoutOptions toGridLayoutOptions(const GridOptions & opts){
+    GridLayoutOptions out {};
+    out.columns       = opts.columns;
+    out.rowSpacing    = opts.rowSpacing;
+    out.columnSpacing = opts.columnSpacing;
+    out.cellAlign     = toGridCellAlign(opts.cellAlign);
+    return out;
+}
+
+inline GridChildSpec toGridChildSpec(const GridSlot & slot){
+    GridChildSpec out {};
+    out.columnSpan = slot.columnSpan;
+    out.rowSpan    = slot.rowSpan;
+    return out;
+}
+
 inline FlexChildSpec toFlexChildSpec(const StackSlot & slot, bool resizable,
                                     bool honorCrossStretch){
     FlexChildSpec out {};
@@ -252,6 +280,116 @@ StackWidget(StackAxis::Vertical,rect,options){
 VStack::VStack(ViewPtr view,const StackOptions & options):
 StackWidget(StackAxis::Vertical,std::move(view),options){
 
+}
+
+// ---------------------------------------------------------------------------
+// Grid
+// ---------------------------------------------------------------------------
+
+Grid::Grid(Composition::Rect rect,const GridOptions & options):
+Container(rect),
+options_(options),
+gridLayout_(toGridLayoutOptions(options)){
+    if(view != nullptr){
+        view->setLayoutManager(&gridLayout_);
+    }
+}
+
+Grid::Grid(ViewPtr view,const GridOptions & options):
+Container(std::move(view)),
+options_(options),
+gridLayout_(toGridLayoutOptions(options)){
+    if(this->view != nullptr){
+        this->view->setLayoutManager(&gridLayout_);
+    }
+}
+
+void Grid::onMount(){
+    relayout();
+}
+
+void Grid::resize(Composition::Rect & newRect){
+    (void)newRect;
+    relayout();
+}
+
+const GridOptions & Grid::getOptions() const{
+    return options_;
+}
+
+void Grid::setOptions(const GridOptions & options){
+    options_ = options;
+    gridLayout_.setOptions(toGridLayoutOptions(options));
+    relayout();
+}
+
+WidgetPtr Grid::addChild(const WidgetPtr & child){
+    return addChild(child,{});
+}
+
+WidgetPtr Grid::addChild(const WidgetPtr & child,const GridSlot & slot){
+    if(child == nullptr || child.get() == this){
+        return nullptr;
+    }
+
+    for(std::size_t i = 0; i < children.size(); ++i){
+        if(children[i] == child){
+            if(i < childSlots_.size()){
+                childSlots_[i] = slot;
+            }
+            gridLayout_.setChildSpec(&child->viewRef(), toGridChildSpec(slot));
+            relayout();
+            return child;
+        }
+    }
+
+    wireChild(child);
+    childSlots_.push_back(slot);
+    gridLayout_.setChildSpec(&child->viewRef(), toGridChildSpec(slot));
+    relayout();
+    return child;
+}
+
+bool Grid::removeChild(const WidgetPtr & child){
+    if(child == nullptr){
+        return false;
+    }
+    for(std::size_t i = 0; i < children.size(); ++i){
+        if(children[i] == child){
+            gridLayout_.removeChildSpec(&child->viewRef());
+            unwireChild(child);
+            if(i < childSlots_.size()){
+                childSlots_.erase(childSlots_.begin() + static_cast<std::ptrdiff_t>(i));
+            }
+            relayout();
+            return true;
+        }
+    }
+    return false;
+}
+
+void Grid::relayout(){
+    // Stale-child cleanup mirrors StackWidget::relayout — gridLayout_ keeps
+    // per-child span entries keyed by View*, so a nulled-out slot must be
+    // dropped before arrange iterates view->subviews().
+    for(std::size_t i = 0; i < children.size(); ){
+        if(children[i] == nullptr){
+            children.erase(children.begin() + static_cast<std::ptrdiff_t>(i));
+            if(i < childSlots_.size()){
+                childSlots_.erase(childSlots_.begin() + static_cast<std::ptrdiff_t>(i));
+            }
+        }
+        else {
+            ++i;
+        }
+    }
+    if(view != nullptr){
+        gridLayout_.arrange(*view, view->getRect());
+    }
+}
+
+Grid::~Grid(){
+    childSlots_.clear();
 }
 
 }

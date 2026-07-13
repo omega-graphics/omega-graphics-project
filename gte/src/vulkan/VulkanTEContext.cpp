@@ -27,7 +27,9 @@ namespace {
     }
 
 struct VulkanTessVertex { float pos[4]; float color[4]; };
-struct VulkanTessParams { float rect[4]; float viewport[4]; float color[4]; float extra[4]; };
+// viewport = {origin.x, origin.y, width, height}; flags = {localSpace, nearDepth, farDepth, 0}.
+// Must stay byte-identical to `struct TessParams` in gte/src/shaders/triangulate_*.omegasl.
+struct VulkanTessParams { float rect[4]; float viewport[4]; float color[4]; float extra[4]; float flags[4]; };
 struct VulkanPathSeg { float se[4]; float sv[4]; float c[4]; float r[4]; };
 
 TETriangulationResult readbackVulkan(VmaAllocator allocator, VkBuffer buf, VmaAllocation alloc,
@@ -222,6 +224,24 @@ std::future<TETriangulationResult> vulkanGpuDispatch(
 
     if (!pip.gpuReady) return fallback();
 
+    // Phase 9.6 — the kernels honor this the same way the CPU path does: it
+    // makes their NDC conversion an identity pass.
+    const float localSpace = origParams.localSpace ? 1.f : 0.f;
+
+    // Winding (Phase 9.2, params-level frontFaceRotation). The kernels bake a
+    // fixed vertex-emission order rather than recomputing it, so the CPU decides
+    // the b/c swap here and the kernel just applies `swapBC`.
+    //
+    // FLAT primitives (Rect / RoundedRect / Ellipsoid / Path2D) go through TE's
+    // finalizeFlat, which picks each triangle's winding from its SIGNED AREA --
+    // a quantity the NDC map's Y-flip inverts. The kernels bake the {NDC,
+    // Clockwise} outcome, so the swap flips for local space AND for CCW: XOR.
+    // The SOLID primitive (RectPrism) goes through finalizeSolid, which ignores
+    // signed area entirely, so only CCW flips it -- local space does not.
+    const bool wantCCW = ctx->resolveWinding(origParams, ff) == GTEPolygonFrontFaceRotation::CounterClockwise;
+    const bool localOn = origParams.localSpace;
+    const float swapFlat  = (localOn != wantCCW) ? 1.f : 0.f;
+
     VulkanTessKernel *kernel = nullptr;
     unsigned vc = 0, tc = 1;
     size_t paramSize = 0;
@@ -234,7 +254,7 @@ std::future<TETriangulationResult> vulkanGpuDispatch(
     switch (ep.type) {
         case ET::Rect: {
             kernel = &pip.rect; vc = 6; tc = 1;
-            tp = {{ep.rx,ep.ry,ep.rw,ep.rh},{vp.x,vp.y,vp.width,vp.height},{cv[0],cv[1],cv[2],cv[3]},{0,0,0,0}};
+            tp = {{ep.rx,ep.ry,ep.rw,ep.rh},{vp.x,vp.y,vp.width,vp.height},{cv[0],cv[1],cv[2],cv[3]},{0,0,0,0},{localSpace,vp.nearDepth,vp.farDepth,swapFlat}};
             paramSize = sizeof(VulkanTessParams); paramData = &tp;
             break;
         }
@@ -243,13 +263,18 @@ std::future<TETriangulationResult> vulkanGpuDispatch(
             float step = ctxArcStep > 0 ? ctxArcStep : 0.01f;
             unsigned segs = (unsigned)std::ceil(2.f * M_PI / step);
             vc = segs * 3; tc = segs;
-            tp = {{ep.ex,ep.ey,0,0},{vp.x,vp.y,vp.width,vp.height},{cv[0],cv[1],cv[2],cv[3]},{ep.erad_x,ep.erad_y,step,(float)segs}};
+            tp = {{ep.ex,ep.ey,0,0},{vp.x,vp.y,vp.width,vp.height},{cv[0],cv[1],cv[2],cv[3]},{ep.erad_x,ep.erad_y,step,(float)segs},{localSpace,vp.nearDepth,vp.farDepth,swapFlat}};
             paramSize = sizeof(VulkanTessParams); paramData = &tp;
             break;
         }
         case ET::RectPrism: {
+            // finalizeSolid can express CounterClockwise only by swapping b/c on
+            // every triangle, which this kernel's baked emission order cannot do.
+            // Route that case to the CPU rather than silently emitting the wrong
+            // winding (which is what this path did before Phase 9).
+            if (wantCCW) return fallback();
             kernel = &pip.prism; vc = 36; tc = 1;
-            tp = {{ep.px,ep.py,ep.pz,ep.pw},{vp.x,vp.y,vp.width,vp.height},{cv[0],cv[1],cv[2],cv[3]},{ep.ph,ep.pd,0,0}};
+            tp = {{ep.px,ep.py,ep.pz,ep.pw},{vp.x,vp.y,vp.width,vp.height},{cv[0],cv[1],cv[2],cv[3]},{ep.ph,ep.pd,0,0},{localSpace,vp.nearDepth,vp.farDepth,0}};
             paramSize = sizeof(VulkanTessParams); paramData = &tp;
             break;
         }
@@ -262,7 +287,7 @@ std::future<TETriangulationResult> vulkanGpuDispatch(
             float sw = ep.strokeWidth > 0 ? ep.strokeWidth : 1.f;
             for (unsigned i = 0; i < sc; i++) {
                 auto &s = ep.pathSegments[i];
-                pathSegs[i] = {{s.sx,s.sy,s.ex,s.ey},{sw,0,vp.width,vp.height},{cv[0],cv[1],cv[2],cv[3]},{0,0,0,0}};
+                pathSegs[i] = {{s.sx,s.sy,s.ex,s.ey},{sw,localSpace,vp.width,vp.height},{cv[0],cv[1],cv[2],cv[3]},{vp.x,vp.y,swapFlat,0}};
             }
             paramSize = sc * sizeof(VulkanPathSeg); paramData = pathSegs;
             break;
@@ -427,7 +452,7 @@ public:
         }
         GPUTriangulationExtractedParams ep;
         extractGPUTriangulationParams(params, ep);
-        GEViewport vp = viewport ? *viewport : getEffectiveViewport();
+        GEViewport vp = resolveViewport(params, viewport);
         return vulkanGpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
 
@@ -481,7 +506,7 @@ public:
         }
         GPUTriangulationExtractedParams ep;
         extractGPUTriangulationParams(params, ep);
-        GEViewport vp = viewport ? *viewport : getEffectiveViewport();
+        GEViewport vp = resolveViewport(params, viewport);
         return vulkanGpuDispatch(ep, vp, arcStep, pip, this, params, direction, viewport);
     }
 

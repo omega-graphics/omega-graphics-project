@@ -1,9 +1,17 @@
 
+// NOTE: no backend dispatches this kernel today (no RoundedRect case in any
+// *TEContext's triangulateOnGPU switch) — RoundedRect always falls back to the
+// CPU. Its NDC math is also incomplete: the conversions below scale by 2/extent
+// but never apply the -1 shift, the Y-flip, or the viewport origin, so it does
+// not agree with translateCoordsDefaultImpl. The `flags` slot is carried here
+// only to keep TessParams' layout identical across all four kernels; whoever
+// wires this kernel up must finish the conversion (and honor localSpace) first.
 struct TessParams {
     float4 rect;
-    float4 viewport;
+    float4 viewport;   // {origin.x, origin.y, width, height}
     float4 color;
     float4 extra;
+    float4 flags;      // {localSpace, nearDepth, farDepth, swapBC}
 };
 
 struct TessVertex {

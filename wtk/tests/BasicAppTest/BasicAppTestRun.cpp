@@ -8,6 +8,7 @@
 #include <omegaWTK/Widgets/Containers.h>
 #include <omegaWTK/Widgets/BasicWidgets.h>
 #include <omegaWTK/Widgets/UserInputs.h>
+#include <omegaWTK/Widgets/Overlays.h>
 
 using namespace OmegaWTK;
 
@@ -145,8 +146,9 @@ public:
 
 int RunBasicAppTest(AppInst *app) {
     // Widened 600 -> 720 so the button row still fits after adding the
-    // "Alert" button below (six buttons + spacing).
-    Composition::Rect windowRect{{0, 0}, 720, 640};
+    // "Alert" button below (six buttons + spacing). Heightened 640 -> 880 to
+    // fit the Grid demo + Context Menu row added below the button row.
+    Composition::Rect windowRect{{0, 0}, 720, 880};
 
     auto window = make<AppWindow>(windowRect, new TestWindowDelegate());
     g_mainWindow = window.get();
@@ -435,6 +437,107 @@ int RunBasicAppTest(AppInst *app) {
     StackSlot buttonRowSlot;
     buttonRowSlot.flexGrow = 0.f;
     root->addChild(buttonRow, buttonRowSlot);
+
+    // Grid demo — Widget-Stub Phase 3 GridLayout. Three equal-width columns
+    // filled row-major; the orange cell spans two columns to exercise span
+    // support. cellAlign = Stretch so each colored cell fills its cell block,
+    // making the grid structure (and the 2-column span in row 1) obvious.
+    LabelProps gridTitleProps;
+    gridTitleProps.text = U"Grid — 3 columns, row-major, one 2-column span";
+    gridTitleProps.alignment = Composition::TextLayoutDescriptor::LeftCenter;
+    gridTitleProps.wrapping = Composition::TextLayoutDescriptor::None;
+    auto gridTitle = make<Label>(
+        Composition::Rect{{0, 0}, contentW, 22.f}, gridTitleProps);
+    StackSlot gridTitleSlot;
+    gridTitleSlot.flexGrow = 0.f;
+    root->addChild(gridTitle, gridTitleSlot);
+
+    GridOptions gridOpts;
+    gridOpts.columns = 3;
+    gridOpts.rowSpacing = 8.f;
+    gridOpts.columnSpacing = 8.f;
+    gridOpts.cellAlign = StackCrossAlign::Stretch;
+    auto grid = make<Grid>(
+        Composition::Rect{{0, 0}, contentW, 150.f}, gridOpts);
+
+    struct GridCellSpec { uint32_t color; unsigned colSpan; };
+    const GridCellSpec gridCellSpecs[] = {
+        {0xE05252, 1}, {0x52B85E, 1}, {0x4A7FE0, 1},   // row 0: red, green, blue
+        {0xE0902A, 2},                {0x9A5CE0, 1},    // row 1: orange (2-col), purple
+        {0x2AB5B5, 1}, {0xC94FA0, 1}, {0xB5B52A, 1},    // row 2: teal, magenta, olive
+    };
+    SharedHandle<Widget> gridChildren[8];
+    for (int i = 0; i < 8; ++i) {
+        RectangleProps cellProps;
+        cellProps.fill = Composition::ColorBrush(
+            Composition::Color::create8Bit(gridCellSpecs[i].color));
+        gridChildren[i] = make<Rectangle>(
+            Composition::Rect{{0, 0}, 80.f, 40.f}, cellProps);
+        GridSlot slot;
+        slot.columnSpan = gridCellSpecs[i].colSpan;
+        grid->addChild(gridChildren[i], slot);
+    }
+    StackSlot gridSlot;
+    gridSlot.flexGrow = 0.f;
+    root->addChild(grid, gridSlot);
+
+    // Context menu demo — Widget-Stub Phase 6D ContextMenu, presented through
+    // the window's overlay layer (Overlay-Z-Order-Plan O1–O4). Click the
+    // button to open a Floating menu just below it: hover or Up/Down arrows
+    // highlight a row, click or Enter activates it (firing a notification),
+    // and Escape or a click outside dismisses it — returning keyboard focus to
+    // the button (O4). "Rename" is disabled; a separator splits the groups.
+    OmegaCommon::Vector<PopupMenuItem> ctxItems;
+    {
+        PopupMenuItem cut;
+        cut.title = U"Cut";
+        cut.shortcut = "Ctrl+X";
+        cut.action = [](){ if (nc) nc->send({"ContextMenu", "Cut"}); };
+        PopupMenuItem copy;
+        copy.title = U"Copy";
+        copy.shortcut = "Ctrl+C";
+        copy.action = [](){ if (nc) nc->send({"ContextMenu", "Copy"}); };
+        PopupMenuItem paste;
+        paste.title = U"Paste";
+        paste.shortcut = "Ctrl+V";
+        paste.action = [](){ if (nc) nc->send({"ContextMenu", "Paste"}); };
+        PopupMenuItem sep;
+        sep.separator = true;
+        PopupMenuItem rename;
+        rename.title = U"Rename";
+        rename.enabled = false;
+        PopupMenuItem del;
+        del.title = U"Delete";
+        del.shortcut = "Del";
+        del.action = [](){ if (nc) nc->send({"ContextMenu", "Delete"}); };
+        ctxItems = {cut, copy, paste, sep, rename, del};
+    }
+
+    StackOptions ctxRowOpts;
+    ctxRowOpts.spacing = 12.f;
+    ctxRowOpts.mainAlign = StackMainAlign::Center;
+    ctxRowOpts.crossAlign = StackCrossAlign::Center;
+    auto ctxRow = make<HStack>(
+        Composition::Rect{{0, 0}, contentW, 40.f}, ctxRowOpts);
+
+    ButtonProps ctxBtnProps;
+    ctxBtnProps.text = U"Open Context Menu";
+    auto ctxBtn = make<Button>(
+        Composition::Rect{{0, 0}, 200.f, 32.f}, ctxBtnProps);
+    ctxBtn->viewRef().setCursorShape(Native::CursorShape::PointingHand);
+    ctxBtn->setTooltip("Opens an in-view ContextMenu overlay");
+    Button *ctxBtnRaw = ctxBtn.get();
+    ctxBtn->setOnPress([ctxBtnRaw, ctxItems]() {
+        // Place the menu just under the button, in window space.
+        const Composition::Point2D origin = ctxBtnRaw->viewRef().offsetFromRoot();
+        const Composition::Point2D pos{origin.x, origin.y + ctxBtnRaw->rect().h + 2.f};
+        auto menu = make<ContextMenu>(ctxItems);
+        menu->present(ctxBtnRaw, pos);   // OverlayHost holds it alive while shown
+    });
+    ctxRow->addChild(ctxBtn);
+    StackSlot ctxRowSlot;
+    ctxRowSlot.flexGrow = 0.f;
+    root->addChild(ctxRow, ctxRowSlot);
 
     // TextInput row — Phase 4B v0. Click (or Tab) to focus it (accent ring +
     // caret appear via the FocusManager), then type: printable chars insert,

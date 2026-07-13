@@ -104,6 +104,53 @@ public:
     explicit VStack(ViewPtr view,const StackOptions & options = {});
 };
 
+// ---------------------------------------------------------------------------
+// Grid — Widget-Stub-Implementation-Plan Phase 3. A `Container` whose
+// children are laid out in a fixed number of equal-width columns, filled
+// row-major, with per-child column / row spans. It mirrors the
+// `StackWidget` ↔ `FlexLayout` pattern exactly: the widget owns a
+// `GridLayout` (the reusable layout built-in), sets it as the backing
+// View's manager, and drives an arrange on mount / resize / child change.
+// ---------------------------------------------------------------------------
+
+struct OMEGAWTK_EXPORT GridOptions {
+    /// Number of equal-width columns (clamped to `>= 1`).
+    unsigned        columns       = 1;
+    float           rowSpacing    = 0.f;
+    float           columnSpacing = 0.f;
+    /// How each child sits within its cell block. `Stretch` fills the cell;
+    /// `Start` / `Center` / `End` keep the child's own size and position it.
+    StackCrossAlign cellAlign     = StackCrossAlign::Start;
+};
+
+struct OMEGAWTK_EXPORT GridSlot {
+    unsigned columnSpan = 1;
+    unsigned rowSpan    = 1;
+};
+
+class OMEGAWTK_EXPORT Grid : public Container {
+    GridOptions                    options_;
+    GridLayout                     gridLayout_;
+    OmegaCommon::Vector<GridSlot>  childSlots_;
+protected:
+    void onMount() override;
+    void resize(Composition::Rect & newRect) override;
+public:
+    explicit Grid(Composition::Rect rect,const GridOptions & options = {});
+    explicit Grid(ViewPtr view,const GridOptions & options = {});
+
+    const GridOptions & getOptions() const;
+    void setOptions(const GridOptions & options);
+
+    WidgetPtr addChild(const WidgetPtr & child) override;
+    WidgetPtr addChild(const WidgetPtr & child,const GridSlot & slot);
+    bool removeChild(const WidgetPtr & child) override;
+
+    void relayout();
+
+    ~Grid() override;
+};
+
 }
 
 #endif // OMEGAWTK_WIDGETS_CONTAINERS_H

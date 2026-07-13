@@ -34,6 +34,31 @@ target_compile_definitions(omegagte_te_index_buffer_test PRIVATE ${PUBLIC_DEFS})
 target_link_libraries(omegagte_te_index_buffer_test PRIVATE OmegaCommonCore OmegaGTE)
 add_test(NAME omegagte_te_index_buffer COMMAND omegagte_te_index_buffer_test)
 
+# Triangulation-Engine-Completion-Plan Phase 9 — backend-independent unit test
+# for TE's coordinate space: params-level viewport + precedence, viewport-origin
+# awareness, the [0,1] depth map, and local-space (un-baked) triangulation.
+# Pure CPU: OmegaTriangulationEngineContext is abstract but device-independent,
+# so a test subclass gives a real triangulateSync with no GPU.
+add_executable(omegagte_te_coordspace_test te_coordspace_test.cpp)
+target_include_directories(omegagte_te_coordspace_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../common/include")
+target_compile_definitions(omegagte_te_coordspace_test PRIVATE ${PUBLIC_DEFS})
+target_link_libraries(omegagte_te_coordspace_test PRIVATE OmegaCommonCore OmegaGTE)
+add_test(NAME omegagte_te_coordspace COMMAND omegagte_te_coordspace_test)
+
+# GESpace-Implementation-Plan Phase 1 — backend-independent unit test for the
+# GESpace space->NDC matrix (origin-aware ortho, Y-flip, [0,1] depth) and for
+# the column-major `transformPoint` it depends on. Pure CPU: GESpace is a
+# transform authority, not a GPU resource, so no device is needed.
+add_executable(omegagte_gespace_test gespace_test.cpp)
+target_include_directories(omegagte_gespace_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../common/include")
+target_compile_definitions(omegagte_gespace_test PRIVATE ${PUBLIC_DEFS})
+target_link_libraries(omegagte_gespace_test PRIVATE OmegaCommonCore OmegaGTE)
+add_test(NAME omegagte_gespace COMMAND omegagte_gespace_test)
+
 include(CMakeParseArguments)
 
 # ===========================================================================

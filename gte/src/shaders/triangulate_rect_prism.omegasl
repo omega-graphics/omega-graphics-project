@@ -1,9 +1,10 @@
 
 struct TessParams {
     float4 rect;
-    float4 viewport;
+    float4 viewport;   // {origin.x, origin.y, width, height}
     float4 color;
     float4 extra;
+    float4 flags;      // {localSpace, nearDepth, farDepth, swapBC}
 };
 
 struct TessVertex {
@@ -23,33 +24,61 @@ void triangulate_rect_prism_kernel(uint3 tid : GlobalThreadID){
     float w  = params[0].rect[3];
     float h  = params[0].extra[0];
     float d  = params[0].extra[1];
+    float vx = params[0].viewport[0];
+    float vy = params[0].viewport[1];
     float vw = params[0].viewport[2];
     float vh = params[0].viewport[3];
+    float localSpace = params[0].flags[0];
+    float nearDepth  = params[0].flags[1];
+    float farDepth   = params[0].flags[2];
     float4 col = params[0].color;
 
-    // NDC conversion mirrors OmegaTriangulationEngineContext::translateCoordsDefaultImpl
-    // (TE.cpp): x maps [0,vw] -> [-1,1]; y maps [0,vh] -> [1,-1]; z maps
-    // [0,farDepth] -> [-1,1] for z>0 and passes through unchanged at z==0
-    // (farDepth is always 1.0 across this codebase's GEViewport construction,
-    // so it is not threaded through as a separate param). z<0 is intentionally
-    // left as pass-through, matching translateCoordsDefaultImpl's own
-    // divide-by-nearDepth=0 there, which this TE usage never exercises.
-    float nx0 = ((2.0 * x0) / vw) - 1.0;
-    float ny0 = 1.0 - ((2.0 * y0) / vh);
-    float nx1 = ((2.0 * (x0 + w)) / vw) - 1.0;
-    float ny1 = 1.0 - ((2.0 * (y0 + h)) / vh);
+    float x1 = x0 + w;
+    float y1 = y0 + h;
     float rawZ0 = z0;
     float rawZ1 = z0 + d;
-    float nz0 = rawZ0;
-    if (rawZ0 > 0.0) { nz0 = (2.0 * rawZ0) - 1.0; }
-    float nz1 = rawZ1;
-    if (rawZ1 > 0.0) { nz1 = (2.0 * rawZ1) - 1.0; }
+
+    // NDC conversion mirrors OmegaTriangulationEngineContext::translateCoordsDefaultImpl
+    // (TE.cpp) exactly: the viewport origin is subtracted first, then x maps
+    // [vx, vx+vw] -> [-1,1], y maps [vy, vy+vh] -> [1,-1], and z maps
+    // [nearDepth, farDepth] -> [0,1] as one continuous affine line.
+    //
+    // The depth map used to be a two-branch approximation of the CPU's own
+    // three-branch one, which divided z<0 by nearDepth -- always 0 here, so the
+    // CPU produced -infinity while this kernel silently passed z through. Both
+    // sides are now the same branchless map, so CPU and GPU agree for every z.
+    float depthRange = farDepth - nearDepth;
+    if(depthRange == 0.0){ depthRange = 1.0; }
+
+    float nx0 = ((2.0 * (x0 - vx)) / vw) - 1.0;
+    float ny0 = 1.0 - ((2.0 * (y0 - vy)) / vh);
+    float nx1 = ((2.0 * (x1 - vx)) / vw) - 1.0;
+    float ny1 = 1.0 - ((2.0 * (y1 - vy)) / vh);
+    float nz0 = (rawZ0 - nearDepth) / depthRange;
+    float nz1 = (rawZ1 - nearDepth) / depthRange;
+
+    // Local space (Phase 9.6): emit the authored units untouched, matching the
+    // CPU path's identity pass in _triangulatePriv.
+    if(localSpace > 0.5){
+        nx0 = x0;
+        ny0 = y0;
+        nz0 = rawZ0;
+        nx1 = x1;
+        ny1 = y1;
+        nz1 = rawZ1;
+    }
 
     // Face emission order and per-face diagonal split mirror TE.cpp's CPU
     // RectangularPrism path exactly (Bottom, Front, "Left"=x1, "Right"=x0,
     // Back, Top -- CPU's own face-normal comments use that x0/x1 naming).
-    // finalizeSolid does not touch triangle order for the default Clockwise
-    // winding, so the as-authored CPU order below IS the final order.
+    //
+    // Winding: the prism is CLOSED geometry, so TE runs it through finalizeSolid,
+    // which swaps b/c only when CounterClockwise is requested -- it never consults
+    // the triangle's signed area. That makes its order space-INDEPENDENT: unlike
+    // the flat kernels, local space does not flip it, so there is no swap for this
+    // kernel to apply and the as-authored order below is final. A CounterClockwise
+    // request cannot be expressed in this baked order at all, so the host routes
+    // that case to the CPU path instead of dispatching here (see the *TEContext).
     TessVertex v;
     v.color = col;
     uint idx = 0;

@@ -2,6 +2,7 @@
 #include "omegaWTK/UI/Widget.h"
 #include "omegaWTK/UI/View.h"
 #include "omegaWTK/UI/AppWindow.h"
+#include "omegaWTK/UI/FocusManager.h"   // O4 §6: push/pop restoration around present/dismiss
 #include "WidgetTreeHost.h"
 
 #include <algorithm>
@@ -55,6 +56,45 @@ bool rectContainsPoint(const Composition::Rect & r,
            p.y >= r.pos.y && p.y < r.pos.y + r.h;
 }
 
+/// O4 §6 — which tiers participate in keyboard-focus restoration.
+/// Only Floating (popovers, menus, dropdowns) and Modal (dialogs,
+/// sheets) can claim focus, so only they push a restoration point on
+/// present and pop it on dismiss. Tooltip and DragGhost never take
+/// focus (`absorbsHits = false`, and a tooltip re-presents on every
+/// hover); pushing for them would both churn the FocusManager's LIFO
+/// restoration stack and, on dismiss, make `popAndRestore` refresh the
+/// already-focused view's reason to `Popup` — surfacing a focus ring
+/// that was never intended. Gating on tier keeps the stack balanced
+/// with exactly the overlays that can hold focus.
+constexpr bool tierParticipatesInFocus(OverlayTier tier){
+    return tier == OverlayTier::Floating || tier == OverlayTier::Modal;
+}
+
+/// O4 §6 — pointer-only subtree membership test, mirroring the private
+/// `viewInSubtree` helper in FocusManager.cpp. `target` is never
+/// dereferenced, so a stale pointer simply fails to match every live
+/// node and returns false. The dismiss path uses this to detect whether
+/// keyboard focus still points into an overlay's about-to-be-destroyed
+/// subtree after `popAndRestore`, so it can be cleared before the views
+/// die (the F2 teardown contract — see FocusManager.h). Kept local
+/// rather than exposed on FocusManager to avoid growing that class's
+/// public surface for this single internal consumer (matches the O1
+/// decision to leave Widget's / the host's coupling surface unchanged).
+bool viewInSubtree(View * root, View * target){
+    if(root == nullptr || target == nullptr){
+        return false;
+    }
+    if(root == target){
+        return true;
+    }
+    for(View * child : root->subviews()){
+        if(viewInSubtree(child, target)){
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 struct OverlayHost::Impl {
@@ -91,6 +131,10 @@ struct OverlayHost::Impl {
     /// paint order within tier (plan §2). Reverse it for top-first.
     std::array<std::vector<Entry>, kTierCount> entriesByTier {};
     std::uint64_t nextHandleId = 1;
+
+    /// Handles queued by `requestDeferredDismiss`, drained after the input
+    /// dispatch unwinds so an overlay never frees itself mid-delivery.
+    std::vector<std::uint64_t> deferredDismiss;
 
     /// Scratch buffers backing the `ArrayRef`s returned from
     /// `overlaysTopFirst` / `overlaysIn` / `overlaysForPaintIn`.
@@ -229,6 +273,38 @@ struct OverlayHost::Impl {
         if(host != nullptr && e.widget != nullptr){
             host->unmountOverlay(e.widget.get());
         }
+        // O4 §6 — focus restoration, the pop side of `present`'s push.
+        // Runs *after* unmounting (plan §6). Every dismiss path funnels
+        // through here (handle / widget / tier / all, plus the O3
+        // click-outside / Escape / anchor-destroy paths), so a single pop
+        // keeps the FocusManager's LIFO restoration stack balanced 1:1
+        // with present. Only focus-bearing tiers pushed, so only they pop.
+        if(host != nullptr && tierParticipatesInFocus(e.tier)){
+            FocusManager & fm = host->focusManager();
+            // Common case: hand focus back to whoever held it before this
+            // overlay opened (with FocusReason::Popup, so a keyboard
+            // opener's focus ring returns). A null capture clears focus.
+            fm.popAndRestore();
+            // F2 teardown contract (FocusManager.h): `popAndRestore`
+            // *skips* — leaving focus untouched — when the captured opener
+            // had itself detached while this overlay was up. If focus is
+            // therefore still inside this overlay's subtree, the widget
+            // refs `eraseById` / `dismiss*` are about to release may
+            // destroy the focused view and dangle `currentlyFocused_`.
+            // Clear it here so the next `setFocus` never dereferences
+            // freed memory. `e.widget` is still alive (erase happens after
+            // this returns), so `viewRef()` is safe.
+            if(e.widget != nullptr &&
+               viewInSubtree(&e.widget->viewRef(), fm.focusedView())){
+                fm.clearFocus();
+            }
+        }
+        // O5 §6 — release the modal tab-trap, the pop side of present's
+        // pushTabTrap. Only Modal pushed a trap, so only Modal pops;
+        // balanced 1:1 through this single dismiss funnel.
+        if(host != nullptr && e.tier == OverlayTier::Modal){
+            host->focusManager().popTabTrap();
+        }
     }
 
     /// A dismissed overlay must vanish from the composite: force a
@@ -315,6 +391,28 @@ OverlayHandle OverlayHost::present(WidgetPtr overlay,
         return OverlayHandle{};
     }
 
+    // O4 §6 — focus restoration. Capture whoever currently holds
+    // keyboard focus *before* this overlay opens, so `dismiss` can hand
+    // focus back on close. Pushed before mounting (plan §6) and before
+    // the caller claims focus for the overlay — an overlay widget
+    // (Modal / ContextMenu) focuses its own content only after `present`
+    // returns, so `focusedView()` here is still the pre-overlay holder.
+    // Gated to focus-bearing tiers: a tooltip hover must not touch the
+    // restoration stack (see `tierParticipatesInFocus`).
+    if(impl_->host != nullptr && tierParticipatesInFocus(tier)){
+        impl_->host->focusManager().pushRestorationPoint();
+    }
+
+    // O5 §6 — modal tab-trap. A Modal constrains Tab / Shift-Tab
+    // traversal to its own subtree while presented, so the keyboard
+    // cannot reach a main-tree widget the modal is covering. The
+    // overlay's view subtree is already complete here (the caller built
+    // the modal's content before calling present), so it is a valid trap
+    // root. Only Modal traps; Floating menus / popovers do not.
+    if(impl_->host != nullptr && tier == OverlayTier::Modal){
+        impl_->host->focusManager().pushTabTrap(&overlay->viewRef());
+    }
+
     const auto desired = overlay->rect();
     const auto bounds = impl_->windowBounds();
     const auto resolved = impl_->computeRect(anchor, desired, bounds);
@@ -393,6 +491,43 @@ void OverlayHost::dismiss(OverlayHandle handle){
         return;
     }
     if(impl_->eraseById(handle.id)){
+        impl_->requestDismissRepaint();
+    }
+}
+
+void OverlayHost::requestDeferredDismiss(OverlayHandle handle){
+    if(!handle.valid()){
+        return;
+    }
+    // Dedup so a double request (e.g. an Enter and a click racing on the
+    // same item) still erases exactly once at drain.
+    for(auto id : impl_->deferredDismiss){
+        if(id == handle.id){
+            return;
+        }
+    }
+    impl_->deferredDismiss.push_back(handle.id);
+    // A purely-programmatic caller (not mid-dispatch) needs a frame to
+    // reach the dispatcher's drain; requestFrame is a no-op on a detached
+    // host.
+    if(impl_->host != nullptr){
+        impl_->host->requestFrame();
+    }
+}
+
+void OverlayHost::drainDeferredDismissals(){
+    if(impl_->deferredDismiss.empty()){
+        return;
+    }
+    // Swap out first: an erase path (anchor-detach observer, focus events
+    // fired by O4's popAndRestore) could re-enter and mutate the queue.
+    std::vector<std::uint64_t> ids;
+    ids.swap(impl_->deferredDismiss);
+    bool removed = false;
+    for(auto id : ids){
+        removed = impl_->eraseById(id) || removed;
+    }
+    if(removed){
         impl_->requestDismissRepaint();
     }
 }

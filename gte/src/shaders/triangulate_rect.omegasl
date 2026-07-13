@@ -1,9 +1,10 @@
 
 struct TessParams {
     float4 rect;
-    float4 viewport;
+    float4 viewport;   // {origin.x, origin.y, width, height}
     float4 color;
     float4 extra;
+    float4 flags;      // {localSpace, nearDepth, farDepth, swapBC}
 };
 
 struct TessVertex {
@@ -21,43 +22,76 @@ void triangulate_rect_kernel(uint3 tid : GlobalThreadID){
     float y0 = params[0].rect[1];
     float w  = params[0].rect[2];
     float h  = params[0].rect[3];
+    float vx = params[0].viewport[0];
+    float vy = params[0].viewport[1];
     float vw = params[0].viewport[2];
     float vh = params[0].viewport[3];
+    float localSpace = params[0].flags[0];
+    float swapBC     = params[0].flags[3];
     float4 col = params[0].color;
 
+    float x1 = x0 + w;
+    float y1 = y0 + h;
+
     // NDC conversion mirrors OmegaTriangulationEngineContext::translateCoordsDefaultImpl
-    // (TE.cpp) exactly: x maps [0,vw] -> [-1,1]; y maps [0,vh] -> [1,-1] (GEViewport
-    // is top-left/Y-down, NDC is Y-up).
-    float nx0 = ((2.0 * x0) / vw) - 1.0;
-    float ny0 = 1.0 - ((2.0 * y0) / vh);
-    float nx1 = ((2.0 * (x0 + w)) / vw) - 1.0;
-    float ny1 = 1.0 - ((2.0 * (y0 + h)) / vh);
+    // (TE.cpp) exactly: the viewport ORIGIN is subtracted first, then x maps
+    // [vx, vx+vw] -> [-1,1] and y maps [vy, vy+vh] -> [1,-1] (GEViewport is
+    // top-left/Y-down, NDC is Y-up).
+    float nx0 = ((2.0 * (x0 - vx)) / vw) - 1.0;
+    float ny0 = 1.0 - ((2.0 * (y0 - vy)) / vh);
+    float nx1 = ((2.0 * (x1 - vx)) / vw) - 1.0;
+    float ny1 = 1.0 - ((2.0 * (y1 - vy)) / vh);
+
+    // Local space (Phase 9.6): emit the authored units untouched, matching the
+    // CPU path's identity pass in _triangulatePriv.
+    if(localSpace > 0.5){
+        nx0 = x0;
+        ny0 = y0;
+        nx1 = x1;
+        ny1 = y1;
+    }
 
     TessVertex v;
     v.color = col;
 
-    // Vertex order matches the CPU path's post-finalizeFlat output for the
-    // default Clockwise winding (TE.cpp finalizeFlat swaps b/c per-triangle
-    // to normalize to the requested winding; for Rect + Clockwise that swap
-    // is a fixed, known outcome given the fixed authored order, so it's
-    // baked in here rather than computed at runtime). Triangle 1: (x0,y0),
-    // (x1,y0), (x0,y1) -- b/c swapped relative to the "naive" authored
-    // order. Triangle 2 is unaffected by the swap.
+    // Vertex order below is the CPU path's post-finalizeFlat output for the
+    // {NDC, Clockwise} baseline: TE.cpp's finalizeFlat swaps b/c per triangle to
+    // normalize to the requested winding, and for Rect that swap is a fixed,
+    // known outcome given the fixed authored order, so it is baked in here
+    // rather than recomputed. Triangle 1: (x0,y0), (x1,y0), (x0,y1).
+    //
+    // `swapBC` carries every DEVIATION from that baseline. finalizeFlat decides
+    // from the triangle's signed area, which the NDC map's Y-flip inverts — so
+    // local space flips the swap, and a CounterClockwise request flips it too.
+    // The host XORs the two and sends the answer (see the *TEContext dispatch);
+    // this kernel just applies it.
+    float b0x = nx1;  float b0y = ny0;   // triangle 1, vertex b
+    float c0x = nx0;  float c0y = ny1;   // triangle 1, vertex c
+    float b1x = nx0;  float b1y = ny1;   // triangle 2, vertex b
+    float c1x = nx1;  float c1y = ny0;   // triangle 2, vertex c
+
+    if(swapBC > 0.5){
+        float tx = b0x;  float ty = b0y;
+        b0x = c0x;  b0y = c0y;  c0x = tx;  c0y = ty;
+        tx = b1x;  ty = b1y;
+        b1x = c1x;  b1y = c1y;  c1x = tx;  c1y = ty;
+    }
+
     v.pos = make_float4(nx0, ny0, 0.0, 1.0);
     vertices[0] = v;
 
-    v.pos = make_float4(nx1, ny0, 0.0, 1.0);
+    v.pos = make_float4(b0x, b0y, 0.0, 1.0);
     vertices[1] = v;
 
-    v.pos = make_float4(nx0, ny1, 0.0, 1.0);
+    v.pos = make_float4(c0x, c0y, 0.0, 1.0);
     vertices[2] = v;
 
     v.pos = make_float4(nx1, ny1, 0.0, 1.0);
     vertices[3] = v;
 
-    v.pos = make_float4(nx0, ny1, 0.0, 1.0);
+    v.pos = make_float4(b1x, b1y, 0.0, 1.0);
     vertices[4] = v;
 
-    v.pos = make_float4(nx1, ny0, 0.0, 1.0);
+    v.pos = make_float4(c1x, c1y, 0.0, 1.0);
     vertices[5] = v;
 }

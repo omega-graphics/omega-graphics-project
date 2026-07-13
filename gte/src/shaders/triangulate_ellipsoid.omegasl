@@ -1,9 +1,10 @@
 
 struct TessParams {
     float4 rect;
-    float4 viewport;
+    float4 viewport;   // {origin.x, origin.y, width, height}
     float4 color;
     float4 extra;
+    float4 flags;      // {localSpace, nearDepth, farDepth, 0}
 };
 
 struct TessVertex {
@@ -22,8 +23,12 @@ void triangulate_ellipsoid_kernel(uint3 tid : GlobalThreadID){
     float rad_x = params[0].extra[0];
     float rad_y = params[0].extra[1];
     float totalSegments = params[0].extra[3];
+    float vx = params[0].viewport[0];
+    float vy = params[0].viewport[1];
     float vw = params[0].viewport[2];
     float vh = params[0].viewport[3];
+    float localSpace = params[0].flags[0];
+    float swapBC     = params[0].flags[3];
     float4 col = params[0].color;
 
     uint segIdx = tid[0];
@@ -32,15 +37,46 @@ void triangulate_ellipsoid_kernel(uint3 tid : GlobalThreadID){
     float angle0 = (pi2 * float(segIdx)) / totalSegments;
     float angle1 = (pi2 * float(segIdx + 1)) / totalSegments;
 
-    // NDC conversion mirrors OmegaTriangulationEngineContext::translateCoordsDefaultImpl
-    // (TE.cpp): x maps [0,vw] -> [-1,1]; y maps [0,vh] -> [1,-1].
-    float ncx = ((2.0 * cx) / vw) - 1.0;
-    float ncy = 1.0 - ((2.0 * cy) / vh);
+    // Rim points in the primitive's own authored units, before any conversion.
+    float rx0 = cx + rad_x * cos(angle0);
+    float ry0 = cy + rad_y * sin(angle0);
+    float rx1 = cx + rad_x * cos(angle1);
+    float ry1 = cy + rad_y * sin(angle1);
 
-    float px0 = ((2.0 * (cx + rad_x * cos(angle0))) / vw) - 1.0;
-    float py0 = 1.0 - ((2.0 * (cy + rad_y * sin(angle0))) / vh);
-    float px1 = ((2.0 * (cx + rad_x * cos(angle1))) / vw) - 1.0;
-    float py1 = 1.0 - ((2.0 * (cy + rad_y * sin(angle1))) / vh);
+    // NDC conversion mirrors OmegaTriangulationEngineContext::translateCoordsDefaultImpl
+    // (TE.cpp) exactly: the viewport origin is subtracted first, then x maps
+    // [vx, vx+vw] -> [-1,1] and y maps [vy, vy+vh] -> [1,-1].
+    float ncx = ((2.0 * (cx - vx)) / vw) - 1.0;
+    float ncy = 1.0 - ((2.0 * (cy - vy)) / vh);
+
+    float px0 = ((2.0 * (rx0 - vx)) / vw) - 1.0;
+    float py0 = 1.0 - ((2.0 * (ry0 - vy)) / vh);
+    float px1 = ((2.0 * (rx1 - vx)) / vw) - 1.0;
+    float py1 = 1.0 - ((2.0 * (ry1 - vy)) / vh);
+
+    // Local space (Phase 9.6): emit the authored units untouched, matching the
+    // CPU path's identity pass in _triangulatePriv.
+    if(localSpace > 0.5){
+        ncx = cx;
+        ncy = cy;
+        px0 = rx0;
+        py0 = ry0;
+        px1 = rx1;
+        py1 = ry1;
+    }
+
+    // Each fan triangle is (center, rim0, rim1), so rim0/rim1 are its b/c pair.
+    // `swapBC` carries every deviation from the baked {NDC, Clockwise} baseline:
+    // finalizeFlat (TE.cpp) decides the swap from the triangle's signed area,
+    // which the NDC map's Y-flip inverts -- so local space flips it, and a
+    // CounterClockwise request flips it too. The host XORs the two and sends the
+    // answer; this kernel just applies it.
+    float bx = px0;  float by = py0;
+    float cx_ = px1;  float cy_ = py1;
+    if(swapBC > 0.5){
+        bx = px1;  by = py1;
+        cx_ = px0;  cy_ = py0;
+    }
 
     uint base = segIdx * 3;
     TessVertex v;
@@ -48,8 +84,8 @@ void triangulate_ellipsoid_kernel(uint3 tid : GlobalThreadID){
 
     v.pos = make_float4(ncx, ncy, 0.0, 1.0);
     vertices[base] = v;
-    v.pos = make_float4(px0, py0, 0.0, 1.0);
+    v.pos = make_float4(bx, by, 0.0, 1.0);
     vertices[base + 1] = v;
-    v.pos = make_float4(px1, py1, 0.0, 1.0);
+    v.pos = make_float4(cx_, cy_, 0.0, 1.0);
     vertices[base + 2] = v;
 }

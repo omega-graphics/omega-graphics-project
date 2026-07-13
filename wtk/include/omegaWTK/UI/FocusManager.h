@@ -185,7 +185,38 @@ namespace OmegaWTK {
         /// same lifetime caveat as F5's restoration stack).
         void setTabOrder(View * a, View * b);
 
+        /// Overlay-Z-Order-Plan O5: modal tab-trap. While a trap root is
+        /// active, `focusNext` / `focusPrevious` traverse only the
+        /// tab-focusable views inside `subtreeRoot` (a Modal overlay's
+        /// content) — the main tree behind the modal is excluded, so Tab
+        /// can never move focus to a widget the modal is covering. The
+        /// trap is a LIFO stack so nested modals each constrain to their
+        /// own subtree and unwind in reverse. `OverlayHost` pushes on a
+        /// Modal-tier `present` and pops on its dismiss; the two stay
+        /// balanced because every dismiss funnels through one path.
+        ///
+        /// Only Tab traversal is trapped — `setFocus` (click focus,
+        /// `popAndRestore`, programmatic `View::focus`) is deliberately
+        /// unaffected, so the modal's own present-time focus claim and
+        /// the O4 focus-return-to-opener on dismiss both still work. A
+        /// null `subtreeRoot` is ignored (nothing to trap to). The stored
+        /// pointer is only ever *compared* / walked for `subviews()`,
+        /// never assumed to be under `root_`, so a detached modal subtree
+        /// still traps correctly.
+        void pushTabTrap(View * subtreeRoot);
+
+        /// Overlay-Z-Order-Plan O5: pop the topmost tab-trap, restoring
+        /// traversal to the enclosing trap (or the whole tree once the
+        /// stack empties). No-op on an empty stack.
+        void popTabTrap();
+
     private:
+        /// Overlay-Z-Order-Plan O5: the effective root `buildTraversalOrder`
+        /// collects tab stops under — the topmost trap when the trap stack
+        /// is non-empty, otherwise `root_`. Centralizes the one place the
+        /// trap changes traversal scope.
+        View * traversalRoot() const;
+
         /// §2.3a F4 / F6: build the effective tab-traversal order into
         /// `out`. Collects the tab-focusable views under `root_` in
         /// pre-order (the F4 natural order), then, when any F6 overrides
@@ -211,6 +242,12 @@ namespace OmegaWTK {
         /// than eagerly pruned on view destruction, so a stale entry deep
         /// in the stack is simply skipped when it surfaces.
         OmegaCommon::Vector<View *> restorationStack_;
+
+        /// Overlay-Z-Order-Plan O5: LIFO stack of modal tab-trap roots
+        /// (non-owning View pointers). `pushTabTrap` appends, `popTabTrap`
+        /// consumes the back, and `traversalRoot()` reads the back. Empty
+        /// in the common (no-modal) case, where traversal uses `root_`.
+        OmegaCommon::Vector<View *> tabTrapStack_;
 
         /// The view that currently owns keyboard focus. Non-owning.
         View * currentlyFocused_ = nullptr;

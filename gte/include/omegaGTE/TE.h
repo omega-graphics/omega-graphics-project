@@ -199,6 +199,52 @@ public:
     */
     static TETriangulationParams GraphicsPath3D(unsigned vectorPathCount,GVectorPath3D * const vectorPaths,float strokeWidth = 1.f);
 
+    /// @brief The coordinate space this geometry is authored in.
+    ///
+    /// When set, triangulation maps input coordinates into NDC relative to
+    /// THIS viewport (origin + extent + depth range) instead of the render
+    /// target's effective viewport. Use it for a render pass whose units are
+    /// not the render target's pixels — a scene drawn into a sub-region of a
+    /// larger target, or one authored in an arbitrary world space.
+    ///
+    /// The coordinate space is a property of the geometry, not of the call, so
+    /// this field **wins over** the loose `viewport` argument on
+    /// `triangulateSync` / `triangulateAsync` / `triangulateOnGPU`. Full
+    /// precedence: `params.viewport` → call argument → `getEffectiveViewport()`.
+    std::optional<GEViewport> viewport;
+
+    /// @brief Emit vertices in the geometry's own units, with no NDC bake.
+    ///
+    /// Triangulation normally converts every coordinate to NDC against the
+    /// resolved viewport, so its output is already in clip space. When this is
+    /// true the conversion becomes an identity pass — no origin subtract, no
+    /// divide, no Y-flip — and vertices come out in the exact units the
+    /// primitive was authored in.
+    ///
+    /// This is what a caller wants when something downstream owns the
+    /// projection: `GESpace` composes a per-object model→NDC matrix, and
+    /// feeding it geometry that TE already baked to NDC would project it twice.
+    /// It is also the only way to get an undistorted 3D primitive — baking to
+    /// NDC divides X by the viewport width and Y by its height, so a sphere
+    /// authored round comes out elliptical under a non-square viewport.
+    ///
+    /// Local space wins over any viewport: when this is true, `viewport` (and
+    /// the call argument, and the effective viewport) are all ignored.
+    bool localSpace = false;
+
+    /// @brief The front-face winding this geometry is authored for.
+    ///
+    /// Like `viewport`, the winding a mesh wants is a property of the geometry
+    /// rather than of the call that triangulates it, so it belongs here. When
+    /// set, it **wins over** the `frontFaceRotation` argument on
+    /// `triangulateSync` / `triangulateAsync` / `triangulateOnGPU`. Full
+    /// precedence: `params.frontFaceRotation` → call argument →
+    /// `GTEPolygonFrontFaceRotation::Clockwise`.
+    ///
+    /// Left unset by default so the existing call argument keeps working
+    /// untouched for every caller that predates this field.
+    std::optional<GTEPolygonFrontFaceRotation> frontFaceRotation;
+
     ~TETriangulationParams();
 };
 
@@ -283,6 +329,7 @@ protected:
     void translateCoordsDefaultImpl(float x, float y,float z,GEViewport * viewport, float *x_result, float *y_result,float *z_result);
     virtual void translateCoords(float x, float y,float z,GEViewport * viewport, float *x_result, float *y_result,float *z_result) = 0;
     virtual GEViewport getEffectiveViewport();
+
     inline void _triangulatePriv(const TETriangulationParams & params,GTEPolygonFrontFaceRotation frontFaceRotation, GEViewport * viewport,TETriangulationResult & result);
 
 public:
@@ -300,6 +347,29 @@ public:
     };
     void extractGPUTriangulationParams(const TETriangulationParams &params, GPUTriangulationExtractedParams &out);
     OMEGACOMMON_CLASS("OmegaGTE.OmegaTriangulationEngineContext")
+
+    /// @brief Resolve which viewport a triangulation request is authored against.
+    ///
+    /// Single authority for the precedence rule, shared by the CPU path
+    /// (`_triangulatePriv`) and every backend's `triangulateOnGPU`, so the two
+    /// cannot drift apart:
+    ///
+    ///   `params.viewport` → `viewportArg` → `getEffectiveViewport()`
+    ///
+    /// A resolved viewport with zero width or height has no usable mapping; it
+    /// is reported and replaced with the effective viewport rather than being
+    /// allowed to divide by zero. Callers honoring `params.localSpace` skip the
+    /// mapping entirely, so the returned viewport is unused in that case.
+    GEViewport resolveViewport(const TETriangulationParams & params, GEViewport * viewportArg);
+
+    /// @brief Resolve which front-face winding a triangulation request wants.
+    ///
+    /// The winding counterpart of `resolveViewport`, with the same precedence
+    /// rule and the same reason for existing — the CPU path and every backend's
+    /// GPU dispatch must agree on it:
+    ///
+    ///   `params.frontFaceRotation` → `frontFaceRotationArg` → `Clockwise`
+    GTEPolygonFrontFaceRotation resolveWinding(const TETriangulationParams & params, GTEPolygonFrontFaceRotation frontFaceRotationArg);
     // Default Value: 0.01 radians.
     void setArcStep(float newArcStep){
         arcStep = newArcStep;

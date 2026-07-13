@@ -304,6 +304,15 @@ protected:
     // `ScrollableContainer::addChild` re-thread the real host into a
     // child added after attach — same access Container already has.
     friend class ScrollableContainer;
+    // ContextMenu (Widget-Stub Phase 6D) is an overlay widget that
+    // self-presents relative to an *anchor* widget already in the tree:
+    // `menu->present(anchor, pos)` reaches the window's overlay layer via
+    // `anchor->treeHost->overlayHost()`. `treeHost` is protected and the
+    // anchor is a base `Widget*` (not a ContextMenu), so protected-through-
+    // base access does not apply — the friendship is the minimal seam that
+    // lets the menu read the anchor's host without widening Widget's public
+    // surface. Matches the existing friend-based coupling above.
+    friend class ContextMenu;
 public:
     ~Widget() override;
 };

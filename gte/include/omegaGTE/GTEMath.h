@@ -895,9 +895,32 @@ _NAMESPACE_BEGIN_
         return GPoint3D{v[0][0], v[1][0], v[2][0]};
     }
 
+    /// Applies `m` to `pt` under the column-major convention the transform
+    /// builders above emit and the backends upload: element (row r, column c)
+    /// is `m[c][r]`, translation lives in column 3, and the point is a column
+    /// vector on the right — the CPU equivalent of a shader's
+    /// `m * float4(pt, 1.0)`.
+    ///
+    /// Do NOT express this as `m * pointToVec4(pt)`: `Matrix::operator*`
+    /// multiplies the raw storage as if the first index were the row, which for
+    /// a column-major matrix applies the TRANSPOSE — it drops the translation
+    /// column entirely and inverts every rotation.
+    ///
+    /// The homogeneous divide is applied when `w` is neither 0 nor 1, so a
+    /// perspective matrix maps correctly too; for an affine matrix `w == 1` and
+    /// the divide is a no-op.
     inline GPoint3D transformPoint(const FMatrix<4,4>& m, const GPoint3D& pt){
-        auto v = m * pointToVec4(pt);
-        return vec4ToPoint(v);
+        const float p[4] = {pt.x, pt.y, pt.z, 1.f};
+        float out[4] = {0.f, 0.f, 0.f, 0.f};
+        for(unsigned r = 0; r < 4; r++)
+            for(unsigned c = 0; c < 4; c++)
+                out[r] += m[c][r] * p[c];
+
+        const float w = out[3];
+        if(w != 0.f && w != 1.f){
+            out[0] /= w; out[1] /= w; out[2] /= w;
+        }
+        return GPoint3D{out[0], out[1], out[2]};
     }
 
     // ==================================================================

@@ -357,6 +357,70 @@ public:
     LayoutSize minSize(View & node) override;
 };
 
+// ---------------------------------------------------------------------------
+// Built-in: GridLayout — uniform-column, content-row grid with span support.
+// The load-bearing manager for the `Grid` container widget, completing the
+// family the 4.5 precedent named (`StackWidget` ↔ `FlexLayout`; `Grid` ↔
+// `GridLayout`). Children are placed row-major (first-fit) into a fixed
+// number of equal-width columns; a child may occupy a rectangular block of
+// cells via its `GridChildSpec` (columnSpan × rowSpan). Column width is
+// uniform — the content width split evenly across the columns, minus the
+// inter-column gaps. Row heights are content-driven: each row sizes to the
+// tallest single-row child that lands in it, and a multi-row spanner grows
+// the last row it covers if its preferred height exceeds the rows it spans.
+// `GridCellAlign` positions (Start / Center / End) or fills (Stretch) each
+// child within its resolved cell block.
+//
+// Per-child span state (`GridChildSpec`) is stored on the manager keyed by
+// the child's backing `View *`, set via `setChildSpec` when the owning
+// `Grid` wires a child (mirrors `FlexLayout::setChildSpec`). Children with
+// no explicit spec occupy a single 1×1 cell.
+// ---------------------------------------------------------------------------
+
+enum class GridCellAlign : std::uint8_t {
+    Start,    ///< Child pinned to the cell's top-left, keeping its own size.
+    Center,   ///< Child centered within the cell, keeping its own size.
+    End,      ///< Child pinned to the cell's bottom-right, keeping its size.
+    Stretch   ///< Child resized to fill the whole cell block.
+};
+
+struct OMEGAWTK_EXPORT GridLayoutOptions {
+    /// Number of equal-width columns. Clamped to `>= 1` at arrange time.
+    unsigned      columns       = 1;
+    float         rowSpacing    = 0.f;
+    float         columnSpacing = 0.f;
+    GridCellAlign cellAlign     = GridCellAlign::Start;
+};
+
+struct OMEGAWTK_EXPORT GridChildSpec {
+    /// Columns this child occupies. Clamped to `[1, columns]` at arrange.
+    unsigned columnSpan = 1;
+    /// Rows this child occupies. Clamped to `>= 1` at arrange.
+    unsigned rowSpan    = 1;
+};
+
+class OMEGAWTK_EXPORT GridLayout : public LayoutManager {
+    GridLayoutOptions                         options_ {};
+    std::unordered_map<View *, GridChildSpec> specs_   {};
+public:
+    explicit GridLayout(const GridLayoutOptions & options = {});
+
+    const GridLayoutOptions & options() const { return options_; }
+    void                      setOptions(const GridLayoutOptions & options);
+
+    /// Set / update the per-child span spec keyed by the child's backing
+    /// View. Children without a spec occupy a single 1×1 cell. The owning
+    /// `Grid` calls this from its addChild / setSlot paths.
+    void          setChildSpec(View * child, const GridChildSpec & spec);
+    /// Drop the spec for `child`. Idempotent. Called from `Grid::removeChild`.
+    void          removeChildSpec(View * child);
+    /// Return the spec for `child` (or the default 1×1 if none is set).
+    GridChildSpec childSpec(View * child) const;
+
+    LayoutSize measure(View & node, const Composition::Rect & avail) override;
+    void       arrange(View & node, const Composition::Rect & finalRectLocal) override;
+};
+
 } // namespace OmegaWTK
 
 #endif

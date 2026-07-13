@@ -306,8 +306,8 @@ No interaction. A widget chooses its tier (or none, staying in the main tree); w
 | **O1** [DONE] | `OverlayHost` skeleton — `present` / `dismiss` / `overlaysTopFirst`. Overlay slot on `WidgetTreeHost`. Anchor → rect math. No focus integration, no Modal trap. | — (uses existing `WidgetTreeHost`, `View::containsPoint`, `UIView`)                                          | Widget-Stub Phase 6 Tooltip / Popover / Snackbar MVPs                              |
 | **O2** [DONE] | Paint walk extension — `paintSubtree` over the overlay slot after the main tree, tier ordering, per-tier FIFO.                                                  | O1; uses existing `FrameBuilder::buildFrame` paint pass                                                       | Visible overlays of any kind                                                       |
 | **O3** [DONE] | Hit-test + click-outside + Escape + anchor-destruction dismissal.                                                                                                | O1; uses existing `WidgetTreeHost` hit dispatcher                                                             | Real dropdown / context-menu behavior; Native-API §2.3a Tooltip activation         |
-| **O4** | Focus restoration around present/dismiss (`pushRestorationPoint` / `popAndRestore`).                                                                              | O1 + **Native-API §2.3a Focus step 5** (`pushRestorationPoint` / `popAndRestore` on `FocusManager`)           | Widget-Stub Phase 6 `ContextMenu`, `Modal` (focus returns to opener)               |
-| **O5** | Modal tab-trap (`Tab`/`Backtab` constrained to the Modal subtree while presented).                                                                                | O4 + **Native-API §2.3a Focus step 4** (`FocusManager::focusNext` / `focusPrevious`)                          | Widget-Stub Phase 6 `Modal` (keyboard cannot escape modal)                         |
+| **O4** [DONE] | Focus restoration around present/dismiss (`pushRestorationPoint` / `popAndRestore`).                                                                              | O1 + **Native-API §2.3a Focus step 5** (`pushRestorationPoint` / `popAndRestore` on `FocusManager`)           | Widget-Stub Phase 6 `ContextMenu`, `Modal` (focus returns to opener)               |
+| **O5** [DONE] | Modal tab-trap (`Tab`/`Backtab` constrained to the Modal subtree while presented).                                                                                | O4 + **Native-API §2.3a Focus step 4** (`FocusManager::focusNext` / `focusPrevious`)                          | Widget-Stub Phase 6 `Modal` (keyboard cannot escape modal)                         |
 
 O1–O3 land independently of FocusManager and unblock most of Phase 6. O4–O5 land alongside FocusManager (§2.3a). The two dependency chains (O1–O3 and O4–O5) are independent of each other.
 
@@ -437,6 +437,57 @@ O3 wires the four §5 dismissal paths into the existing single input dispatcher.
 
 - O4 — focus restoration around present/dismiss (`pushRestorationPoint` / `popAndRestore`).
 - O5 — Modal tab-trap.
+
+### 9.5 O4 implementation notes (2026-07-12) — focus restoration
+
+O4 wires §6 focus save/restore around present/dismiss. The `FocusManager` dependency (Native-API §2.3a Focus step 5) was already complete — `pushRestorationPoint` / `popAndRestore` ship with a stale-capture-tolerant restore. O4 is the first *consumer* of that stack, and the change is contained entirely to `OverlayHost.cpp` (no public-surface change — as §3's class doc anticipated for O4/O5).
+
+**Files touched:**
+
+- `wtk/src/UI/OverlayHost.cpp`:
+  - `present()` — pushes a restoration point at the top (after the null check, before mounting, per §6), so `FocusManager::focusedView()` still names the pre-overlay holder. The overlay claims focus for itself (via its widget's `present()` / `onMount` calling `view->focus(FocusReason::Popup)`) only *after* `present` returns, so the capture is correct.
+  - `Impl::teardownEntry()` — the pop side. Every dismiss path (public `dismiss(handle)` / `dismiss(Widget*)` / `dismissAll(tier)` / `dismissAll()`, and the O3 `dismissClickOutside` / `dismissTopmostForEscape` / anchor-destroy paths) already funnels through this one helper, so a single `popAndRestore()` here keeps the stack balanced 1:1 with `present` across *all* of them without per-path edits.
+  - Two anonymous-namespace helpers: `tierParticipatesInFocus(tier)` (the gate) and `viewInSubtree(root, target)` (pointer-only membership, mirroring FocusManager.cpp's private helper).
+  - Added `#include "omegaWTK/UI/FocusManager.h"` (was only forward-declared via `WidgetTreeHost.h`).
+
+**Decisions surfaced beyond the §6 sketch:**
+
+1. **Focus restoration is gated to Floating + Modal tiers.** §6 says "present pushes, dismiss pops" without qualifying by tier, but an unconditional push/pop is actively wrong for Tooltip / DragGhost: (a) the tooltip re-presents on *every hover*, so it would churn the LIFO stack continuously, and (b) since those overlays never claim focus, `popAndRestore`'s unconditional `setFocus(saved, FocusReason::Popup)` would refresh the *already-focused* view's reason to `Popup` on every dismiss — surfacing a keyboard focus ring that a mouse-hover should never produce. Tooltip and DragGhost are exactly the two tiers with `absorbsHits = false`; the plan already discriminates focus behavior by tier (§6 Modal-trap is per-tier), so gating here is consistent. A Floating overlay that opts *not* to claim focus still gets the opener re-focused with `Popup` reason on dismiss — this matches the plan's explicit "`popAndRestore` … with `FocusReason::Popup`" contract (FocusManager.h), i.e. restore always uses the keyboard reason.
+
+2. **UAF guard for the `popAndRestore` skip path.** FocusManager.h is explicit that `popAndRestore`'s stale-capture tolerance covers only the *saved* pointer; the *current* holder still obeys the F2 teardown contract ("a caller that destroys the focused view must `clearFocus()` first, or `setFocus` dereferences freed memory"). The dangerous sequence: an overlay holds focus, but the captured opener detached from the tree while the overlay was up (and the overlay's own anchor was *not* that opener, so anchor-destroy didn't already close it). `popAndRestore` then skips, leaving focus inside the overlay whose `WidgetPtr` `bucket.erase` is about to release — a dangling `currentlyFocused_` that the next `setFocus` / `clearFocus` would deref. `teardownEntry` closes this: after `popAndRestore`, if `focusedView()` is still inside the dismissed overlay's subtree, it `clearFocus()`es. This is correctness, not gold-plating — it is the exact UAF the FocusManager docs warn the *caller* must prevent. Ordering `popAndRestore` first (not clear-first) keeps the common case a single focus transition with rich event params; the clear only fires on the rare skip.
+
+3. **`viewInSubtree` kept local rather than exposed on `FocusManager`.** The membership walk duplicates FocusManager.cpp's private `viewInSubtree` (~8 lines) instead of adding a public `isFocusWithin` method — matches the O1 decision to not grow a class's public surface for a single internal consumer, and `View::subviews()` is already public so the walk is trivial.
+
+4. **Host-death balance is a non-issue.** `~WidgetTreeHost` destroys the `entriesByTier` vectors via `~Impl` *without* calling `teardownEntry`, so an unbalanced restoration stack can survive to host teardown — but harmlessly: members destruct in reverse declaration order, so `focusManager_` (declared after `overlayHost_`) dies *first*, and its `= default` dtor only drops non-owning `View*`s (never deref). The overlay `WidgetPtr`s release afterward. No cross-object UAF.
+
+**Verification status.** Mechanical: `OmegaWTK_UI` builds clean and `BasicAppTest` links. The §10 *O4 focus restore* behavioral check (Tab to a Button → open a ContextMenu → dismiss → focus returns to the Button with the ring visible) is gated on the Phase-6 `ContextMenu` widget to instantiate against — same caveat as O1–O3. The push/pop balance and the UAF guard are unit-testable in isolation once a harness presents focus-tier overlays through `OverlayHost` against a live `FocusManager`.
+
+**Deferred** (last item on the dependency chain):
+
+- O5 — Modal tab-trap (`Tab`/`Backtab` constrained to the Modal subtree while presented), gated on Native-API §2.3a Focus step 4 (`focusNext` / `focusPrevious`, which is complete).
+
+### 9.6 O5 implementation notes (2026-07-12) — modal tab-trap
+
+O5 constrains `Tab` / `Shift-Tab` traversal to a Modal overlay's subtree while it is presented (§6: "Modal overlays additionally trap tab traversal … Constraint is per-tier"). The Focus-step-4 dependency (`focusNext` / `focusPrevious`) was already complete; O5 adds the trap layer on top of it.
+
+**Files touched:**
+
+- `wtk/include/omegaWTK/UI/FocusManager.h` + `wtk/src/UI/FocusManager.cpp`:
+  - New public `pushTabTrap(View * subtreeRoot)` / `popTabTrap()` — a **LIFO stack** of trap roots (`tabTrapStack_`), so nested modals each constrain to their own subtree and unwind in reverse.
+  - New private `traversalRoot()` — returns the topmost trap root when the stack is non-empty, else `root_`. `buildTraversalOrder` now collects its `natural` (pre-order tab-focusable) set under `traversalRoot()` instead of `root_` directly. That is the *only* change to traversal: `focusNext` / `focusPrevious` / the F6 `setTabOrder` overrides all keep working unchanged, just over the trapped set.
+- `wtk/src/UI/OverlayHost.cpp` — `present()` calls `pushTabTrap(&overlay->viewRef())` for `OverlayTier::Modal`; `teardownEntry()` calls `popTabTrap()` for Modal. Same single-funnel discipline as O4: every dismiss path routes through `teardownEntry`, so the push/pop stays balanced 1:1 with no per-path edits.
+
+**Decisions surfaced beyond the §6 sketch:**
+
+1. **The trap governs Tab traversal *only* — `setFocus` is deliberately untouched.** `pushTabTrap` changes what `buildTraversalOrder` collects; it does nothing to `setFocus`. This is what lets O5 compose cleanly with O4: the modal's present-time focus claim (`view->focus`) and the O4 focus-return-to-opener on dismiss (`popAndRestore` → `setFocus`) both go through `setFocus`, so they still cross the trap boundary as they must (the opener is *outside* the modal subtree, and O4 must restore focus to it). If the trap gated `setFocus` too, O4's restore would be blocked. The two features touch disjoint mechanisms by design.
+
+2. **Trap root is not validated against `root_`.** `traversalRoot()` hands the trap view straight to `collectTabFocusable`, which only walks `subviews()` — it never assumes the trap subtree hangs under `root_`. A Modal presented through `OverlayHost` lives *outside* the main tree (`mountOverlay` threads the host but does not reparent it under `root`), so requiring it to be under `root_` would break the trap. Walking the trap root's own subtree directly is both correct and what makes the modal's off-tree content reachable by Tab.
+
+3. **LIFO stack, not a single trap slot.** §6 says "per-tier," which a single "is a modal presented?" bool could almost satisfy — but nested modals (a confirm dialog opened from within a modal) each need their own trap scope, and the stack gives that for free while matching the shape of O4's restoration stack and the FocusManager's own restoration LIFO. A null trap root is ignored (a modal with no backing view has nothing to trap to and would otherwise strand the Tab key on an empty set).
+
+**Verification status.** Mechanical: `OmegaWTK_UI` builds clean, `BasicAppTest` links. The §10 *O5 Modal trap* behavioral check (Tab inside a Modal cycles only through the modal's views, never reaching main-tree widgets behind it) needs the Phase-6 `Modal` widget to instantiate against — same gating caveat O1–O4 carried. The trap logic is unit-testable in isolation by presenting a Modal-tier overlay with focusable children through `OverlayHost` and asserting `focusNext` never lands outside the modal subtree.
+
+**Phase O1–O5 complete.** The Overlay-Z-Order-Plan's full dependency chain is now implemented; what remains is the Widget-Stub Phase 6 overlay *widgets* (Tooltip shipped; ContextMenu / Modal / Popover / Snackbar / Sheet) that instantiate against this infrastructure and provide the on-screen verification surface for §10.
 
 ---
 

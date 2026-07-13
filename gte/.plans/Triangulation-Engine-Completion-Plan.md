@@ -26,7 +26,7 @@ What will still be missing or incomplete:
 | GPU triangulation covers only 4 of 9 primitives | Low | Pyramid, Cylinder, Cone, RoundedRect, Path3D always fall back to CPU |
 | Hard-coded Path3D stroke width | Low | `TE.cpp:853` ignores params, uses `1.0f` |
 | No LOD / adaptive arc control | Low | Global `arcStep` is the only quality knob; no per-primitive or distance-based control |
-| `TEMesh::translate/rotate/scale` operates on CPU vertices | Low | No GPU-side transform; fine for current use cases |
+| `TEMesh::translate/rotate/scale` operates on CPU vertices | Low | No GPU-side transform; fine for current use cases. **Deprecated in favor of GESpace** — and they were outright broken: `transformPoint` applied the transpose of a column-major matrix, so `translate` was a no-op and `rotate` spun backwards (fixed in GESpace plan Phase 1) |
 
 ---
 
@@ -454,7 +454,34 @@ Torus, Sphere, Capsule: verify correct topology (no T-junctions, no degenerate t
 
 ---
 
-## Phase 9: Params-Level Custom Viewport (Coordinate Space)
+## Phase 9: Params-Level Custom Viewport (Coordinate Space) — ✅ IMPLEMENTED
+
+**The depth map was broken, and that is what malformed 3D primitives.** The plan below
+says "Z is unchanged" (9.3). That was wrong, and it was the most important thing in the
+phase. `translateCoordsDefaultImpl` mapped depth in three branches:
+
+```cpp
+if(z > 0.0)       *z_result = (2.f * z / viewport->farDepth)  - 1.f;   // -> 2z - 1
+else if(z < 0.0)  *z_result = (2.f * z / viewport->nearDepth) - 1.f;   // -> 2z / 0
+else              *z_result = z;                                        // -> 0
+```
+
+Every viewport this engine builds has `nearDepth = 0` (`makeViewport` in each `*TEContext`),
+so **every vertex with negative z divided by zero and came out as −∞**, every vertex with
+positive z landed far outside the clip volume (a radius-100 sphere gave `z_ndc = 199`), and
+the three branches did not meet at z=0. Any primitive straddling the origin plane — sphere,
+torus, capsule, prism — came back as a torn mesh with half its vertices at infinity. The
+GPU prism kernel had noticed and silently diverged, passing z<0 through unchanged (its own
+comment admitted the divide-by-zero it was routing around).
+
+Depth is now **one continuous affine map to [0,1]** — `z_ndc = (z - near)/(far - near)`,
+near→0, far→1 — the range Vulkan, D3D12 and Metal actually clip against, and the same
+convention [GESpace](GESpace-Implementation-Plan.md) uses. No branches, no seam, no divide
+by a depth bound that is always zero. 2D content (z=0 → 0) is byte-identical to before.
+
+**Winding moved onto the params too** (developer's call, and the same rule as 9.1): a
+`std::optional<GTEPolygonFrontFaceRotation> frontFaceRotation` field, params-wins. This
+turned out to be the clean fix for a bug local-space triangulation exposed — see 9.7.
 
 ### Motivation
 
@@ -553,9 +580,15 @@ Subtract the viewport origin before the NDC divide so offset viewports map corre
 *y_result = 1.f - (2.f * (y - viewport->y) / viewport->height);
 ```
 
-Z is unchanged (`GEViewport` carries only `nearDepth`/`farDepth`, no Z origin). This is
-a behavior change **only** for viewports with a non-zero `x`/`y`; the effective
-render-target viewport is always `{0, 0, ...}`, so the default 2D path is byte-identical.
+~~Z is unchanged~~ — **wrong, and it was the whole bug.** Z is now a single continuous map
+to [0,1] (`(z - nearDepth) / (farDepth - nearDepth)`), replacing the three-branch version
+that divided by `nearDepth = 0`. See the banner at the top of this phase. Zero-extent
+viewports are also guarded (reported once, and the effective viewport is used instead)
+rather than producing NaNs inside a draw call.
+
+The X/Y origin change is a behavior change **only** for viewports with a non-zero `x`/`y`;
+the effective render-target viewport is always `{0, 0, ...}`, so the default 2D path is
+byte-identical.
 
 ### 9.4 GPU kernel parity
 
@@ -614,17 +647,52 @@ consolidated the kernels into single OmegaSL sources, this is one guard per kern
 **Consumer**: GESpace (Phase 5 of its plan) calls this to obtain primitive geometry in
 space units. No other caller needs it today; keep the default behavior (NDC bake) unchanged.
 
-### Files
+**As implemented**, the identity pass lives in `_triangulatePriv` (a `mapCoords` lambda that
+every one of the 27 coordinate call sites goes through) rather than inside `translateCoords`.
+Same effect, and no primitive can forget to honor it: 27 call sites, one place that decides
+what they mean. The virtual `translateCoords` signature is therefore untouched, so no backend
+override needed editing for the CPU path.
+
+### 9.7 Winding is a property of the geometry too (added during implementation)
+
+Local space exposed a bug the plan did not anticipate, and `GPUTessTest` caught it: CPU and
+GPU agreed on the *positions* but disagreed on **winding** — b and c swapped.
+
+`finalizeFlat` (`TE.cpp:482`) normalizes each triangle's winding from its **signed area**,
+and the NDC map's Y-flip *inverts that sign*. The GPU kernels bake the `{NDC, Clockwise}`
+outcome into a fixed vertex-emission order. So in local space (no Y-flip) the CPU makes the
+opposite b/c swap and the baked order is wrong. The same baked order also meant **GPU +
+CounterClockwise was already silently wrong**, a pre-existing bug unrelated to Phase 9.
+
+Both collapse into one flag. The host computes `swapBC` and the kernel just applies it:
+
+- **Flat** primitives (Rect / RoundedRect / Ellipsoid / Path2D — the `finalizeFlat` set):
+  `swapBC = localSpace XOR wantCCW`. Each deviation from the baked baseline flips the swap.
+- **Solid** primitives (RectPrism — the `finalizeSolid` set): `finalizeSolid` never consults
+  signed area, so its order is space-**independent**; local space does not flip it. Its baked
+  order cannot express CounterClockwise at all, so the host routes prism+CCW to the CPU path
+  rather than silently emitting the wrong winding.
+
+Winding is resolved by `OmegaTriangulationEngineContext::resolveWinding`, the counterpart of
+`resolveViewport` — one authority, called by both the CPU path and every backend's GPU
+dispatch, so the two cannot drift.
+
+### Files (as actually implemented)
 
 | File | Change |
 |---|---|
-| `gte/include/omegaGTE/TE.h` | Add `std::optional<GEViewport> viewport` and `bool localSpace` to `TETriangulationParams` |
-| `gte/src/TE.cpp` | Viewport resolution precedence in `_triangulatePriv`; origin subtraction in `translateCoordsDefaultImpl`; local-space identity early-out |
-| `gte/src/metal/MetalTEContext.mm` | Apply resolution precedence + local-space flag in the `triangulateOnGPU` overrides |
-| `gte/src/d3d12/D3D12TEContext.cpp` | Same |
-| `gte/src/vulkan/VulkanTEContext.cpp` | Same |
-| `gte/src/shaders/triangulate_*.omegasl` | Add viewport-origin offset + local-space skip to the NDC conversion |
-| `gte/tests/` | Anchored + offset viewport tests, local-space (raw-units) test, CPU/GPU agreement (Phase 8) |
+| `gte/include/omegaGTE/TE.h` | `std::optional<GEViewport> viewport`, `bool localSpace`, **`std::optional<GTEPolygonFrontFaceRotation> frontFaceRotation`** on `TETriangulationParams`; public `resolveViewport` / **`resolveWinding`** |
+| `gte/src/TE.cpp` | **[0,1] depth map + origin subtraction + zero-extent guard** in `translateCoordsDefaultImpl`; `resolveViewport`/`resolveWinding` as the single precedence authority; `mapCoords` local-space identity seam in `_triangulatePriv` (27 call sites routed through it) |
+| `gte/src/vulkan/VulkanTEContext.cpp` | Precedence via `resolveViewport`; `localSpace` + depth range + `swapBC` into the param buffer; prism+CCW → CPU fallback |
+| `gte/src/d3d12/D3D12TEContext.cpp` | Same — **not compiled here (WSL); needs a Windows build** |
+| `gte/src/metal/MetalTEContext.mm` | Same — **not compiled here (macOS)**. Also fixes a pre-existing bug: its GPU path fell back to a hardcoded `{0,0,1,1,0,1}` viewport instead of `getEffectiveViewport()`, so Metal's GPU and CPU paths triangulated against different spaces |
+| `gte/src/shaders/triangulate_{rect,ellipsoid,rect_prism,path2d,rounded_rect}.omegasl` | `TessParams` gains `float4 flags` = `{localSpace, nearDepth, farDepth, swapBC}` (PathSegment packs the same into its existing spare slots); viewport-origin subtraction; [0,1] depth in the prism; local-space skip; `swapBC` applied in the flat kernels |
+| `gte/tests/te_coordspace_test.cpp` (new) | Pure-CPU suite: the −∞ sphere regression, the depth map, origin awareness, params/call-arg precedence for viewport **and** winding, local-space round/un-squashed output |
+| `gte/tests/GPUTessTest/main.cpp` | Extended to 10 CPU/GPU parity cases: anchored (arg + params), params-beats-arg, offset viewport, local space, CCW winding, and local-space+CCW (the XOR case) |
+
+**Verification**: `omegagte_te_coordspace` + 14/14 GTE ctest + 26/26 AQUA ctest; `GPUTessTest`
+reports CPU/GPU byte-identity on all 10 coordinate-space cases on Vulkan (RTX 5080). D3D12 and
+Metal are code-complete but uncompiled here — they need a build on their platforms.
 
 ---
 
@@ -674,7 +742,7 @@ Phase 6 (LOD) ─── Per-primitive arcStep, curve tolerance, vertex budget
     │
 Phase 7 (Utilities) ─── Normal rotation, merge, bounding box
     │
-Phase 9 (Custom Viewport) ─── Params-level viewport + origin-aware coord translation
+Phase 9 (Custom Viewport) ─── [DONE] Params viewport + winding, origin-aware + [0,1] depth, local space
     │
 Phase 8 (Testing) ─── Validates everything
 ```

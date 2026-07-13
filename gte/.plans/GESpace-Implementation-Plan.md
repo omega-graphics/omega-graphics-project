@@ -54,7 +54,40 @@ These three forks were resolved with the developer before writing and govern the
 
 ---
 
-## Phase 1: GESpace Core and Space→NDC Matrix
+## Phase 1: GESpace Core and Space→NDC Matrix — ✅ IMPLEMENTED
+
+Two things were found while implementing Phase 1 that the plan above got wrong. Both were
+confirmed empirically (compiled probe against `GTEMath.h`, not inferred), and both were
+resolved with the developer. They govern every later phase, so they are recorded here
+rather than in the phase that discovered them.
+
+**Finding A — `transformPoint()` was applying the transpose.** `GTEMath.h`'s matrices are
+column-major (element `(row r, col c)` is `m[c][r]`, translation in column 3) — that is
+what the transform builders emit, what `Kreate::Mat4`'s `float[16]` assumes, and what the
+shaders' `pc.mvp * float4(v.pos, 1.0)` requires. But `transformPoint` was written as
+`m * pointToVec4(pt)`, and `Matrix::operator*` multiplies the raw storage as if the first
+index were the row — so it applied **Mᵀ**. Measured: `transformPoint(translationMatrix(1,0,0),
+origin)` returned `(0,0,0)`, and `rotationZ(+90°)` on `(1,0,0)` returned `(0,-1,0)`.
+Translation was dropped entirely and rotation ran backwards.
+
+Consequence: `TEMesh::translate` (`TE.cpp:2053`) is a **no-op** today and `TEMesh::rotate`
+(`TE.cpp:2066`) spins the wrong way — these are worse than the "crude" the plan called
+them, which only strengthens the deprecation below. `transformPoint` is now fixed to apply
+`M·v` (with a homogeneous divide, so perspective matrices map correctly too); its only
+three callers are those already-deprecated TEMesh methods, which go from broken to merely
+superseded. `Matrix::operator*` is **left alone** — it is used repo-wide (Kreate, AQUA) and
+changing its order is a separate, much larger refactor. Be aware of what it does: GTE
+`A * B` yields the GPU matrix `B·A`, i.e. it reads "apply A first, then B".
+
+**Finding B — depth range is [0,1], not [-1,1].** The plan specified
+`z_ndc = 2*z/vp.farDepth - 1` to match `translateCoordsDefaultImpl`. That is the OpenGL
+[-1,1] depth range, and **no backend GTE ships clips against it** — Vulkan, D3D12 and Metal
+all clip depth to [0,1], so a z just above 0 baked through TE's `z > 0` branch lands at
+NDC ≈ -1 and is clipped away entirely. GESpace therefore maps depth to **[0,1]**
+(`z_ndc = (z - near)/(far - near)`; near→0, far→1) and does *not* inherit TE's depth bug.
+X and Y are unchanged from the plan and remain exactly `translateCoordsDefaultImpl` for an
+origin-anchored viewport. (TE's own depth baking is left as-is; fixing it belongs to the
+TE plan.)
 
 ### 1.1 The class
 
@@ -93,21 +126,31 @@ Y-down / top-left convention already documented in `translateCoordsDefaultImpl`
 
 ```
 x_ndc = 2*(x - vp.x)/vp.width  - 1
-y_ndc = 1 - 2*(y - vp.y)/vp.height        // Y-flip: y=0 → +1
-z_ndc = 2*z/vp.farDepth - 1               // matches translateCoordsDefaultImpl's far branch
+y_ndc = 1 - 2*(y - vp.y)/vp.height              // Y-flip: y=0 → +1
+z_ndc = (z - vp.nearDepth)/(vp.farDepth - vp.nearDepth)   // [0,1] — see Finding B
 ```
 
-Implement via `orthographicProjection(vp.x, vp.x+vp.width, vp.y+vp.height, vp.y,
-vp.nearDepth, vp.farDepth)` (note `bottom`/`top` swapped to encode the Y-flip), and
-verify it reproduces `translateCoordsDefaultImpl` for the `z > 0` case. Do **not** reuse
-`viewportMatrix` — it is scale-only and origin-blind; leave it alone (or deprecate
-separately) to avoid perturbing other callers.
+Implemented via `orthographicProjection(vp.x, vp.x+vp.width, vp.y+vp.height, vp.y,
+vp.nearDepth, vp.farDepth)` (note `bottom`/`top` swapped to encode the Y-flip) — its X and
+Y rows are exactly right, origin term included. Its **depth row is not usable**: it maps
+near→0 but far→**-1** (a sign-flipped [0,1]), matching neither convention, so `GESpace.cpp`
+overwrites `m[2][2]` and `m[3][2]` with the [0,1] map. `orthographicProjection` itself is
+left untouched — it has no other callers, but it is public GTE math and repairing it is a
+separate decision.
+
+Do **not** reuse `viewportMatrix` — it is scale-only and origin-blind; leave it alone (or
+deprecate separately) to avoid perturbing other callers.
+
+A degenerate viewport (zero width, height, or depth range) logs an error and yields
+identity. A NaN matrix reaching a draw call is far harder to debug at 3am than an identity
+one, and a zero-height viewport is a real state (a minimized window).
 
 > This matrix is exactly what Phase 9 of the TE plan makes the CPU path honor per-primitive.
 > GESpace expresses the same mapping as a composable matrix instead of baking it into vertices.
 
 **Files**: new `gte/include/omegaGTE/GESpace.h`, new `gte/src/common/GESpace.cpp`,
-`gte/CMakeLists.txt` (add the source).
+`gte/include/omegaGTE/GTEMath.h` (`transformPoint` fix, Finding A). **No `gte/CMakeLists.txt`
+edit is needed** — it picks up `src/common/*.cpp` via `file(GLOB COMMON_SRCS ...)` at line 39.
 
 ---
 
@@ -186,18 +229,25 @@ the space object.
 
 ---
 
-## External Dependency — Local-Space (Un-baked) Triangulation
+## External Dependency — Local-Space (Un-baked) Triangulation — ✅ SATISFIED
 
 Placing a *primitive* (Phase 4) requires geometry in **local/space units**, but TE
-triangulation always bakes to NDC today (`translateCoords`), so applying `spaceToNDC *
-model` on top of already-NDC vertices double-projects. The un-baked triangulation path
-GESpace needs is **owned by the TE plan** — see
+triangulation used to always bake to NDC (`translateCoords`), so applying `spaceToNDC *
+model` on top of already-NDC vertices would double-project. The un-baked triangulation path
+GESpace needs is owned by the TE plan —
 [Triangulation-Engine-Completion-Plan.md](Triangulation-Engine-Completion-Plan.md)
-**Phase 9.6 (Local-space triangulation)**, which exposes a `TETriangulationParams::localSpace`
-flag that makes `translateCoords` an identity pass.
+**Phase 9**, now **implemented**:
 
-This is a hard prerequisite for Phase 4 below. Nothing in Phases 1–3 depends on it (those
-place existing GEMeshes, which already carry their own local-space vertices).
+- `TETriangulationParams::localSpace` makes the coordinate conversion an identity pass, on
+  both the CPU path and every GPU kernel. Phase 4 sets it and gets geometry in authored units.
+- TE's depth map was also fixed as part of that phase — it used to divide z<0 by
+  `nearDepth`, always 0, so **every 3D primitive came back with half its vertices at −∞**.
+  Depth is now the same continuous [0,1] map GESpace uses, so the two agree by construction.
+- `TETriangulationParams::viewport` and `::frontFaceRotation` landed too (params-wins
+  precedence), so a GESpace-placed primitive can declare its own space and winding.
+
+**Phase 4 is unblocked.** Nothing in Phases 1–3 depended on it (those place existing
+GEMeshes, which already carry their own local-space vertices).
 
 ---
 
@@ -257,6 +307,14 @@ Concretely:
   `modelMatrix()`); for a viewport-linear 2D/UI scene, `objectTransform` supplies the full
   MVP. Both are supported because the space→NDC step is just one matrix in the product.
 
+> **Open bug to resolve in this phase (found during Phase 1, not yet fixed).** Because GTE's
+> `Matrix::operator*` composes in reverse (`A * B` → GPU `B·A`, see Finding A),
+> `Mat4 mvp = projection * view * cachedWorld` (`kreate/src/Scene.cpp:116`) hands the shader
+> `world·view·projection` — the reverse of what `pc.mvp * float4(v.pos, 1.0)` needs. It is
+> only invisible today where `view`/`projection` are identity. Either flip the composition
+> order in Kreate or route it through GESpace, which composes explicitly. Verify against a
+> non-identity view before closing this phase.
+
 This phase is scoped in the Kreate module and should get its own short note in a Kreate
 `.plans/` doc; list it here as the integration contract, not the Kreate-side breakdown.
 
@@ -291,9 +349,11 @@ This phase is scoped in the Kreate module and should get its own short note in a
 
 | File | Changes |
 |---|---|
-| New `gte/include/omegaGTE/GESpace.h` | `GESpace`, `GESpaceObjectID`, `GESpaceTransform` |
-| New `gte/src/common/GESpace.cpp` | Space→NDC matrix, object table, transforms, retrieval, primitive placement |
-| `gte/CMakeLists.txt` | Add `GESpace.cpp` |
+| New `gte/include/omegaGTE/GESpace.h` | ✅ Phase 1: `GESpace` (viewport + `spaceToNDC`). `GESpaceObjectID` / `GESpaceTransform` in Phase 2 |
+| New `gte/src/common/GESpace.cpp` | ✅ Phase 1: space→NDC matrix. Object table, transforms, retrieval, primitive placement in Phases 2-4 |
+| `gte/include/omegaGTE/GTEMath.h` | ✅ Phase 1: `transformPoint` fixed to apply `M·v` column-major (was applying `Mᵀ` — Finding A) |
+| `gte/tests/gespace_test.cpp`, `gte/tests/CMakeLists.txt` | ✅ Phase 1: `omegagte_gespace` unit test (13/13 GTE suite green) |
+| ~~`gte/CMakeLists.txt`~~ | Not needed — `file(GLOB COMMON_SRCS src/common/*.cpp)` already picks it up |
 | `gte/include/omegaGTE/TE.h` | `TEMesh` / `TETriangulationResult` `translate`/`rotate`/`scale` marked `OMEGA_DEPRECATED` (superseded — see below) |
 | `kreate/src/Scene.cpp`, `kreate/src/Object.cpp`, `kreate/include/kreate/*.h` | Delegate transform/space to GESpace (Phase 5; Kreate-owned) |
 | `gte/tests/` | `GESpaceTest` |
