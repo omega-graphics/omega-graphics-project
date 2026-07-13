@@ -209,7 +209,9 @@ light plus ambient, with correct normals.
 - `Material`: a shader (pipeline) + named parameter set (scalars, vectors,
   textures) + render state. Objects reference a material, not a raw pipeline.
 - A standard surface shader (OmegaSL) and a parameter-binding path
-  (per-material/per-object uniform buffers).
+  (per-material/per-object uniform buffers). OmegaSL is kREATE's default and
+  standard shading language; supporting **Slang** as an alternative authoring
+  path is Phase 17 (additive, optional) and does not change this phase.
 - `Light` types: directional, point, spot — with color/intensity/range.
 - A lighting model in the standard shader (start with a single light, then
   multiple); decide forward vs. deferred (see decision).
@@ -505,6 +507,58 @@ each platform.
 
 ---
 
+### Phase 17 — Alternate shader authoring: Slang *(optional, additive)*
+
+**Goal:** Let people author kREATE materials in **Slang** as an alternative to
+OmegaSL, so teams with an existing Slang codebase — or who want its language
+features (generics, modules, autodiff) — can use the engine without rewriting
+their shaders.
+
+**Deliverable:** A Phase 4 material whose surface shader is authored in a
+`.slang` file, compiled and rendered on every backend the target device
+supports, sitting side by side with OmegaSL materials in the same scene.
+
+**Why:** Slang is a mature, Khronos-hosted neutral shading language with genuine
+native back-ends — it emits SPIR-V, HLSL, MSL, and WGSL directly rather than
+transpiling through one platform's model. Those are exactly the per-backend
+artifacts OmegaGTE already consumes, so Slang slots in as a *second front-end*
+producing the same kind of output `omegaslc` does. OmegaSL stays kREATE's
+default and standard shading language; Slang is an opt-in path for users who
+already have Slang shaders or prefer its language surface. This is meeting users
+where they are, not replacing the in-house language.
+
+**Work:**
+- A **Slang → GTE artifact path**: drive `slangc` to emit the per-backend module
+  (SPIR-V for Vulkan/WebGPU, DXIL/HLSL for D3D12, MSL for Metal) that GTE's
+  shader-library loader can ingest, wired through AUTOMDEPS like every other dep.
+- A `Material` (Phase 4) can reference a `.slang` source (or precompiled Slang
+  artifact) in place of an OmegaSL shader — the material abstraction is the seam.
+- **Reflection / binding metadata reconciliation.** OmegaGTE's `.omegasllib`
+  carries the reflection, feature bits, and tessellation descriptors that
+  `omegaslc` produces. Slang has its own reflection API; the integration must map
+  it onto what GTE's pipeline creation and kREATE's per-material parameter
+  binding expect. This is the real work — the compile step is the easy part.
+- **Feature-gating still flows through `GTEDeviceFeatures`.** A Slang shader that
+  uses a capability the device lacks is skipped and reported exactly as an
+  OmegaSL one is; kREATE does not gain a second, parallel capability model.
+- Docs: a Slang↔OmegaSL parity note so users know which stages/built-ins have a
+  Slang equivalent.
+
+**Depends on:** Phase 4 (the material + shader-binding system Slang plugs into),
+and an **OmegaGTE-side seam** to load shader artifacts not produced by
+`omegaslc` (tracked in `gte/.plans/` — today `loadShaderLibrary` assumes the
+`.omegasllib` container). Placed late only because it is additive; it can be
+pulled forward once Phase 4 lands, since no later phase blocks it.
+
+**Key decision:** **How Slang output enters GTE** — wrap `slangc` output into the
+existing `.omegasllib` container (reuses all downstream loading + feature
+masking, but needs a container writer that isn't `omegaslc`) vs. a parallel
+raw-per-backend-module load path on `OmegaGraphicsEngine` (less reuse, but does
+not couple Slang to OmegaSL's container format). This is a GTE-boundary choice —
+coordinate with `gte/.plans/`, do not solve it silently inside kREATE.
+
+---
+
 ## 5. Cross-cutting concerns
 
 These don't fit one phase — they thread through several and should be designed
@@ -549,6 +603,11 @@ phases above so they can be decided deliberately:
 7. **In-game UI — reuse OmegaWTK vs. dedicated game UI.** (Phase 12)
 8. **Networking in scope?** (Phase 15) If yes, decide the topology before
    Phase 11, because it constrains gameplay and physics.
+9. **Slang shader ingestion path.** (Phase 17) If Slang authoring is in scope,
+   decide how its compiled output enters OmegaGTE — wrapped into `.omegasllib`
+   vs. a parallel raw-module load path — and who owns the reflection metadata.
+   A GTE-boundary decision; coordinate with `gte/.plans/`. Not on the critical
+   path, so it can wait until after Phase 4.
 
 ---
 
@@ -581,6 +640,8 @@ Phase 14  Assets II & streaming  ◄── needs 3, 6, 7 (+ job system)
 Phase 15  Networking (optional)  ◄── needs 6, 11
    │
 Phase 16  Tooling & distribution ◄── matures alongside everything
+
+Phase 17  Slang shader support (optional) ◄── needs 4; additive
 ```
 
 The critical path to "you can build a game in it" runs **Phase 1 → 6**, after

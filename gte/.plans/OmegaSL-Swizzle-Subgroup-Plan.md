@@ -568,6 +568,108 @@ The cooperative types are device-gated through the **existing** OmegaSL feature 
 
 ---
 
+## Part G — Neural-inference props (weight layout, activations, quantized weights)
+
+Parts D/E land the matrix-core MMA primitive; three further props are what make
+in-shader **neural inference** — neural materials, neural texture compression
+(NTC), neural upscaling — actually correct and usable. They are called out
+separately because each is a real requirement of the shipping cooperative-vector
+APIs that Parts D/E under-specified, not polish. All three ride the **Part F**
+`coopvector` gate; none needs a new feature bit.
+
+### G.1 Device-optimal weight layout + host-side conversion
+
+E.3's `coopvec_matmul*` accepted only `row_major` / `col_major`. Both shipping
+cooperative-vector APIs want a third, **device-optimal opaque** weight layout —
+and on some devices it is *required*, not merely faster:
+
+- DirectX Cooperative Vectors: a `MUL_OPTIMAL` matrix layout distinct from
+  row/column-major, produced by a `ConvertMatrix`-class call.
+- `VK_NV_cooperative_vector`: `…INFERENCING_OPTIMAL…`, produced by
+  `vkConvertCooperativeVectorMatrixNV` / `vkCmdConvertCooperativeVectorMatrixNV`.
+
+(Exact spellings verify against the vendored SDK — same feasibility-spike posture
+as D.6 / E.6.)
+
+**Adds:**
+- A third layout keyword **`mul_optimal`** (alongside the Part D
+  `row_major`/`col_major`) accepted by `coopvec_matmul*`. Under it the weight
+  `buffer` is opaque device-formatted data — the shader never indexes it manually.
+- A **host-side conversion prop** on the engine, e.g.
+  `OmegaGraphicsEngine::convertCoopVectorWeights(src, shape, elementType) -> SharedHandle<GEBuffer>`,
+  mapping to the D3D12 / Vulkan convert entry points. On Metal the "optimal"
+  layout is exactly the `simdgroup_matrix` tile packing the E.6.1 emulation
+  already stages, so conversion pre-tiles the weights (no vendor convert call).
+- A `GTEDeviceFeatures` prop **`bool coopVectorMulOptimalRequired`** — true where
+  the device won't accept row/col-major for matmul. Sema (runtime path) then
+  rejects a `row_major` coopvec matmul on such a device with a message pointing
+  at `convertCoopVectorWeights`.
+
+### G.2 Activation-function set on cooperative vectors
+
+E.3 listed only `max`/`min` (ReLU). A real MLP layer needs element-wise
+transcendentals between matmuls. Add element-wise builtins over `coopvec<T,N>`
+(return same type), each lowering to the per-element target math already in
+OmegaSL §5.1:
+
+```omegasl
+coopvec<T,N> coopvec_exp(coopvec<T,N> v);
+coopvec<T,N> coopvec_tanh(coopvec<T,N> v);
+coopvec<T,N> coopvec_max(coopvec<T,N> v, coopvec<T,N> w);   // formalizes E.3
+coopvec<T,N> coopvec_min(coopvec<T,N> v, coopvec<T,N> w);
+```
+
+Keep the set **small and composable** — `exp` + `tanh` + `max`/`min` + the
+existing `+`/`*` express ReLU, LeakyReLU, sigmoid (`1/(1+exp(-x))`), GELU/SiLU
+approximations, and softmax numerators — rather than baking in every named
+activation. No hardware dependency: each is an element-wise map, lowered to a
+per-lane loop or the native vector op.
+
+### G.3 Quantized weight element types (fp8 / int8)
+
+Neural texture compression and neural materials store weights in **fp8**
+(E4M3 / E5M2) and sometimes int8, with a wider accumulate type. E.7's
+`coopVectorTypes` already enumerates device-reported element types; make explicit:
+
+- fp8 / int8 variants populate `coopVectorTypes` when the device reports them
+  (Vulkan component-type query / DX tier) and become legal `coopvec` (and
+  `coopmat`) element types when present — E.5's "fp8 only if reported" is the gate.
+- **Mixed weight/accumulate types:** `coopvec_matmul*` may read a weight `buffer`
+  whose element type is *narrower* (fp8/int8) than the vector's accumulate type
+  (half/float). Sema allows the mixed pair when the device reports it, matching
+  the hardware's on-load upconvert — no manual dequantize in the shader.
+
+### G.4 Files touched (Part G) — delta over D.8 / E.8
+
+| File | Change |
+|---|---|
+| `gte/omegasl/src/Toks.def` | Add `mul_optimal` layout keyword |
+| `gte/omegasl/src/AST.def` | Add `BUILTIN_COOPVEC_EXP` / `_TANH` / `_MAX` / `_MIN` |
+| `gte/omegasl/src/Sema.cpp` | Accept `mul_optimal`; mixed weight/accumulate-type rule; reject `row_major` matmul where `coopVectorMulOptimalRequired` |
+| `gte/omegasl/src/{HLSL,Metal,GLSL}CodeGen.cpp` | Activation lowering; `mul_optimal` opaque-weight path; fp8/int8 element types |
+| `gte/include/omegaGTE/GTEDevice.h` | Add `coopVectorMulOptimalRequired`; document fp8/int8 in `coopVectorTypes` |
+| `gte/include/omegaGTE/GE.h`, `gte/src/GE.cpp` | Declare `convertCoopVectorWeights(...)` |
+| `gte/src/{d3d12,vulkan,metal}/…` | Weight-convert entry points (DX/VK); Metal pre-tile to `simdgroup_matrix` layout |
+| `gte/docs/OmegaSL-Reference.md` | Extend §9 with activations + `mul_optimal` + quantized weights |
+
+No new feature bit — Part G rides the Part F `OMEGASL_FEATURE_BIT_COOPVECTOR`
+gate; `mul_optimal` / fp8 legality is a device-report check layered on top (like
+the D.5 / E.5 shape/type checks), not a coarse capability of its own.
+
+### G.5 Tests (delta)
+
+- `coopvec_mul_optimal.omegasl` — a `mul_optimal` matmul: verify the weight buffer
+  is treated as opaque (no manual indexing emitted), and that on a device with
+  `coopVectorMulOptimalRequired` a `row_major` matmul is rejected with the
+  message naming `convertCoopVectorWeights`.
+- `coopvec_activations.omegasl` — an MLP layer using `coopvec_exp` + `coopvec_max`;
+  verify each lowers to the §5.1 per-element target math on all three backends.
+- `coopvec_fp8_weights.omegasl` — fp8 weight buffer feeding a half-accumulate
+  matmul: accepted when the device reports the pair, rejected (naming the types)
+  when it does not.
+
+---
+
 ## Test plan
 
 Per-feature smoke tests written as `.omegasl` fixtures under `gte/test/omegasl/`:
