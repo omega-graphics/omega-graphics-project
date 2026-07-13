@@ -94,7 +94,7 @@ struct AQUA_EXPORT AQJointDesc {
 struct AQJointHandle {
     std::uint32_t index      = 0;
     std::uint32_t generation = 0;
-    AQUA_NODISCARD bool valid() const { return generation != 0; }
+    OMEGA_NODISCARD bool valid() const { return generation != 0; }
 };
 
 #endif // AQUA_AQJOINT_H

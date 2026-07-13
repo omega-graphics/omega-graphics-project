@@ -7,6 +7,38 @@
 
 _NAMESPACE_BEGIN_
 
+    /// @brief A stable handle to an object placed in a GESpace, returned by
+    /// `addObject()` (and, from Phase 3, `addMesh()`). Handles are never reused
+    /// within a space, so a stale handle reads as invalid rather than silently
+    /// addressing a different object.
+    typedef uint32_t GESpaceObjectID;
+
+    /// @brief The handle value that never names an object. Returned by failed
+    /// placements; `addObject()` mints IDs starting at 1.
+    constexpr GESpaceObjectID GESpaceInvalidObject = 0;
+
+    /// @brief An object's local→space transform, stored as TRS components.
+    ///
+    /// The components are the authority, not a matrix: repeated `rotate()` calls
+    /// compose quaternions rather than multiplying matrices, so orientation does
+    /// not accumulate drift or shear. Everything here is in **space units** —
+    /// never NDC — which is what makes a rotation actually rotate instead of
+    /// skewing under a non-square viewport (the defect in the old
+    /// `TEMesh::rotate`, which spun vertices in clip space).
+    struct OMEGAGTE_EXPORT GESpaceTransform {
+        /// Space units.
+        GPoint3D translation {0.f, 0.f, 0.f};
+        FQuaternion rotation = FQuaternion::Identity();
+        GPoint3D scale {1.f, 1.f, 1.f};
+
+        /// @brief The composed local→space matrix: translate ∘ rotate ∘ scale.
+        ///
+        /// Scale is applied first, then rotation, then translation — so an
+        /// object scales about its own origin and orbits nothing. Column-major,
+        /// like every matrix GESpace produces (see GESpace's class docs).
+        OMEGA_NODISCARD FMatrix<4,4> modelMatrix() const;
+    };
+
     /// @brief A coordinate space that places geometry into a viewport-defined
     /// relative space and hands back the transform that maps it to NDC.
     ///
@@ -44,7 +76,7 @@ _NAMESPACE_BEGIN_
         void setViewport(const GEViewport & viewport);
 
         /// @brief The viewport this space is currently anchored to.
-        const GEViewport & viewport() const;
+        OMEGA_NODISCARD const GEViewport & viewport() const;
 
         /// @brief The linear space→NDC transform derived from the current
         /// viewport. This is GESpace's canonical coordinate conversion.
@@ -71,10 +103,67 @@ _NAMESPACE_BEGIN_
         /// A degenerate viewport (zero width, height, or depth range) has no
         /// meaningful mapping; it logs an error and yields identity rather than
         /// propagating NaNs into a draw call.
-        FMatrix<4,4> spaceToNDC() const;
+        OMEGA_NODISCARD FMatrix<4,4> spaceToNDC() const;
 
-        // Object management (addMesh / transforms / objectTransform) arrives in
-        // Phases 2-4.
+        // -------------------------------------------------------------------
+        // Objects and transforms
+        // -------------------------------------------------------------------
+
+        /// @brief Place a transform-only object in the space and return its
+        /// handle. The object carries no geometry — it is a pure transform node
+        /// (an anchor, or a placeholder to be given a mesh later).
+        ///
+        /// `addMesh()` (Phase 3) is this plus a geometry reference.
+        GESpaceObjectID addObject(const GESpaceTransform & transform = GESpaceTransform());
+
+        /// @brief Whether `id` names a live object in this space.
+        OMEGA_NODISCARD bool contains(GESpaceObjectID id) const;
+
+        /// @brief Replace the object's translation outright (space units).
+        void setTranslation(GESpaceObjectID id, const GPoint3D & translation);
+        /// @brief Move the object by a delta, in space units.
+        void translate(GESpaceObjectID id, float dx, float dy, float dz);
+
+        /// @brief Replace the object's orientation outright.
+        void setRotation(GESpaceObjectID id, const FQuaternion & rotation);
+
+        /// @brief Rotate the object by the given Euler angles (radians),
+        /// applied X→Y→Z to match `rotationEuler` / `FQuaternion::fromEuler`.
+        ///
+        /// This COMPOSES with the current orientation rather than replacing it,
+        /// about the space's axes: repeated calls accumulate, and because the
+        /// composition is a quaternion product the orientation stays a pure
+        /// rotation no matter how many times it is called.
+        void rotate(GESpaceObjectID id, float pitch, float yaw, float roll);
+
+        /// @brief Rotate the object by `radians` about the axis (ax, ay, az).
+        /// Composes with the current orientation, like `rotate()`. The axis is
+        /// normalized; a zero-length axis is a no-op.
+        void rotateAxis(GESpaceObjectID id, float ax, float ay, float az, float radians);
+
+        /// @brief Replace the object's scale outright.
+        void setScale(GESpaceObjectID id, const GPoint3D & scale);
+        /// @brief Multiply the object's current scale by these factors.
+        void scale(GESpaceObjectID id, float sx, float sy, float sz);
+
+        /// @brief The object's current TRS transform. An unknown handle logs an
+        /// error and yields an identity transform.
+        OMEGA_NODISCARD const GESpaceTransform & transformOf(GESpaceObjectID id) const;
+
+        /// @brief The object's composed local→NDC matrix:
+        /// `spaceToNDC()` applied after `transformOf(id).modelMatrix()`.
+        ///
+        /// **This is the final result** — hand it to the draw pipeline as the
+        /// object's transform (Kreate consumes it as the per-object MVP; see
+        /// Phase 5 of the plan). Geometry is never re-baked on the CPU: the
+        /// mesh's vertex buffer stays in its own local space and this matrix
+        /// does the work on the GPU.
+        ///
+        /// An unknown handle logs an error and yields `spaceToNDC()` alone
+        /// (i.e. the object treated as untransformed), never a garbage matrix.
+        OMEGA_NODISCARD FMatrix<4,4> objectTransform(GESpaceObjectID id) const;
+
+        // Geometry placement (addMesh / addPrimitive) arrives in Phases 3-4.
 
     private:
         struct Impl;

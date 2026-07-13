@@ -94,56 +94,56 @@ public:
     ~AQRigidBody();
 
     // --- linear state ---
-    AQUA_NODISCARD OmegaGTE::FVec<3> position() const;
+    OMEGA_NODISCARD OmegaGTE::FVec<3> position() const;
     void setPosition(const OmegaGTE::FVec<3> &p);
 
-    AQUA_NODISCARD OmegaGTE::FVec<3> velocity() const;
+    OMEGA_NODISCARD OmegaGTE::FVec<3> velocity() const;
     void setVelocity(const OmegaGTE::FVec<3> &v);
 
     // --- angular state ---
-    AQUA_NODISCARD OmegaGTE::FQuaternion orientation() const;
+    OMEGA_NODISCARD OmegaGTE::FQuaternion orientation() const;
     void setOrientation(const OmegaGTE::FQuaternion &q);
-    AQUA_NODISCARD OmegaGTE::FVec<3> angularVelocity() const;   ///< world frame
+    OMEGA_NODISCARD OmegaGTE::FVec<3> angularVelocity() const;   ///< world frame
     void setAngularVelocity(const OmegaGTE::FVec<3> &w);         ///< world frame
 
     // --- mass properties ---
-    AQUA_NODISCARD float mass() const;                          ///< 0 ⇒ static
-    AQUA_NODISCARD OmegaGTE::FVec<3> inertiaPrincipalMoments() const;
+    OMEGA_NODISCARD float mass() const;                          ///< 0 ⇒ static
+    OMEGA_NODISCARD OmegaGTE::FVec<3> inertiaPrincipalMoments() const;
     /// World-space inverse inertia tensor: R · diag(invMomentsBody) · Rᵀ. Phase 3
     /// contact solvers and the conserved-quantity accessors below share this.
-    AQUA_NODISCARD OmegaGTE::FMatrix<3,3> worldInverseInertia() const;
+    OMEGA_NODISCARD OmegaGTE::FMatrix<3,3> worldInverseInertia() const;
 
     // --- conserved-quantity accessors (Phase 1.1 §6.3) ---
     // Make tests + gameplay assert against the engine's own numbers rather than
     // re-deriving L / E by hand.
-    AQUA_NODISCARD OmegaGTE::FVec<3> linearMomentum()  const;   ///< m · v (world)
-    AQUA_NODISCARD OmegaGTE::FVec<3> angularMomentum() const;   ///< R · Ib · ω_b (world)
-    AQUA_NODISCARD float             kineticEnergy()   const;   ///< ½m‖v‖² + ½ω_b·Ib·ω_b
+    OMEGA_NODISCARD OmegaGTE::FVec<3> linearMomentum()  const;   ///< m · v (world)
+    OMEGA_NODISCARD OmegaGTE::FVec<3> angularMomentum() const;   ///< R · Ib · ω_b (world)
+    OMEGA_NODISCARD float             kineticEnergy()   const;   ///< ½m‖v‖² + ½ω_b·Ib·ω_b
 
     // --- robustness controls (Phase 1.1 §6.4) ---
-    void  setLinearDamping(float c);   AQUA_NODISCARD float linearDamping()   const;
-    void  setAngularDamping(float c);  AQUA_NODISCARD float angularDamping()  const;
-    void  setGravityScale(float s);    AQUA_NODISCARD float gravityScale()    const;
+    void  setLinearDamping(float c);   OMEGA_NODISCARD float linearDamping()   const;
+    void  setAngularDamping(float c);  OMEGA_NODISCARD float angularDamping()  const;
+    void  setGravityScale(float s);    OMEGA_NODISCARD float gravityScale()    const;
     /// 0 ⇒ unlimited (default). Opt-in safety valve for fast spinners; changes
     /// the physics, so off by default — the adaptive gyroscopic iteration is
     /// the silent default stability path.
-    void  setMaxAngularSpeed(float s); AQUA_NODISCARD float maxAngularSpeed() const;
+    void  setMaxAngularSpeed(float s); OMEGA_NODISCARD float maxAngularSpeed() const;
 
     // --- material coefficients (Phase 3) ---
     /// Coefficient of restitution in [0, 1]. 0 ⇒ perfectly inelastic; 1 ⇒
     /// perfectly elastic. Combined per-pair via the AQSpace's restitution
     /// combine rule (see `AQSpace::setMaterialCombine`).
-    AQUA_NODISCARD float restitution() const;
+    OMEGA_NODISCARD float restitution() const;
     void setRestitution(float r);
     /// Coefficient of friction ≥ 0. Single μ on the isotropic Coulomb cone
     /// (the Phase 3 lean — anisotropic friction is the §11.6 deferred case).
     /// Combined per-pair via the AQSpace's friction combine rule.
-    AQUA_NODISCARD float friction() const;
+    OMEGA_NODISCARD float friction() const;
     void setFriction(float mu);
 
     // --- collision geometry & filter (Phase 2) ---
     /// Current shape handle. Invalid handle ⇒ no shape (broadphase-invisible).
-    AQUA_NODISCARD AQShapeHandle shape() const;
+    OMEGA_NODISCARD AQShapeHandle shape() const;
     /// Sets the shape handle. Does NOT re-derive inertia automatically — the
     /// auto-derive runs in `addBody` only. Callers that want the moments
     /// recomputed should set them to zero and re-add the body, or set the
@@ -153,16 +153,16 @@ public:
     /// World-space fattened AABB of the body's shape (per Phase 2 §6.A). Both
     /// components are zero if the body has no shape. Useful for debug overlays
     /// and gameplay queries.
-    AQUA_NODISCARD OmegaGTE::FVec<3> aabbMin() const;
-    AQUA_NODISCARD OmegaGTE::FVec<3> aabbMax() const;
+    OMEGA_NODISCARD OmegaGTE::FVec<3> aabbMin() const;
+    OMEGA_NODISCARD OmegaGTE::FVec<3> aabbMax() const;
 
-    AQUA_NODISCARD AQCollisionFilter collisionFilter() const;
+    OMEGA_NODISCARD AQCollisionFilter collisionFilter() const;
     void setCollisionFilter(const AQCollisionFilter &f);
 
     // --- activation / sleep (Phase 4) ---
     /// Current activation state. The integrator and PGS sweep fast-path
     /// `Sleeping`; `Kinematic` is reported for kinematic bodies.
-    AQUA_NODISCARD AQActivationState activation() const;
+    OMEGA_NODISCARD AQActivationState activation() const;
     /// Force the body Active (and, if it is in an island, wakes the whole
     /// island on the next step). A no-op on kinematic bodies.
     void wakeUp();
@@ -172,8 +172,8 @@ public:
     void putToSleep();
 
     // --- triggers / CCD (Phase 4) ---
-    AQUA_NODISCARD bool isTrigger() const;
-    AQUA_NODISCARD AQCCDMode ccdMode() const;
+    OMEGA_NODISCARD bool isTrigger() const;
+    OMEGA_NODISCARD AQCCDMode ccdMode() const;
     void setCCDMode(AQCCDMode m);
 
     // --- kinematic control (Phase 4) ---
@@ -197,7 +197,7 @@ public:
                              const OmegaGTE::FVec<3> &worldPoint);  // + angular impulse
     void applyAngularImpulse(const OmegaGTE::FVec<3> &angularImpulse);
 
-    AQUA_NODISCARD AQBodyType type() const;
+    OMEGA_NODISCARD AQBodyType type() const;
 
 private:
     AQRigidBody();

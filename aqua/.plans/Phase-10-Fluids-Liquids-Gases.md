@@ -463,7 +463,7 @@ struct AQFluidDesc {
 struct AQFluidSystemHandle {
     std::uint32_t index      = 0;
     std::uint32_t generation = 0;       // guards stale handles after teardown
-    AQUA_NODISCARD bool valid() const { return generation != 0; }
+    OMEGA_NODISCARD bool valid() const { return generation != 0; }
 };
 
 // --- Per-particle fluid state added to the Phase 6 pool as parallel SoA arrays
@@ -606,11 +606,11 @@ public:
     // State handoff to kREATE (surface/volume extraction is kREATE's render job, §1):
     // AQUA returns particle positions + per-particle density. kREATE meshes the liquid
     // surface (marching cubes / screen-space fluid) and builds the gas density field.
-    AQUA_NODISCARD std::size_t fluidParticleCount(AQFluidSystemHandle f) const; // new
-    AQUA_NODISCARD const OmegaGTE::FVec<3>* fluidPositions(AQFluidSystemHandle f) const; // new
-    AQUA_NODISCARD const float* fluidDensities(AQFluidSystemHandle f) const;    // new
+    OMEGA_NODISCARD std::size_t fluidParticleCount(AQFluidSystemHandle f) const; // new
+    OMEGA_NODISCARD const OmegaGTE::FVec<3>* fluidPositions(AQFluidSystemHandle f) const; // new
+    OMEGA_NODISCARD const float* fluidDensities(AQFluidSystemHandle f) const;    // new
     // gas only — null for liquid systems:
-    AQUA_NODISCARD const float* fluidTemperatures(AQFluidSystemHandle f) const; // new
+    OMEGA_NODISCARD const float* fluidTemperatures(AQFluidSystemHandle f) const; // new
 
     void destroyFluid(AQFluidSystemHandle f);                                   // new
 };

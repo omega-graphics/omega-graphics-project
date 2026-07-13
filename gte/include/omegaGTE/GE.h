@@ -290,7 +290,7 @@ _NAMESPACE_BEGIN_
     public:
         OMEGACOMMON_CLASS("OmegaGTE.GEFence")
         /// Value last signaled (or about to be signaled) by the producer queue; use for CPU wait.
-        virtual std::uint64_t getLastSignaledValue() const { return 0; }
+        OMEGA_NODISCARD virtual std::uint64_t getLastSignaledValue() const { return 0; }
 
         virtual ~GEFence() = default;
     };
@@ -348,9 +348,9 @@ _NAMESPACE_BEGIN_
             void setTriangleList(SharedHandle<GEBuffer>& buffer) { type = TRIANGLES; data = TriangleList{buffer}; }
             void setAabb(SharedHandle<GEBuffer>& buffer) { type = AABB; data = Aabb{buffer}; }
             TriangleList& getTriangleList() { return std::get<TriangleList>(data); }
-            const TriangleList& getTriangleList() const { return std::get<TriangleList>(data); }
+            OMEGA_NODISCARD const TriangleList& getTriangleList() const { return std::get<TriangleList>(data); }
             Aabb& getAabb() { return std::get<Aabb>(data); }
-            const Aabb& getAabb() const { return std::get<Aabb>(data); }
+            OMEGA_NODISCARD const Aabb& getAabb() const { return std::get<Aabb>(data); }
         };
         OmegaCommon::Vector<Geometry> data;
     public:

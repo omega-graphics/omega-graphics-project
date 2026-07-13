@@ -52,7 +52,19 @@
 
 
 
-#define OMEGACOMMON_NODISCARD [[nodiscard]]
+// Portable "do not ignore this return value" marker for any Omega API. Expands
+// to the C++17 `[[nodiscard]]` attribute, and to nothing on a compiler that does
+// not advertise it. Feature-tests the attribute rather than `__cplusplus`, which
+// MSVC pins at 199711L without `/Zc:__cplusplus` regardless of `/std:` — a
+// version test would silently read false there and disable every annotation.
+#if defined(__has_cpp_attribute)
+#  if __has_cpp_attribute(nodiscard) >= 201603L
+#    define OMEGA_NODISCARD [[nodiscard]]
+#  endif
+#endif
+#ifndef OMEGA_NODISCARD
+#  define OMEGA_NODISCARD
+#endif
 
 // Portable deprecation marker for any Omega API (types, methods, functions).
 // Expands to the C++17 `[[deprecated]]` attribute, so `msg` is shown at every

@@ -188,6 +188,238 @@ int main() {
                     2.f, 3.f, 4.f, "scalingMatrix must scale");
     }
 
+    // =====================================================================
+    // Phase 2 — object model and transforms
+    // =====================================================================
+
+    const GEViewport screen{0.f, 0.f, 800.f, 600.f, 0.f, 1.f};
+
+    // --- GESpaceTransform::modelMatrix composes T ∘ R ∘ S, in that order. ----
+    {
+        GESpaceTransform t;
+        expectPoint(transformPoint(t.modelMatrix(), GPoint3D{3.f, 4.f, 5.f}),
+                    3.f, 4.f, 5.f, "default transform is identity");
+
+        t.translation = GPoint3D{10.f, 20.f, 30.f};
+        expectPoint(transformPoint(t.modelMatrix(), GPoint3D{0.f, 0.f, 0.f}),
+                    10.f, 20.f, 30.f, "translation only");
+
+        GESpaceTransform s;
+        s.scale = GPoint3D{2.f, 3.f, 4.f};
+        expectPoint(transformPoint(s.modelMatrix(), GPoint3D{1.f, 1.f, 1.f}),
+                    2.f, 3.f, 4.f, "scale only");
+
+        GESpaceTransform r;
+        r.rotation = FQuaternion::fromAxisAngle(0.f, 0.f, 1.f, HalfPi<float>);
+        expectPoint(transformPoint(r.modelMatrix(), GPoint3D{1.f, 0.f, 0.f}),
+                    0.f, 1.f, 0.f, "rotation only (+90 about Z)");
+
+        // ORDER. Scale, then rotate, then translate. A point at (1,0,0):
+        //   scale x2      -> (2,0,0)
+        //   rotate +90 Z  -> (0,2,0)
+        //   translate +10 -> (10,2,0)
+        // If the composition were transposed (translate first), the translation
+        // would itself be scaled and rotated and land somewhere else entirely —
+        // this is the assertion that catches GTE's reversed operator*.
+        GESpaceTransform trs;
+        trs.scale = GPoint3D{2.f, 2.f, 2.f};
+        trs.rotation = FQuaternion::fromAxisAngle(0.f, 0.f, 1.f, HalfPi<float>);
+        trs.translation = GPoint3D{10.f, 0.f, 0.f};
+        expectPoint(transformPoint(trs.modelMatrix(), GPoint3D{1.f, 0.f, 0.f}),
+                    10.f, 2.f, 0.f, "model matrix applies scale, then rotation, then translation");
+
+        // Scale must NOT move the object: an object at the origin stays at the
+        // origin no matter how it is scaled.
+        GESpaceTransform big;
+        big.translation = GPoint3D{5.f, 5.f, 5.f};
+        big.scale = GPoint3D{100.f, 100.f, 100.f};
+        expectPoint(transformPoint(big.modelMatrix(), GPoint3D{0.f, 0.f, 0.f}),
+                    5.f, 5.f, 5.f, "scale must not scale the translation");
+    }
+
+    // --- Quaternion rotation agrees with the Euler matrix builder. -----------
+    {
+        const float pitch = 0.3f, yaw = -0.7f, roll = 1.1f;
+        const auto viaQuat = FQuaternion::fromEuler(pitch, yaw, roll).toMatrix();
+        const auto viaMatrix = rotationEuler(pitch, yaw, roll);
+
+        const GPoint3D probes[] = {
+            {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, 0.f, 1.f}, {1.f, -2.f, 3.f},
+        };
+        for (const auto &p : probes) {
+            const auto a = transformPoint(viaQuat, p);
+            const auto b = transformPoint(viaMatrix, p);
+            if (!pointNearlyEqual(a, b, 1e-4f)) {
+                std::printf("FAIL fromEuler/rotationEuler disagree at (%f,%f,%f): "
+                            "quat (%f,%f,%f) vs matrix (%f,%f,%f)\n",
+                            p.x, p.y, p.z, a.x, a.y, a.z, b.x, b.y, b.z);
+                assert(false && "FQuaternion::fromEuler must match rotationEuler");
+            }
+        }
+    }
+
+    // --- The object table: handles, mutators, accumulation. ------------------
+    {
+        GESpace space(screen);
+
+        const auto id = space.addObject();
+        assert(id != GESpaceInvalidObject && "addObject must mint a valid handle");
+        assert(space.contains(id) && "the space should contain what it just added");
+        assert(!space.contains(GESpaceInvalidObject) && "the invalid handle names nothing");
+        assert(!space.contains(id + 1000) && "an unknown handle names nothing");
+
+        // Handles are distinct.
+        const auto other = space.addObject();
+        assert(other != id && "handles must be unique");
+
+        // translate() accumulates; setTranslation() replaces.
+        space.translate(id, 1.f, 2.f, 3.f);
+        space.translate(id, 10.f, 20.f, 30.f);
+        expectPoint(space.transformOf(id).translation, 11.f, 22.f, 33.f, "translate accumulates");
+        space.setTranslation(id, GPoint3D{-1.f, -2.f, -3.f});
+        expectPoint(space.transformOf(id).translation, -1.f, -2.f, -3.f, "setTranslation replaces");
+
+        // scale() accumulates multiplicatively; setScale() replaces.
+        space.scale(id, 2.f, 2.f, 2.f);
+        space.scale(id, 3.f, 3.f, 3.f);
+        expectPoint(space.transformOf(id).scale, 6.f, 6.f, 6.f, "scale accumulates multiplicatively");
+        space.setScale(id, GPoint3D{1.f, 1.f, 1.f});
+        expectPoint(space.transformOf(id).scale, 1.f, 1.f, 1.f, "setScale replaces");
+
+        // rotate() COMPOSES: two 45° turns about Z equal one 90° turn.
+        const auto spun = space.addObject();
+        space.rotate(spun, 0.f, 0.f, HalfPi<float> * 0.5f);
+        space.rotate(spun, 0.f, 0.f, HalfPi<float> * 0.5f);
+        expectPoint(transformPoint(space.transformOf(spun).rotation.toMatrix(), GPoint3D{1.f, 0.f, 0.f}),
+                    0.f, 1.f, 0.f, "two 45deg rotations compose into one 90deg rotation");
+
+        // ...and it stays a pure rotation. 64 accumulated turns must not drift
+        // off the unit quaternion — that drift is what would silently introduce
+        // a scale into the model matrix.
+        const auto drifted = space.addObject();
+        for (int i = 0; i < 64; i++) {
+            space.rotateAxis(drifted, 0.f, 0.f, 1.f, TwoPi<float> / 64.f);
+        }
+        const auto q = space.transformOf(drifted).rotation;
+        assert(nearlyEqual(q.length(), 1.f, 1e-4f) && "accumulated rotation must stay unit-length");
+        // 64 x (360/64) = a full turn, back to where it started.
+        expectPoint(transformPoint(q.toMatrix(), GPoint3D{1.f, 0.f, 0.f}),
+                    1.f, 0.f, 0.f, "64 accumulated turns come full circle without drift");
+
+        // rotateAxis on a zero-length axis is a no-op, not a NaN.
+        const auto degenerate = space.addObject();
+        space.rotateAxis(degenerate, 0.f, 0.f, 0.f, 1.f);
+        const auto dq = space.transformOf(degenerate).rotation;
+        assert(!std::isnan(dq.x) && !std::isnan(dq.w) && "a zero axis must not produce NaN");
+        assert(nearlyEqual(dq.length(), 1.f) && "a zero axis must leave the rotation untouched");
+    }
+
+    // --- objectTransform = spaceToNDC ∘ model, and it IS the final result. ---
+    {
+        GESpace space(screen);
+        const auto id = space.addObject();
+        space.setTranslation(id, GPoint3D{400.f, 300.f, 0.f});
+        space.setScale(id, GPoint3D{100.f, 100.f, 1.f});
+        space.rotateAxis(id, 0.f, 0.f, 1.f, HalfPi<float>);
+
+        // Hand-compose the same thing and require an exact agreement, pointwise.
+        const auto model = space.transformOf(id).modelMatrix();
+        const auto ndc = space.spaceToNDC();
+        const GPoint3D probes[] = {
+            {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {-1.f, -1.f, 0.5f},
+        };
+        for (const auto &p : probes) {
+            const auto viaObject = transformPoint(space.objectTransform(id), p);
+            const auto byHand = transformPoint(ndc, transformPoint(model, p));
+            if (!pointNearlyEqual(viaObject, byHand, 1e-4f)) {
+                std::printf("FAIL objectTransform != spaceToNDC(model(p)) at (%f,%f,%f): "
+                            "(%f,%f,%f) vs (%f,%f,%f)\n",
+                            p.x, p.y, p.z, viaObject.x, viaObject.y, viaObject.z,
+                            byHand.x, byHand.y, byHand.z);
+                assert(false && "objectTransform must equal spaceToNDC applied after the model matrix");
+            }
+        }
+
+        // The object sits at the viewport center, so its local origin lands at
+        // NDC (0,0) — the end-to-end statement of "place it, then draw it".
+        expectPoint(transformPoint(space.objectTransform(id), GPoint3D{0.f, 0.f, 0.f}),
+                    0.f, 0.f, 0.f, "an object at the viewport center maps to NDC origin");
+    }
+
+    // --- The regression the old TEMesh::rotate failed: a 90deg rotation in a
+    //     NON-SQUARE viewport must keep a square square in SPACE units, and pick
+    //     up aspect scaling only on the way through spaceToNDC. ---------------
+    {
+        GESpace space(screen);   // 800x600 — deliberately non-square
+        const auto id = space.addObject();
+        space.setTranslation(id, GPoint3D{400.f, 300.f, 0.f});
+        space.setScale(id, GPoint3D{100.f, 100.f, 1.f});
+
+        // A unit square's corners, in the object's local space.
+        const GPoint3D corners[4] = {
+            {-1.f, -1.f, 0.f}, {1.f, -1.f, 0.f}, {1.f, 1.f, 0.f}, {-1.f, 1.f, 0.f},
+        };
+
+        auto spaceExtent = [&](GPoint3D *out) {
+            const auto model = space.transformOf(id).modelMatrix();
+            for (int i = 0; i < 4; i++) out[i] = transformPoint(model, corners[i]);
+        };
+
+        GPoint3D before[4], after[4];
+        spaceExtent(before);
+        space.rotateAxis(id, 0.f, 0.f, 1.f, HalfPi<float>);
+        spaceExtent(after);
+
+        auto sideLength = [](const GPoint3D &a, const GPoint3D &b) {
+            const float dx = b.x - a.x, dy = b.y - a.y;
+            return std::sqrt(dx*dx + dy*dy);
+        };
+
+        // In SPACE units the rotated square is still a square: all four sides
+        // equal, and equal to what they were before the rotation. The old
+        // TEMesh::rotate spun vertices in NDC and turned this into a rectangle.
+        for (int i = 0; i < 4; i++) {
+            const float s0 = sideLength(before[i], before[(i + 1) % 4]);
+            const float s1 = sideLength(after[i], after[(i + 1) % 4]);
+            assert(nearlyEqual(s0, 200.f, 0.01f) && "unrotated square side should be 2*scale");
+            assert(nearlyEqual(s1, 200.f, 0.01f) &&
+                   "a rotation in space units must NOT distort the square under a non-square viewport");
+        }
+
+        // The aspect stretch appears only after spaceToNDC — and it is the
+        // viewport's, not the rotation's: x is divided by 800, y by 600.
+        const auto ndcA = transformPoint(space.objectTransform(id), corners[0]);
+        const auto ndcB = transformPoint(space.objectTransform(id), corners[1]);
+        const float ndcSideX = std::fabs(ndcB.x - ndcA.x);
+        const float ndcSideY = std::fabs(ndcB.y - ndcA.y);
+        // After a 90deg turn that edge runs vertically, so it spans 200 space
+        // units of Y => 2*200/600 in NDC, and none of X.
+        assert(nearlyEqual(ndcSideX, 0.f, 1e-3f) && "the rotated edge should be vertical in NDC");
+        assert(nearlyEqual(ndcSideY, 2.f * 200.f / 600.f, 1e-3f) &&
+               "aspect scaling must come from spaceToNDC (y/600), not from the rotation");
+    }
+
+    // --- Unknown handles degrade loudly, never into garbage matrices. --------
+    {
+        GESpace space(screen);
+        const GESpaceObjectID ghost = 4242;
+
+        space.translate(ghost, 1.f, 1.f, 1.f);   // logs, does nothing
+        space.rotate(ghost, 1.f, 1.f, 1.f);
+        space.scale(ghost, 2.f, 2.f, 2.f);
+
+        const auto &t = space.transformOf(ghost);
+        expectPoint(t.translation, 0.f, 0.f, 0.f, "unknown handle yields an identity transform");
+        expectPoint(t.scale, 1.f, 1.f, 1.f, "unknown handle yields unit scale");
+
+        // objectTransform on a ghost falls back to the bare space matrix, so a
+        // caller that ignores the error still draws something sane.
+        const auto ghostM = space.objectTransform(ghost);
+        const auto spaceM = space.spaceToNDC();
+        const bool same = (ghostM == spaceM);
+        assert(same && "objectTransform on an unknown handle should fall back to spaceToNDC");
+    }
+
     std::printf("gespace_test: all checks passed\n");
     return 0;
 }

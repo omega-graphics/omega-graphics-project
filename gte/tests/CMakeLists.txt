@@ -34,6 +34,18 @@ target_compile_definitions(omegagte_te_index_buffer_test PRIVATE ${PUBLIC_DEFS})
 target_link_libraries(omegagte_te_index_buffer_test PRIVATE OmegaCommonCore OmegaGTE)
 add_test(NAME omegagte_te_index_buffer COMMAND omegagte_te_index_buffer_test)
 
+# Backend-independent unit test for the GVectorPath transform helpers in
+# GTEBase.h. They are direct trig (GTEMath.h depends on GTEBase.h, so they cannot
+# use FMatrix), which is precisely how they drifted into applying the TRANSPOSE of
+# the rotation they documented. Every check ties them back to the matrix builders.
+add_executable(omegagte_path_transform_test path_transform_test.cpp)
+target_include_directories(omegagte_path_transform_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../common/include")
+target_compile_definitions(omegagte_path_transform_test PRIVATE ${PUBLIC_DEFS})
+target_link_libraries(omegagte_path_transform_test PRIVATE OmegaCommonCore OmegaGTE)
+add_test(NAME omegagte_path_transform COMMAND omegagte_path_transform_test)
+
 # Triangulation-Engine-Completion-Plan Phase 9 — backend-independent unit test
 # for TE's coordinate space: params-level viewport + precedence, viewport-origin
 # awareness, the [0,1] depth map, and local-space (un-baked) triangulation.

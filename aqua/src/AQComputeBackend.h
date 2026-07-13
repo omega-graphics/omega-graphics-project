@@ -24,7 +24,7 @@
 // The honest probe is behavioural — `selfTest` builds and runs a trivial
 // compute pipeline end to end.
 
-#include <aqua/AQBase.h>   // AQUA_NODISCARD
+#include <aqua/AQBase.h>   // OMEGA_NODISCARD
 #include <omega-common/utils.h>
 #include <cstddef>
 #include <cstdint>
@@ -63,11 +63,11 @@ struct AQUA_EXPORT AQComputeBackend {
     /// through 5c-5e — the stage kernels land incrementally behind the
     /// stage-isolation parity tests; 5f/5g flips this true once the GPU step
     /// is end-to-end.
-    AQUA_NODISCARD bool usable() const { return gpuUsable; }
+    OMEGA_NODISCARD bool usable() const { return gpuUsable; }
 
     /// The held engine/queue, for the buffer pools and pipeline build.
-    AQUA_NODISCARD SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine() const { return gpuEngine; }
-    AQUA_NODISCARD SharedHandle<OmegaGTE::GECommandQueue> queue() const { return cmdQueue; }
+    OMEGA_NODISCARD SharedHandle<OmegaGTE::OmegaGraphicsEngine> engine() const { return gpuEngine; }
+    OMEGA_NODISCARD SharedHandle<OmegaGTE::GECommandQueue> queue() const { return cmdQueue; }
 
     /// Load AQUA's precompiled kernel library (`AQKernels.omegasllib`) from
     /// @p path via `OmegaGraphicsEngine::loadShaderLibrary`. Returns false if the
@@ -80,7 +80,7 @@ struct AQUA_EXPORT AQComputeBackend {
     /// readback toolchain end to end on the active device. Requires
     /// `loadKernelLibrary` to have succeeded and a non-null command queue.
     /// Returns true iff the GPU produced the expected results.
-    AQUA_NODISCARD bool selfTest();
+    OMEGA_NODISCARD bool selfTest();
 
     // --- Phase 5c: body-state GPU mirror + integration dispatch ---
 
@@ -125,7 +125,7 @@ struct AQUA_EXPORT AQComputeBackend {
         OmegaCommon::Vector<float> localQuatX, localQuatY, localQuatZ, localQuatW;
         OmegaCommon::Vector<std::uint32_t> filterLayer, filterMask;
         OmegaCommon::Vector<float> hullVertX, hullVertY, hullVertZ;
-        AQUA_NODISCARD std::size_t size() const { return shapeType.size(); }
+        OMEGA_NODISCARD std::size_t size() const { return shapeType.size(); }
     };
 
     /// Upload the per-body shape/filter tables + hull pool. Body poses and
@@ -331,7 +331,7 @@ struct AQUA_EXPORT AQComputeBackend {
     /// selectable: kernel library loaded + capability probe passed
     /// (AQContext::loadKernels flips it). Distinct from usable(), which
     /// remains the full-rigid-step gate.
-    AQUA_NODISCARD bool kernelsLive() const { return kernelsLiveFlag; }
+    OMEGA_NODISCARD bool kernelsLive() const { return kernelsLiveFlag; }
     void setKernelsLive(bool on) { kernelsLiveFlag = on; }
 
     /// One static collider for the 6i collide kernel — the shape's COMBINED

@@ -49,19 +49,19 @@ namespace OmegaCommon {
       static Result<AssetBundle, String> open(FS::Path path);
       static Result<AssetBundle, String> open(FS::Path path, ArrayRef<std::uint8_t> key);
 
-      OMEGACOMMON_NODISCARD size_t entryCount() const;
-      OMEGACOMMON_NODISCARD Optional<AssetInfo> info(StrRef name) const;
-      OMEGACOMMON_NODISCARD bool contains(StrRef name) const;
-      OMEGACOMMON_NODISCARD Vector<AssetInfo> entries() const;
+      OMEGA_NODISCARD size_t entryCount() const;
+      OMEGA_NODISCARD Optional<AssetInfo> info(StrRef name) const;
+      OMEGA_NODISCARD bool contains(StrRef name) const;
+      OMEGA_NODISCARD Vector<AssetInfo> entries() const;
 
-      OMEGACOMMON_NODISCARD Result<Vector<std::uint8_t>, String> load(StrRef name) const;
-      OMEGACOMMON_NODISCARD Result<String, String> loadText(StrRef name) const;
+      OMEGA_NODISCARD Result<Vector<std::uint8_t>, String> load(StrRef name) const;
+      OMEGA_NODISCARD Result<String, String> loadText(StrRef name) const;
 
       /// Returns an input stream over the raw stored bytes of @p name.
       /// The stream owns its own file handle; it may outlive the bundle and
       /// be read independently from other streams. Encrypted or compressed
       /// entries are rejected — use @c load instead.
-      OMEGACOMMON_NODISCARD Result<UniqueHandle<std::istream>, String> stream(StrRef name) const;
+      OMEGA_NODISCARD Result<UniqueHandle<std::istream>, String> stream(StrRef name) const;
   };
   
   class [[deprecated("Use AssetBundle instead")]] OMEGACOMMON_EXPORT AssetLibrary {

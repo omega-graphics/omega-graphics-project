@@ -118,7 +118,7 @@ struct AQParticlePool {
 // caller can never dangle into a pool that compaction relocated.
 struct AQParticleSystemHandle {
     std::uint64_t id = 0;
-    AQUA_NODISCARD bool valid() const { return id != 0; }
+    OMEGA_NODISCARD bool valid() const { return id != 0; }
 };
 
 #endif // AQUA_AQPARTICLES_H

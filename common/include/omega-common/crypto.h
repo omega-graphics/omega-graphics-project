@@ -160,8 +160,8 @@ namespace OmegaCommon {
 
         static Result<SigningKey, CryptoError> generate();
         static Result<SigningKey, CryptoError> fromPem(StrRef pem);
-        OMEGACOMMON_NODISCARD Result<String, CryptoError> toPem() const;
-        OMEGACOMMON_NODISCARD Result<VerifyingKey, CryptoError> verifyingKey() const;
+        OMEGA_NODISCARD Result<String, CryptoError> toPem() const;
+        OMEGA_NODISCARD Result<VerifyingKey, CryptoError> verifyingKey() const;
         Result<Vector<std::uint8_t>, CryptoError> sign(const std::uint8_t *message, size_t messageLen) const;
     };
 
@@ -190,13 +190,13 @@ namespace OmegaCommon {
         static Result<Certificate, CryptoError> selfSigned(
             const SigningKey &key, StrRef commonName, unsigned validDays);
 
-        OMEGACOMMON_NODISCARD Result<String, CryptoError> toPem() const;
-        OMEGACOMMON_NODISCARD String subject() const;
-        OMEGACOMMON_NODISCARD String issuer() const;
-        OMEGACOMMON_NODISCARD String serialNumber() const;
-        OMEGACOMMON_NODISCARD int64_t notBefore() const;
-        OMEGACOMMON_NODISCARD int64_t notAfter() const;
-        OMEGACOMMON_NODISCARD bool isExpired() const;
+        OMEGA_NODISCARD Result<String, CryptoError> toPem() const;
+        OMEGA_NODISCARD String subject() const;
+        OMEGA_NODISCARD String issuer() const;
+        OMEGA_NODISCARD String serialNumber() const;
+        OMEGA_NODISCARD int64_t notBefore() const;
+        OMEGA_NODISCARD int64_t notAfter() const;
+        OMEGA_NODISCARD bool isExpired() const;
     };
 
     /// Trusted certificate store for verification. Move-only.
@@ -217,7 +217,7 @@ namespace OmegaCommon {
         static Result<CertificateStore, CryptoError> system();
 
         void addCertificate(const Certificate &cert);
-        OMEGACOMMON_NODISCARD Result<bool, CryptoError> verify(const Certificate &leaf) const;
+        OMEGA_NODISCARD Result<bool, CryptoError> verify(const Certificate &leaf) const;
         Result<bool, CryptoError> verifyChain(const Certificate &leaf,
             const Certificate *intermediates, size_t intermediateCount) const;
     };
@@ -249,9 +249,9 @@ namespace OmegaCommon {
         Result<size_t, CryptoError> write(const std::uint8_t *buf, size_t len);
         void shutdown();
 
-        OMEGACOMMON_NODISCARD Optional<Certificate> peerCertificate() const;
-        OMEGACOMMON_NODISCARD String version() const;
-        OMEGACOMMON_NODISCARD String cipherName() const;
+        OMEGA_NODISCARD Optional<Certificate> peerCertificate() const;
+        OMEGA_NODISCARD String version() const;
+        OMEGA_NODISCARD String cipherName() const;
     };
 
     /// TLS context (wraps SSL_CTX). Configures TLS parameters; creates streams.

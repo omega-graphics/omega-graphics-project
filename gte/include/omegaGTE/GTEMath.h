@@ -784,8 +784,19 @@ _NAMESPACE_BEGIN_
         return m;
     }
 
+    /// Composed Euler rotation: pitch (X) is applied first, then yaw (Y), then
+    /// roll (Z) — the GPU matrix `Rz(roll) · Ry(yaw) · Rx(pitch)`. This matches
+    /// `FQuaternion::fromEuler` and `OmegaGTE::rotate(GVectorPath3D&, ...)`.
+    ///
+    /// Note the operand order. `Matrix::operator*` composes in REVERSE relative
+    /// to the column-major convention these matrices are built in (`A * B` is the
+    /// GPU product `B·A`; it reads "apply A first, then B"). Spelling this the
+    /// natural-looking way — `rotationZ(roll) * rotationY(yaw) * rotationX(pitch)`
+    /// — therefore composes the OPPOSITE order (Z first, X last), which is what
+    /// this function used to do: it silently disagreed with `fromEuler` for any
+    /// input where two of the three angles were non-zero.
     inline FMatrix<4,4> rotationEuler(float pitch, float yaw, float roll){
-        return rotationZ(roll) * rotationY(yaw) * rotationX(pitch);
+        return rotationX(pitch) * rotationY(yaw) * rotationZ(roll);
     }
 
     // ==================================================================

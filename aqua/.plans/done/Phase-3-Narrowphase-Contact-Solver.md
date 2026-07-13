@@ -650,9 +650,9 @@ class AQUA_EXPORT AQRigidBody {
 public:
     // ... Phase 1 + 1.1 + 2 surface ...
 
-    AQUA_NODISCARD float restitution() const;                   // new
+    OMEGA_NODISCARD float restitution() const;                   // new
     void setRestitution(float r);                               // new (clamped [0, 1])
-    AQUA_NODISCARD float friction() const;                      // new
+    OMEGA_NODISCARD float friction() const;                      // new
     void setFriction(float mu);                                 // new (clamped >= 0)
 };
 ```
@@ -667,19 +667,19 @@ public:
     // narrowphase produces this space. Default Average (the PhysX default).
     void setMaterialCombine(AQMaterialCombine restCombine,
                             AQMaterialCombine fricCombine);     // new
-    AQUA_NODISCARD AQMaterialCombine restitutionCombine() const; // new
-    AQUA_NODISCARD AQMaterialCombine frictionCombine() const;    // new
+    OMEGA_NODISCARD AQMaterialCombine restitutionCombine() const; // new
+    OMEGA_NODISCARD AQMaterialCombine frictionCombine() const;    // new
 
     // Solver knobs (defaults: 8 velocity, 4 position; §11.4). 0 disables
     // the position pass entirely — useful for the energy-non-growth test.
     void setSolverIterations(int velocityIters, int positionIters); // new
-    AQUA_NODISCARD int velocityIterations() const;                  // new
-    AQUA_NODISCARD int positionIterations() const;                  // new
+    OMEGA_NODISCARD int velocityIterations() const;                  // new
+    OMEGA_NODISCARD int positionIterations() const;                  // new
 
     // Read-only manifold view (for debug overlays and Phase 4 joint
     // wiring). Stable for the duration of one advance() call; the next
     // advance() refreshes it.
-    AQUA_NODISCARD std::vector<AQContactManifold> contactManifolds() const; // new
+    OMEGA_NODISCARD std::vector<AQContactManifold> contactManifolds() const; // new
 };
 ```
 

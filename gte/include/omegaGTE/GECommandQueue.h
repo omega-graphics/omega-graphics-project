@@ -216,11 +216,11 @@ _NAMESPACE_BEGIN_
         /// @brief Logical type this queue actually runs as on this backend
         /// (post-fallback). Use @ref isDedicated to tell whether this matches
         /// the originally-requested type.
-        GECommandQueueDesc::Type type() const { return desc_.type; }
+        OMEGA_NODISCARD GECommandQueueDesc::Type type() const { return desc_.type; }
 
         /// @brief The user's originally-requested type, before any backend
         /// fallback. Equal to @ref type when @ref isDedicated returns true.
-        GECommandQueueDesc::Type requestedType() const { return requestedType_; }
+        OMEGA_NODISCARD GECommandQueueDesc::Type requestedType() const { return requestedType_; }
 
         /// @brief Priority the queue was created with. Recorded for
         /// introspection; whether the backend actually honored it is
@@ -229,15 +229,15 @@ _NAMESPACE_BEGIN_
         /// honors NORMAL by default and the rest only when
         /// `VK_KHR_global_priority` is present and opted into; Metal records
         /// only).
-        GECommandQueueDesc::Priority priority() const { return desc_.priority; }
+        OMEGA_NODISCARD GECommandQueueDesc::Priority priority() const { return desc_.priority; }
 
         /// @brief Debug label the queue was created with. May be empty.
-        const OmegaCommon::String & label() const { return desc_.label; }
+        OMEGA_NODISCARD const OmegaCommon::String & label() const { return desc_.label; }
 
         /// @brief Returns true iff `type()` matches what the caller originally
         /// asked for (i.e., the backend did not have to fall back to a more
         /// general queue family / list type).
-        bool isDedicated() const { return desc_.type == requestedType_; }
+        OMEGA_NODISCARD bool isDedicated() const { return desc_.type == requestedType_; }
 
         /// @brief Encodes a wait on command buffer using fence.
         /// @param commandBuffer The GECommandBuffer to encode the wait on.

@@ -63,13 +63,13 @@ _NAMESPACE_BEGIN_
 
         /// @brief The loaded mesh, or null if load was not called or
         /// failed.
-        virtual SharedHandle<GEMesh> mesh() const = 0;
+        OMEGA_NODISCARD virtual SharedHandle<GEMesh> mesh() const = 0;
 
         /// @brief All `TextureAsset`s the loader created for material
         /// textures referenced by the source mesh. Empty if
         /// `loadMaterialTextures` was false or the source has no
         /// material textures.
-        virtual std::vector<SharedHandle<GETextureAsset>> textureAssets() const = 0;
+        OMEGA_NODISCARD virtual std::vector<SharedHandle<GETextureAsset>> textureAssets() const = 0;
 
         /// @brief Free GPU and CPU resources held by this asset early.
         /// Optional — destruction handles release automatically.

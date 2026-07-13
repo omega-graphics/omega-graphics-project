@@ -691,7 +691,7 @@ struct AQUA_EXPORT AQJointDesc {
 struct AQJointHandle {
     std::uint32_t index      = 0;
     std::uint32_t generation = 0;
-    AQUA_NODISCARD bool valid() const { return generation != 0; }
+    OMEGA_NODISCARD bool valid() const { return generation != 0; }
 };
 
 /// Activation state. The integrator and PGS sweep fast-path `Sleeping`.
@@ -910,11 +910,11 @@ class AQUA_EXPORT AQRigidBody {
 public:
     // ... Phase 1 + 1.1 + 2 + 3 surface ...
 
-    AQUA_NODISCARD AQActivationState activation() const;          // new
+    OMEGA_NODISCARD AQActivationState activation() const;          // new
     void wakeUp();                                                 // new — force Active
     void putToSleep();                                             // new — force Sleeping
-    AQUA_NODISCARD bool isTrigger() const;                         // new
-    AQUA_NODISCARD AQCCDMode ccdMode() const;                      // new
+    OMEGA_NODISCARD bool isTrigger() const;                         // new
+    OMEGA_NODISCARD AQCCDMode ccdMode() const;                      // new
     void setCCDMode(AQCCDMode m);                                  // new
 
     // Kinematic bodies: pose is set externally each frame; the velocity used
@@ -964,7 +964,7 @@ public:
     bool           destroyJoint(AQJointHandle h);                              // new
 
     // Read-only joint view, refreshed per `advance`.
-    AQUA_NODISCARD std::vector<AQJointDesc> joints() const;                    // new
+    OMEGA_NODISCARD std::vector<AQJointDesc> joints() const;                    // new
 
     // --- queries (Phase 4) ---
     // hits is cleared then appended; results are sorted by fraction. The grid
@@ -992,7 +992,7 @@ public:
     // --- triggers (Phase 4) ---
     // Drains the per-`advance` event queue; subsequent calls until the next
     // advance return empty.
-    AQUA_NODISCARD std::vector<AQTriggerEvent> triggerEvents();                // new
+    OMEGA_NODISCARD std::vector<AQTriggerEvent> triggerEvents();                // new
 
     // --- sleep tuning (Phase 4) ---
     // Defaults: 0.01 m/s linear, 0.01 rad/s angular, 60 sub-steps (~0.5 s at

@@ -92,7 +92,7 @@ class AQUA_EXPORT AQContext
     /// back to CPU when no usable backend exists.
     void setExecutionPath(AQExecPath path);
     /// The *resolved* path that the next `advance` will run (never `Auto`).
-    AQUA_NODISCARD AQExecPath executionPath() const;
+    OMEGA_NODISCARD AQExecPath executionPath() const;
 
     /// Creates a simulation space owned and stepped by this context.
     SharedHandle<AQSpace> createSpace();
@@ -102,12 +102,12 @@ class AQUA_EXPORT AQContext
     void advance(float realDt);
 
     /// The fixed sub-step size, in seconds. Defaults to 1/120 s.
-    AQUA_NODISCARD float fixedTimestep() const;
+    OMEGA_NODISCARD float fixedTimestep() const;
     /// Sets the fixed sub-step size. Non-positive values are ignored.
     void setFixedTimestep(float dt);
 
     /// Total simulated time advanced so far, in seconds.
-    AQUA_NODISCARD double elapsed() const;
+    OMEGA_NODISCARD double elapsed() const;
 };
 
 #endif // AQUA_AQCONTEXT_H

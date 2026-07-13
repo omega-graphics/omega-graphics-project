@@ -56,7 +56,7 @@ _NAMESPACE_BEGIN_
         /// per-buffer timing is not wired yet (Vulkan / D3D12 until the
         /// GPU-Commit-Timing plan's P1 phase). Check the feature bit — do not
         /// infer "instantaneous" from a zero here.
-        double gpuDurationSec() const { return gpuEndTimeSec - gpuStartTimeSec; }
+        OMEGA_NODISCARD double gpuDurationSec() const { return gpuEndTimeSec - gpuStartTimeSec; }
     };
 
     /// @brief Callback fired once after a whole commit finishes on the GPU.
@@ -439,7 +439,7 @@ _NAMESPACE_BEGIN_
         /// commit-level timing aggregator on top of an existing handler
         /// (e.g. the WTK recycler's) instead of overwriting it. Backends that
         /// store a handler override this to return it.
-        virtual GECommandBufferCompletionHandler getCompletionHandler() const {
+        OMEGA_NODISCARD virtual GECommandBufferCompletionHandler getCompletionHandler() const {
             return {};
         }
 
@@ -459,7 +459,7 @@ _NAMESPACE_BEGIN_
         /// On D3D12/Vulkan the swap chain is bound to this queue at creation
         /// time; on Metal it is recorded so the engine can encode the
         /// `presentDrawable:` call.
-        virtual SharedHandle<GECommandQueue> presentQueue() const = 0;
+        OMEGA_NODISCARD virtual SharedHandle<GECommandQueue> presentQueue() const = 0;
 
         /// Submit the engine's internal "transition to PRESENT + Present" work
         /// on the present queue. Replaces the old `commitAndPresent()`. The

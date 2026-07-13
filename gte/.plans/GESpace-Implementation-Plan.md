@@ -154,7 +154,38 @@ edit is needed** — it picks up `src/common/*.cpp` via `file(GLOB COMMON_SRCS .
 
 ---
 
-## Phase 2: Object Model and Transforms
+## Phase 2: Object Model and Transforms — ✅ IMPLEMENTED
+
+Two divergences from the text below, both recorded because they outlive this phase:
+
+**Finding C — `rotationEuler` composed the wrong order.** 2.2 below says the Euler helpers
+route through `FQuaternion::fromEuler` "(X→Y→Z, matching `rotationEuler`)". They did **not**
+match. `rotationEuler` was written `rotationZ(roll) * rotationY(yaw) * rotationX(pitch)`,
+which *looks* like the standard Rz·Ry·Rx — but `Matrix::operator*` composes in reverse
+(Finding A), so it actually applied **Z first and X last**, the opposite of its own
+docstring. Measured: for pitch=90°, yaw=90°, `rotationEuler` sent (1,0,0) to (0,1,0) while
+`fromEuler` sent it to (0,0,−1). Anything with two non-zero angles silently disagreed.
+
+Fixed to `rotationX(pitch) * rotationY(yaw) * rotationZ(roll)` — the spelling that, under
+the reversed operator, actually yields the GPU product `Rz·Ry·Rx` (pitch first, roll last).
+It now agrees with `FQuaternion::fromEuler` and with `OmegaGTE::rotate(GVectorPath3D&, ...)`,
+which already composed X→Y→Z with direct trig. Only caller was the deprecated
+`TEMesh::rotate`. This is the same reversed-`operator*` trap as Finding A; it is now the
+third bug traced to it, which is why `GESpace.cpp` routes every composition through one
+named `applyThen(first, second)` helper instead of spelling `operator*` at each site.
+
+**`addObject()` was added.** Every mutator in 2.2 is keyed by a `GESpaceObjectID`, but the
+only thing that mints one (`addMesh`) is Phase 3 — so Phase 2 as written could not be
+exercised at all. `addObject(transform = {})` places a transform-only object (a pure
+transform node: an anchor, or a placeholder to be given geometry later). Phase 3's
+`addMesh` is this plus a geometry reference.
+
+**Also worth a follow-up, not fixed here (out of scope):** `OmegaGTE::rotate(GVectorPath3D&,
+pitch, yaw, roll)` (`GTEBase.h:479`) composes the right *order* but spins the opposite
+*direction* from `rotationX`/`fromEuler` — its Rx block computes `y' = cy + sz`, the
+transpose of the `rotationX` GTE builds. Path rotation therefore turns the wrong way
+relative to every other rotation in the library. It has real path callers, so it is not a
+free fix like the ones above; it needs its own decision.
 
 ### 2.1 Placed object + handle
 
@@ -197,13 +228,30 @@ the old `TEMesh::rotate`.
 ### 2.3 Retrieve the final result per object
 
 ```cpp
-/// Composed local → NDC: spaceToNDC() * transformOf(id).modelMatrix().
+/// Composed local → NDC: spaceToNDC() applied AFTER transformOf(id).modelMatrix().
 /// THIS is "the final translated result." Feed it to the draw pipeline as the
 /// object's transform (Kreate uses it as its per-object MVP; see Phase 5).
 FMatrix<4,4> GESpace::objectTransform(GESpaceObjectID) const;
 ```
 
-**Files**: `GESpace.h`, `GESpace.cpp`.
+Both `modelMatrix()` (T∘R∘S) and `objectTransform()` (spaceToNDC ∘ model) are composed
+through `applyThen(first, second)` in `GESpace.cpp` — a named helper that says which matrix
+applies first, because writing `a * b` and reading it as "a then b" is exactly how Findings
+A and C happened. The tests assert the order by pushing points through the matrix, not by
+inspecting it: a point at (1,0,0) under scale×2, +90° about Z, and translate +10 must land
+at (10,2,0), which is only true if scale really is applied first and the translation is not
+itself scaled and rotated.
+
+**Files**: `GESpace.h`, `GESpace.cpp`, `gte/include/omegaGTE/GTEMath.h` (`rotationEuler`
+order fix, Finding C), `gte/tests/gespace_test.cpp`.
+
+**Verification**: `omegagte_gespace` covers the TRS order, `fromEuler`↔`rotationEuler`
+agreement, quaternion accumulation (two 45° turns == one 90°; 64 turns come full circle and
+stay unit-length, so no drift creeps a scale into the model matrix), `objectTransform` vs a
+hand-composed `spaceToNDC(model(p))`, the non-square-viewport rotation regression the old
+`TEMesh::rotate` failed (a square stays square in space units and only picks up aspect
+through `spaceToNDC`), and loud degradation on unknown handles. 14/14 GTE + 26/26 AQUA
+ctest green after the shared-math change.
 
 ---
 
@@ -349,9 +397,9 @@ This phase is scoped in the Kreate module and should get its own short note in a
 
 | File | Changes |
 |---|---|
-| New `gte/include/omegaGTE/GESpace.h` | ✅ Phase 1: `GESpace` (viewport + `spaceToNDC`). `GESpaceObjectID` / `GESpaceTransform` in Phase 2 |
-| New `gte/src/common/GESpace.cpp` | ✅ Phase 1: space→NDC matrix. Object table, transforms, retrieval, primitive placement in Phases 2-4 |
-| `gte/include/omegaGTE/GTEMath.h` | ✅ Phase 1: `transformPoint` fixed to apply `M·v` column-major (was applying `Mᵀ` — Finding A) |
+| New `gte/include/omegaGTE/GESpace.h` | ✅ Phase 1: `GESpace` (viewport + `spaceToNDC`). ✅ Phase 2: `GESpaceObjectID`, `GESpaceTransform`, `addObject`, TRS mutators, `objectTransform` |
+| New `gte/src/common/GESpace.cpp` | ✅ Phase 1: space→NDC matrix. ✅ Phase 2: object table + transforms + retrieval (all composition via one `applyThen` helper). Geometry placement in Phases 3-4 |
+| `gte/include/omegaGTE/GTEMath.h` | ✅ Phase 1: `transformPoint` fixed to apply `M·v` column-major (was applying `Mᵀ` — Finding A). ✅ Phase 2: `rotationEuler` fixed to compose X→Y→Z (was composing Z→Y→X — Finding C) |
 | `gte/tests/gespace_test.cpp`, `gte/tests/CMakeLists.txt` | ✅ Phase 1: `omegagte_gespace` unit test (13/13 GTE suite green) |
 | ~~`gte/CMakeLists.txt`~~ | Not needed — `file(GLOB COMMON_SRCS src/common/*.cpp)` already picks it up |
 | `gte/include/omegaGTE/TE.h` | `TEMesh` / `TETriangulationResult` `translate`/`rotate`/`scale` marked `OMEGA_DEPRECATED` (superseded — see below) |

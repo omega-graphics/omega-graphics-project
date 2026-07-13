@@ -289,22 +289,22 @@ struct AQUA_EXPORT AQBodyDesc {
 class AQUA_EXPORT AQRigidBody {
 public:
     // ... Phase 1 API ...
-    AQUA_NODISCARD OmegaGTE::FVec<3> linearMomentum()  const;   // new
-    AQUA_NODISCARD OmegaGTE::FVec<3> angularMomentum() const;   // new (world)
-    AQUA_NODISCARD float            kineticEnergy()    const;   // new
-    AQUA_NODISCARD OmegaGTE::FMatrix<3,3> worldInverseInertia() const; // new
+    OMEGA_NODISCARD OmegaGTE::FVec<3> linearMomentum()  const;   // new
+    OMEGA_NODISCARD OmegaGTE::FVec<3> angularMomentum() const;   // new (world)
+    OMEGA_NODISCARD float            kineticEnergy()    const;   // new
+    OMEGA_NODISCARD OmegaGTE::FMatrix<3,3> worldInverseInertia() const; // new
 
-    void  setLinearDamping(float c);   AQUA_NODISCARD float linearDamping()  const;  // new
-    void  setAngularDamping(float c);  AQUA_NODISCARD float angularDamping() const;  // new
-    void  setGravityScale(float s);    AQUA_NODISCARD float gravityScale()   const;  // new
-    void  setMaxAngularSpeed(float s); AQUA_NODISCARD float maxAngularSpeed()const;  // new
+    void  setLinearDamping(float c);   OMEGA_NODISCARD float linearDamping()  const;  // new
+    void  setAngularDamping(float c);  OMEGA_NODISCARD float angularDamping() const;  // new
+    void  setGravityScale(float s);    OMEGA_NODISCARD float gravityScale()   const;  // new
+    void  setMaxAngularSpeed(float s); OMEGA_NODISCARD float maxAngularSpeed()const;  // new
 };
 
 class AQUA_EXPORT AQSpace {
 public:
     // ... Phase 1 API ...
     void setDebugFlags(std::uint32_t flags);                         // new (AQDebugFlags)
-    AQUA_NODISCARD std::vector<AQDebugLine> drainDebugLines();        // new — read & clear
+    OMEGA_NODISCARD std::vector<AQDebugLine> drainDebugLines();        // new — read & clear
 };
 ```
 

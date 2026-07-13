@@ -17,7 +17,7 @@
 // vector components via the GTE column-major `[row][0]` access the integrator
 // uses, so the gather never relies on `Matrix` storage layout implicitly.
 
-#include <aqua/AQBase.h>         // AQUA_NODISCARD
+#include <aqua/AQBase.h>         // OMEGA_NODISCARD
 #include <aqua/AQIntegrator.h>   // AQBodyState<Ty>, AQActivationState
 #include <omega-common/utils.h>  // OmegaCommon::Vector
 #include <cstdint>
@@ -47,7 +47,7 @@ struct AQUA_EXPORT AQBodySoA {
     OmegaCommon::Vector<std::uint8_t> activation;
 
     /// Number of bodies the arrays currently hold.
-    AQUA_NODISCARD std::size_t size() const { return posX.size(); }
+    OMEGA_NODISCARD std::size_t size() const { return posX.size(); }
 
     /// Resize every parallel array to `n` (no-op if already `n`).
     void resize(std::size_t n);

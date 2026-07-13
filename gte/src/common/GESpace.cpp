@@ -7,6 +7,21 @@ _NAMESPACE_BEGIN_
 
 namespace {
 
+    /// GTE's `Matrix::operator*` composes in REVERSE relative to the column-major
+    /// convention these matrices are built and uploaded in: `A * B` evaluates to
+    /// the GPU product `B·A`. (Verified, not assumed: `translationMatrix(1,0,0) *
+    /// rotationZ(90°)` comes back with its translation column at (0,1,0) — the
+    /// signature of Rz·T, not T·Rz.) Read that way, `operator*` means "apply A
+    /// first, then B".
+    ///
+    /// Spelling that out at every call site invites exactly one silent
+    /// transposition bug, so say it once, here. `applyThen(first, second)` returns
+    /// the matrix that applies `first` and then `second` — the GPU product
+    /// `second · first`.
+    inline FMatrix<4,4> applyThen(const FMatrix<4,4> & first, const FMatrix<4,4> & second){
+        return first * second;
+    }
+
     bool viewportIsDegenerate(const GEViewport & vp){
         const float depthRange = vp.farDepth - vp.nearDepth;
         return vp.width == 0.f || vp.height == 0.f || depthRange == 0.f;
@@ -37,12 +52,51 @@ namespace {
 
 }  // namespace
 
+FMatrix<4,4> GESpaceTransform::modelMatrix() const {
+    // Scale first, then rotate, then translate — so the object scales about its
+    // own origin, spins in place, and only then moves. The reverse order would
+    // scale the translation and make an object's position depend on its size.
+    const auto S = scalingMatrix(scale.x, scale.y, scale.z);
+    const auto R = rotation.toMatrix();
+    const auto T = translationMatrix(translation.x, translation.y, translation.z);
+    return applyThen(applyThen(S, R), T);
+}
+
 struct GESpace::Impl {
     GEViewport viewport;
     FMatrix<4,4> spaceToNDC = FMatrix<4,4>::Identity();
 
+    /// Insertion-ordered (IDs are monotonic and Map is ordered), so `objects()`
+    /// in Phase 3 enumerates deterministically.
+    OmegaCommon::Map<GESpaceObjectID, GESpaceTransform> objects;
+    GESpaceObjectID nextID = 1;   // 0 is GESpaceInvalidObject
+
     explicit Impl(const GEViewport & vp):viewport(vp){
         recompose();
+    }
+
+    /// Null for an unknown handle. Callers log and degrade; nothing here throws.
+    GESpaceTransform * find(GESpaceObjectID id){
+        auto it = objects.find(id);
+        return it == objects.end() ? nullptr : &it->second;
+    }
+    const GESpaceTransform * find(GESpaceObjectID id) const {
+        auto it = objects.find(id);
+        return it == objects.end() ? nullptr : &it->second;
+    }
+
+    /// Every mutator resolves its handle through here. An unknown handle is a
+    /// caller bug (a stale or foreign ID), so it is reported at the point of use
+    /// — loudly, naming the operation and the handle — rather than silently
+    /// mutating nothing and leaving the caller to wonder why the object never
+    /// moves.
+    GESpaceTransform * findForWrite(GESpaceObjectID id, const char * op){
+        auto * t = find(id);
+        if(t == nullptr){
+            std::cerr << "[GESpace] error: " << op << "() on unknown object " << id
+                      << "; ignoring." << std::endl;
+        }
+        return t;
     }
 
     void recompose(){
@@ -76,6 +130,105 @@ const GEViewport & GESpace::viewport() const {
 
 FMatrix<4,4> GESpace::spaceToNDC() const {
     return impl->spaceToNDC;
+}
+
+// -------------------------------------------------------------------------
+// Objects and transforms
+// -------------------------------------------------------------------------
+
+GESpaceObjectID GESpace::addObject(const GESpaceTransform & transform){
+    const GESpaceObjectID id = impl->nextID++;
+    impl->objects[id] = transform;
+    return id;
+}
+
+bool GESpace::contains(GESpaceObjectID id) const {
+    return impl->find(id) != nullptr;
+}
+
+void GESpace::setTranslation(GESpaceObjectID id, const GPoint3D & translation){
+    if(auto * t = impl->findForWrite(id, "setTranslation")){
+        t->translation = translation;
+    }
+}
+
+void GESpace::translate(GESpaceObjectID id, float dx, float dy, float dz){
+    if(auto * t = impl->findForWrite(id, "translate")){
+        t->translation.x += dx;
+        t->translation.y += dy;
+        t->translation.z += dz;
+    }
+}
+
+void GESpace::setRotation(GESpaceObjectID id, const FQuaternion & rotation){
+    if(auto * t = impl->findForWrite(id, "setRotation")){
+        t->rotation = rotation;
+    }
+}
+
+void GESpace::rotate(GESpaceObjectID id, float pitch, float yaw, float roll){
+    if(auto * t = impl->findForWrite(id, "rotate")){
+        // `q1 * q2` applies q2 first, then q1 (see Quaternion::operator*), so the
+        // delta goes on the LEFT: the new rotation is applied on top of whatever
+        // the object already had, about the space's axes. Normalize as we go —
+        // a long chain of products otherwise drifts off the unit sphere and the
+        // orientation slowly acquires a scale.
+        t->rotation = (FQuaternion::fromEuler(pitch, yaw, roll) * t->rotation).normalized();
+    }
+}
+
+void GESpace::rotateAxis(GESpaceObjectID id, float ax, float ay, float az, float radians){
+    auto * t = impl->findForWrite(id, "rotateAxis");
+    if(t == nullptr){
+        return;
+    }
+    const float len = std::sqrt(ax*ax + ay*ay + az*az);
+    if(len == 0.f){
+        std::cerr << "[GESpace] warning: rotateAxis called with a zero-length axis on object "
+                  << id << "; ignoring." << std::endl;
+        return;
+    }
+    const auto delta = FQuaternion::fromAxisAngle(ax/len, ay/len, az/len, radians);
+    t->rotation = (delta * t->rotation).normalized();
+}
+
+void GESpace::setScale(GESpaceObjectID id, const GPoint3D & scale){
+    if(auto * t = impl->findForWrite(id, "setScale")){
+        t->scale = scale;
+    }
+}
+
+void GESpace::scale(GESpaceObjectID id, float sx, float sy, float sz){
+    if(auto * t = impl->findForWrite(id, "scale")){
+        // Multiplicative, matching translate()/rotate(): scale(2,2,2) twice is a
+        // 4x object, not a 2x one.
+        t->scale.x *= sx;
+        t->scale.y *= sy;
+        t->scale.z *= sz;
+    }
+}
+
+const GESpaceTransform & GESpace::transformOf(GESpaceObjectID id) const {
+    static const GESpaceTransform identity;
+    const auto * t = impl->find(id);
+    if(t == nullptr){
+        std::cerr << "[GESpace] error: transformOf() on unknown object " << id
+                  << "; returning an identity transform." << std::endl;
+        return identity;
+    }
+    return *t;
+}
+
+FMatrix<4,4> GESpace::objectTransform(GESpaceObjectID id) const {
+    const auto * t = impl->find(id);
+    if(t == nullptr){
+        std::cerr << "[GESpace] error: objectTransform() on unknown object " << id
+                  << "; returning the bare space->NDC matrix." << std::endl;
+        return impl->spaceToNDC;
+    }
+    // Model takes the object from local units into space units; spaceToNDC takes
+    // it the rest of the way. Apply model, THEN spaceToNDC.
+    return applyThen(t->modelMatrix(), impl->spaceToNDC);
 }
 
 _NAMESPACE_END_

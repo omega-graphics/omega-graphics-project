@@ -57,9 +57,9 @@ _NAMESPACE_BEGIN_
         /// @brief Effective shape of this texture. Phase B view-dimension
         /// pickers and bind-time validators consult this so cube / array
         /// / MS textures bind with the right view dimension.
-        TextureKind getKind() const { return kind; }
-        unsigned getArrayLayers() const { return arrayLayers; }
-        unsigned getSampleCount() const { return sampleCount; }
+        OMEGA_NODISCARD TextureKind getKind() const { return kind; }
+        OMEGA_NODISCARD unsigned getArrayLayers() const { return arrayLayers; }
+        OMEGA_NODISCARD unsigned getSampleCount() const { return sampleCount; }
         /// @brief Backend-only: record the effective shape after the
         /// native resource has been built. Public so that backend
         /// `makeTexture` paths (which sit outside the friend boundary)

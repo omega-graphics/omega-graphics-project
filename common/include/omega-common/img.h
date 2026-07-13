@@ -185,9 +185,9 @@ namespace OmegaCommon::Img {
         BitmapImage & operator=(BitmapImage &&) noexcept = default;
 
         Byte * data() noexcept { return pixels.data(); }
-        OMEGACOMMON_NODISCARD const Byte * data() const noexcept { return pixels.data(); }
-        OMEGACOMMON_NODISCARD std::size_t byteSize() const noexcept { return pixels.size(); }
-        OMEGACOMMON_NODISCARD bool empty() const noexcept { return pixels.empty(); }
+        OMEGA_NODISCARD const Byte * data() const noexcept { return pixels.data(); }
+        OMEGA_NODISCARD std::size_t byteSize() const noexcept { return pixels.size(); }
+        OMEGA_NODISCARD bool empty() const noexcept { return pixels.empty(); }
     };
 
     OMEGACOMMON_IMG_EXPORT Result<BitmapImage, std::string> loadFromFile(FS::Path path);

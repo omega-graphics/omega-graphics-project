@@ -219,7 +219,7 @@ _NAMESPACE_BEGIN_
             Node *pt_A;
             Node *pt_B;
             unsigned pos;
-            bool atEnd() const {
+            OMEGA_NODISCARD bool atEnd() const {
                 return pt_A == nullptr || pt_B == nullptr;
             }
         public:
@@ -467,15 +467,16 @@ _NAMESPACE_BEGIN_
         path.transformEachPoint([=](GPoint2D & p){
             float x = p.x - pivot.x;
             float y = p.y - pivot.y;
-            p.x = pivot.x + (c * x + s * y);
-            p.y = pivot.y + (-s * x + c * y);
+            p.x = pivot.x + (c * x - s * y);
+            p.y = pivot.y + (s * x + c * y);
         });
     }
 
     /// Rotate every point of a 3D path by the Euler angles `pitch` (about X),
     /// `yaw` (about Y) and `roll` (about Z) about `pivot` (defaults to the
-    /// origin). The composed rotation is Rz(roll) * Ry(yaw) * Rx(pitch),
-    /// matching OmegaGTE::rotationEuler.
+    /// origin). Pitch is applied first, then yaw, then roll — the composed
+    /// rotation is Rz(roll) * Ry(yaw) * Rx(pitch), matching
+    /// OmegaGTE::rotationEuler and FQuaternion::fromEuler.
     inline void rotate(GVectorPath3D & path, float pitch, float yaw, float roll, GPoint3D pivot = {0.f,0.f,0.f}){
         float cx = std::cos(pitch), sx = std::sin(pitch);
         float cy = std::cos(yaw),   sy = std::sin(yaw);
@@ -485,14 +486,14 @@ _NAMESPACE_BEGIN_
             float y = p.y - pivot.y;
             float z = p.z - pivot.z;
             // Rx(pitch): x unchanged
-            float y1 =  cx * y + sx * z;
-            float z1 = -sx * y + cx * z;
+            float y1 = cx * y - sx * z;
+            float z1 = sx * y + cx * z;
             // Ry(yaw): y unchanged (y1)
-            float x2 = cy * x - sy * z1;
-            float z2 = sy * x + cy * z1;
+            float x2 =  cy * x + sy * z1;
+            float z2 = -sy * x + cy * z1;
             // Rz(roll): z unchanged (z2)
-            float x3 =  cz * x2 + sz * y1;
-            float y3 = -sz * x2 + cz * y1;
+            float x3 = cz * x2 - sz * y1;
+            float y3 = sz * x2 + cz * y1;
             p.x = pivot.x + x3;
             p.y = pivot.y + y3;
             p.z = pivot.z + z2;

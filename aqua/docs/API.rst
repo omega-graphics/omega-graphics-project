@@ -935,5 +935,5 @@ Preprocessor macros (``AQBase.h``)
 
 ``AQBase.h`` defines only two macros, applied to the exported types above:
 ``AQUA_EXPORT`` (the ``dllexport`` / ``dllimport`` visibility marker on Windows,
-empty elsewhere) and ``AQUA_NODISCARD`` (``[[nodiscard]]`` under C++17). Neither
+empty elsewhere) and ``OMEGA_NODISCARD`` (``[[nodiscard]]`` under C++17). Neither
 is something consumer code writes directly.

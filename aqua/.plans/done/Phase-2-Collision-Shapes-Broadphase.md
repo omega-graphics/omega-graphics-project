@@ -374,7 +374,7 @@ AQVec3<float>      AQshapeInertiaMoments(const AQShape& s, float mass);   // -> 
 struct AQShapeHandle {
     std::uint32_t index      = 0;
     std::uint32_t generation = 0;   // guards against stale handles after removal
-    AQUA_NODISCARD bool valid() const { return generation != 0; }
+    OMEGA_NODISCARD bool valid() const { return generation != 0; }
 };
 
 // --- A broadphase candidate pair (body indices into the space's SoA arrays). ---
@@ -504,12 +504,12 @@ public:
     //   worldInverseInertia() / linearMomentum() / angularMomentum() / kineticEnergy()
     //   setLinearDamping/setAngularDamping/setGravityScale/setMaxAngularSpeed (+ getters)
 
-    AQUA_NODISCARD AQShapeHandle shape() const;                 // new
+    OMEGA_NODISCARD AQShapeHandle shape() const;                 // new
     void setShape(const AQShapeHandle &s);                      // new (re-derives inertia if auto)
-    AQUA_NODISCARD OmegaGTE::FVec<3> aabbMin() const;           // new — current world (fat) AABB
-    AQUA_NODISCARD OmegaGTE::FVec<3> aabbMax() const;           // new
+    OMEGA_NODISCARD OmegaGTE::FVec<3> aabbMin() const;           // new — current world (fat) AABB
+    OMEGA_NODISCARD OmegaGTE::FVec<3> aabbMax() const;           // new
 
-    AQUA_NODISCARD AQCollisionFilter collisionFilter() const;   // new
+    OMEGA_NODISCARD AQCollisionFilter collisionFilter() const;   // new
     void setCollisionFilter(const AQCollisionFilter &f);        // new
 };
 ```
@@ -535,7 +535,7 @@ public:
 
     // Broadphase result access — for debug-draw now, Phase 3 narrowphase next.
     // Returns the current ordered, de-duplicated candidate pairs.
-    AQUA_NODISCARD std::vector<AQBroadphasePair> candidatePairs() const;           // new
+    OMEGA_NODISCARD std::vector<AQBroadphasePair> candidatePairs() const;           // new
 };
 ```
 

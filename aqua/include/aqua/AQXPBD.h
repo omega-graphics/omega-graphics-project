@@ -105,7 +105,7 @@ struct AQXPBDParams {
 // stable id, never a pointer, so a caller can never dangle into freed state.
 struct AQXPBDBodyHandle {
     std::uint64_t id = 0;
-    AQUA_NODISCARD bool valid() const { return id != 0; }
+    OMEGA_NODISCARD bool valid() const { return id != 0; }
 };
 
 /// Identifies one authored constraint: the owning body + the constraint's
@@ -115,7 +115,7 @@ struct AQConstraintHandle {
     std::uint64_t    body  = 0;                     ///< AQXPBDBodyHandle::id
     AQConstraintType type  = AQConstraintDistance;
     std::uint32_t    index = 0;                     ///< authoring index within the type
-    AQUA_NODISCARD bool valid() const { return body != 0; }
+    OMEGA_NODISCARD bool valid() const { return body != 0; }
 };
 
 // --- Body description ----------------------------------------------------------

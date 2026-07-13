@@ -51,11 +51,11 @@ _NAMESPACE_BEGIN_
 
         /// @brief Get the loaded texture, or null if load was not called
         /// or failed.
-        virtual SharedHandle<GETexture> texture() const = 0;
+        OMEGA_NODISCARD virtual SharedHandle<GETexture> texture() const = 0;
 
         /// @brief Describe the loaded texture (dimensions, format, mips).
         /// Fields are zero / default when no texture is loaded.
-        virtual TextureDescriptor descriptor() const = 0;
+        OMEGA_NODISCARD virtual TextureDescriptor descriptor() const = 0;
 
         /// @brief Free GPU and CPU resources held by this asset early.
         /// Optional — destruction handles release automatically.

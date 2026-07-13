@@ -62,7 +62,7 @@ struct AQShape {
 struct AQShapeHandle {
     std::uint32_t index      = 0;
     std::uint32_t generation = 0;
-    AQUA_NODISCARD bool valid() const { return generation != 0; }
+    OMEGA_NODISCARD bool valid() const { return generation != 0; }
 };
 
 /// 32-bit layer membership + 32-bit collision mask. Two bodies generate a

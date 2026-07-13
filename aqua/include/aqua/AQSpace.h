@@ -41,7 +41,7 @@ public:
     ~AQSpace();
 
     void setGravity(const OmegaGTE::FVec<3> &g);
-    AQUA_NODISCARD OmegaGTE::FVec<3> gravity() const;
+    OMEGA_NODISCARD OmegaGTE::FVec<3> gravity() const;
 
     /// Adds a body and returns a handle owned by this space.
     SharedHandle<AQRigidBody> addBody(const AQBodyDesc &desc);
@@ -50,7 +50,7 @@ public:
     bool removeBody(const SharedHandle<AQRigidBody> &body);
 
     /// Number of bodies currently in the space.
-    AQUA_NODISCARD std::size_t bodyCount() const;
+    OMEGA_NODISCARD std::size_t bodyCount() const;
 
     // --- drainable debug surface (Phase 1.1 §6.5) ---
     // AQUA emits structured `AQDebugLine` records each step according to the
@@ -60,9 +60,9 @@ public:
     // by default (AQDebugNone), so the surface is zero-cost when unused.
     /// Sets which debug primitives the space emits each step. OR of `AQDebugFlags`.
     void setDebugFlags(std::uint32_t flags);
-    AQUA_NODISCARD std::uint32_t debugFlags() const;
+    OMEGA_NODISCARD std::uint32_t debugFlags() const;
     /// Moves the accumulated debug lines out of the space and clears its buffer.
-    AQUA_NODISCARD OmegaCommon::Vector<AQDebugLine> drainDebugLines();
+    OMEGA_NODISCARD OmegaCommon::Vector<AQDebugLine> drainDebugLines();
 
     // --- shape factories (Phase 2) ---
     // Shapes are owned and instanced by the space (§11.3) and referenced by
@@ -78,7 +78,7 @@ public:
     /// Current ordered, de-duplicated broadphase candidate pairs (Phase 2 §10).
     /// Indices are stable for the lifetime of the space (the body's slot in
     /// the space's body-SoA array). Updated once per `AQContext::advance`.
-    AQUA_NODISCARD OmegaCommon::Vector<AQBroadphasePair> candidatePairs() const;
+    OMEGA_NODISCARD OmegaCommon::Vector<AQBroadphasePair> candidatePairs() const;
 
     // --- material combine + solver (Phase 3) ---
     /// Per-space restitution and friction combine rules. Default is Average
@@ -86,23 +86,23 @@ public:
     /// isotropic-material policy). See `AQMaterialCombine`.
     void setMaterialCombine(AQMaterialCombine restCombine,
                             AQMaterialCombine fricCombine);
-    AQUA_NODISCARD AQMaterialCombine restitutionCombine() const;
-    AQUA_NODISCARD AQMaterialCombine frictionCombine() const;
+    OMEGA_NODISCARD AQMaterialCombine restitutionCombine() const;
+    OMEGA_NODISCARD AQMaterialCombine frictionCombine() const;
 
     /// Sequential-impulse PGS sweep counts (Phase-3 §11.4). Defaults: 8
     /// velocity, 4 position. `positionIters == 0` disables the split-impulse
     /// position-correction pass entirely — useful for the energy-non-growth
     /// test and for scenes that don't need penetration recovery.
     void setSolverIterations(int velocityIters, int positionIters);
-    AQUA_NODISCARD int velocityIterations() const;
-    AQUA_NODISCARD int positionIterations() const;
+    OMEGA_NODISCARD int velocityIterations() const;
+    OMEGA_NODISCARD int positionIterations() const;
 
     /// Read-only manifold view, refreshed by the most recent sub-step. Stable
     /// for the duration of one `AQContext::advance` call between the final
     /// sub-step and the next `advance`. Useful for the Phase 4 joint wiring
     /// and for debug overlays — the value-type copy carries body indices, not
     /// pointers, so it is safe to hold across `advance` boundaries.
-    AQUA_NODISCARD OmegaCommon::Vector<AQContactManifold> contactManifolds() const;
+    OMEGA_NODISCARD OmegaCommon::Vector<AQContactManifold> contactManifolds() const;
 
     // ========================================================================
     // Phase 4 — joints, queries, triggers, sleep tuning (§10 public API).
@@ -142,13 +142,13 @@ public:
 
     /// Read-only joint view, refreshed per `advance`. Value-type copies carry
     /// body indices, not pointers — safe to hold across `advance` boundaries.
-    AQUA_NODISCARD OmegaCommon::Vector<AQJointDesc> joints() const;
+    OMEGA_NODISCARD OmegaCommon::Vector<AQJointDesc> joints() const;
 
     /// World-frame linear impulse this joint applied during the most recent
     /// sub-step (zero vector for an invalid handle). Divide by the sub-step `dt`
     /// for the reaction force the joint exerts — the bridge deliverable reads
     /// this for its catenary-tension / support-force oracle.
-    AQUA_NODISCARD OmegaGTE::FVec<3> jointImpulse(AQJointHandle h) const;
+    OMEGA_NODISCARD OmegaGTE::FVec<3> jointImpulse(AQJointHandle h) const;
 
     // --- queries (valid between `advance` calls; stale during one) ---
     // `hits` is cleared then appended; results are sorted by (fraction, body).
@@ -175,7 +175,7 @@ public:
     // --- triggers ---
     /// Drains the per-`advance` trigger-event queue; subsequent calls until the
     /// next advance return empty. Events are ordered by `(a, b)` ascending.
-    AQUA_NODISCARD OmegaCommon::Vector<AQTriggerEvent> triggerEvents();
+    OMEGA_NODISCARD OmegaCommon::Vector<AQTriggerEvent> triggerEvents();
 
     // --- sleep tuning ---
     /// Space-wide sleep thresholds. Defaults: 0.01 m/s linear, 0.01 rad/s
@@ -214,14 +214,14 @@ public:
     /// count written; any out array may be null to skip that attribute. Valid
     /// after `AQContext::advance` returns — the live set is packed into the
     /// prefix by the end-of-frame compaction.
-    AQUA_NODISCARD std::uint32_t readParticleState(AQParticleSystemHandle system,
+    OMEGA_NODISCARD std::uint32_t readParticleState(AQParticleSystemHandle system,
                                        OmegaGTE::FVec<3> *outPositions,
                                        OmegaGTE::FVec<3> *outVelocities,
                                        float *outLifetimes,
                                        std::uint32_t *outFlags,
                                        std::uint32_t maxCount) const;
     /// Number of live particles in the system (0 on an unknown handle).
-    AQUA_NODISCARD std::uint32_t liveParticleCount(AQParticleSystemHandle system) const;
+    OMEGA_NODISCARD std::uint32_t liveParticleCount(AQParticleSystemHandle system) const;
 
     // --- XPBD constraint core (Phase 7, §10/§13) -----------------------------
     // An XPBD body is a persistent particle set + typed constraints projected
@@ -256,12 +256,12 @@ public:
     /// Values are sanitized: substeps/iterations clamp to ≥ 1, damping to
     /// [0, 1), explosionThreshold to > 0.
     void setXPBDParams(const AQXPBDParams &params);
-    AQUA_NODISCARD AQXPBDParams xpbdParams() const;
+    OMEGA_NODISCARD AQXPBDParams xpbdParams() const;
 
     /// Snapshots particle state into caller-owned arrays (either may be null
     /// to skip). Returns the count written (min(particleCount, maxCount); 0 on
     /// an unknown handle). Valid between `AQContext::advance` calls.
-    AQUA_NODISCARD std::uint32_t readXPBDState(AQXPBDBodyHandle body,
+    OMEGA_NODISCARD std::uint32_t readXPBDState(AQXPBDBodyHandle body,
                                    OmegaGTE::FVec<3> *outPositions,
                                    OmegaGTE::FVec<3> *outVelocities,
                                    std::uint32_t maxCount) const;
@@ -270,7 +270,7 @@ public:
     /// the solver's own view, one contiguous range per color batch) and the
     /// batch table. Any out array may be null. Returns the constraint count
     /// written. Re-colors first if the topology changed since the last step.
-    AQUA_NODISCARD std::uint32_t readXPBDConstraints(AQXPBDBodyHandle body,
+    OMEGA_NODISCARD std::uint32_t readXPBDConstraints(AQXPBDBodyHandle body,
                                    AQDistanceConstraint *outConstraints,
                                    std::uint32_t maxConstraints,
                                    OmegaCommon::Vector<AQConstraintBatch> *outBatches) const;
@@ -278,7 +278,7 @@ public:
     /// Cumulative explosion-guard trips on this body (0 on an unknown handle).
     /// A non-zero value means the solve diverged and was clamped — loud by
     /// contract (§9.7), so tests can assert both "tripped" and "never trips".
-    AQUA_NODISCARD std::uint32_t xpbdGuardTrips(AQXPBDBodyHandle body) const;
+    OMEGA_NODISCARD std::uint32_t xpbdGuardTrips(AQXPBDBodyHandle body) const;
 
     /// Enables two-way contact coupling of this XPBD body's particles against
     /// the space's rigid colliders (Phase 7g, §13.6). Off by default. Particles

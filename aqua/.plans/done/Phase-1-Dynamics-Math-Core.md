@@ -419,20 +419,20 @@ public:
     ~AQRigidBody();
 
     // --- linear state (existing) ---
-    AQUA_NODISCARD OmegaGTE::FVec<3> position() const;
+    OMEGA_NODISCARD OmegaGTE::FVec<3> position() const;
     void setPosition(const OmegaGTE::FVec<3> &p);
-    AQUA_NODISCARD OmegaGTE::FVec<3> velocity() const;
+    OMEGA_NODISCARD OmegaGTE::FVec<3> velocity() const;
     void setVelocity(const OmegaGTE::FVec<3> &v);
 
     // --- angular state (new) ---
-    AQUA_NODISCARD OmegaGTE::FQuaternion orientation() const;
+    OMEGA_NODISCARD OmegaGTE::FQuaternion orientation() const;
     void setOrientation(const OmegaGTE::FQuaternion &q);
-    AQUA_NODISCARD OmegaGTE::FVec<3> angularVelocity() const;   // world frame
+    OMEGA_NODISCARD OmegaGTE::FVec<3> angularVelocity() const;   // world frame
     void setAngularVelocity(const OmegaGTE::FVec<3> &w);
 
     // --- mass properties (new) ---
-    AQUA_NODISCARD float mass() const;                          // 0 ⇒ static
-    AQUA_NODISCARD OmegaGTE::FVec<3> inertiaPrincipalMoments() const;
+    OMEGA_NODISCARD float mass() const;                          // 0 ⇒ static
+    OMEGA_NODISCARD OmegaGTE::FVec<3> inertiaPrincipalMoments() const;
 
     // --- force / torque / impulse API (new) ---
     // Accumulated in world space, consumed at the start of each sub-step.
@@ -445,7 +445,7 @@ public:
                              const OmegaGTE::FVec<3> &worldPoint);  // + angular impulse
     void applyAngularImpulse(const OmegaGTE::FVec<3> &angularImpulse);
 
-    AQUA_NODISCARD AQBodyType type() const;
+    OMEGA_NODISCARD AQBodyType type() const;
 
 private:
     AQRigidBody();

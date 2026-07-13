@@ -115,50 +115,50 @@ namespace OmegaCommon {
         /// Make an empty Array node, ready to be filled via push_back.
         static JSON Array();
 
-        OMEGACOMMON_NODISCARD bool isString() const;
+        OMEGA_NODISCARD bool isString() const;
 
-        OMEGACOMMON_NODISCARD bool isArray() const;
+        OMEGA_NODISCARD bool isArray() const;
 
-        OMEGACOMMON_NODISCARD bool isNumber() const;
+        OMEGA_NODISCARD bool isNumber() const;
 
         /// True when this is a number stored as an integer.
-        OMEGACOMMON_NODISCARD bool isInt() const;
+        OMEGA_NODISCARD bool isInt() const;
 
         /// True when this is a number stored as a real (floating-point).
-        OMEGACOMMON_NODISCARD bool isReal() const;
+        OMEGA_NODISCARD bool isReal() const;
 
-        OMEGACOMMON_NODISCARD bool isMap() const;
+        OMEGA_NODISCARD bool isMap() const;
 
         /// True when this is an explicit null node.
-        OMEGACOMMON_NODISCARD bool isNull() const;
+        OMEGA_NODISCARD bool isNull() const;
 
         /// True when this is a boolean node.
-        OMEGACOMMON_NODISCARD bool isBool() const;
+        OMEGA_NODISCARD bool isBool() const;
 
         /// Get this JSON node as a String.
-        OMEGACOMMON_NODISCARD OmegaCommon::StrRef asString() const;
+        OMEGA_NODISCARD OmegaCommon::StrRef asString() const;
 
         /// Get this JSON node as a Vector
         /// (From a JSON Array).
-        OMEGACOMMON_NODISCARD ArrayRef<JSON> asVector() const;
+        OMEGA_NODISCARD ArrayRef<JSON> asVector() const;
 
         /// Get this JSON node as a Map.
-        OMEGACOMMON_NODISCARD MapRef<String,JSON> asMap() const;
+        OMEGA_NODISCARD MapRef<String,JSON> asMap() const;
 
         /// Get this number as a 64-bit integer (truncates a real value).
-        OMEGACOMMON_NODISCARD long long asInt() const;
+        OMEGA_NODISCARD long long asInt() const;
 
         /// Get this number as a double (widens an integer value).
-        OMEGACOMMON_NODISCARD double asDouble() const;
+        OMEGA_NODISCARD double asDouble() const;
 
         /// Get this number as a float (narrows asDouble()).
-        OMEGACOMMON_NODISCARD float asFloat() const;
+        OMEGA_NODISCARD float asFloat() const;
 
         /// Get a mutable reference to this boolean node.
         bool & asBool();
 
         /// Get this boolean node's value (const).
-        OMEGACOMMON_NODISCARD bool asBool() const;
+        OMEGA_NODISCARD bool asBool() const;
 
         // /// @name Mod Methods 
         // /// @{
@@ -179,23 +179,23 @@ namespace OmegaCommon {
         /// @{
 
         /// True when this Map node holds `key`.
-        OMEGACOMMON_NODISCARD bool contains(OmegaCommon::StrRef key) const;
+        OMEGA_NODISCARD bool contains(OmegaCommon::StrRef key) const;
 
         /// Find a Map member by key, or nullptr when absent. Never inserts.
         JSON * find(OmegaCommon::StrRef key);
 
-        OMEGACOMMON_NODISCARD const JSON * find(OmegaCommon::StrRef key) const;
+        OMEGA_NODISCARD const JSON * find(OmegaCommon::StrRef key) const;
 
         /// Access a Map member by key. Asserts the key is present (never inserts).
         JSON & at(OmegaCommon::StrRef key);
 
-        OMEGACOMMON_NODISCARD const JSON & at(OmegaCommon::StrRef key) const;
+        OMEGA_NODISCARD const JSON & at(OmegaCommon::StrRef key) const;
 
         /// Number of members (Map) or elements (Array).
-        OMEGACOMMON_NODISCARD size_t size() const;
+        OMEGA_NODISCARD size_t size() const;
 
         /// True when this Map/Array node holds nothing.
-        OMEGACOMMON_NODISCARD bool empty() const;
+        OMEGA_NODISCARD bool empty() const;
 
         /// @}
 
