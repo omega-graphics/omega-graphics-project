@@ -505,6 +505,47 @@ typedef int ASTType;
 ///          it is an `object_data T& [[payload]]` reference parameter)
 #define BUILTIN_DISPATCH_MESH "dispatchMesh"
 
+/// Inline ray tracing (Raytracing plan §1.3). `intersect(as, ray)` casts a
+/// single ray against a top-level acceleration structure and returns a
+/// `RayHit` describing the committed opaque-triangle hit (or a miss). Overloads
+/// (validated by arg count in Sema, like the `sample`/`gather` family):
+///   intersect(AccelerationStructure as, Ray ray)               — mask = 0xFF
+///   intersect(AccelerationStructure as, Ray ray, uint mask)    — instance mask
+/// Compute-stage only; lowers to inline ray-query on every backend (HLSL
+/// `RayQuery::TraceRayInline`, GLSL `rayQueryEXT`, MSL `intersector`). The
+/// 4-arg `rayFlags` overload + `RAY_FLAG_*` constants are deferred to
+/// sub-phase 1.5 (they need a named-constant surface and a non-trivial Metal
+/// flag mapping).
+#define BUILTIN_INTERSECT "intersect"
+
+/// Inline ray tracing sub-phase 1.5 — low-level `ray_query_*` traversal loop
+/// (Raytracing plan §1.5). The explicit-loop form for non-opaque / alpha-tested
+/// TRIANGLE geometry, where the shader must inspect each candidate and decide
+/// whether to commit it. All 12 take a `RayQuery` as arg0 and are compute-only.
+///   ray_query_init(q, as, ray [, mask])  — void; start a traversal
+///   ray_query_proceed(q)                 — bool; advance to the next candidate
+///   ray_query_commit(q)                  — void; accept the current candidate
+///   ray_query_committed(q)               — bool; did any hit commit?
+/// Committed-hit accessors (valid after the loop, when committed() is true):
+///   ray_query_t / _primitive / _instance / _barycentrics
+/// Current-candidate accessors (valid inside the loop, for alpha testing):
+///   ray_query_candidate_t / _candidate_primitive / _candidate_instance /
+///   ray_query_candidate_barycentrics
+/// See the per-backend lowering table in Raytracing-Full-Implementation-Plan.md
+/// §1.5. Ray flags and procedural/AABB geometry are NOT part of this set.
+#define BUILTIN_RAY_QUERY_INIT "ray_query_init"
+#define BUILTIN_RAY_QUERY_PROCEED "ray_query_proceed"
+#define BUILTIN_RAY_QUERY_COMMIT "ray_query_commit"
+#define BUILTIN_RAY_QUERY_COMMITTED "ray_query_committed"
+#define BUILTIN_RAY_QUERY_T "ray_query_t"
+#define BUILTIN_RAY_QUERY_PRIMITIVE "ray_query_primitive"
+#define BUILTIN_RAY_QUERY_INSTANCE "ray_query_instance"
+#define BUILTIN_RAY_QUERY_BARYCENTRICS "ray_query_barycentrics"
+#define BUILTIN_RAY_QUERY_CANDIDATE_T "ray_query_candidate_t"
+#define BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE "ray_query_candidate_primitive"
+#define BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE "ray_query_candidate_instance"
+#define BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS "ray_query_candidate_barycentrics"
+
 //Internal Shader Attributes
 #define ATTRIBUTE_VERTEX_ID "VertexID"
 #define ATTRIBUTE_INSTANCE_ID "InstanceID"

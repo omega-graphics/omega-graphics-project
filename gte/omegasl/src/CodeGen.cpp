@@ -233,6 +233,12 @@ namespace omegasl {
                 } else if (_id_expr == BUILTIN_GET_DIMENSIONS) {
                     generatedExprBody = true;
                     target->emitTextureGetDimensions(*this, _expr, out);
+                } else if (_id_expr == BUILTIN_INTERSECT) {
+                    /// Inline ray tracing (Raytracing plan §2). Statement-shaped
+                    /// inline ray query — the backend queues the query block and
+                    /// emits the injected RayHit temp name inline.
+                    generatedExprBody = true;
+                    target->emitIntersect(*this, _expr, out);
                 } else if (isUserFunc(_id_expr)) {
                     /// §3.5 — pick the mangled spelling matching the
                     /// resolved overload. Sema stamps `resolvedCallee`

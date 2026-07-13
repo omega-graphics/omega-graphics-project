@@ -333,6 +333,36 @@ _NAMESPACE_BEGIN_
         float minX,minY,minZ,maxX,maxY,maxZ;
     };
 
+    struct GEAccelerationStruct;
+
+    /// Inline ray tracing (Raytracing plan §6.1) — instance-flag bits for a
+    /// TLAS instance. Values match `D3D12_RAYTRACING_INSTANCE_FLAG_*` (and the
+    /// Vulkan `VkGeometryInstanceFlagBitsKHR` / Metal equivalents) so each
+    /// backend casts the 8-bit field directly.
+    enum GEAccelerationStructInstanceFlags : unsigned {
+        GE_ACCEL_INSTANCE_FLAG_NONE                 = 0x0,
+        GE_ACCEL_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE = 0x1,
+        GE_ACCEL_INSTANCE_FLAG_TRIANGLE_FRONT_CCW    = 0x2,
+        GE_ACCEL_INSTANCE_FLAG_FORCE_OPAQUE          = 0x4,
+        GE_ACCEL_INSTANCE_FLAG_FORCE_NON_OPAQUE      = 0x8
+    };
+
+    /// Inline ray tracing (Raytracing plan §6.1) — one instance of a bottom-
+    /// level acceleration structure (BLAS) inside a top-level one (TLAS).
+    /// `transform` is a 3x4 row-major affine matrix (the implicit last row is
+    /// [0 0 0 1]). `instanceMask` is AND-ed against the ray's instance-inclusion
+    /// mask during traversal; `instanceID` is the user id read back through
+    /// `RayHit.instanceIndex` / `ray_query_instance`. Build one via
+    /// `GEAccelerationStructDescriptor::addInstance`.
+    struct OMEGAGTE_EXPORT GEAccelerationStructInstance {
+        float transform[3][4];
+        unsigned instanceID : 24;
+        unsigned instanceMask : 8;
+        unsigned instanceContributionToHitGroupIndex : 24;
+        unsigned flags : 8;
+        SharedHandle<GEAccelerationStruct> blas;
+    };
+
      /// @brief Describes the Layout of a Acceleration Structure.
     struct OMEGAGTE_EXPORT GEAccelerationStructDescriptor {
         struct Geometry {
@@ -353,6 +383,14 @@ _NAMESPACE_BEGIN_
             OMEGA_NODISCARD const Aabb& getAabb() const { return std::get<Aabb>(data); }
         };
         OmegaCommon::Vector<Geometry> data;
+
+        /// Inline ray tracing (Raytracing plan §6.1) — bottom-level (geometry)
+        /// vs top-level (instances). Defaults to BottomLevel so existing callers
+        /// that only use addTriangleBuffer / addBoundingBoxBuffer are unchanged;
+        /// addInstance flips it to TopLevel.
+        enum Level { BottomLevel, TopLevel };
+        Level level = BottomLevel;
+        OmegaCommon::Vector<GEAccelerationStructInstance> instances;
     public:
         void addTriangleBuffer(SharedHandle<GEBuffer> & buffer){
             Geometry g;
@@ -363,6 +401,30 @@ _NAMESPACE_BEGIN_
             Geometry g;
             g.setAabb(buffer);
             data.push_back(g);
+        }
+        /// Add a BLAS instance to a TLAS and flip `level` to TopLevel. `mask`
+        /// defaults to 0xFF (visible to every ray) — a zero mask, which a
+        /// default-constructed instance would carry, is invisible to the 0xFF
+        /// default ray mask, so defaulting here avoids a silent "no hits" trap.
+        /// C++17 forbids default member initializers on the bitfields, so the
+        /// defaults live here instead.
+        void addInstance(SharedHandle<GEAccelerationStruct> & blas,
+                         const float transform[3][4],
+                         unsigned mask = 0xFF,
+                         unsigned instanceID = 0,
+                         unsigned flags = GE_ACCEL_INSTANCE_FLAG_NONE,
+                         unsigned hitGroupIndex = 0){
+            GEAccelerationStructInstance inst{};
+            for(int r = 0; r < 3; ++r)
+                for(int c = 0; c < 4; ++c)
+                    inst.transform[r][c] = transform[r][c];
+            inst.instanceID = instanceID;
+            inst.instanceMask = mask;
+            inst.instanceContributionToHitGroupIndex = hitGroupIndex;
+            inst.flags = flags;
+            inst.blas = blas;
+            instances.push_back(inst);
+            level = TopLevel;
         }
     };
 

@@ -89,6 +89,13 @@ namespace omegasl::ast {
         Type *atomic_int_type;
         Type *atomic_uint_type;
 
+        /// Inline ray tracing (Raytracing plan §1.2).
+        Type *ray_type;
+        Type *rayhit_type;
+        Type *acceleration_structure_type;
+        /// Sub-phase 1.5 — opaque low-level ray-query object.
+        Type *ray_query_type;
+
         Type *buffer_type;
         Type *uniform_type;
         Type *push_constant_type;
@@ -164,6 +171,22 @@ namespace omegasl::ast {
         FuncType *gatherAlpha;
         FuncType *calculateLOD;
         FuncType *getDimensions;
+
+        FuncType *intersect;
+
+        /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family.
+        FuncType *ray_query_init;
+        FuncType *ray_query_proceed;
+        FuncType *ray_query_commit;
+        FuncType *ray_query_committed;
+        FuncType *ray_query_t;
+        FuncType *ray_query_primitive;
+        FuncType *ray_query_instance;
+        FuncType *ray_query_barycentrics;
+        FuncType *ray_query_candidate_t;
+        FuncType *ray_query_candidate_primitive;
+        FuncType *ray_query_candidate_instance;
+        FuncType *ray_query_candidate_barycentrics;
 
 
         void Initialize(){
@@ -280,6 +303,39 @@ namespace omegasl::ast {
                 /// map to `int`/`uint`).
                 atomic_int_type = new Type{KW_TY_ATOMIC_INT,global_scope};
                 atomic_uint_type = new Type{KW_TY_ATOMIC_UINT,global_scope};
+
+                /// Inline ray tracing (Raytracing plan §1.2). `Ray` / `RayHit`
+                /// are declared with `builtin = false` and a populated `fields`
+                /// map — exactly the shape `Sem::addTypeToCurrentContext`
+                /// produces for a user `struct`. That is what routes
+                /// `ray.origin` / `hit.t` through the struct-field path in
+                /// Sema's MEMBER_EXPR handler instead of the vector-swizzle
+                /// path (which the `builtin` flag gates), and what auto-adds
+                /// their names to a shader's used-struct set so each backend
+                /// emits the matching `struct` definition. The `fields` order
+                /// is not load-bearing here (MapVec is unordered); the emitted
+                /// struct text is pinned per backend in `emitDefaultHeaders`.
+                /// The vector/scalar element Types are constructed above, so
+                /// their pointers are valid to reference here.
+                ray_type = new Type{KW_TY_RAY,global_scope,false,{},{
+                    {"origin",TypeExpr::Create(float3_type)},
+                    {"direction",TypeExpr::Create(float3_type)},
+                    {"tmin",TypeExpr::Create(float_type)},
+                    {"tmax",TypeExpr::Create(float_type)}
+                    }};
+                rayhit_type = new Type{KW_TY_RAY_HIT,global_scope,false,{},{
+                    {"committed",TypeExpr::Create(bool_type)},
+                    {"t",TypeExpr::Create(float_type)},
+                    {"primitiveIndex",TypeExpr::Create(uint_type)},
+                    {"instanceIndex",TypeExpr::Create(uint_type)},
+                    {"barycentrics",TypeExpr::Create(float2_type)}
+                    }};
+                /// Opaque TLAS handle — no user-visible fields; touched only by
+                /// `intersect()` and bound through the compute resource map.
+                acceleration_structure_type = new Type{KW_TY_ACCELERATION_STRUCTURE,global_scope};
+                /// Sub-phase 1.5 — opaque ray-query object; declared as a local
+                /// and mutated by `ray_query_*`. No fields (like the TLAS handle).
+                ray_query_type = new Type{KW_TY_RAY_QUERY,global_scope};
 
                 make_float2 = new FuncType{BUILTIN_MAKE_FLOAT2,global_scope,true,{},{
 
@@ -435,6 +491,63 @@ namespace omegasl::ast {
                     {"texture",TypeExpr::Create("TEXTURE_TYPE")},
                     {"lod",TypeExpr::Create(uint_type)}
                     },TypeExpr::Create(uint2_type)};
+
+                /// Inline ray tracing (Raytracing plan §1.3). The param
+                /// TypeExprs are placeholders — the real per-argument
+                /// validation (arg[0] is an AccelerationStructure, arg[1] a
+                /// Ray, optional arg[2] a uint mask) lives in the per-builtin
+                /// Sema branch, exactly as `sample`/`gather` do. The declared
+                /// return type is `RayHit`; the shared CALL_EXPR tail returns
+                /// it as the call's resolved type.
+                intersect = new FuncType{BUILTIN_INTERSECT,global_scope,true,{},{
+                    {"as",TypeExpr::Create(acceleration_structure_type)},
+                    {"ray",TypeExpr::Create(ray_type)}
+                    },TypeExpr::Create(rayhit_type)};
+
+                /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family.
+                /// Like the texture builtins, the param TypeExprs are
+                /// placeholders — the real per-arg validation (arg0 is a
+                /// RayQuery, etc.) lives in the Sema `ray_query_*` branch. Only
+                /// the declared return type is load-bearing (it flows through the
+                /// shared CALL_EXPR tail).
+                ray_query_init = new FuncType{BUILTIN_RAY_QUERY_INIT,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)},
+                    {"as",TypeExpr::Create(acceleration_structure_type)},
+                    {"ray",TypeExpr::Create(ray_type)}
+                    },TypeExpr::Create(void_type)};
+                ray_query_proceed = new FuncType{BUILTIN_RAY_QUERY_PROCEED,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(bool_type)};
+                ray_query_commit = new FuncType{BUILTIN_RAY_QUERY_COMMIT,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(void_type)};
+                ray_query_committed = new FuncType{BUILTIN_RAY_QUERY_COMMITTED,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(bool_type)};
+                ray_query_t = new FuncType{BUILTIN_RAY_QUERY_T,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(float_type)};
+                ray_query_primitive = new FuncType{BUILTIN_RAY_QUERY_PRIMITIVE,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(uint_type)};
+                ray_query_instance = new FuncType{BUILTIN_RAY_QUERY_INSTANCE,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(uint_type)};
+                ray_query_barycentrics = new FuncType{BUILTIN_RAY_QUERY_BARYCENTRICS,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(float2_type)};
+                ray_query_candidate_t = new FuncType{BUILTIN_RAY_QUERY_CANDIDATE_T,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(float_type)};
+                ray_query_candidate_primitive = new FuncType{BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(uint_type)};
+                ray_query_candidate_instance = new FuncType{BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(uint_type)};
+                ray_query_candidate_barycentrics = new FuncType{BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(float2_type)};
             }
         }
 
@@ -530,6 +643,12 @@ namespace omegasl::ast {
                 /// §5.6 — atomic scalar types.
                 delete atomic_int_type;
                 delete atomic_uint_type;
+                /// Inline ray tracing (Raytracing plan §1.2).
+                delete ray_type;
+                delete rayhit_type;
+                delete acceleration_structure_type;
+                /// Sub-phase 1.5 — opaque ray-query object.
+                delete ray_query_type;
                 delete make_float2;
                 delete make_float3;
                 delete make_float4;
@@ -584,6 +703,20 @@ namespace omegasl::ast {
                 delete gatherAlpha;
                 delete calculateLOD;
                 delete getDimensions;
+                delete intersect;
+                /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family.
+                delete ray_query_init;
+                delete ray_query_proceed;
+                delete ray_query_commit;
+                delete ray_query_committed;
+                delete ray_query_t;
+                delete ray_query_primitive;
+                delete ray_query_instance;
+                delete ray_query_barycentrics;
+                delete ray_query_candidate_t;
+                delete ray_query_candidate_primitive;
+                delete ray_query_candidate_instance;
+                delete ray_query_candidate_barycentrics;
             }
         }
 
@@ -750,7 +883,16 @@ namespace omegasl::ast {
             /// §2a follow-up — mesh-shader runtime output-count call.
             BUILTIN_SET_MESH_OUTPUTS,
             /// §5 — amplification-stage child dispatch.
-            BUILTIN_DISPATCH_MESH
+            BUILTIN_DISPATCH_MESH,
+            /// Inline ray tracing (Raytracing plan §1.3).
+            BUILTIN_INTERSECT,
+            /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family.
+            BUILTIN_RAY_QUERY_INIT, BUILTIN_RAY_QUERY_PROCEED,
+            BUILTIN_RAY_QUERY_COMMIT, BUILTIN_RAY_QUERY_COMMITTED,
+            BUILTIN_RAY_QUERY_T, BUILTIN_RAY_QUERY_PRIMITIVE,
+            BUILTIN_RAY_QUERY_INSTANCE, BUILTIN_RAY_QUERY_BARYCENTRICS,
+            BUILTIN_RAY_QUERY_CANDIDATE_T, BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE,
+            BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE, BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS
         };
         return reserved.count(std::string(name)) > 0;
     }

@@ -118,6 +118,11 @@ add_omegasl_compile_test(omegasl_compile_half_pack           half_pack.omegasl)
 add_omegasl_compile_test(omegasl_compile_pack_norm           pack_norm.omegasl)
 # §5.6 Phase A — atomic ops (add/min/max/and/or/xor/exchange + load/store).
 add_omegasl_compile_test(omegasl_compile_atomic_ops          atomic_ops.omegasl)
+# Raytracing plan §1-2 — inline ray query: Ray/RayHit/AccelerationStructure
+# builtin types + intersect() lowered to inline ray query on every backend.
+add_omegasl_compile_test(omegasl_compile_inline_raytracing   inline_raytracing.omegasl)
+# Raytracing plan §1.5 — low-level RayQuery traversal loop (ray_query_*).
+add_omegasl_compile_test(omegasl_compile_ray_query_loop      ray_query_loop.omegasl)
 # §5.1.0 — modf / frexp out-param intrinsics + mod / mad aliases.
 add_omegasl_compile_test(omegasl_compile_math_modf_frexp     math_modf_frexp.omegasl)
 # §4.1 / §4.2 / §4.3 — 16-bit, 64-bit, and double numeric type families.

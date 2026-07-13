@@ -109,7 +109,18 @@ namespace omegasl {
         /// scalar; the atomic-operand rules live in the CALL_EXPR atomic
         /// bucket and the type just needs to resolve here.
         ast::builtins::atomic_int_type,
-        ast::builtins::atomic_uint_type
+        ast::builtins::atomic_uint_type,
+
+        /// Inline ray tracing (Raytracing plan §1.2). `Ray` / `RayHit` are
+        /// builtin `struct` types (member access resolves through their
+        /// populated `fields`); `AccelerationStructure` is the opaque TLAS
+        /// handle. All three just need to resolve here — their rules live in
+        /// the RESOURCE_DECL whitelist and the `intersect` CALL_EXPR branch.
+        ast::builtins::ray_type,
+        ast::builtins::rayhit_type,
+        ast::builtins::acceleration_structure_type,
+        /// Sub-phase 1.5 — opaque low-level ray-query object.
+        ast::builtins::ray_query_type
         }),
         builtinFunctionMap({
 
@@ -169,7 +180,22 @@ namespace omegasl {
             ast::builtins::calculateLOD,
             ast::builtins::getDimensions,
             ast::builtins::write,
-            ast::builtins::read
+            ast::builtins::read,
+            /// Inline ray tracing (Raytracing plan §1.3).
+            ast::builtins::intersect,
+            /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family.
+            ast::builtins::ray_query_init,
+            ast::builtins::ray_query_proceed,
+            ast::builtins::ray_query_commit,
+            ast::builtins::ray_query_committed,
+            ast::builtins::ray_query_t,
+            ast::builtins::ray_query_primitive,
+            ast::builtins::ray_query_instance,
+            ast::builtins::ray_query_barycentrics,
+            ast::builtins::ray_query_candidate_t,
+            ast::builtins::ray_query_candidate_primitive,
+            ast::builtins::ray_query_candidate_instance,
+            ast::builtins::ray_query_candidate_barycentrics
         }),currentContext(nullptr){
 
     };
@@ -2262,6 +2288,153 @@ namespace omegasl {
                     if(!isNumericScalar(_t) && _t != ast::builtins::float2_type && _t != ast::builtins::float3_type){ reportTy("2nd param of " + std::string(BUILTIN_MAKE_FLOAT4) + " must be a numeric scalar, float2, or float3"); return nullptr; }
                 }
             }
+            /// @brief intersect(AccelerationStructure as, Ray ray [, uint mask])
+            /// Inline ray tracing (Raytracing plan §1.3/§1.5). Compute-stage
+            /// only; casts one ray against a TLAS and resolves to a `RayHit`
+            /// (the shared CALL_EXPR tail returns `func_found->returnType`).
+            else if(func_found == ast::builtins::intersect){
+
+                /// 2 args (mask defaults to 0xFF) or 3 args (explicit mask).
+                if(_expr->args.size() != 2 && _expr->args.size() != 3){
+                    auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_INTERSECT; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+
+                /// §1.5 — inline ray query is a capability of compute shaders.
+                bool inCompute = funcContext && funcContext->type == SHADER_DECL
+                    && ((ast::ShaderDecl *)funcContext)->shaderType == ast::ShaderDecl::Compute;
+                if(!inCompute){
+                    auto e = std::make_unique<InvalidAttribute>(
+                        std::string("`") + std::string(BUILTIN_INTERSECT) + "` is only valid inside a compute shader");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+
+                auto as_t_e = performSemForExpr(_expr->args[0],funcContext);
+                auto ray_t_e = performSemForExpr(_expr->args[1],funcContext);
+                if(as_t_e == nullptr || ray_t_e == nullptr){
+                    return nullptr;
+                }
+
+                /// arg0 must resolve to a bound `AccelerationStructure` — same
+                /// "resolve the argument's type" discipline the texture builtins
+                /// use (the resource-map membership is validated at SHADER_DECL).
+                auto as_t = resolveTypeWithExpr(as_t_e);
+                if(as_t != ast::builtins::acceleration_structure_type){
+                    reportTypeErr("1st param of function " + std::string(BUILTIN_INTERSECT) + " must be an AccelerationStructure.");
+                    return nullptr;
+                }
+
+                /// arg1 must be a `Ray`.
+                auto ray_t = resolveTypeWithExpr(ray_t_e);
+                if(ray_t != ast::builtins::ray_type){
+                    reportTypeErr("2nd param of function " + std::string(BUILTIN_INTERSECT) + " must be a Ray.");
+                    return nullptr;
+                }
+
+                /// Optional arg2 is the instance-inclusion mask — an integer
+                /// scalar (`uint`/`int`; a literal `0xFF` resolves to `int`).
+                if(_expr->args.size() == 3){
+                    auto mask_t_e = performSemForExpr(_expr->args[2],funcContext);
+                    if(mask_t_e == nullptr){
+                        return nullptr;
+                    }
+                    auto mask_t = resolveTypeWithExpr(mask_t_e);
+                    if(mask_t != ast::builtins::uint_type && mask_t != ast::builtins::int_type){
+                        reportTypeErr("3rd param of function " + std::string(BUILTIN_INTERSECT) + " (instance mask) must be a uint or int.");
+                        return nullptr;
+                    }
+                }
+                /// Success: fall through to the shared `return func_found->returnType;`
+                /// tail, which resolves the call to `RayHit`.
+            }
+            /// @brief ray_query_* — low-level inline ray-query traversal loop
+            /// (Raytracing plan §1.5). Every one of the 12 takes a `RayQuery` as
+            /// arg0; `ray_query_init` additionally takes (AccelerationStructure,
+            /// Ray [, uint mask]). Compute-stage only. The return type flows from
+            /// the FuncType via the shared CALL_EXPR tail.
+            else if(func_found == ast::builtins::ray_query_init
+                    || func_found == ast::builtins::ray_query_proceed
+                    || func_found == ast::builtins::ray_query_commit
+                    || func_found == ast::builtins::ray_query_committed
+                    || func_found == ast::builtins::ray_query_t
+                    || func_found == ast::builtins::ray_query_primitive
+                    || func_found == ast::builtins::ray_query_instance
+                    || func_found == ast::builtins::ray_query_barycentrics
+                    || func_found == ast::builtins::ray_query_candidate_t
+                    || func_found == ast::builtins::ray_query_candidate_primitive
+                    || func_found == ast::builtins::ray_query_candidate_instance
+                    || func_found == ast::builtins::ray_query_candidate_barycentrics){
+
+                const std::string fname = std::string(_id_expr->id);
+
+                /// §1.5 — inline ray query is a capability of compute shaders.
+                bool inCompute = funcContext && funcContext->type == SHADER_DECL
+                    && ((ast::ShaderDecl *)funcContext)->shaderType == ast::ShaderDecl::Compute;
+                if(!inCompute){
+                    auto e = std::make_unique<InvalidAttribute>(
+                        std::string("`") + fname + "` is only valid inside a compute shader");
+                    e->loc = _expr->loc.value_or(ErrorLoc{});
+                    diagnostics->addError(std::move(e));
+                    return nullptr;
+                }
+
+                /// `ray_query_init` is (q, as, ray [, mask]); every other member
+                /// of the family is a unary accessor on the RayQuery.
+                bool isInit = (func_found == ast::builtins::ray_query_init);
+                if(isInit){
+                    if(_expr->args.size() != 3 && _expr->args.size() != 4){
+                        auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_RAY_QUERY_INIT; e->expected = 3; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                } else {
+                    if(_expr->args.size() != 1){
+                        auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = fname.c_str(); e->expected = 1; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                }
+
+                /// arg0 must resolve to a `RayQuery`.
+                auto q_t_e = performSemForExpr(_expr->args[0],funcContext);
+                if(q_t_e == nullptr){
+                    return nullptr;
+                }
+                if(resolveTypeWithExpr(q_t_e) != ast::builtins::ray_query_type){
+                    reportTypeErr("1st param of function " + fname + " must be a RayQuery.");
+                    return nullptr;
+                }
+
+                if(isInit){
+                    auto as_t_e = performSemForExpr(_expr->args[1],funcContext);
+                    auto ray_t_e = performSemForExpr(_expr->args[2],funcContext);
+                    if(as_t_e == nullptr || ray_t_e == nullptr){
+                        return nullptr;
+                    }
+                    if(resolveTypeWithExpr(as_t_e) != ast::builtins::acceleration_structure_type){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_RAY_QUERY_INIT) + " must be an AccelerationStructure.");
+                        return nullptr;
+                    }
+                    if(resolveTypeWithExpr(ray_t_e) != ast::builtins::ray_type){
+                        reportTypeErr("3rd param of function " + std::string(BUILTIN_RAY_QUERY_INIT) + " must be a Ray.");
+                        return nullptr;
+                    }
+                    if(_expr->args.size() == 4){
+                        auto mask_t_e = performSemForExpr(_expr->args[3],funcContext);
+                        if(mask_t_e == nullptr){
+                            return nullptr;
+                        }
+                        auto mask_t = resolveTypeWithExpr(mask_t_e);
+                        if(mask_t != ast::builtins::uint_type && mask_t != ast::builtins::int_type){
+                            reportTypeErr("4th param of function " + std::string(BUILTIN_RAY_QUERY_INIT) + " (instance mask) must be a uint or int.");
+                            return nullptr;
+                        }
+                    }
+                }
+                /// Success: fall through to the shared tail, which returns the
+                /// FuncType's declared return type (void / bool / uint / float /
+                /// float2 per intrinsic).
+            }
             /// @brief sample(sampler sampler,texture texture,texcoord coord) function
             else if(func_found == ast::builtins::sample){
 
@@ -3303,7 +3476,10 @@ namespace omegasl {
                 && ty != ast::builtins::sampler1d_type
                 && ty != ast::builtins::sampler2d_type
                 && ty != ast::builtins::sampler3d_type
-                && ty != ast::builtins::samplercube_type){
+                && ty != ast::builtins::samplercube_type
+                /// Inline ray tracing (Raytracing plan §1.4) — a TLAS is a
+                /// valid compute resource type.
+                && ty != ast::builtins::acceleration_structure_type){
                     auto e = std::make_unique<TypeError>(std::string("Resource `") + _decl->name + "` is not a valid type. (" + _decl->typeExpr->name + ")");
                     e->loc = _decl->loc.value_or(ErrorLoc{});
                     diagnostics->addError(std::move(e));
@@ -3675,6 +3851,16 @@ namespace omegasl {
                                 || _t == ast::builtins::sampler3d_type
                                 || _t == ast::builtins::samplercube_type) && r.access != ast::ShaderDecl::ResourceMapDesc::In){
                                 auto e = std::make_unique<TypeError>(std::string("In Shader Decl `") + _decl->name + "`, resource `" + r.name + "` with type `" + _t->name + "` can only be granted input access to shader.");
+                                e->loc = _decl->loc.value_or(ErrorLoc{});
+                                diagnostics->addError(std::move(e));
+                                return false;
+                            }
+                            /// Inline ray tracing (Raytracing plan §1.4) — a
+                            /// TLAS is traced read-only on every backend (HLSL
+                            /// SRV, GLSL `accelerationStructureEXT`, Metal
+                            /// `acceleration_structure`); reject `out`/`inout`.
+                            if(_t == ast::builtins::acceleration_structure_type && r.access != ast::ShaderDecl::ResourceMapDesc::In){
+                                auto e = std::make_unique<TypeError>(std::string("In Shader Decl `") + _decl->name + "`, acceleration structure `" + r.name + "` is read-only and can only be granted input access to shader.");
                                 e->loc = _decl->loc.value_or(ErrorLoc{});
                                 diagnostics->addError(std::move(e));
                                 return false;

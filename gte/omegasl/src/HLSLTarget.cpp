@@ -69,6 +69,12 @@ namespace omegasl {
         /// lower — the runtime gate (`OMEGASL_FEATURE_BIT_FLOAT16`) is
         /// what protects callers on hardware that doesn't support it.
         const bool needs16Bit = (requiredFeatures & OMEGASL_FEATURE_BIT_FLOAT16) != 0;
+        /// Inline ray tracing (Raytracing plan §2.1) — `RayQuery` /
+        /// `TraceRayInline` need SM 6.5. A compute shader using `intersect()`
+        /// forces `cs_6_5` regardless of the FLOAT16 gate (SM 5.0 / 6.2 don't
+        /// recognize the RayQuery spelling at all), the same way mesh /
+        /// amplification force `ms_6_5` / `as_6_5` below.
+        const bool needsRayQuery = (requiredFeatures & OMEGASL_FEATURE_BIT_RAYTRACING) != 0;
 
         std::ostringstream out;
         out << " -nologo -T";
@@ -78,7 +84,7 @@ namespace omegasl {
         } else if (stage == ast::ShaderDecl::Fragment) {
             out << "ps" << profileTag;
         } else if (stage == ast::ShaderDecl::Compute) {
-            out << "cs" << profileTag;
+            out << (needsRayQuery ? "cs_6_5" : (std::string("cs") + profileTag));
         } else if (stage == ast::ShaderDecl::Hull) {
             out << "hs" << profileTag;
         } else if (stage == ast::ShaderDecl::Domain) {
@@ -147,6 +153,15 @@ namespace omegasl {
             std::cerr << "error: runtime D3DCompile path cannot compile '" << name.data()
                       << "' — mesh and amplification shaders need SM 6.5 (dxc), but the runtime uses "
                          "D3DCompile (SM 5.1 max). Use the offline pipeline." << std::endl;
+            return;
+        }
+        /// Inline ray tracing (Raytracing plan §2.1) — `RayQuery` needs SM 6.5
+        /// (dxc). D3DCompile tops out at SM 5.1, so a runtime RT compile is
+        /// structurally impossible; fail loud like the mesh / FLOAT16 gates.
+        if ((requiredFeatures & OMEGASL_FEATURE_BIT_RAYTRACING) != 0) {
+            std::cerr << "error: runtime D3DCompile path cannot compile '" << name.data()
+                      << "' — `#requires(RAYTRACING)` (inline RayQuery) needs SM 6.5 (dxc), but the "
+                         "runtime uses D3DCompile (SM 5.1 max). Use the offline pipeline." << std::endl;
             return;
         }
 #ifdef TARGET_DIRECTX
@@ -218,6 +233,43 @@ namespace omegasl {
     void HLSLTarget::emitStaticPreamble(std::ostream &/*out*/) {
         /// HLSL emits static samplers inline as `: register(sN, spaceM);`
         /// during emitResourceBinding — no separate preamble.
+    }
+
+    /// Inline ray tracing (Raytracing plan §1.2/§2.4). Fixed HLSL text for the
+    /// `Ray` / `RayHit` builtin structs. The trailing `};\n` matches what
+    /// `emitStructDecl` caches for a user struct, so the used-struct emission
+    /// path (`out << generatedStructs[s] << endl`) spells them identically.
+    static const char hlslRayStruct[] =
+        "struct Ray{\n"
+        "    float3 origin;\n"
+        "    float3 direction;\n"
+        "    float tmin;\n"
+        "    float tmax;\n"
+        "};\n";
+    static const char hlslRayHitStruct[] =
+        "struct RayHit{\n"
+        "    bool committed;\n"
+        "    float t;\n"
+        "    uint primitiveIndex;\n"
+        "    uint instanceIndex;\n"
+        "    float2 barycentrics;\n"
+        "};\n";
+
+    void HLSLTarget::emitDefaultHeaders(CodeGen &cg, std::ostream &/*out*/) {
+        /// HLSL's RayQuery / RaytracingAccelerationStructure / RayDesc are
+        /// intrinsic to SM 6.5, so no `#include` preamble is emitted. This
+        /// override exists only to pre-seed the `Ray` / `RayHit` struct text
+        /// into `generatedStructs` so the used-struct emission path can spell
+        /// them (they resolve with `builtin = false`, so a shader that declares
+        /// a `Ray`/`RayHit` local adds their names to its used-struct set).
+        /// Idempotent (`insert` no-ops if already present) and gated on the RT
+        /// feature bit, so non-RT shaders keep byte-identical (empty) output.
+        if (cg.fileRequiredFeatures & OMEGASL_FEATURE_BIT_RAYTRACING) {
+            generatedStructs.insert(std::make_pair(OmegaCommon::String("Ray"),
+                                                   OmegaCommon::String(hlslRayStruct)));
+            generatedStructs.insert(std::make_pair(OmegaCommon::String("RayHit"),
+                                                   OmegaCommon::String(hlslRayHitStruct)));
+        }
     }
 
     void HLSLTarget::emitResourceBinding(CodeGen &cg,
@@ -373,6 +425,14 @@ namespace omegasl {
             layoutDesc.type = res_desc->isStatic ? OMEGASL_SHADER_STATIC_SAMPLERCUBE_DESC
                                                  : OMEGASL_SHADER_SAMPLERCUBE_DESC;
             out << HLSL_SAMPLER;
+        } else if (_t == ast::builtins::acceleration_structure_type) {
+            /// Inline ray tracing (Raytracing plan §2). A TLAS is a read-only
+            /// SRV in HLSL — `RaytracingAccelerationStructure` at a `t`
+            /// register — so it rides the same `isTResource` path as an input
+            /// texture/buffer.
+            layoutDesc.type = OMEGASL_SHADER_ACCELERATION_STRUCTURE_DESC;
+            isTResource = true;
+            out << "RaytracingAccelerationStructure";
         }
 
         out << " " << res_desc->name;
@@ -765,8 +825,59 @@ namespace omegasl {
         return true;
     }
 
+    /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family (HLSL).
+    /// Returns true (and emits) when `name` is one of the family; false
+    /// otherwise. `ray_query_init` is statement-shaped (build a `RayDesc`
+    /// first, via statement injection); every other member is a one-line method
+    /// call on the RayQuery arg0. See the lowering table in
+    /// Raytracing-Full-Implementation-Plan.md §1.5.
+    static bool hlslEmitRayQuery(CodeGen &cg, ast::CallExpr *_expr,
+                                 OmegaCommon::StrRef name, std::ostream &out) {
+        if (name == BUILTIN_RAY_QUERY_INIT) {
+            std::string q    = cg.renderExprToString(_expr->args[0]);
+            std::string as   = cg.renderExprToString(_expr->args[1]);
+            std::string ray  = cg.renderExprToString(_expr->args[2]);
+            std::string mask = (_expr->args.size() == 4)
+                ? ("(uint)(" + cg.renderExprToString(_expr->args[3]) + ")")
+                : std::string("0xFFu");
+            unsigned id = cg.rayQueryTempId++;
+            std::string rd = "_rd" + std::to_string(id);
+            cg.queuePendingStatement("RayDesc " + rd + ";");
+            cg.queuePendingStatement(rd + ".Origin = " + ray + ".origin;");
+            cg.queuePendingStatement(rd + ".Direction = " + ray + ".direction;");
+            cg.queuePendingStatement(rd + ".TMin = " + ray + ".tmin;");
+            cg.queuePendingStatement(rd + ".TMax = " + ray + ".tmax;");
+            out << q << ".TraceRayInline(" << as << ", RAY_FLAG_NONE, " << mask << ", " << rd << ")";
+            return true;
+        }
+        /// `committed()` is a status comparison, not a bare accessor.
+        if (name == BUILTIN_RAY_QUERY_COMMITTED) {
+            out << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ".CommittedStatus() == COMMITTED_TRIANGLE_HIT)";
+            return true;
+        }
+        const char *method = nullptr;
+        if (name == BUILTIN_RAY_QUERY_PROCEED)                 method = "Proceed";
+        else if (name == BUILTIN_RAY_QUERY_COMMIT)             method = "CommitNonOpaqueTriangleHit";
+        else if (name == BUILTIN_RAY_QUERY_T)                  method = "CommittedRayT";
+        else if (name == BUILTIN_RAY_QUERY_PRIMITIVE)          method = "CommittedPrimitiveIndex";
+        else if (name == BUILTIN_RAY_QUERY_INSTANCE)           method = "CommittedInstanceIndex";
+        else if (name == BUILTIN_RAY_QUERY_BARYCENTRICS)       method = "CommittedTriangleBarycentrics";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_T)        method = "CandidateTriangleRayT";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE)method = "CandidatePrimitiveIndex";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE) method = "CandidateInstanceIndex";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS) method = "CandidateTriangleBarycentrics";
+        else return false;
+        cg.generateExpr(_expr->args[0]);
+        out << "." << method << "()";
+        return true;
+    }
+
     bool HLSLTarget::tryEmitBuiltinCall(CodeGen &cg, ast::CallExpr *_expr,
                                         OmegaCommon::StrRef name, std::ostream &out) {
+        /// Sub-phase 1.5 — low-level ray-query traversal family.
+        if (hlslEmitRayQuery(cg, _expr, name, out)) return true;
         /// §5.3 — HLSL's countbits / reversebits are scalar-uint only;
         /// lower signed-cast + vector component-expansion here.
         if (name == BUILTIN_COUNTBITS)   return hlslEmitIntUnary(cg, _expr, "countbits", out);
@@ -1789,6 +1900,46 @@ namespace omegasl {
         out << resultExpr;
     }
 
+    void HLSLTarget::emitIntersect(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// Inline ray tracing (Raytracing plan §2.1). `intersect(as, ray[,
+        /// mask])` lowers to an SM 6.5 `RayQuery`: build a `RayDesc` from the
+        /// `Ray`, `TraceRayInline`, and a single `Proceed()` (opaque triangles
+        /// terminate in one step), then read the committed hit into a `RayHit`.
+        /// The whole thing is statement-shaped, so it is queued as preceding
+        /// statements (flushed before the current statement by `generateBlock`)
+        /// and the expression is the injected `RayHit` temp — same injection
+        /// pattern as `emitTextureGetDimensions`.
+        std::string asStr = cg.renderExprToString(_expr->args[0]);
+        std::string rayStr = cg.renderExprToString(_expr->args[1]);
+        /// Missing mask ⇒ 0xFF (include every instance). An explicit mask is
+        /// cast to uint — a literal like `0xFF` resolves to `int` in Sema.
+        std::string maskStr = (_expr->args.size() == 3)
+            ? ("(uint)(" + cg.renderExprToString(_expr->args[2]) + ")")
+            : std::string("0xFFu");
+
+        unsigned id = cg.rayQueryTempId++;
+        std::string q  = "_rq" + std::to_string(id);
+        std::string rd = "_rd" + std::to_string(id);
+        std::string h  = "_rh" + std::to_string(id);
+
+        cg.queuePendingStatement("RayQuery<RAY_FLAG_NONE> " + q + ";");
+        cg.queuePendingStatement("RayDesc " + rd + ";");
+        cg.queuePendingStatement(rd + ".Origin = " + rayStr + ".origin;");
+        cg.queuePendingStatement(rd + ".Direction = " + rayStr + ".direction;");
+        cg.queuePendingStatement(rd + ".TMin = " + rayStr + ".tmin;");
+        cg.queuePendingStatement(rd + ".TMax = " + rayStr + ".tmax;");
+        cg.queuePendingStatement(q + ".TraceRayInline(" + asStr + ", RAY_FLAG_NONE, " + maskStr + ", " + rd + ");");
+        cg.queuePendingStatement(q + ".Proceed();");
+        cg.queuePendingStatement("RayHit " + h + ";");
+        cg.queuePendingStatement(h + ".committed = (" + q + ".CommittedStatus() == COMMITTED_TRIANGLE_HIT);");
+        cg.queuePendingStatement(h + ".t = " + q + ".CommittedRayT();");
+        cg.queuePendingStatement(h + ".primitiveIndex = " + q + ".CommittedPrimitiveIndex();");
+        cg.queuePendingStatement(h + ".instanceIndex = " + q + ".CommittedInstanceIndex();");
+        cg.queuePendingStatement(h + ".barycentrics = " + q + ".CommittedTriangleBarycentrics();");
+
+        out << h;
+    }
+
     void HLSLTarget::emitTextureWrite(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
         /// RWTexture<N>D write: texture[coord] = data, with coord cast to
         /// the matching unsigned type (see hlslUintCoordTypeForTexture).
@@ -1940,6 +2091,16 @@ namespace omegasl {
         /// the type is the underlying scalar.
         else if (_ty == ast::builtins::atomic_int_type)  { out << "int"; }
         else if (_ty == ast::builtins::atomic_uint_type) { out << "uint"; }
+        /// Inline ray tracing (Raytracing plan §2). Spelled when the TLAS
+        /// handle is passed to a user helper; the resource declaration itself
+        /// is emitted in `emitResourceBinding`. `Ray`/`RayHit` fall through to
+        /// the default (`_ty->name`) — their names match the emitted structs.
+        else if (_ty == ast::builtins::acceleration_structure_type) { out << "RaytracingAccelerationStructure"; }
+        /// Sub-phase 1.5 — the low-level ray-query object. Declared as a local
+        /// (`RayQuery<RAY_FLAG_NONE> q;`) and mutated by the `ray_query_*`
+        /// intrinsics. RAY_FLAG_NONE keeps ray flags out of the type — matching
+        /// the traversal-only scope (per-ray flags are a later sub-phase).
+        else if (_ty == ast::builtins::ray_query_type) { out << "RayQuery<RAY_FLAG_NONE>"; }
         /// §4.1 16-bit family. HLSL spells these with the explicit
         /// arithmetic-type names from SM 6.2; vectors require the
         /// `vector<T,N>` template since `float16_t2` etc. aren't built

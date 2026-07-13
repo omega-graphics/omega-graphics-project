@@ -174,6 +174,20 @@ namespace omegasl {
             DECLARE_BUILTIN_TYPE(atomic_int_type);
             DECLARE_BUILTIN_TYPE(atomic_uint_type);
 
+            /// Inline ray tracing (Raytracing plan §1.2). `Ray` / `RayHit`
+            /// are the only builtin *struct* types — they resolve with
+            /// `builtin = false` and populated `fields` so `ray.origin` /
+            /// `hit.t` member access takes the struct-field path (not the
+            /// vector-swizzle path) in Sema, and they are emitted as real
+            /// `struct` definitions per backend. `AccelerationStructure` is
+            /// the opaque TLAS handle, bound as a compute resource.
+            DECLARE_BUILTIN_TYPE(ray_type);
+            DECLARE_BUILTIN_TYPE(rayhit_type);
+            DECLARE_BUILTIN_TYPE(acceleration_structure_type);
+            /// Sub-phase 1.5 — opaque low-level ray-query object (`builtin =
+            /// true`, no fields). Declared as a local, mutated by `ray_query_*`.
+            DECLARE_BUILTIN_TYPE(ray_query_type);
+
 #undef  DECLARE_BUILTIN_TYPE
 #define DECLARE_BUILTIN_FUNC(name) extern FuncType *name;
 
@@ -238,6 +252,25 @@ namespace omegasl {
             DECLARE_BUILTIN_FUNC(read);
             DECLARE_BUILTIN_FUNC(calculateLOD);
             DECLARE_BUILTIN_FUNC(getDimensions);
+
+            /// Inline ray tracing (Raytracing plan §1.3) — `intersect`. One
+            /// FuncType; the 2-arg / 3-arg overloads are distinguished by arg
+            /// count in the Sema branch, exactly like `sample`.
+            DECLARE_BUILTIN_FUNC(intersect);
+
+            /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family.
+            DECLARE_BUILTIN_FUNC(ray_query_init);
+            DECLARE_BUILTIN_FUNC(ray_query_proceed);
+            DECLARE_BUILTIN_FUNC(ray_query_commit);
+            DECLARE_BUILTIN_FUNC(ray_query_committed);
+            DECLARE_BUILTIN_FUNC(ray_query_t);
+            DECLARE_BUILTIN_FUNC(ray_query_primitive);
+            DECLARE_BUILTIN_FUNC(ray_query_instance);
+            DECLARE_BUILTIN_FUNC(ray_query_barycentrics);
+            DECLARE_BUILTIN_FUNC(ray_query_candidate_t);
+            DECLARE_BUILTIN_FUNC(ray_query_candidate_primitive);
+            DECLARE_BUILTIN_FUNC(ray_query_candidate_instance);
+            DECLARE_BUILTIN_FUNC(ray_query_candidate_barycentrics);
         }
 
         /// §5.1.0 — map a builtin alias spelling to its canonical name

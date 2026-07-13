@@ -7,6 +7,7 @@
 #include "GED3D12Texture.h"
 
 #include <memory>
+#include <cstring>
 
 #include <d3d12.h>
 _NAMESPACE_BEGIN_
@@ -1223,6 +1224,52 @@ static void fillGeometryDescsFromGE(const GEAccelerationStructDescriptor &desc,
     }
 }
 
+/// Raytracing plan §6.2 — translate the GE descriptor's TLAS instances into a
+/// `D3D12_RAYTRACING_INSTANCE_DESC` array (field-by-field, since the GE bitfield
+/// packing need not match D3D12's), upload it to an Upload-heap buffer the build
+/// reads, store that buffer on `dst` (so it outlives the recorded command until
+/// the GPU consumes it), and fill the build inputs' Type / NumDescs /
+/// InstanceDescs. Shared by build and refit.
+static void fillTLASInstancesFromGE(GED3D12Engine *engine,
+                                    const GEAccelerationStructDescriptor &desc,
+                                    GED3D12AccelerationStruct *dst,
+                                    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS &inputs) {
+    std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instanceDescs;
+    instanceDescs.reserve(desc.instances.size());
+    for (auto &inst : desc.instances) {
+        D3D12_RAYTRACING_INSTANCE_DESC id{};
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 4; ++c)
+                id.Transform[r][c] = inst.transform[r][c];
+        id.InstanceID = inst.instanceID;
+        id.InstanceMask = inst.instanceMask;
+        id.InstanceContributionToHitGroupIndex = inst.instanceContributionToHitGroupIndex;
+        id.Flags = inst.flags;
+        auto blas = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(inst.blas);
+        id.AccelerationStructure =
+            blas ? blas->structBuffer->buffer->GetGPUVirtualAddress() : 0;
+        instanceDescs.push_back(id);
+    }
+
+    size_t bytes = sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * instanceDescs.size();
+    auto instBuf = std::dynamic_pointer_cast<GED3D12Buffer>(
+        engine->makeBuffer({BufferDescriptor::Upload,
+                            bytes ? bytes : sizeof(D3D12_RAYTRACING_INSTANCE_DESC),
+                            sizeof(D3D12_RAYTRACING_INSTANCE_DESC)}));
+    if (!instanceDescs.empty()) {
+        CD3DX12_RANGE noRead(0, 0);
+        void *dataPtr = nullptr;
+        instBuf->buffer->Map(0, &noRead, &dataPtr);
+        memmove(dataPtr, instanceDescs.data(), bytes);
+        instBuf->buffer->Unmap(0, nullptr);
+    }
+    dst->instanceBuffer = instBuf;
+
+    inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    inputs.NumDescs = static_cast<UINT>(instanceDescs.size());
+    inputs.InstanceDescs = instBuf->buffer->GetGPUVirtualAddress();
+}
+
 void GED3D12CommandBuffer::buildAccelerationStructure(SharedHandle<GEAccelerationStruct> &src,
                                                       const GEAccelerationStructDescriptor &desc) {
     auto accel_struct = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(src);
@@ -1236,8 +1283,8 @@ void GED3D12CommandBuffer::buildAccelerationStructure(SharedHandle<GEAcceleratio
     d.ScratchAccelerationStructureData = accel_struct->scratchBuffer->buffer->GetGPUVirtualAddress();
     d.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     d.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
-    if (geometryDescs.empty()) {
-        d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    if (desc.level == GEAccelerationStructDescriptor::TopLevel) {
+        fillTLASInstancesFromGE(parentQueue->engine, desc, accel_struct.get(), d.Inputs);
     } else {
         d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
         d.Inputs.NumDescs = static_cast<UINT>(geometryDescs.size());
@@ -1277,8 +1324,11 @@ void GED3D12CommandBuffer::refitAccelerationStructure(SharedHandle<GEAcceleratio
     d.ScratchAccelerationStructureData = accel_struct_dest->scratchBuffer->buffer->GetGPUVirtualAddress();
     d.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     d.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
-    if (geometryDescs.empty()) {
-        d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    if (desc.level == GEAccelerationStructDescriptor::TopLevel) {
+        /// Raytracing plan §6.2 — a TLAS update re-uploads its instance descs
+        /// (transforms may have changed) onto the destination and points the
+        /// update at them, same as the initial build.
+        fillTLASInstancesFromGE(parentQueue->engine, desc, accel_struct_dest.get(), d.Inputs);
     } else {
         d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
         d.Inputs.NumDescs = static_cast<UINT>(geometryDescs.size());
@@ -1899,9 +1949,10 @@ bool GED3D12CommandBuffer::amplificationValidForBind(const char *what) {
     const bool ok = currentRenderPipeline != nullptr
                     && currentRenderPipeline->isMesh
                     && currentRenderPipeline->amplificationShader != nullptr;
-    d3d12RequireOrReturn(ok, DEBUG_DOMAIN_RESOURCE, what
-                         << ": no amplification stage on the bound pipeline "
-                            "(bind a mesh pipeline built with `amplificationFunc`)");
+    d3d12RequireOrReturnValue(ok, DEBUG_DOMAIN_RESOURCE,
+                              std::string(what) + ": no amplification stage on the bound pipeline "
+                                 "(bind a mesh pipeline built with `amplificationFunc`)",
+                              false);
     return ok;
 }
 

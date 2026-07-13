@@ -1642,9 +1642,12 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs {};
         inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
         inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
-        if(geometryDescs.empty()){
+        /// Raytracing plan §6.2 — TLAS is sized by its instance count (the
+        /// prebuild only needs Type + NumDescs; the instance-desc GPU address
+        /// is supplied later, at build time). BLAS is sized by its geometry.
+        if(desc.level == GEAccelerationStructDescriptor::TopLevel){
             inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-            inputs.NumDescs = 0;
+            inputs.NumDescs = static_cast<UINT>(desc.instances.size());
             inputs.pGeometryDescs = nullptr;
         } else {
             inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;

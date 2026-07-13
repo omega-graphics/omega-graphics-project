@@ -263,5 +263,26 @@ namespace omegasl {
 #define KW_TY_ATOMIC_INT KW_TY("atomic_int")
 #define KW_TY_ATOMIC_UINT KW_TY("atomic_uint")
 
+/// Inline ray tracing (Raytracing plan §1.2). `Ray` and `RayHit` are
+/// builtin *struct* types (they carry named fields the shader reads /
+/// writes — `ray.origin`, `hit.t`), so unlike every other builtin they
+/// resolve with `builtin=false` and populated `fields` and are emitted as
+/// real `struct` definitions in each backend. `AccelerationStructure` is an
+/// opaque, resource-bound handle (like a texture): declared `... : N`,
+/// listed in a compute shader's resource map, and passed to `intersect()`.
+/// Per backend: HLSL `RaytracingAccelerationStructure` (SM 6.5 RayQuery),
+/// GLSL `accelerationStructureEXT` (GL_EXT_ray_query), MSL
+/// `acceleration_structure<instancing>` (<metal_raytracing>). The low-level
+/// `RayQuery` (sub-phase 1.5) is the opaque low-level ray-query object for the
+/// explicit traversal loop (non-opaque / alpha-tested triangles). Like
+/// `AccelerationStructure` it is `builtin = true` with no user-visible fields —
+/// declared as a local (`RayQuery q;`) and mutated in place by the
+/// `ray_query_*` intrinsics. Per backend: HLSL `RayQuery<RAY_FLAG_NONE>`, GLSL
+/// `rayQueryEXT`, Metal `intersection_query<triangle_data, instancing>`.
+#define KW_TY_RAY KW_TY("Ray")
+#define KW_TY_RAY_HIT KW_TY("RayHit")
+#define KW_TY_ACCELERATION_STRUCTURE KW_TY("AccelerationStructure")
+#define KW_TY_RAY_QUERY KW_TY("RayQuery")
+
 
 #endif // OMEGASL_TOKS_DEF

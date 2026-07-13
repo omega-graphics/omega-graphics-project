@@ -380,6 +380,12 @@ namespace omegasl {
         /// (`_gd<N>_w`, ...) so multiple queries in one shader don't collide.
         unsigned getDimensionsTempId = 0;
 
+        /// Inline ray tracing (Raytracing plan §2) — monotonic id for the
+        /// injected inline-ray-query temporaries (`_rq<N>`, `_rd<N>`, `_rh<N>`
+        /// / `_res<N>`) so multiple `intersect(...)` calls in one shader don't
+        /// collide. Shared across all three backends' `emitIntersect`.
+        unsigned rayQueryTempId = 0;
+
         void queuePendingStatement(std::string stmt) {
             pendingStatements.push_back(std::move(stmt));
         }

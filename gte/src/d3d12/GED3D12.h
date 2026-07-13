@@ -257,6 +257,12 @@ _NAMESPACE_BEGIN_
     struct GED3D12AccelerationStruct : public GEAccelerationStruct {
         SharedHandle<GED3D12Buffer> structBuffer;
         SharedHandle<GED3D12Buffer> scratchBuffer;
+        /// Inline ray tracing (Raytracing plan §6.2) — for a TLAS, the
+        /// Upload-heap buffer of `D3D12_RAYTRACING_INSTANCE_DESC` the build
+        /// consumes. Null for a BLAS. Owned here so it outlives the recorded
+        /// `BuildRaytracingAccelerationStructure`; filled in
+        /// `buildAccelerationStructure`.
+        SharedHandle<GED3D12Buffer> instanceBuffer;
         explicit GED3D12AccelerationStruct(
             SharedHandle<GED3D12Buffer> & structBuffer,
             SharedHandle<GED3D12Buffer> & scratchBuffer);

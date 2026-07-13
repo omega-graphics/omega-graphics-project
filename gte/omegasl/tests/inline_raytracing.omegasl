@@ -1,0 +1,73 @@
+// Inline ray tracing (Raytracing plan §7.1). Compute shaders that cast one ray
+// per thread against a top-level acceleration structure using the inline
+// ray-query model, then write the hit result (miss / hit distance / primitive)
+// into an output buffer. Exercises the whole Phase 1-2 surface: the `Ray` /
+// `RayHit` builtin struct types, the `AccelerationStructure` resource, and the
+// `intersect()` intrinsic (2-arg and 3-arg overloads) lowered to inline ray
+// query on every backend (HLSL RayQuery, GLSL GL_EXT_ray_query, MSL
+// intersector).
+//
+// `#requires(RAYTRACING)` is the serialized feature gate the runtime loader
+// masks against the device's raytracing capability; it also drives the GLSL
+// backend's `#extension GL_EXT_ray_query` line and the MSL backend's
+// `#include <metal_raytracing>`.
+
+#requires(RAYTRACING)
+
+struct HitResult {
+    uint hit;      // 1 when the ray hit committed geometry, else 0
+    float dist;    // hit distance (valid only when hit == 1)
+    uint prim;     // primitive index within the hit geometry
+};
+
+AccelerationStructure scene : 0;
+buffer<HitResult> results : 1;
+
+// Primary rays — the 2-arg one-shot intersect (mask defaults to 0xFF).
+[in scene, out results]
+compute(x=8,y=1,z=1)
+void cast_primary(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+
+    Ray ray;
+    ray.origin = float3((float)idx, 0.0, 0.0);
+    ray.direction = float3(0.0, 0.0, 1.0);
+    ray.tmin = 0.0;
+    ray.tmax = 1000.0;
+
+    RayHit hit = intersect(scene, ray);
+
+    results[idx].hit = 0u;
+    results[idx].dist = 0.0;
+    results[idx].prim = 0u;
+    if(hit.committed){
+        results[idx].hit = 1u;
+        results[idx].dist = hit.t;
+        results[idx].prim = hit.primitiveIndex;
+    }
+}
+
+// Shadow-style query with an explicit instance-inclusion mask (the 3-arg
+// intersect overload).
+[in scene, out results]
+compute(x=8,y=1,z=1)
+void cast_masked(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+
+    Ray ray;
+    ray.origin = float3((float)idx, 1.0, 0.0);
+    ray.direction = float3(0.0, 0.0, 1.0);
+    ray.tmin = 0.001;
+    ray.tmax = 500.0;
+
+    RayHit hit = intersect(scene, ray, 255);
+
+    results[idx].hit = 0u;
+    results[idx].dist = 0.0;
+    results[idx].prim = 0u;
+    if(hit.committed){
+        results[idx].hit = 1u;
+        results[idx].dist = hit.t;
+        results[idx].prim = hit.instanceIndex;
+    }
+}
