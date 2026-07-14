@@ -1,198 +1,361 @@
 #include "../GTETestEntryPoint.h"
 #include "../GTETestWindow.h"
 
-// MeshAndRaytracingTest — visual test for the mesh-shader pipeline driving a
-// GEMeshAsset-loaded FBX, placed in the scene by GESpace.
+// MeshAndRaytracingTest — G-buffer raster + RAY-TRACED SHADOWS.
 //
-// The mesh shader consumes the GEMesh's vertex buffer directly (one mesh
-// threadgroup per triangle) and transforms each vertex by a single push-constant
-// MVP. That matrix is `GESpace::objectTransform()` — GESpace-Implementation-Plan
-// Phase 3. The point of routing through GESpace rather than hand-writing a matrix
-// here: the GEMesh's vertex buffer stays in the FBX's own local units (GESpace
-// never re-bakes geometry on the CPU), and the space owns the one conversion from
-// those units to NDC.
+// The test finally does what its name promised: it rasterizes a small 3D scene and
+// then ray-traces the shadows in it, so a broken acceleration structure fails
+// VISIBLY (missing or wrong shadows) instead of silently returning zeros that a
+// readback assert would happily accept.
 //
-// Before GESpace this test handed the raw FBX coordinates to the rasterizer as if
-// they were already clip-space — so the racket, authored in units that span
-// hundreds, landed almost entirely outside the [-1,1] clip volume and the window
-// showed nothing but the clear color.
+// The scene:
+//   - A flattened cylinder acting as a floor — the surface the shadows land ON. A
+//     shadow test with nothing to receive shadows proves nothing.
+//   - Four TE 3D primitives (Sphere, Cylinder, Cone, Torus) hovering above it,
+//     placed by GESpace. These are the casters.
+//   - The GEMeshAsset-loaded FBX, drawn through the mesh-shader pipeline, also a
+//     caster.
 //
-// Shared, backend-neutral body (GTETestWindow-CrossBackend-Plan.md, Phase 4);
-// runs today on D3D12 and Vulkan, wherever GTEDEVICE_FEATURE_MESH_SHADER is
-// present.
+// The frame, in three passes:
+//   1. G-BUFFER (offscreen, MRT + depth). Rasterize everything into RGBA32Float
+//      world position + RGBA16Float world normal + RGBA8 albedo, with a real
+//      D32Float depth buffer so nearer surfaces actually win. This is the pass that
+//      the engine could not express until depth attachments and float formats
+//      landed.
+//   2. SHADOW (compute). For each covered pixel, read its world position/normal,
+//      cast ONE shadow ray at the light through the TLAS with
+//      RAY_FLAG_TERMINATE_ON_FIRST_HIT, and shade.
+//   3. COMPOSITE. Resolve the lit image onto the drawable with a fullscreen
+//      triangle.
 //
-// TODO: there is no depth attachment on the test window's render target, so the
-// draw has no depth test — 389k triangles resolve in dispatch order and back
-// faces can paint over front ones. The silhouette and placement (what this test
-// is verifying) are correct regardless; proper occlusion needs a depth buffer on
-// the native render target, which is a separate piece of work.
+// Why offscreen at all: a drawable is BGRA8Unorm. World positions are unbounded and
+// normals are signed — neither survives 8-bit unorm — and no API gives a swapchain
+// a depth buffer anyway. So 3D renders into texture targets that own their depth,
+// and only the finished image is resolved to the drawable. That is now the
+// engine-wide standard (see PixelFormat-Completion-Plan.md).
+//
+// Acceleration structures: one BLAS per drawn object, built over the SAME vertex
+// buffer the raster pass consumes (that is what the TriangleList stride/count fields
+// are for — a Position+Normal vertex is 24/32B, not the tightly-packed 12B a BLAS
+// used to assume), and one TLAS instancing them with each object's GESpace
+// local→world transform. The shadow kernel traces that TLAS.
 
 #include <omegaGTE/GTEDevice.h>
 #include <omegaGTE/GECommandQueue.h>
 #include <omegaGTE/GEPipeline.h>
 #include <omegaGTE/GERenderTarget.h>
+#include <omegaGTE/GETexture.h>
 #include <omegaGTE/GTEMath.h>
 #include <omegaGTE/GTEShader.h>
 #include <omegaGTE/GEMesh.h>
 #include <omegaGTE/GEMeshAsset.h>
 #include <omegaGTE/GESpace.h>
+#include <omegaGTE/TE.h>
 
 #include <omega-common/fs.h>
 
 #include <algorithm>
 #include <iostream>
 #include <memory>
+#include <vector>
 
-#define AMPLIFICATION_SHADER "ampFunc"
-#define MESH_SHADER          "meshFunc"
-#define FRAGMENT_SHADER      "fragFunc"
+using namespace OmegaGTE;
 
 // Triangles per amplification threadgroup. Must match the `32u` in the shader's
-// `ampFunc` — the two together define the batch, and a disagreement would either
-// skip triangles (host batch larger) or run mesh groups past the end of the
-// vertex buffer (host batch smaller).
+// `ampFunc`.
 static constexpr uint32_t kTrianglesPerBatch = 32;
 
-// Window / viewport extent, in pixels. These are also the space's X/Y units:
-// GESpace maps space units → NDC straight through the viewport, so authoring in
-// pixels means "translate to (400, 300)" puts an object in the middle of an
-// 800x600 window.
 static constexpr float kWindowWidth  = 800.f;
 static constexpr float kWindowHeight = 600.f;
 
-// Depth range of the SPACE, in space units — NOT the rasterizer viewport's
-// [0,1] depth range, which is a different thing that happens to live on the same
-// struct. The fit below scales the model to hundreds of space units on its
-// longest axis, so the space needs a depth range on that same order or the mesh
-// is scaled straight through the far plane and clipped away entirely (with every
-// matrix still "correct"). Symmetric about 0, so a model centered at z=0 sits at
-// NDC depth 0.5 with room on both sides to rotate.
+// Depth range of the SPACE, in space units (NOT the rasterizer's [0,1] range).
 static constexpr float kSpaceNearDepth = -1000.f;
 static constexpr float kSpaceFarDepth  =  1000.f;
 
-// Fraction of the viewport's shorter axis the fitted model should span.
-static constexpr float kFillFraction = 0.8f;
+static constexpr float kFillFraction = 0.45f;
 
-/// The `constant<MeshTransform>` block, declared `[in pc]` by BOTH the
-/// amplification and the mesh stage: one column-major float4x4 plus the triangle
-/// count.
-///
-/// `triCount` is what the amplification stage clamps its tail batch against. It
-/// lives in the push constant rather than being baked into the dispatch because
-/// the amp shader — not the host — is the thing that has to know when to stop.
-///
-/// Layout is std430: the mat4 is 64B at offset 0 (16B-aligned), the uint is 4B
-/// at offset 64. The C++ struct below matches byte for byte with no padding
-/// (alignof(float[16]) == alignof(uint32_t) == 4), which is why this can be
-/// memcpy'd straight into the push-constant range.
-struct MeshTransformConstants {
+// ── Push-constant blocks (must match the shader byte for byte) ──────────────
+
+/// `constant<ObjectXform> pc : 0` — three column-major float4x4 plus an albedo and
+/// the triangle count. std430: mat4s are 64B each at 16B alignment, the float4 is
+/// 16B, the uint is 4B.
+struct ObjectXformConstants {
     float    mvp[16];
+    float    model[16];
+    float    normalMat[16];
+    float    albedo[4];
     uint32_t triCount;
 };
 
-static OmegaGTE::GTE gte;
-static SharedHandle<OmegaGTE::GTEShaderLibrary> library;
-static SharedHandle<OmegaGTE::GERenderPipelineState> meshPipeline;
-static SharedHandle<OmegaGTE::GEMeshAsset> meshAsset;
-static SharedHandle<OmegaGTE::GEMesh> loadedMesh;
-static SharedHandle<OmegaGTE::GECommandQueue> commandQueue;
-static SharedHandle<OmegaGTE::GENativeRenderTarget> renderTarget;
+/// `constant<ShadowParams> sp : 3`.
+struct ShadowParamsConstants {
+    float lightPos[4];
+    float ambient[4];   // rgb = ambient, w = shadow strength
+    float dims[4];      // xy = G-buffer extent
+};
 
-// The coordinate space the mesh is placed in, and the handle it was placed at.
-static UniqueHandle<OmegaGTE::GESpace> space;
-static OmegaGTE::GESpaceObjectID meshObject = OmegaGTE::GESpaceInvalidObject;
+// ── Scene ───────────────────────────────────────────────────────────────────
 
-/// Flatten an FMatrix<4,4> into the 16 floats the shader's `float4x4` expects.
-/// FMatrix stores column-major (`m[col][row]`, one whole column contiguous), and
-/// so does the shader's matrix, so column `c` goes to floats [4c .. 4c+3] — no
-/// transpose. Spelled out as a loop rather than a memcpy of the private storage
-/// because getting this backwards is silent: a transposed MVP still produces a
+/// One drawable thing: where it lives (GESpace), what geometry it has (GEMesh), and
+/// the BLAS built over that geometry.
+struct SceneObject {
+    GESpaceObjectID          id = GESpaceInvalidObject;
+    SharedHandle<GEMesh>     mesh;
+    SharedHandle<GEAccelerationStruct> blas;
+    float                    albedo[4] = {0.8f, 0.8f, 0.8f, 1.f};
+    bool                     isFBX = false;   // drawn with the mesh pipeline
+};
+
+static GTE gte;
+static SharedHandle<GTEShaderLibrary> library;
+static SharedHandle<GECommandQueue>   commandQueue;
+static SharedHandle<GENativeRenderTarget> renderTarget;
+
+static SharedHandle<GERenderPipelineState>  primPipeline;
+static SharedHandle<GERenderPipelineState>  meshPipeline;
+static SharedHandle<GEComputePipelineState> shadowPipeline;
+static SharedHandle<GERenderPipelineState>  compositePipeline;
+
+// G-buffer surfaces + the render target that owns them (and the depth buffer).
+static SharedHandle<GETexture> gWorldPosTex, gNormalTex, gAlbedoTex, gDepthTex, litTex;
+static SharedHandle<GETextureRenderTarget> gWorldPosRT, gNormalRT, gAlbedoRT;
+
+static SharedHandle<GEAccelerationStruct> tlas;
+
+static UniqueHandle<GESpace> space;
+static std::vector<SceneObject> sceneObjects;
+static SharedHandle<GEMeshAsset> meshAsset;
+static SharedHandle<OmegaTriangulationEngineContext> teContext;
+
+/// Flatten an FMatrix<4,4> into 16 floats. FMatrix stores column-major and so does
+/// the shader's `float4x4`, so column `c` goes to floats [4c..4c+3] — no transpose.
+/// Getting this backwards is SILENT: a transposed matrix still draws a
 /// plausible-looking picture, just the wrong one.
-static MeshTransformConstants flattenColumnMajor(const OmegaGTE::FMatrix<4,4> &m,
-                                                 uint32_t triCount){
-    MeshTransformConstants out{};
+static void flattenColumnMajor(const FMatrix<4,4> &m, float out[16]) {
     for (unsigned c = 0; c < 4; ++c) {
         for (unsigned r = 0; r < 4; ++r) {
-            out.mvp[c * 4 + r] = m[c][r];
+            out[c * 4 + r] = m[c][r];
         }
     }
-    out.triCount = triCount;
-    return out;
 }
 
-/// Place `mesh` in `space` so it lands centered in the viewport and spans
-/// `kFillFraction` of its shorter axis, whatever units the source file used.
+/// The inverse-transpose of a model matrix's upper 3x3, written back as a 4x4.
 ///
-/// This is the whole reason `GEMesh::bounds` exists: the vertex buffer is a GPU
-/// resource with no CPU copy, so without the local-space AABB captured at load
-/// time the scale here would be a magic number tuned by eye to one asset. The
-/// model is centered on all three axes — including Z, where an off-origin model
-/// scaled by a few hundred would otherwise be pushed clean through the far plane.
-static OmegaGTE::GESpaceObjectID fitMeshToSpace(OmegaGTE::GESpace &sp,
-                                                const SharedHandle<OmegaGTE::GEMesh> &mesh){
-    const auto id = sp.addMesh(mesh);
-    if (id == OmegaGTE::GESpaceInvalidObject) {
-        return id;
+/// Rotating a normal by the model matrix is only correct under UNIFORM scale. These
+/// objects are non-uniformly scaled (the floor especially — it is a cylinder
+/// squashed flat), and under that a plain model-matrix rotation tilts normals off
+/// the surface, so the lighting and the shadow term both go quietly wrong.
+static void normalMatrixOf(const FMatrix<4,4> &model, float out[16]) {
+    // Upper-left 3x3.
+    float m[3][3];
+    for (unsigned c = 0; c < 3; ++c) {
+        for (unsigned r = 0; r < 3; ++r) {
+            m[r][c] = model[c][r];
+        }
     }
 
-    const auto &bounds = mesh->bounds;
-    if (!bounds.valid || bounds.longestExtent() <= 0.f) {
-        // A mesh with no bounds (empty, or loaded by a path that does not
-        // populate them) can still be placed — it just cannot be auto-fitted, so
-        // say so instead of dividing by zero and drawing a NaN.
-        std::cerr << "[MeshAndRaytracingTest] warning: mesh has no valid bounds; "
-                     "placing it untransformed (it will almost certainly be off-screen)."
-                  << std::endl;
-        return id;
+    const float det =
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+        m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+        m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+
+    // Degenerate (a zero scale on some axis) — fall back to identity rather than
+    // dividing by zero and spraying NaNs through every normal in the frame.
+    if (std::abs(det) < 1e-8f) {
+        for (unsigned i = 0; i < 16; ++i) out[i] = (i % 5 == 0) ? 1.f : 0.f;
+        return;
+    }
+    const float invDet = 1.f / det;
+
+    // inverse(m), then transpose — done in one step below.
+    float inv[3][3];
+    inv[0][0] =  (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * invDet;
+    inv[0][1] = -(m[0][1] * m[2][2] - m[0][2] * m[2][1]) * invDet;
+    inv[0][2] =  (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * invDet;
+    inv[1][0] = -(m[1][0] * m[2][2] - m[1][2] * m[2][0]) * invDet;
+    inv[1][1] =  (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * invDet;
+    inv[1][2] = -(m[0][0] * m[1][2] - m[0][2] * m[1][0]) * invDet;
+    inv[2][0] =  (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * invDet;
+    inv[2][1] = -(m[0][0] * m[2][1] - m[0][1] * m[2][0]) * invDet;
+    inv[2][2] =  (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * invDet;
+
+    // out = transpose(inv), stored column-major: out[c*4+r] = transpose(inv)[r][c]
+    //                                                       = inv[c][r].
+    for (unsigned i = 0; i < 16; ++i) out[i] = 0.f;
+    for (unsigned c = 0; c < 3; ++c) {
+        for (unsigned r = 0; r < 3; ++r) {
+            out[c * 4 + r] = inv[c][r];
+        }
+    }
+    out[15] = 1.f;
+}
+
+/// Build the BLAS for one object's mesh.
+///
+/// The vertex buffer is handed over WITH its stride and vertex count, because these
+/// meshes carry Position+Normal (a 24- or 32-byte vertex). The BLAS reads only the
+/// position at offset 0, but it has to be told how far apart the vertices are — the
+/// old "tightly-packed float3" assumption would step 12 bytes at a time through a
+/// 32-byte vertex and trace shredded geometry.
+static SharedHandle<GEAccelerationStruct> buildBLAS(const SharedHandle<GEMesh> &mesh) {
+    if (!mesh || !mesh->vertexBuffer || mesh->vertexCount < 3) {
+        return nullptr;
+    }
+    GEAccelerationStructDescriptor desc;
+    desc.level = GEAccelerationStructDescriptor::BottomLevel;
+    desc.addTriangleBuffer(mesh->vertexBuffer,
+                           mesh->vertexStride,
+                           mesh->vertexCount);
+    return gte.graphicsEngine->allocateAccelerationStructure(desc);
+}
+
+/// Place a TE primitive in the space and build its GPU mesh WITH NORMALS.
+///
+/// `GEMeshAttrPosition | GEMeshAttrNormal` is the opt-in that Raytracing plan §7-V.a
+/// unlocked: TE was already computing a normal per vertex and then throwing it away
+/// whenever no UV/color attachment happened to be requested, which is exactly what
+/// GESpace's primitive path does. Position-only is still the DEFAULT — this asks for
+/// more, and now actually gets it instead of a buffer of zeros.
+static SceneObject addPrimitive(TETriangulationParams params,
+                                const GPoint3D &translation,
+                                const GPoint3D &scale,
+                                const float albedo[4]) {
+    SceneObject obj;
+    obj.id = space->addPrimitive(teContext.get(), params);
+    if (obj.id == GESpaceInvalidObject) {
+        std::cerr << "[MeshAndRaytracingTest] addPrimitive failed" << std::endl;
+        return obj;
+    }
+    space->setScale(obj.id, scale);
+    space->setTranslation(obj.id, translation);
+
+    GEMeshDescriptor md{};
+    md.attributes = GEMeshAttrPosition | GEMeshAttrNormal;
+    md.topology   = GEMeshTopology::Triangle;
+    md.indexType  = GEMeshIndexType::None;
+
+    obj.mesh = space->meshOf(obj.id, gte.graphicsEngine.get(), md);
+    if (!obj.mesh) {
+        std::cerr << "[MeshAndRaytracingTest] meshOf(primitive) failed" << std::endl;
+        return obj;
+    }
+    obj.blas = buildBLAS(obj.mesh);
+    std::copy(albedo, albedo + 4, obj.albedo);
+    return obj;
+}
+
+/// Create the offscreen G-buffer + the lit output.
+static bool createTargets(unsigned w, unsigned h) {
+    auto mk = [&](PixelFormat fmt, GETexture::GETextureUsage usage) {
+        TextureDescriptor d{};
+        d.storage_opts = GPUOnly;
+        d.usage  = usage;
+        d.pixelFormat = fmt;
+        d.width  = w;
+        d.height = h;
+        d.depth  = 1;
+        d.kind   = TextureKind::Tex2D;
+        return gte.graphicsEngine->makeTexture(d);
+    };
+
+    // World position needs full float — positions are unbounded. Normals are
+    // signed, so they need a float format too (half is plenty). Albedo is the only
+    // thing that fits in 8-bit unorm.
+    gWorldPosTex = mk(PixelFormat::RGBA32Float, GETexture::RenderTarget);
+    gNormalTex   = mk(PixelFormat::RGBA16Float, GETexture::RenderTarget);
+    gAlbedoTex   = mk(PixelFormat::RGBA8Unorm,  GETexture::RenderTarget);
+    gDepthTex    = mk(PixelFormat::D32Float,    GETexture::RenderTargetAndDepthStencil);
+    // The compute pass writes this, the composite pass samples it.
+    litTex       = mk(PixelFormat::RGBA8Unorm,  GETexture::GPUAccessOnly);
+
+    if (!gWorldPosTex || !gNormalTex || !gAlbedoTex || !gDepthTex || !litTex) {
+        std::cerr << "[MeshAndRaytracingTest] G-buffer texture creation failed" << std::endl;
+        return false;
     }
 
-    const float fit = kFillFraction * std::min(kWindowWidth, kWindowHeight)
-                    / bounds.longestExtent();
-    const auto center = bounds.center();
+    auto mkRT = [&](const SharedHandle<GETexture> &tex,
+                    const SharedHandle<GETexture> &depth) {
+        TextureRenderTargetDescriptor rd{};
+        rd.renderToExistingTexture = true;
+        rd.texture = tex;
+        rd.depthTexture = depth;   // null for the secondary MRT slots
+        rd.region = TextureRegion{0, 0, 0, w, h, 1};
+        return gte.graphicsEngine->makeTextureRenderTarget(rd);
+    };
 
-    sp.setScale(id, OmegaGTE::GPoint3D{fit, fit, fit});
-    // Scale is applied before translation (GESpaceTransform is T∘R∘S), so the
-    // model's own center must be pre-scaled here to cancel it.
-    sp.setTranslation(id, OmegaGTE::GPoint3D{kWindowWidth  * 0.5f - center.x * fit,
-                                             kWindowHeight * 0.5f - center.y * fit,
-                                             0.f                  - center.z * fit});
+    // Only attachment 0's render target carries the depth surface: a pass has
+    // exactly ONE depth attachment, and it is taken from the target backing color
+    // attachment 0.
+    gWorldPosRT = mkRT(gWorldPosTex, gDepthTex);
+    gNormalRT   = mkRT(gNormalTex,   nullptr);
+    gAlbedoRT   = mkRT(gAlbedoTex,   nullptr);
 
-    std::cout << "[MeshAndRaytracingTest] mesh bounds (local): min("
-              << bounds.min.x << ", " << bounds.min.y << ", " << bounds.min.z << ") max("
-              << bounds.max.x << ", " << bounds.max.y << ", " << bounds.max.z << ")"
-              << "\n[MeshAndRaytracingTest] fit scale = " << fit
-              << " (longest extent " << bounds.longestExtent() << " space units -> "
-              << (kFillFraction * std::min(kWindowWidth, kWindowHeight)) << " px)"
-              << std::endl;
-    return id;
+    if (!gWorldPosRT || !gNormalRT || !gAlbedoRT) {
+        std::cerr << "[MeshAndRaytracingTest] G-buffer render target creation failed" << std::endl;
+        return false;
+    }
+    return true;
+}
+
+/// Build the TLAS over every object's BLAS, using each object's GESpace local→world
+/// transform. The shadow kernel traces this.
+static bool buildTLAS() {
+    GEAccelerationStructDescriptor td;
+
+    unsigned instanceCount = 0;
+    for (auto &obj : sceneObjects) {
+        if (!obj.blas) continue;
+
+        // GESpace stores column-major; the TLAS instance transform is a 3x4
+        // ROW-major affine matrix (the implicit last row is [0 0 0 1]). So
+        // transform[r][c] = model[c][r].
+        const auto model = space->transformOf(obj.id).modelMatrix();
+        float xf[3][4];
+        for (unsigned r = 0; r < 3; ++r) {
+            for (unsigned c = 0; c < 4; ++c) {
+                xf[r][c] = model[c][r];
+            }
+        }
+        td.addInstance(obj.blas, xf, /*mask=*/0xFF, /*instanceID=*/instanceCount);
+        ++instanceCount;
+    }
+
+    if (instanceCount == 0) {
+        std::cerr << "[MeshAndRaytracingTest] no BLAS to instance; TLAS skipped" << std::endl;
+        return false;
+    }
+
+    tlas = gte.graphicsEngine->allocateAccelerationStructure(td);
+    if (!tlas) {
+        std::cerr << "[MeshAndRaytracingTest] TLAS allocation failed" << std::endl;
+        return false;
+    }
+    std::cout << "[MeshAndRaytracingTest] TLAS: " << instanceCount << " instances" << std::endl;
+    return true;
 }
 
 GTE_TEST_ENTRY_POINT {
     (void)argc;
 
-    // Point the working directory at the executable's folder so the relative
-    // "./meshAndRaytracing.omegasllib" / "./orange_tennis_racket.fbx" loads
-    // below resolve regardless of where the test is launched from — same
-    // convention 2DTest uses.
     OmegaCommon::FS::changeCWD(OmegaCommon::FS::getExecutableDir());
 
     gte = OmegaGTE::InitWithDefaultDevice();
     std::cout << "[MeshAndRaytracingTest] GTE Initialized" << std::endl;
 
-    // Mesh-shader feature gate. The Phase 3 public API also checks this
-    // inside `makeMeshPipelineState`, but reporting it up-front gives the
-    // user a clearer one-line diagnostic than chasing the per-call log
-    // later. Same shape we'll use for raytracing when it joins.
-    auto enumerateRes = OmegaGTE::enumerateDevices();
+    // ── Feature gates ───────────────────────────────────────────────
     bool meshSupported = false;
-    for (auto &dev : enumerateRes) {
-        if (dev && dev->features.hasFeature(OmegaGTE::GTEDEVICE_FEATURE_MESH_SHADER)) {
-            meshSupported = true;
-            break;
-        }
+    bool rtSupported   = false;
+    for (auto &dev : OmegaGTE::enumerateDevices()) {
+        if (!dev) continue;
+        if (dev->features.hasFeature(GTEDEVICE_FEATURE_MESH_SHADER))  meshSupported = true;
+        if (dev->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING))   rtSupported   = true;
     }
-    std::cout << "[MeshAndRaytracingTest] GTEDEVICE_FEATURE_MESH_SHADER = "
-              << (meshSupported ? "YES" : "NO") << std::endl;
+    std::cout << "[MeshAndRaytracingTest] MESH_SHADER = " << (meshSupported ? "YES" : "NO")
+              << ", RAYTRACING = " << (rtSupported ? "YES" : "NO") << std::endl;
+    if (!rtSupported) {
+        std::cerr << "[MeshAndRaytracingTest] device has no raytracing; nothing to show." << std::endl;
+        return 0;   // not a failure — just not this machine
+    }
 
     library = gte.graphicsEngine->loadShaderLibrary("./meshAndRaytracing.omegasllib");
     if (!library) {
@@ -200,198 +363,373 @@ GTE_TEST_ENTRY_POINT {
         return 1;
     }
 
-    // Two-stage mesh pipeline: amplification -> mesh -> fragment (§5). The
-    // amplification stage batches the model's triangles 32 at a time and
-    // dispatches the mesh threadgroups for each batch itself, so the host issues
-    // one dispatch per BATCH instead of one per triangle.
-    OmegaGTE::MeshPipelineDescriptor meshPipeDesc{};
-    meshPipeDesc.name = "MeshAndRaytracing.Pipeline";
-    meshPipeDesc.amplificationFunc = library->shaders[AMPLIFICATION_SHADER];
-    meshPipeDesc.meshFunc          = library->shaders[MESH_SHADER];
-    meshPipeDesc.fragmentFunc      = library->shaders[FRAGMENT_SHADER];
-    meshPipeDesc.depthAndStencilDesc.enableDepth = false;
-    meshPipeDesc.depthAndStencilDesc.enableStencil = false;
+    // ── G-buffer surfaces ───────────────────────────────────────────
+    const auto W = static_cast<unsigned>(kWindowWidth);
+    const auto H = static_cast<unsigned>(kWindowHeight);
+    if (!createTargets(W, H)) return 1;
 
-    meshPipeline = gte.graphicsEngine->makeMeshPipelineState(meshPipeDesc);
-    const bool meshPipelineLive = (meshPipeline != nullptr);
-    std::cout << "[MeshAndRaytracingTest] makeMeshPipelineState (amplification + mesh) -> "
-              << (meshPipelineLive ? "live PSO" : "nullptr")
-              << std::endl;
+    // ── Pipelines ───────────────────────────────────────────────────
+    //
+    // The G-buffer pipelines declare all THREE color formats and the depth format.
+    // Metal will not test depth at all unless the pipeline names the depth format —
+    // a depth-enabled pipeline without it is silently inert.
+    const OmegaCommon::Vector<PixelFormat> gbufFormats = {
+        PixelFormat::RGBA32Float, PixelFormat::RGBA16Float, PixelFormat::RGBA8Unorm
+    };
 
-    // ── Load the FBX through GEMeshAsset ────────────────────────────
-    // `desiredDescriptor.attributes = Position` keeps the per-vertex
-    // stride at 12B (tightly packed `float3`). Adding Normal would jump
-    // the GEMesh CPU stride to 24B while OmegaSL `buffer<T>` on D3D12
-    // would pad to 32B (std430 16-byte vec3 alignment between
-    // consecutive vec3 fields) — they wouldn't agree, and the shader
-    // would read garbage. See the matching note in the shader file.
-    meshAsset = OmegaGTE::GEMeshAsset::Create(gte.graphicsEngine);
-    OmegaGTE::GEMeshAsset::LoadOptions meshOpts{};
-    meshOpts.desiredDescriptor.attributes = OmegaGTE::GEMeshAttrPosition;
-    meshOpts.desiredDescriptor.topology   = OmegaGTE::GEMeshTopology::Triangle;
-    meshOpts.desiredDescriptor.indexType  = OmegaGTE::GEMeshIndexType::None;
-    meshOpts.loadMaterialTextures = false;
-    const bool meshLoaded = meshAsset->load("./orange_tennis_racket.fbx", meshOpts);
-    loadedMesh = meshLoaded ? meshAsset->mesh() : nullptr;
-    if (meshLoaded && loadedMesh) {
-        std::cout << "[MeshAndRaytracingTest] FBX loaded: vertexCount="
-                  << loadedMesh->vertexCount
-                  << " stride=" << loadedMesh->vertexStride << "B ("
-                  << (loadedMesh->vertexCount / 3u) << " triangles)" << std::endl;
-    } else {
-        std::cerr << "[MeshAndRaytracingTest] FBX load failed; dispatching "
-                     "a single empty mesh threadgroup to exercise the "
-                     "pipeline anyway." << std::endl;
+    RenderPipelineDescriptor primDesc{};
+    primDesc.name = "MeshAndRaytracing.GBuffer.Primitives";
+    primDesc.vertexFunc   = library->shaders["primVert"];
+    primDesc.fragmentFunc = library->shaders["primFrag"];
+    primDesc.colorPixelFormats = gbufFormats;
+    primDesc.depthStencilPixelFormat = PixelFormat::D32Float;
+    primDesc.depthAndStencilDesc.enableDepth   = true;
+    primDesc.depthAndStencilDesc.depthOperation = CompareFunc::Less;
+    primPipeline = gte.graphicsEngine->makeRenderPipelineState(primDesc);
+
+    MeshPipelineDescriptor meshDesc{};
+    meshDesc.name = "MeshAndRaytracing.GBuffer.Mesh";
+    meshDesc.amplificationFunc = library->shaders["ampFunc"];
+    meshDesc.meshFunc          = library->shaders["meshFunc"];
+    meshDesc.fragmentFunc      = library->shaders["meshFrag"];
+    meshDesc.colorPixelFormats = gbufFormats;
+    meshDesc.depthStencilPixelFormat = PixelFormat::D32Float;
+    meshDesc.depthAndStencilDesc.enableDepth    = true;
+    meshDesc.depthAndStencilDesc.depthOperation = CompareFunc::Less;
+    meshPipeline = meshSupported ? gte.graphicsEngine->makeMeshPipelineState(meshDesc) : nullptr;
+
+    ComputePipelineDescriptor shadowDesc{};
+    shadowDesc.name = "MeshAndRaytracing.ShadowKernel";
+    shadowDesc.computeFunc = library->shaders["shadowKernel"];
+    shadowPipeline = gte.graphicsEngine->makeComputePipelineState(shadowDesc);
+
+    RenderPipelineDescriptor compDesc{};
+    compDesc.name = "MeshAndRaytracing.Composite";
+    compDesc.vertexFunc   = library->shaders["compositeVert"];
+    compDesc.fragmentFunc = library->shaders["compositeFrag"];
+    compDesc.colorPixelFormats = { PixelFormat::BGRA8Unorm };   // the drawable
+    compDesc.depthAndStencilDesc.enableDepth = false;
+    compositePipeline = gte.graphicsEngine->makeRenderPipelineState(compDesc);
+
+    std::cout << "[MeshAndRaytracingTest] pipelines: prim=" << (primPipeline ? "ok" : "NULL")
+              << " mesh=" << (meshPipeline ? "ok" : "NULL")
+              << " shadow=" << (shadowPipeline ? "ok" : "NULL")
+              << " composite=" << (compositePipeline ? "ok" : "NULL") << std::endl;
+    if (!primPipeline || !shadowPipeline || !compositePipeline) {
+        std::cerr << "[MeshAndRaytracingTest] a required pipeline is null; aborting." << std::endl;
+        return 1;
     }
 
-    // ── Place the mesh in a GESpace ─────────────────────────────────
-    // The space is defined by a viewport: X/Y in pixels (so the space's units
-    // ARE screen units) and a depth range in those same space units. GESpace
-    // owns the one conversion from here to NDC; the mesh's vertex buffer is
-    // never touched.
-    OmegaGTE::GEViewport spaceViewport;
-    spaceViewport.x         = 0.f;
-    spaceViewport.y         = 0.f;
-    spaceViewport.width     = kWindowWidth;
-    spaceViewport.height    = kWindowHeight;
-    spaceViewport.nearDepth = kSpaceNearDepth;
-    spaceViewport.farDepth  = kSpaceFarDepth;
-
-    space = std::make_unique<OmegaGTE::GESpace>(spaceViewport);
-    if (loadedMesh) {
-        // No reorientation: the asset's measured bounds (~1.90 x 0.81 x 0.17)
-        // say it already lies flat in the XY plane — Z is its thin axis — so it
-        // faces the viewer as authored. Rotating it upright, as a Z-up model
-        // would need, would turn it edge-on and show a sliver. The bounds are
-        // what make that knowable instead of a guess.
-        meshObject = fitMeshToSpace(*space, loadedMesh);
-    }
-
+    // ── Window / frame ──────────────────────────────────────────────
     OmegaGTETests::GTETestWindowDescriptor desc;
-    desc.title = "GTE MeshAndRaytracingTest";
-    desc.width = static_cast<unsigned>(kWindowWidth);
-    desc.height = static_cast<unsigned>(kWindowHeight);
+    desc.title  = "GTE MeshAndRaytracingTest — RT shadows";
+    desc.width  = W;
+    desc.height = H;
 
     OmegaGTETests::GTETestWindowDelegate del;
 
-    del.onReady = [meshPipelineLive](const OmegaGTE::NativeRenderTargetDescriptor &nrt) {
-        OmegaGTE::GECommandQueueDesc commandQueueDesc{};
-        commandQueueDesc.maxBufferCount = 64;
-        commandQueue = gte.graphicsEngine->makeCommandQueue(commandQueueDesc);
-        renderTarget = gte.graphicsEngine->makeNativeRenderTarget(nrt, commandQueue);
+    del.onReady = [W, H, meshSupported](const NativeRenderTargetDescriptor &nrt) {
+    GECommandQueueDesc qd{};
+    qd.maxBufferCount = 64;
+    commandQueue = gte.graphicsEngine->makeCommandQueue(qd);
+    renderTarget = gte.graphicsEngine->makeNativeRenderTarget(nrt, commandQueue);
 
-        auto commandBuffer = commandQueue->getAvailableBuffer();
+    // ── Scene ───────────────────────────────────────────────────────
+    //
+    // Built here rather than up front because a TE context binds to a render
+    // target + queue, and neither exists until the window is ready.
+    GEViewport spaceViewport;
+    spaceViewport.x = 0.f;  spaceViewport.y = 0.f;
+    spaceViewport.width  = kWindowWidth;
+    spaceViewport.height = kWindowHeight;
+    spaceViewport.nearDepth = kSpaceNearDepth;
+    spaceViewport.farDepth  = kSpaceFarDepth;
+    space = std::make_unique<GESpace>(spaceViewport);
 
-        OmegaGTE::GERenderPassDescriptor renderPassDesc{};
-        renderPassDesc.nRenderTarget = renderTarget.get();
-        using ColorAttachment = OmegaGTE::GERenderPassDescriptor::ColorAttachment;
-        // Slate-grey clear so a stub run still shows "I drew something" without
-        // false-positiving the meshlet (the triangle uses pure red/green/blue
-        // vertex colors that contrast hard against grey).
-        renderPassDesc.colorAttachments.push_back(
-            ColorAttachment(ColorAttachment::ClearColor(0.15f, 0.15f, 0.18f, 1.f),
-                            ColorAttachment::Clear));
+    // ── Camera ──────────────────────────────────────────────────────
+    //
+    // A real perspective camera, looking DOWN at the scene from in front.
+    //
+    // The first cut of this test used the space's default viewport-linear
+    // (orthographic, axis-aligned) map, and it made the shadows invisible: the
+    // floor is a horizontal disc in the XZ plane, and an orthographic camera
+    // staring straight down -Z sees a horizontal plane EDGE-ON — it rendered as a
+    // 1-pixel line. The shadows were almost certainly being traced correctly; they
+    // just had nowhere visible to land.
+    //
+    // Setting a view + projection here is exactly what GESpace Phase 5 is for: it
+    // composes projection·view·model itself, so `objectTransform()` still returns a
+    // single local→clip matrix and nothing downstream changes. Note the scene below
+    // is now authored in WORLD units (metres-ish), not pixels — with a real lens,
+    // pixel-sized coordinates make no sense.
+    space->setViewMatrix(lookAt(GPoint3D{0.f, 5.5f, 11.f},    // eye: up and in front
+                                GPoint3D{0.f, 1.2f,  0.f},    // target: the objects
+                                GPoint3D{0.f, 1.f,   0.f}));  // up
+    space->setProjectionMatrix(perspectiveProjection(
+        45.f * 3.14159265f / 180.f,
+        kWindowWidth / kWindowHeight,
+        0.1f, 200.f));
 
-        // The RASTERIZER viewport. Its nearDepth/farDepth are the hardware depth
-        // range and must stay within [0,1] — unlike the space viewport above,
-        // whose depth range is in space units. Same struct, two different jobs.
-        OmegaGTE::GEViewport    viewport    {0, 0, kWindowWidth, kWindowHeight, 0.f, 1.f};
-        OmegaGTE::GEScissorRect scissorRect {0, 0, kWindowWidth, kWindowHeight};
+    teContext = gte.triangulationEngine->createTEContextFromTextureRenderTarget(
+        gWorldPosRT, commandQueue);
+    if (!teContext) {
+        std::cerr << "[MeshAndRaytracingTest] TE context creation failed" << std::endl;
+        return;
+    }
+    // Scene in WORLD units now (roughly metres), with the floor at y = 0 and the
+    // casters standing on it.
 
-        commandBuffer->startRenderPass(renderPassDesc);
-        commandBuffer->setViewports({viewport});
-        commandBuffer->setScissorRects({scissorRect});
+    // The FLOOR — a cylinder squashed flat into a disc lying in the XZ plane. This
+    // is what the shadows fall ON; a shadow test with no receiver proves nothing.
+    // Deliberately non-uniformly scaled (7 x 0.15 x 7), which is also what makes
+    // the inverse-transpose normal matrix necessary rather than decorative.
+    {
+        GCylinder disc{GPoint3D{0.f, 0.f, 0.f}, 1.f, 1.f};
+        auto p = TETriangulationParams::Cylinder(disc);
+        const float grey[4] = {0.78f, 0.78f, 0.82f, 1.f};
+        sceneObjects.push_back(addPrimitive(p,
+            GPoint3D{0.f, 0.f, 0.f},
+            GPoint3D{7.f, 0.15f, 7.f},
+            grey));
+    }
 
-        if (meshPipelineLive) {
-            commandBuffer->setRenderPipelineState(meshPipeline);
-            if (loadedMesh && loadedMesh->vertexBuffer && loadedMesh->vertexCount >= 3
-                && meshObject != OmegaGTE::GESpaceInvalidObject) {
-                const uint32_t triCount = loadedMesh->vertexCount / 3u;
+    // The CASTERS, standing on the floor.
+    {
+        GSphere s{GPoint3D{0.f, 0.f, 0.f}, 1.f};
+        auto p = TETriangulationParams::Sphere(s);
+        const float red[4] = {0.85f, 0.30f, 0.25f, 1.f};
+        sceneObjects.push_back(addPrimitive(p,
+            GPoint3D{-2.6f, 1.1f, 0.3f}, GPoint3D{1.1f, 1.1f, 1.1f}, red));
+    }
+    {
+        // Stood UP on its edge (rotated about X) so the hole faces the camera —
+        // lying flat it reads as a featureless pill, and a torus casting a shadow
+        // with a hole in it is the whole point of putting one here.
+        GTorus t{GPoint3D{0.f, 0.f, 0.f}, 1.f, 0.35f};
+        auto p = TETriangulationParams::Torus(t);
+        const float green[4] = {0.30f, 0.75f, 0.40f, 1.f};
+        auto obj = addPrimitive(p,
+            GPoint3D{0.2f, 1.5f, -0.4f}, GPoint3D{1.3f, 1.3f, 1.3f}, green);
+        if (obj.id != GESpaceInvalidObject) {
+            space->rotateAxis(obj.id, 1.f, 0.f, 0.f, 1.5707963f);
+        }
+        sceneObjects.push_back(obj);
+    }
+    {
+        GCone c{0.f, 0.f, 0.f, 1.f, 2.f};
+        auto p = TETriangulationParams::Cone(c);
+        const float blue[4] = {0.30f, 0.45f, 0.85f, 1.f};
+        sceneObjects.push_back(addPrimitive(p,
+            GPoint3D{2.9f, 0.1f, 0.2f}, GPoint3D{1.f, 1.2f, 1.f}, blue));
+    }
+    {
+        GCylinder cyl{GPoint3D{0.f, 0.f, 0.f}, 1.f, 2.f};
+        auto p = TETriangulationParams::Cylinder(cyl);
+        const float amber[4] = {0.90f, 0.70f, 0.25f, 1.f};
+        sceneObjects.push_back(addPrimitive(p,
+            GPoint3D{1.3f, 0.8f, 1.9f}, GPoint3D{0.55f, 0.8f, 0.55f}, amber));
+    }
 
-                // THE transform. `objectTransform` composes the object's TRS (in
-                // space units) with the space's own space→NDC map, so this single
-                // matrix carries an FBX-local vertex all the way to clip space.
-                // The mesh's GPU buffer is never rewritten — the matrix does the
-                // work, which is the entire matrix-only premise of GESpace.
-                //
-                // One call feeds BOTH stages: `pc` is declared `[in pc]` on the
-                // amplification shader (which reads `triCount` to clamp its tail
-                // batch) and on the mesh shader (which reads `mvp`). Each backend
-                // fans the write out to every stage that declared the block —
-                // Vulkan via the push-constant range's stage mask, D3D12 via a
-                // root-constants param per stage, Metal via
-                // setObjectBytes/setMeshBytes.
-                const auto constants =
-                    flattenColumnMajor(space->objectTransform(meshObject), triCount);
-                commandBuffer->setRenderConstants(&constants, sizeof(constants));
+    // The FBX, through the mesh-shader pipeline.
+    if (meshPipeline) {
+        meshAsset = GEMeshAsset::Create(gte.graphicsEngine);
+        GEMeshAsset::LoadOptions opts{};
+        opts.desiredDescriptor.attributes = GEMeshAttrPosition;   // FBX path stays Position-only
+        opts.desiredDescriptor.topology   = GEMeshTopology::Triangle;
+        opts.desiredDescriptor.indexType  = GEMeshIndexType::None;
+        opts.loadMaterialTextures = false;
 
-                // The mesh shader sits in the pipeline's `vertexShader` slot (the
-                // slot-doubling from Phase 4a/4b/4c — mesh REPLACES vertex), so
-                // `bindResourceAtVertexShader` is the correct bind hook for a
-                // mesh-stage buffer. Register 1 matches the `: 1` annotation on
-                // `buffer<VertexIn>` in the shader (slot 0 is the push-constant
-                // block).
-                //
-                // The amplification stage reads no buffers here, so it needs no
-                // `bindResourceAtAmplificationShader` — its only input is the push
-                // constant above. If it did (a real culler wants the geometry), it
-                // is a genuinely separate stage with its own descriptor set /
-                // register space, which is why that bind is its own method rather
-                // than a routing branch inside this one.
-                commandBuffer->bindResourceAtVertexShader(loadedMesh->vertexBuffer, 1);
+        if (meshAsset->load("./orange_tennis_racket.fbx", opts)) {
+            SceneObject obj;
+            obj.mesh  = meshAsset->mesh();
+            obj.isFBX = true;
+            if (obj.mesh && obj.mesh->vertexBuffer && obj.mesh->bounds.valid
+                && obj.mesh->bounds.longestExtent() > 0.f) {
+                obj.id = space->addMesh(obj.mesh);
+                // Fit the racket to ~4 world units on its longest axis, stand it
+                // upright (it is authored lying in the XY plane), and set it behind
+                // the primitives so it casts across the back of the floor.
+                const float fit = 4.5f / obj.mesh->bounds.longestExtent();
+                const auto ctr = obj.mesh->bounds.center();
+                space->setScale(obj.id, GPoint3D{fit, fit, fit});
+                space->rotateAxis(obj.id, 1.f, 0.f, 0.f, -1.2f);
+                space->setTranslation(obj.id,
+                    GPoint3D{-0.3f - ctr.x * fit,
+                              2.4f - ctr.y * fit,
+                             -3.2f - ctr.z * fit});
+                obj.blas = buildBLAS(obj.mesh);
+                const float orange[4] = {0.85f, 0.55f, 0.20f, 1.f};
+                std::copy(orange, orange + 4, obj.albedo);
+                sceneObjects.push_back(obj);
+                std::cout << "[MeshAndRaytracingTest] FBX: " << obj.mesh->vertexCount
+                          << " verts, stride " << obj.mesh->vertexStride << "B" << std::endl;
+            }
+        } else {
+            std::cerr << "[MeshAndRaytracingTest] FBX load failed; continuing with primitives only."
+                      << std::endl;
+        }
+    }
 
-                // ONE amplification threadgroup per 32-triangle batch — not one
-                // dispatch per triangle. Each amp group then launches its own mesh
-                // children (32, or fewer for the tail). The dispatch count the host
-                // issues therefore drops by 32x, and the GPU decides the rest.
-                const uint32_t batchCount =
-                    (triCount + kTrianglesPerBatch - 1u) / kTrianglesPerBatch;
-                std::cout << "[MeshAndRaytracingTest] dispatching " << batchCount
-                          << " amplification threadgroups for " << triCount
-                          << " triangles (" << kTrianglesPerBatch << " per batch)"
-                          << std::endl;
-                commandBuffer->drawMeshTasks(batchCount, 1, 1);
+    if (!buildTLAS()) return;
+
+        auto cb = commandQueue->getAvailableBuffer();
+
+        // ── Pass 0: build the acceleration structures ───────────────
+        //
+        // BLAS first, then the TLAS that instances them: a TLAS build reads its
+        // BLAS, so they cannot be recorded the other way round.
+        cb->beginAccelStructPass();
+        for (auto &obj : sceneObjects) {
+            if (!obj.blas || !obj.mesh) continue;
+            GEAccelerationStructDescriptor bd;
+            bd.level = GEAccelerationStructDescriptor::BottomLevel;
+            bd.addTriangleBuffer(obj.mesh->vertexBuffer,
+                                 obj.mesh->vertexStride,
+                                 obj.mesh->vertexCount);
+            cb->buildAccelerationStructure(obj.blas, bd);
+        }
+        {
+            GEAccelerationStructDescriptor td;
+            unsigned n = 0;
+            for (auto &obj : sceneObjects) {
+                if (!obj.blas) continue;
+                const auto model = space->transformOf(obj.id).modelMatrix();
+                float xf[3][4];
+                for (unsigned r = 0; r < 3; ++r)
+                    for (unsigned c = 0; c < 4; ++c)
+                        xf[r][c] = model[c][r];
+                td.addInstance(obj.blas, xf, 0xFF, n++);
+            }
+            cb->buildAccelerationStructure(tlas, td);
+        }
+        cb->finishAccelStructPass();
+
+        // ── Pass 1: G-buffer ────────────────────────────────────────
+        using CA = GERenderPassDescriptor::ColorAttachment;
+        GERenderPassDescriptor gpass{};
+        // Attachment 0's render target is the one that owns the depth surface.
+        gpass.tRenderTarget = gWorldPosRT.get();
+        // worldPos cleared to w=0 — that is the COVERAGE flag the shadow kernel
+        // tests. Clearing it to anything with w!=0 would make the whole background
+        // look like geometry sitting at the world origin.
+        gpass.colorAttachments.push_back(CA(CA::ClearColor(0.f, 0.f, 0.f, 0.f), CA::Clear));
+        gpass.colorAttachments.push_back(CA(CA::ClearColor(0.f, 0.f, 0.f, 0.f), CA::Clear, gNormalRT));
+        gpass.colorAttachments.push_back(CA(CA::ClearColor(0.f, 0.f, 0.f, 1.f), CA::Clear, gAlbedoRT));
+        gpass.depthStencilAttachment.disabled       = false;
+        gpass.depthStencilAttachment.depthloadAction = GERenderPassDescriptor::DepthStencilAttachment::Clear;
+        gpass.depthStencilAttachment.clearDepth      = 1.f;
+
+        GEViewport    vp {0, 0, kWindowWidth, kWindowHeight, 0.f, 1.f};
+        GEScissorRect sr {0, 0, kWindowWidth, kWindowHeight};
+
+        cb->startRenderPass(gpass);
+        cb->setViewports({vp});
+        cb->setScissorRects({sr});
+
+        for (auto &obj : sceneObjects) {
+            if (!obj.mesh || !obj.mesh->vertexBuffer || obj.id == GESpaceInvalidObject) continue;
+
+            ObjectXformConstants k{};
+            const auto model = space->transformOf(obj.id).modelMatrix();
+            flattenColumnMajor(space->objectTransform(obj.id), k.mvp);
+            flattenColumnMajor(model, k.model);
+            normalMatrixOf(model, k.normalMat);
+            std::copy(obj.albedo, obj.albedo + 4, k.albedo);
+            k.triCount = obj.mesh->vertexCount / 3u;
+
+            if (obj.isFBX) {
+                if (!meshPipeline) continue;
+                cb->setRenderPipelineState(meshPipeline);
+                cb->setRenderConstants(&k, sizeof(k));
+                // The mesh stage occupies the vertex slot; register 2 matches
+                // `buffer<MeshVertexIn> vertBuf : 2` in the shader.
+                cb->bindResourceAtVertexShader(obj.mesh->vertexBuffer, 2);
+                const uint32_t batches =
+                    (k.triCount + kTrianglesPerBatch - 1u) / kTrianglesPerBatch;
+                cb->drawMeshTasks(batches, 1, 1);
             } else {
-                // FBX load failed or returned no geometry. Still run the pipeline
-                // end-to-end (so a broken PSO surfaces as a crash/validation error
-                // rather than as a silently empty window) but with triCount = 0,
-                // which makes the amplification stage dispatch zero mesh children.
-                // A zero-count `dispatchMesh` is legal on all three backends.
-                MeshTransformConstants constants{};  // zeroed: mvp = 0, triCount = 0
-                commandBuffer->setRenderConstants(&constants, sizeof(constants));
-                commandBuffer->drawMeshTasks(1, 1, 1);
+                cb->setRenderPipelineState(primPipeline);
+                cb->setRenderConstants(&k, sizeof(k));
+                // register 1 matches `buffer<PrimVertex> primVerts : 1`.
+                cb->bindResourceAtVertexShader(obj.mesh->vertexBuffer, 1);
+                cb->drawPolygons(GECommandBuffer::Triangle, obj.mesh->vertexCount, 0);
             }
         }
-        // No `else` here: with no live PSO there is nothing bound to dispatch
-        // against, and `drawMeshTasks` now asserts on that (it did not when this
-        // test was written against the Phase-3 stubs, which no-op'd).
+        cb->finishRenderPass();
 
-        commandBuffer->finishRenderPass();
-        commandQueue->submitCommandBuffer(commandBuffer);
+        // ── Pass 2: ray-traced shadows ──────────────────────────────
+        ShadowParamsConstants sp{};
+        // World space now. Up, to the left, and in front — so the casters throw
+        // their shadows back and to the right across the floor, where the camera
+        // can see them.
+        sp.lightPos[0] = -5.5f;
+        sp.lightPos[1] = 9.0f;
+        sp.lightPos[2] =  5.0f;
+        // w = the light's RADIUS. Nonzero makes it an area light, which is what
+        // gives the shadows a soft penumbra instead of a hard stencil edge. This is
+        // where the ray budget goes: kShadowSamples rays per pixel instead of one.
+        sp.lightPos[3] = 0.6f;
+        sp.ambient[0] = 0.16f; sp.ambient[1] = 0.17f; sp.ambient[2] = 0.21f;
+        sp.ambient[3] = 0.90f;   // shadow strength
+        sp.dims[0] = static_cast<float>(W);
+        sp.dims[1] = static_cast<float>(H);
+
+        GEComputePassDescriptor cpass{};
+        cb->startComputePass(cpass);
+        cb->setComputePipelineState(shadowPipeline);
+        cb->setComputeConstants(&sp, sizeof(sp), 0);
+        cb->bindResourceAtComputeShader(tlas, 4);
+        cb->bindResourceAtComputeShader(gWorldPosTex, 5);
+        cb->bindResourceAtComputeShader(gNormalTex, 6);
+        cb->bindResourceAtComputeShader(gAlbedoTex, 7);
+        cb->bindResourceAtComputeShader(litTex, 8);
+        cb->dispatchThreadgroups((W + 7u) / 8u, (H + 7u) / 8u, 1);
+        cb->finishComputePass();
+
+        // ── Pass 3: composite onto the drawable ─────────────────────
+        GERenderPassDescriptor cpassDesc{};
+        cpassDesc.nRenderTarget = renderTarget.get();
+        cpassDesc.colorAttachments.push_back(
+            CA(CA::ClearColor(0.05f, 0.06f, 0.09f, 1.f), CA::Clear));
+
+        cb->startRenderPass(cpassDesc);
+        cb->setViewports({vp});
+        cb->setScissorRects({sr});
+        cb->setRenderPipelineState(compositePipeline);
+        cb->bindResourceAtFragmentShader(litTex, 9);
+        // Fullscreen TRIANGLE: 3 vertices, no vertex buffer — positions come from
+        // the vertex id.
+        cb->drawPolygons(GECommandBuffer::Triangle, 3, 0);
+        cb->finishRenderPass();
+
+        commandQueue->submitCommandBuffer(cb);
         commandQueue->commitToGPU();
         renderTarget->present();
+
+        std::cout << "[MeshAndRaytracingTest] frame submitted" << std::endl;
     };
 
     del.onClose = []() {
         commandQueue->commitToGPUAndWait();
 
-        // The space holds a reference to the mesh; drop it before the mesh so
-        // the GPU buffer is released once, in a defined order.
+        sceneObjects.clear();
+        tlas.reset();
         space.reset();
-        loadedMesh.reset();
+        teContext.reset();
         meshAsset.reset();
-        meshPipeline.reset();
+
+        litTex.reset(); gDepthTex.reset();
+        gAlbedoRT.reset(); gNormalRT.reset(); gWorldPosRT.reset();
+        gAlbedoTex.reset(); gNormalTex.reset(); gWorldPosTex.reset();
+
+        compositePipeline.reset(); shadowPipeline.reset();
+        meshPipeline.reset(); primPipeline.reset();
         renderTarget.reset();
         library.reset();
         commandQueue.reset();
 
         OmegaGTE::Close(gte);
     };
-
-    // TODO(MeshAndRaytracing-Phase2): when raytracing reaches the dispatch
-    // surface, build a TLAS over the same geometry and dispatch a raygen pass
-    // into a fullscreen texture, then blit it into the same window as a
-    // second pass.
 
     return OmegaGTETests::RunGTETestWindow(argc, argv, desc, del);
 };

@@ -261,3 +261,19 @@ add_metal_cli_test(
 target_link_options("CommitTimingTest" PRIVATE
     "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
 add_test(NAME omegagte_commit_timing COMMAND CommitTimingTest)
+
+# PixelFormat-Completion-Plan + depth-attachment plumbing — verifies the new
+# depth/float PixelFormat entries, pixelFormatInfo, and that a GETextureRenderTarget
+# can carry (and validate) a depth surface. Shared, backend-independent source.
+add_metal_cli_test(
+    NAME
+    "DepthFormatTest"
+    SOURCES
+    "../depth_format_test.cpp"
+    FRAMEWORKS
+    "Metal"
+    "Foundation"
+)
+target_link_options("DepthFormatTest" PRIVATE
+    "-Wl,-rpath,${CMAKE_BINARY_DIR}/Frameworks")
+add_test(NAME omegagte_depth_format COMMAND DepthFormatTest)

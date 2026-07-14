@@ -454,29 +454,69 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         ap = [NSOBJECT_OBJC_BRIDGE(id<MTLCommandBuffer>,buffer.handle()) accelerationStructureCommandEncoder];
     };
 
+    /// Raytracing plan §6-M2/M3. Builds with the descriptor the structure was
+    /// SIZED against (retained at allocation) — Metal derives an acceleration
+    /// structure's size from its descriptor, so building it with a different one
+    /// is undefined. `desc` is therefore not re-read here; it was consumed by
+    /// `allocateAccelerationStructure`.
+    ///
+    /// This used to build an EMPTY MTLPrimitiveAccelerationStructureDescriptor,
+    /// so no geometry ever reached the GPU.
     void GEMetalCommandBuffer::buildAccelerationStructure(SharedHandle<GEAccelerationStruct> &structure,const GEAccelerationStructDescriptor &desc){
-        MTLPrimitiveAccelerationStructureDescriptor *d = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+        (void)desc;
         auto metal_structure = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(structure);
-        [ap buildAccelerationStructure:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,metal_structure->accelStruct.handle()) 
-            descriptor:d 
-            scratchBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metal_structure->scratchBuffer->metalBuffer.handle()) 
+        if(!metal_structure || metal_structure->descriptor.handle() == nullptr){
+            DEBUG_CRITICAL(DEBUG_DOMAIN_QUEUE,
+                "buildAccelerationStructure: structure has no descriptor (not from allocateAccelerationStructure?)");
+            return;
+        }
+        auto *d = NSOBJECT_OBJC_BRIDGE(MTLAccelerationStructureDescriptor *,metal_structure->descriptor.handle());
+        [ap buildAccelerationStructure:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,metal_structure->accelStruct.handle())
+            descriptor:d
+            scratchBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metal_structure->scratchBuffer->metalBuffer.handle())
             scratchBufferOffset:0];
-
     }
 
     void GEMetalCommandBuffer::copyAccelerationStructure(SharedHandle<GEAccelerationStruct> &src,
                                                          SharedHandle<GEAccelerationStruct> &dest) {
-        auto src_struct = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(src), dest_struct = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(dest);
-//        [ap copyAccelerationStructure:]
+        auto src_struct = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(src);
+        auto dest_struct = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(dest);
+        if(!src_struct || !dest_struct){
+            DEBUG_CRITICAL(DEBUG_DOMAIN_QUEUE, "copyAccelerationStructure: null source or destination");
+            return;
+        }
+        [ap copyAccelerationStructure:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,src_struct->accelStruct.handle())
+            toAccelerationStructure:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,dest_struct->accelStruct.handle())];
     }
 
+    /// Refit `src` into `dest`. For a TLAS the instance records are re-written
+    /// from `desc` first — updated transforms are the entire point of a refit —
+    /// into the SAME instance buffer the TLAS was built against, so the
+    /// descriptor (and therefore the structure's size) is unchanged.
+    ///
+    /// This used to pass `src` as BOTH source and destination (ignoring `dest`)
+    /// and refit against an empty descriptor.
     void GEMetalCommandBuffer::refitAccelerationStructure(SharedHandle<GEAccelerationStruct> &src,SharedHandle<GEAccelerationStruct> &dest, const GEAccelerationStructDescriptor &desc){
-         MTLPrimitiveAccelerationStructureDescriptor *d = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
-         auto metal_structure = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(src);
-         [ap refitAccelerationStructure:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,metal_structure->accelStruct.handle()) 
-            descriptor:d 
-            destination:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,metal_structure->accelStruct.handle()) scratchBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,metal_structure->scratchBuffer->metalBuffer.handle())  scratchBufferOffset:0];
-    };
+        auto src_struct = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(src);
+        auto dest_struct = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(dest);
+        if(!src_struct || src_struct->descriptor.handle() == nullptr){
+            DEBUG_CRITICAL(DEBUG_DOMAIN_QUEUE,
+                "refitAccelerationStructure: source has no descriptor (not from allocateAccelerationStructure?)");
+            return;
+        }
+        if(src_struct->isTopLevel && src_struct->instanceBuffer){
+            fillMetalTLASInstances(desc, src_struct->instanceBuffer.get());
+        }
+        auto *d = NSOBJECT_OBJC_BRIDGE(MTLAccelerationStructureDescriptor *,src_struct->descriptor.handle());
+        auto destAS = dest_struct
+            ? NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,dest_struct->accelStruct.handle())
+            : NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,src_struct->accelStruct.handle());
+        [ap refitAccelerationStructure:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,src_struct->accelStruct.handle())
+            descriptor:d
+            destination:destAS
+            scratchBuffer:NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,src_struct->scratchBuffer->metalBuffer.handle())
+            scratchBufferOffset:0];
+    }
 
     void GEMetalCommandBuffer::finishAccelStructPass(){
         [ap endEncoding];
@@ -539,9 +579,16 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
                 renderTarget = drawableTexture;
             }
             renderPassDesc.colorAttachments[0].texture =renderTarget;
-           
+
+            /// A NATIVE render target (the swapchain drawable) owns no depth
+            /// surface by design — 3D content renders into a texture target that
+            /// carries its own depth and is blitted here afterwards. Depth against
+            /// the drawable is therefore a caller error, not something to fake by
+            /// aliasing the color texture (which is what this used to do).
             if(!desc.depthStencilAttachment.disabled){
-                renderPassDesc.depthAttachment.texture = renderPassDesc.stencilAttachment.texture = renderTarget;
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT,
+                    "startRenderPass: depth/stencil is not supported on a native render target — "
+                    "render 3D into a GETextureRenderTarget with a depthTexture, then blit to the drawable");
             }
         }
         else if(desc.tRenderTarget != nullptr){
@@ -563,8 +610,29 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             renderPassDesc.renderTargetWidth = renderTarget.width;
             renderPassDesc.renderTargetHeight = renderTarget.height;
             renderPassDesc.colorAttachments[0].texture = renderTarget;
+
+            /// Depth comes from the render target's OWN depth surface. It used to
+            /// be the color texture itself, which cannot work — a BGRA8 color
+            /// texture is not a depth format — and is why depth testing has never
+            /// functioned. The stencil attachment is only bound when the format
+            /// actually has a stencil aspect; binding a depth-only texture as
+            /// stencil is a Metal validation error.
             if(!desc.depthStencilAttachment.disabled){
-                renderPassDesc.depthAttachment.texture = renderPassDesc.stencilAttachment.texture = renderTarget;
+                if(!t_rt->depthTexture){
+                    DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT,
+                        "startRenderPass: depthStencilAttachment is enabled but the render target has no "
+                        "depthTexture (set TextureRenderTargetDescriptor::depthTexture)");
+                }
+                else {
+                    auto *depthTex = (GEMetalTexture *)t_rt->depthTexture.get();
+                    id<MTLTexture> mtlDepth = NSOBJECT_OBJC_BRIDGE(id<MTLTexture>, depthTex->texture.handle());
+                    renderPassDesc.depthAttachment.texture = mtlDepth;
+
+                    const auto dinfo = pixelFormatInfo(t_rt->depthTexture->getPixelFormat());
+                    if(dinfo.aspect == PixelFormatInfo::Aspect::DepthStencil){
+                        renderPassDesc.stencilAttachment.texture = mtlDepth;
+                    }
+                }
             }
         }
         else {
@@ -588,15 +656,19 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
             const GERenderPassDescriptor::ColorAttachment *attachment =
                 desc.colorAttachments.empty() ? nullptr : &desc.colorAttachments[i];
 
+            /// MRT: each attachment names a GETextureRenderTarget; its color
+            /// surface is the attachment's texture. (Depth is NOT taken per
+            /// attachment — a pass has exactly one depth attachment, and it comes
+            /// from the render target backing attachment 0, above.)
             if(i > 0){
-                metalRequireOrReturn(attachment != nullptr && attachment->texture != nullptr, DEBUG_DOMAIN_RENDERTGT,
-                             "startRenderPass: color attachments beyond index 0 must supply an explicit texture");
-                auto *attachTex = (GEMetalTexture *)attachment->texture.get();
+                metalRequireOrReturn(attachment != nullptr && attachment->renderTarget != nullptr, DEBUG_DOMAIN_RENDERTGT,
+                             "startRenderPass: color attachments beyond index 0 must supply an explicit renderTarget");
+                auto *attachTex = (GEMetalTexture *)attachment->renderTarget->underlyingTexture().get();
                 renderPassDesc.colorAttachments[i].texture =
                     NSOBJECT_OBJC_BRIDGE(id<MTLTexture>, attachTex->texture.handle());
             }
-            else if(attachment != nullptr && attachment->texture != nullptr){
-                auto *attachTex = (GEMetalTexture *)attachment->texture.get();
+            else if(attachment != nullptr && attachment->renderTarget != nullptr){
+                auto *attachTex = (GEMetalTexture *)attachment->renderTarget->underlyingTexture().get();
                 renderPassDesc.colorAttachments[0].texture =
                     NSOBJECT_OBJC_BRIDGE(id<MTLTexture>, attachTex->texture.handle());
             }
@@ -1326,6 +1398,20 @@ buffer({NSOBJECT_CPP_BRIDGE [[NSOBJECT_OBJC_BRIDGE(id<MTLCommandQueue>,parentQue
         metalRequireOrReturn(cp != nil, DEBUG_DOMAIN_RESOURCE,
                      "bindResourceAtComputeShader(GEAccelerationStruct): called outside an active compute pass");
         auto mtl_accel_struct = (GEMetalAccelerationStruct *)accelStruct.get();
+
+        /// Raytracing plan §6-M3 — a TLAS only names its BLAS; Metal does not
+        /// infer residency from that reference the way it does for a directly
+        /// bound resource. Every referenced BLAS must be made resident on THIS
+        /// encoder or traversal reads nothing and every ray misses — a silent,
+        /// all-black failure with no validation error.
+        for(auto & b : mtl_accel_struct->blasRefs){
+            auto mb = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(b);
+            if(mb){
+                [cp useResource:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,mb->accelStruct.handle())
+                          usage:MTLResourceUsageRead];
+            }
+        }
+
         [cp setAccelerationStructure:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,mtl_accel_struct->accelStruct.handle()) atBufferIndex:getResourceLocalIndexFromGlobalIndex(idx,computePipelineState->computeShader->internal)];
     }
 

@@ -25,15 +25,74 @@
 
 _NAMESPACE_BEGIN_
 
+    /// PixelFormat-Completion-Plan — D3D12 translation table. ETC2/EAC has no DXGI
+    /// equivalent (it is a mobile format); those arms fail loudly rather than
+    /// silently substituting a format the caller did not ask for.
     inline DXGI_FORMAT pixelFormatToDxgiFormat(PixelFormat fmt){
         switch(fmt){
-            case PixelFormat::RGBA8Unorm:      return DXGI_FORMAT_R8G8B8A8_UNORM;
-            case PixelFormat::RGBA16Unorm:     return DXGI_FORMAT_R16G16B16A16_UNORM;
-            case PixelFormat::RGBA8Unorm_SRGB: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-            case PixelFormat::BGRA8Unorm:      return DXGI_FORMAT_B8G8R8A8_UNORM;
-            case PixelFormat::BGRA8Unorm_SRGB: return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-            default:                           return DXGI_FORMAT_R8G8B8A8_UNORM;
+            // ── 8-bit color ──
+            case PixelFormat::R8Unorm:            return DXGI_FORMAT_R8_UNORM;
+            case PixelFormat::R8Snorm:            return DXGI_FORMAT_R8_SNORM;
+            case PixelFormat::R8Uint:             return DXGI_FORMAT_R8_UINT;
+            case PixelFormat::RG8Unorm:           return DXGI_FORMAT_R8G8_UNORM;
+            case PixelFormat::RG8Snorm:           return DXGI_FORMAT_R8G8_SNORM;
+            case PixelFormat::RGBA8Unorm:         return DXGI_FORMAT_R8G8B8A8_UNORM;
+            case PixelFormat::RGBA8Unorm_SRGB:    return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+            case PixelFormat::RGBA8Snorm:         return DXGI_FORMAT_R8G8B8A8_SNORM;
+            case PixelFormat::BGRA8Unorm:         return DXGI_FORMAT_B8G8R8A8_UNORM;
+            case PixelFormat::BGRA8Unorm_SRGB:    return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+
+            // ── 16-bit color ──
+            case PixelFormat::R16Unorm:           return DXGI_FORMAT_R16_UNORM;
+            case PixelFormat::R16Float:           return DXGI_FORMAT_R16_FLOAT;
+            case PixelFormat::R16Uint:            return DXGI_FORMAT_R16_UINT;
+            case PixelFormat::RG16Unorm:          return DXGI_FORMAT_R16G16_UNORM;
+            case PixelFormat::RG16Float:          return DXGI_FORMAT_R16G16_FLOAT;
+            case PixelFormat::RGBA16Unorm:        return DXGI_FORMAT_R16G16B16A16_UNORM;
+            case PixelFormat::RGBA16Float:        return DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+            // ── 32-bit color ──
+            case PixelFormat::R32Float:           return DXGI_FORMAT_R32_FLOAT;
+            case PixelFormat::R32Uint:            return DXGI_FORMAT_R32_UINT;
+            case PixelFormat::RG32Float:          return DXGI_FORMAT_R32G32_FLOAT;
+            case PixelFormat::RGBA32Float:        return DXGI_FORMAT_R32G32B32A32_FLOAT;
+
+            // ── Packed ──
+            case PixelFormat::RGB10A2Unorm:       return DXGI_FORMAT_R10G10B10A2_UNORM;
+            case PixelFormat::R11G11B10Float:     return DXGI_FORMAT_R11G11B10_FLOAT;
+
+            // ── Depth / stencil ──
+            case PixelFormat::D16Unorm:           return DXGI_FORMAT_D16_UNORM;
+            case PixelFormat::D32Float:           return DXGI_FORMAT_D32_FLOAT;
+            case PixelFormat::D24Unorm_S8Uint:    return DXGI_FORMAT_D24_UNORM_S8_UINT;
+            case PixelFormat::D32Float_S8Uint:    return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+
+            // ── BC ──
+            case PixelFormat::BC1_RGBA_Unorm:     return DXGI_FORMAT_BC1_UNORM;
+            case PixelFormat::BC1_RGBA_Unorm_SRGB:return DXGI_FORMAT_BC1_UNORM_SRGB;
+            case PixelFormat::BC3_RGBA_Unorm:     return DXGI_FORMAT_BC3_UNORM;
+            case PixelFormat::BC3_RGBA_Unorm_SRGB:return DXGI_FORMAT_BC3_UNORM_SRGB;
+            case PixelFormat::BC5_RG_Unorm:       return DXGI_FORMAT_BC5_UNORM;
+            case PixelFormat::BC7_RGBA_Unorm:     return DXGI_FORMAT_BC7_UNORM;
+            case PixelFormat::BC7_RGBA_Unorm_SRGB:return DXGI_FORMAT_BC7_UNORM_SRGB;
+
+            // ── ASTC / ETC2 — no DXGI equivalent. Fail loudly. ──
+            case PixelFormat::ASTC_4x4_Unorm:
+            case PixelFormat::ASTC_4x4_Unorm_SRGB:
+            case PixelFormat::ASTC_6x6_Unorm:
+            case PixelFormat::ASTC_6x6_Unorm_SRGB:
+            case PixelFormat::ASTC_8x8_Unorm:
+            case PixelFormat::ASTC_8x8_Unorm_SRGB:
+            case PixelFormat::ETC2_RGB8_Unorm:
+            case PixelFormat::ETC2_RGB8_Unorm_SRGB:
+            case PixelFormat::ETC2_RGBA8_Unorm:
+            case PixelFormat::ETC2_RGBA8_Unorm_SRGB:
+            case PixelFormat::EAC_R11_Unorm:
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE,
+                    "ASTC / ETC2 pixel formats have no D3D12 equivalent — ship BC instead");
+                return DXGI_FORMAT_UNKNOWN;
         }
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
     }
 
 struct GTED3D12Device : public GTEDevice {
@@ -1620,12 +1679,19 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             gd.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
             if(g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES){
                 gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.getTriangleList().buffer);
+                const auto & tl = g.getTriangleList();
+                auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(tl.buffer);
                 if(d3dBuf){
+                    /// Raytracing plan §6-M1 — honor an explicit stride/count so
+                    /// the PREBUILD sizing here matches what the command buffer's
+                    /// `fillGeometryDescsFromGE` will actually build. Zero keeps
+                    /// the historical tightly-packed-float3 default.
+                    const size_t stride = tl.vertexStride ? tl.vertexStride : (sizeof(float) * 3);
+                    const size_t count  = tl.vertexCount ? tl.vertexCount : (d3dBuf->size() / stride);
                     gd.Triangles.VertexBuffer.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
-                    gd.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3;
+                    gd.Triangles.VertexBuffer.StrideInBytes = stride;
                     gd.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-                    gd.Triangles.VertexCount = static_cast<UINT>(d3dBuf->size() / (sizeof(float) * 3));
+                    gd.Triangles.VertexCount = static_cast<UINT>(count);
                 }
             } else {
                 gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
@@ -2490,29 +2556,6 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
             return nullptr;
         }
 
-        ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
-        if(desc.allowDepthStencilTesting){
-            D3D12_DESCRIPTOR_HEAP_DESC dsv_heap_desc{};
-            dsv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-            dsv_heap_desc.NodeMask = 0;
-            dsv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-            dsv_heap_desc.NumDescriptors = kBackBufferCount;
-            hr = d3d12_device->CreateDescriptorHeap(&dsv_heap_desc,IID_PPV_ARGS(&dsvDescHeap));
-            if(FAILED(hr)){
-                DEBUG_ERROR(DEBUG_DOMAIN_RENDERTGT, "Failed to create DSV descriptor heap hr=0x"
-                             << std::hex << static_cast<unsigned long>(hr) << std::dec);
-                return nullptr;
-            }
-            // TODO: allocate companion depth-stencil resources sized to the
-            // swap chain and populate this heap with real DSVs (the old
-            // implementation created DSVs that aliased the color back
-            // buffer, which is invalid). Until that lands, the heap exists
-            // so downstream code that already indexes into it does not
-            // crash, but the descriptors themselves are null. Callers that
-            // actually need depth on a native RT should fall back to a
-            // texture render target.
-        }
-
         RECT rc{};
         if(desc.isHwnd){
             if(desc.hwnd == nullptr || !GetClientRect(desc.hwnd, &rc)){
@@ -2596,7 +2639,6 @@ vertex OmegaGTEBlitVertexData omega_gte_blit_fullscreen_vs(uint vid : VertexID){
         return SharedHandle<GENativeRenderTarget>(new GED3D12NativeRenderTarget(
             swapChain.Get(),
             renderTargetHeap.Get(),
-            dsvDescHeap.Get(),
             std::move(presentQueue),
             0,
             rtvs.data(),

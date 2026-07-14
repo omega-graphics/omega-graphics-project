@@ -226,11 +226,10 @@ void GED3D12Texture::copyBytes(void *bytes, size_t bytesPerRow, const TextureReg
     // must populate every pixel they care about before the first bind —
     // bytes outside the written region come from the upload heap's current
     // contents (uninitialised on a fresh texture).
-    UINT bytesPerTexel = 4;
-    switch(pixelFormat){
-        case PixelFormat::RGBA16Unorm: bytesPerTexel = 8; break;
-        default: bytesPerTexel = 4; break;
-    }
+    /// PixelFormat-Completion-Plan — one source of truth. This used to be a
+    /// 2-case switch that answered "4" for every format it didn't know, which
+    /// silently produced the wrong row pitch for anything wider than 8-bit RGBA.
+    UINT bytesPerTexel = pixelFormatInfo(pixelFormat).bytesPerTexel;
 
     void *mem_ptr = nullptr;
     HRESULT hr = cpuSideresource->Map(0,nullptr,&mem_ptr);

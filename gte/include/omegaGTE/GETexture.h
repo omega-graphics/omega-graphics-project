@@ -60,6 +60,11 @@ _NAMESPACE_BEGIN_
         OMEGA_NODISCARD TextureKind getKind() const { return kind; }
         OMEGA_NODISCARD unsigned getArrayLayers() const { return arrayLayers; }
         OMEGA_NODISCARD unsigned getSampleCount() const { return sampleCount; }
+        /// @brief The format this texture was created with. Needed to tell a depth
+        /// surface from a color one (`pixelFormatInfo(fmt).isDepthStencil()`) and to
+        /// match a render target's depth format against the pipeline's.
+        OMEGA_NODISCARD TexturePixelFormat getPixelFormat() const { return pixelFormat; }
+        OMEGA_NODISCARD GETextureUsage getUsage() const { return usage; }
         /// @brief Backend-only: record the effective shape after the
         /// native resource has been built. Public so that backend
         /// `makeTexture` paths (which sit outside the friend boundary)

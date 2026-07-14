@@ -38,15 +38,76 @@
 
 _NAMESPACE_BEGIN_
 
+    /// PixelFormat-Completion-Plan — Vulkan translation table. Vulkan can name
+    /// every family in the enum (BC, ASTC and ETC2 all have VK_FORMAT entries);
+    /// whether a given *device* implements one is a separate question, answered by
+    /// vkGetPhysicalDeviceFormatProperties rather than by this table.
     inline VkFormat pixelFormatToVkFormat(PixelFormat fmt){
         switch(fmt){
-            case PixelFormat::RGBA8Unorm:      return VK_FORMAT_R8G8B8A8_UNORM;
-            case PixelFormat::RGBA16Unorm:     return VK_FORMAT_R16G16B16A16_UNORM;
-            case PixelFormat::RGBA8Unorm_SRGB: return VK_FORMAT_R8G8B8A8_SRGB;
-            case PixelFormat::BGRA8Unorm:      return VK_FORMAT_B8G8R8A8_UNORM;
-            case PixelFormat::BGRA8Unorm_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
-            default:                           return VK_FORMAT_R8G8B8A8_UNORM;
+            // ── 8-bit color ──
+            case PixelFormat::R8Unorm:            return VK_FORMAT_R8_UNORM;
+            case PixelFormat::R8Snorm:            return VK_FORMAT_R8_SNORM;
+            case PixelFormat::R8Uint:             return VK_FORMAT_R8_UINT;
+            case PixelFormat::RG8Unorm:           return VK_FORMAT_R8G8_UNORM;
+            case PixelFormat::RG8Snorm:           return VK_FORMAT_R8G8_SNORM;
+            case PixelFormat::RGBA8Unorm:         return VK_FORMAT_R8G8B8A8_UNORM;
+            case PixelFormat::RGBA8Unorm_SRGB:    return VK_FORMAT_R8G8B8A8_SRGB;
+            case PixelFormat::RGBA8Snorm:         return VK_FORMAT_R8G8B8A8_SNORM;
+            case PixelFormat::BGRA8Unorm:         return VK_FORMAT_B8G8R8A8_UNORM;
+            case PixelFormat::BGRA8Unorm_SRGB:    return VK_FORMAT_B8G8R8A8_SRGB;
+
+            // ── 16-bit color ──
+            case PixelFormat::R16Unorm:           return VK_FORMAT_R16_UNORM;
+            case PixelFormat::R16Float:           return VK_FORMAT_R16_SFLOAT;
+            case PixelFormat::R16Uint:            return VK_FORMAT_R16_UINT;
+            case PixelFormat::RG16Unorm:          return VK_FORMAT_R16G16_UNORM;
+            case PixelFormat::RG16Float:          return VK_FORMAT_R16G16_SFLOAT;
+            case PixelFormat::RGBA16Unorm:        return VK_FORMAT_R16G16B16A16_UNORM;
+            case PixelFormat::RGBA16Float:        return VK_FORMAT_R16G16B16A16_SFLOAT;
+
+            // ── 32-bit color ──
+            case PixelFormat::R32Float:           return VK_FORMAT_R32_SFLOAT;
+            case PixelFormat::R32Uint:            return VK_FORMAT_R32_UINT;
+            case PixelFormat::RG32Float:          return VK_FORMAT_R32G32_SFLOAT;
+            case PixelFormat::RGBA32Float:        return VK_FORMAT_R32G32B32A32_SFLOAT;
+
+            // ── Packed ──
+            /// Vulkan's packed formats are little-endian-component-order, so
+            /// RGB10A2 is spelled A2B10G10R10 and R11G11B10 is B10G11R11.
+            case PixelFormat::RGB10A2Unorm:       return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+            case PixelFormat::R11G11B10Float:     return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+
+            // ── Depth / stencil ──
+            case PixelFormat::D16Unorm:           return VK_FORMAT_D16_UNORM;
+            case PixelFormat::D32Float:           return VK_FORMAT_D32_SFLOAT;
+            case PixelFormat::D24Unorm_S8Uint:    return VK_FORMAT_D24_UNORM_S8_UINT;
+            case PixelFormat::D32Float_S8Uint:    return VK_FORMAT_D32_SFLOAT_S8_UINT;
+
+            // ── BC ──
+            case PixelFormat::BC1_RGBA_Unorm:     return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+            case PixelFormat::BC1_RGBA_Unorm_SRGB:return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+            case PixelFormat::BC3_RGBA_Unorm:     return VK_FORMAT_BC3_UNORM_BLOCK;
+            case PixelFormat::BC3_RGBA_Unorm_SRGB:return VK_FORMAT_BC3_SRGB_BLOCK;
+            case PixelFormat::BC5_RG_Unorm:       return VK_FORMAT_BC5_UNORM_BLOCK;
+            case PixelFormat::BC7_RGBA_Unorm:     return VK_FORMAT_BC7_UNORM_BLOCK;
+            case PixelFormat::BC7_RGBA_Unorm_SRGB:return VK_FORMAT_BC7_SRGB_BLOCK;
+
+            // ── ASTC ──
+            case PixelFormat::ASTC_4x4_Unorm:      return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+            case PixelFormat::ASTC_4x4_Unorm_SRGB: return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+            case PixelFormat::ASTC_6x6_Unorm:      return VK_FORMAT_ASTC_6x6_UNORM_BLOCK;
+            case PixelFormat::ASTC_6x6_Unorm_SRGB: return VK_FORMAT_ASTC_6x6_SRGB_BLOCK;
+            case PixelFormat::ASTC_8x8_Unorm:      return VK_FORMAT_ASTC_8x8_UNORM_BLOCK;
+            case PixelFormat::ASTC_8x8_Unorm_SRGB: return VK_FORMAT_ASTC_8x8_SRGB_BLOCK;
+
+            // ── ETC2 / EAC ──
+            case PixelFormat::ETC2_RGB8_Unorm:       return VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+            case PixelFormat::ETC2_RGB8_Unorm_SRGB:  return VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK;
+            case PixelFormat::ETC2_RGBA8_Unorm:      return VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+            case PixelFormat::ETC2_RGBA8_Unorm_SRGB: return VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK;
+            case PixelFormat::EAC_R11_Unorm:         return VK_FORMAT_EAC_R11_UNORM_BLOCK;
         }
+        return VK_FORMAT_R8G8B8A8_UNORM;
     }
 
     inline const char *vkResultToStr(VkResult r){

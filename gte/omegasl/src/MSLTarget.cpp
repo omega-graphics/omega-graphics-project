@@ -643,6 +643,7 @@ using namespace metal;
         meshVertsStructDecl = nullptr;
         meshMaxVertices = 0;
         meshMaxPrimitives = 0;
+        meshIdxTmpSerial = 0;
         if (_decl->shaderType == ast::ShaderDecl::Mesh) {
             for (auto &p : _decl->params) {
                 if (p.meshOutput == ast::AttributedFieldDecl::Vertices) {
@@ -1109,6 +1110,7 @@ using namespace metal;
             meshVertsStructDecl = nullptr;
             meshMaxVertices = 0;
             meshMaxPrimitives = 0;
+            meshIdxTmpSerial = 0;
         }
         /// §5 — the payload rides BOTH mesh-pipeline stages, so its reset is
         /// unconditional rather than folded into the mesh-only block above.
@@ -1225,7 +1227,11 @@ using namespace metal;
 
         std::string idxStr  = cg.renderExprToString(_idx->idx_expr);
         std::string rhsStr  = cg.renderExprToString(expr->rhs);
-        std::string tmpName = "__omegasl_mesh_idx_tmp";
+        /// Unique per write: the decl below is queued as a pre-statement into the
+        /// enclosing block, so a shader writing `tris[0]` and `tris[1]` would
+        /// declare the same name twice in one scope (MSL: "redefinition of
+        /// '__omegasl_mesh_idx_tmp'").
+        std::string tmpName = "__omegasl_mesh_idx_tmp" + std::to_string(meshIdxTmpSerial++);
 
         cg.queuePendingStatement(std::string(vecTy) + " " + tmpName + " = " + rhsStr + ";");
         for (unsigned k = 0; k + 1 < K; ++k) {

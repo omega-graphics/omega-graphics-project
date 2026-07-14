@@ -944,6 +944,199 @@ struct GEAccelerationStructDescriptor {
 
 ---
 
+## Phase 6-M: Metal acceleration structures (BLAS + TLAS) — IN PROGRESS (2026-07-14)
+
+> **Finding that reshapes this phase:** Metal raytracing was not merely "missing
+> TLAS" — it was **effectively unimplemented**. `GEMetalEngine::allocateAccelerationStructure`
+> built an *empty* `MTLPrimitiveAccelerationStructureDescriptor` (ignoring `desc`
+> entirely), sized it, and allocated an accel struct from that; and
+> `GEMetalCommandBuffer::buildAccelerationStructure` built a second empty
+> descriptor. No geometry ever reached the GPU. `copyAccelerationStructure` was a
+> commented-out stub. So the BLAS geometry path has to be built before TLAS can
+> mean anything.
+
+### 6-M1 — TriangleList vertex stride / count (public API, all backends)
+
+`GEAccelerationStructDescriptor::Geometry::TriangleList` carries **only a buffer**,
+and the D3D12 builder hardcodes `StrideInBytes = 12` with
+`VertexCount = size / 12` — i.e. it assumes a tightly-packed `float3` position
+buffer with no index buffer. That silently breaks the moment a mesh's vertex
+buffer carries any other attribute (a Position+Normal mesh has a 24- or 32-byte
+stride, so the BLAS would read every vertex at the wrong offset and the geometry
+would come out shredded). This is a hard blocker for Phase 7-B, which needs the
+SAME mesh buffer to be both rasterized (with normals) and traced.
+
+Add optional fields, defaulting to the existing inferred behavior so D3D12 and
+every current caller are byte-for-byte unchanged:
+
+```cpp
+struct TriangleList {
+    SharedHandle<GEBuffer> buffer;
+    size_t vertexStride = 0;   // 0 ⇒ infer sizeof(float)*3 (tightly packed)
+    size_t vertexCount  = 0;   // 0 ⇒ infer buffer.size() / vertexStride
+};
+```
+
+Position is required to be the FIRST attribute at offset 0 of the vertex struct —
+which is exactly what `geMeshFieldsFor` already guarantees (Position always leads
+the attribute order). So a strided GEMesh buffer traces correctly with no
+repacking and no second position-only buffer.
+
+### 6-M2 — Metal BLAS geometry
+
+One shared helper builds a real `MTLPrimitiveAccelerationStructureDescriptor`
+from `desc.data`, used by allocate / build / refit alike (today each hand-rolls
+its own empty one, which is why they could drift):
+- `TRIANGLES` → `MTLAccelerationStructureTriangleGeometryDescriptor`
+  (`vertexBuffer`, `vertexStride`, `vertexFormat = MTLAttributeFormatFloat3`,
+  `triangleCount = vertexCount / 3`).
+- `AABB` → `MTLAccelerationStructureBoundingBoxGeometryDescriptor`
+  (`boundingBoxBuffer`, `boundingBoxCount`, stride
+  `sizeof(MTLAxisAlignedBoundingBox)`) — pairs with the existing
+  `createBoundingBoxesBuffer`, and is what the sub-phase 1.5 procedural/AABB
+  shader path needs at runtime.
+
+Scratch buffer is sized from `accelerationStructureSizesWithDescriptor` as today.
+
+### 6-M3 — Metal TLAS
+
+`MTLInstanceAccelerationStructureDescriptor`:
+- `instancedAccelerationStructures` — an `NSArray` of the referenced BLAS
+  (`id<MTLAccelerationStructure>`); each GE instance's `blas` handle is
+  de-duplicated into this array and its position becomes the instance's
+  `accelerationStructureIndex`.
+- `instanceDescriptorBuffer` — a GPU buffer of
+  `MTLAccelerationStructureInstanceDescriptor`, one per GE instance: 4x3
+  column-major `transformationMatrix` (transposed from GE's 3x4 row-major),
+  `mask`, `intersectionFunctionTableOffset` (= hitGroupIndex), `options` (from
+  the GE instance flags), `accelerationStructureIndex`.
+- Both the instance buffer AND the retained BLAS array must be stored on
+  `GEMetalAccelerationStruct` so they outlive the recorded command — the same
+  lifetime rule the D3D12 TLAS already follows for its Upload-heap instance
+  buffer.
+
+**Metal instance-flag mapping.** GE's flags are DXR-valued; Metal's
+`MTLAccelerationStructureInstanceOptions` are a different bitset, so they are
+translated (not cast): `TRIANGLE_CULL_DISABLE` → `Disable­Triangle­Culling`,
+`TRIANGLE_FRONT_CCW` → `TriangleFrontFacingWindingCounterClockwise`,
+`FORCE_OPAQUE` → `Opaque`, `FORCE_NON_OPAQUE` → `NonOpaque`. (D3D12 casts
+directly; Metal cannot.)
+
+**Files**: `GE.h`, `GEMetal.h`, `GEMetal.mm`, `GEMetalCommandQueue.mm`,
+`GED3D12CommandQueue.cpp` (honor the new stride/count).
+
+---
+
+## Phase 7-V: Visual raytracing in MeshAndRaytracingTest — DONE + VISUALLY VERIFIED (2026-07-14)
+
+> **Status: VERIFIED on Metal by human screenshot (2026-07-14).** The frame shows
+> ray-traced SOFT shadows: a lit floor disc, five TE primitives + the FBX racket,
+> each casting a penumbra that widens with distance from the caster — including the
+> shadow cast THROUGH the torus's hole.
+>
+> That one image validates the whole chain at once, which is exactly why it was
+> worth insisting on a visual: Metal BLAS geometry (reaching the GPU for the first
+> time), TLAS instancing + the 3x4 row-major → 4x3 column-major transpose, BLAS
+> residency (`useResource`), §6-M1's `vertexStride`/`vertexCount` (the FBX vertex is
+> 16B, not 12), TE normals surviving through GESpace, MRT + depth attachments, float
+> G-buffer formats, and `RAY_FLAG_TERMINATE_ON_FIRST_HIT` decomposing into Metal's
+> `accept_any_intersection`. Any one of those being wrong would have been obvious.
+>
+> **Camera gotcha worth remembering.** The first run drew the floor as a 1-PIXEL
+> LINE and no visible shadows. The shadows were being traced correctly the whole
+> time — the floor is a horizontal disc in the XZ plane, and GESpace's DEFAULT map
+> is viewport-linear (orthographic, looking straight down -Z), which sees a
+> horizontal plane edge-on by construction. Nothing was broken; there was simply
+> nowhere for a shadow to land. Fixed by giving the space a real camera
+> (`lookAt` + `perspectiveProjection` → `setViewMatrix`/`setProjectionMatrix`), which
+> is what GESpace Phase 5 exists for, and re-authoring the scene in WORLD units
+> instead of pixels. A "3D scene" placed in the viewport-linear space is really a 2D
+> scene that happens to have Z.
+>
+> **Soft shadows.** The light has a radius and the kernel fires 32 jittered shadow
+> rays per pixel across the light disc (~15M rays/frame at 800x600). A single ray
+> gives a stencil-hard edge — the giveaway that the light has no size. Residual
+> grain in the penumbrae is sampling noise from the hash-based jitter, not a bug;
+> stratifying the samples (or raising the count) is the fix if it ever matters.
+>
+> Runtime evidence from the live Metal run:
+> - 4/4 pipelines created — the MRT+depth G-buffer (prim), the mesh pipeline
+>   (amp→mesh→frag), the ray-query compute kernel, and the composite.
+> - **6 BLAS built with REAL geometry** (5 TE primitives + the 1,168,176-vertex
+>   FBX), each with a non-trivial scratch size. Before §6-M2 the Metal BLAS was
+>   sized from an EMPTY descriptor, so this number was ~0 and no geometry ever
+>   reached the GPU.
+> - **TLAS created with 6 instances.** Frame submitted. No CRITICAL, no errors.
+> - The FBX vertex buffer reports a **16-byte** stride (Position-only, padded by
+>   Metal), not the 12 a tightly-packed float3 would give — which is precisely why
+>   §6-M1's `vertexStride`/`vertexCount` had to exist. The old BLAS would have
+>   stepped 12B at a time through a 16B vertex and traced shredded geometry.
+>
+> **Shader library:** one `.omegasllib` holding all 8 stages, and it transpiles on
+> ALL THREE backends (`omegaslc --hlsl/--glsl/--metal`, 8 files each, exit 0) and
+> compiles to AIR on Metal. The shadow kernel's generated MSL confirms the
+> sub-phase 1.5 ray-flag path end to end:
+> `_isect0.accept_any_intersection(true)` — that is `RAY_FLAG_TERMINATE_ON_FIRST_HIT`
+> decomposed into Metal's intersector, exactly as designed.
+
+## Phase 7-V (original plan)
+
+Goal: make raytracing *visible*, so a wrong TLAS fails loudly instead of silently
+returning zeros. Decision (2026-07-14): **ray-traced shadows over the rasterized
+scene** — the scene is rasterized as today, then an inline ray-query compute pass
+casts a shadow ray per pixel toward a light and darkens occluded pixels. A broken
+TLAS shows up immediately as missing or wrong shadows; a readback-only test would
+not.
+
+### 7-V.a — GESpace / TE primitive normals (opt-in)
+
+TE already computes vertex normals (`AttachmentData::normal`), and
+`buildMeshFromTriangulation`'s `writeOneVertex` already honors `GEMeshAttrNormal`.
+The only gap is that GESpace's primitive path hands out **blank AttachmentData**,
+so the normals TE generated are dropped on the floor.
+
+Fix: carry TE's generated `AttachmentData` (normals) through the primitive
+triangulation into the `TETriangulationResult` GESpace stores, so
+`meshOf(id, engine, desc)` with `GEMeshAttrNormal` returns real normals.
+
+**The Position-only DEFAULT is unchanged and stays the rule** — `GEMeshDescriptor::
+attributes` still defaults to `GEMeshAttrPosition`, and GESpace still never
+re-bakes geometry. This is strictly an *opt-in*: a caller that asks for normals
+gets the ones TE already made, instead of a "descriptor requests non-position
+attributes but vertex has no AttachmentData; writing zeros" warning. Lighting and
+materials remain the shader's job — GTE is only no longer discarding data it
+already had.
+
+### 7-V.b — Shaders, linked into ONE library
+
+All stages merged into a single `.omegasllib` (via `add_omegasl_lib` /
+`omegaslc --link`, the AQUA `AQKernels.omegasllib` pattern):
+- **G-buffer raster** — vertex + fragment for the TE primitives, writing world
+  position + normal + albedo. The existing amplification/mesh/fragment trio for
+  the FBX is extended to write the same G-buffer.
+- **RT shadow compute** — `#requires(RAYTRACING)`; reads the G-buffer, builds a
+  shadow ray from the world position toward the light, and calls
+  `intersect(scene, ray, 0xFF, RAY_FLAG_TERMINATE_ON_FIRST_HIT)` — the sub-phase
+  1.5 ray-flag path, which is exactly what a shadow ray is for. Writes the lit /
+  shadowed result to an output texture.
+- **Composite** — fullscreen pass presenting the shaded result.
+
+### 7-V.c — Test app
+
+Scene: several TE 3D primitives (Sphere / Cylinder / Cone / Torus / RectPrism —
+all already exist in TE) placed via GESpace, plus the existing FBX mesh, lit by a
+single light. Offscreen G-buffer (`GETextureRenderTarget`, depth via
+`RenderTargetAndDepthStencil` — the test's long-standing "no depth attachment"
+TODO has to be closed here, since a G-buffer without depth records whichever
+triangle drew last, not the nearest). Per object: a BLAS from its mesh buffer
+(using 6-M1's stride/count); one TLAS instanced from GESpace's transforms; bound
+to the shadow kernel via `bindResourceAtComputeShader`.
+
+**Files**: `gte/tests/MeshAndRaytracingTest/main.cpp`,
+`gte/tests/assets/MeshAndRaytracingTest/*.omegasl`, `GESpace.{h,cpp}`, `TE.cpp`.
+
+---
+
 ## Phase 7: Testing
 
 ### 7.1 OmegaSL compiler tests

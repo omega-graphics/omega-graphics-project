@@ -37,8 +37,9 @@ _NAMESPACE_BEGIN_
         SharedHandle<GECommandQueue> presentQueue() const override { return presentQueue_; }
         void present() override;
         PixelFormat pixelFormat() override { return colorFormat_; }
+        // Color only — a swap chain has no depth surface, so there is no DSV
+        // heap here. Depth lives on a GETextureRenderTarget's depthTexture.
         ComPtr<ID3D12DescriptorHeap> rtvDescHeap;
-        ComPtr<ID3D12DescriptorHeap> dsvDescHeap;
         unsigned frameIndex;
         std::vector<ID3D12Resource *> renderTargets;
 
@@ -68,7 +69,6 @@ _NAMESPACE_BEGIN_
         unsigned sourceHeight_ = 0;
         GED3D12NativeRenderTarget(IDXGISwapChain3 * swapChain,
                                  ID3D12DescriptorHeap * descriptorHeapForRenderTarget,
-                                 ID3D12DescriptorHeap * dsvDescHeap,
                                  SharedHandle<GECommandQueue> presentQueue,
                                  unsigned frameIndex,
                                  ID3D12Resource *const *renderTargets,

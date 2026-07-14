@@ -760,6 +760,11 @@ namespace omegasl {
         ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
         unsigned meshMaxVertices = 0;
         unsigned meshMaxPrimitives = 0;
+        /// Suffixes the index-slot scratch temp `tryEmitBinaryExpr` declares per
+        /// `tris[i] = ...` write. The declaration lands in the enclosing block, so
+        /// a mesh shader emitting two primitives would otherwise redeclare one
+        /// name in the same scope and MSL rejects the shader. Reset per entry.
+        unsigned meshIdxTmpSerial = 0;
 
         /// §5 — mesh-pipeline payload param name on either stage. MSL passes the
         /// payload by reference in the `object_data` address space (writable on

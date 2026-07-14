@@ -172,6 +172,22 @@ _NAMESPACE_BEGIN_
         bool renderToExistingTexture = false;
         SharedHandle<GETexture> texture = nullptr;
         TextureRegion region;
+        /// Optional depth (or depth/stencil) surface for this render target.
+        ///
+        /// Must be created with a depth-aspect `PixelFormat` (`D32Float`,
+        /// `D32Float_S8Uint`, …) — check with `pixelFormatInfo(fmt).isDepthStencil()`
+        /// — and `RenderTargetAndDepthStencil` usage, at the same dimensions as
+        /// `texture`. Leave null for a color-only target; a render pass that then
+        /// sets `depthStencilAttachment.disabled = false` is an error the backend
+        /// reports.
+        ///
+        /// Depth lives HERE, on the render target, rather than on the render pass:
+        /// a target is the thing you render *into*, so the color surface and the
+        /// depth surface it is tested against belong together and cannot drift out
+        /// of sync. `GENativeRenderTarget` deliberately has no equivalent — 3D
+        /// content renders into a texture target with depth and is then blitted to
+        /// the drawable, so the swapchain never needs a depth buffer of its own.
+        SharedHandle<GETexture> depthTexture = nullptr;
     };
 
     /// @brief A 3D Space sized to fixed dimensions.
@@ -370,12 +386,36 @@ _NAMESPACE_BEGIN_
                 TRIANGLES,
                 AABB
             } type;
-            struct TriangleList { SharedHandle<GEBuffer> buffer; };
+            /// A BLAS triangle source. The backends read POSITION ONLY, from
+            /// offset 0 of each vertex — which is safe for any GEMesh vertex
+            /// buffer, because `geMeshFieldsFor` always lays Position first.
+            ///
+            /// `vertexStride` / `vertexCount` default to 0, meaning "infer a
+            /// tightly-packed `float3` position buffer" (stride 12, count =
+            /// buffer size / 12) — the behavior every caller had before these
+            /// fields existed, so defaulted callers are byte-for-byte unchanged.
+            /// Set them explicitly to trace a mesh whose vertices carry MORE than
+            /// position (a Position+Normal vertex has a 24- or 32-byte stride);
+            /// leaving them at 0 for such a buffer makes the BLAS read every
+            /// vertex at the wrong offset and the traced geometry comes out
+            /// shredded.
+            struct TriangleList {
+                SharedHandle<GEBuffer> buffer;
+                size_t vertexStride = 0;
+                size_t vertexCount = 0;
+            };
             struct Aabb { SharedHandle<GEBuffer> buffer; };
             std::variant<TriangleList, Aabb> data;
 
             Geometry() : type(TRIANGLES), data(TriangleList{}) {}
             void setTriangleList(SharedHandle<GEBuffer>& buffer) { type = TRIANGLES; data = TriangleList{buffer}; }
+            /// Strided overload — for a vertex buffer that interleaves more than
+            /// position (see TriangleList). `stride` is the full per-vertex size;
+            /// `count` is the number of vertices (a multiple of 3).
+            void setTriangleList(SharedHandle<GEBuffer>& buffer, size_t stride, size_t count) {
+                type = TRIANGLES;
+                data = TriangleList{buffer, stride, count};
+            }
             void setAabb(SharedHandle<GEBuffer>& buffer) { type = AABB; data = Aabb{buffer}; }
             TriangleList& getTriangleList() { return std::get<TriangleList>(data); }
             OMEGA_NODISCARD const TriangleList& getTriangleList() const { return std::get<TriangleList>(data); }
@@ -395,6 +435,15 @@ _NAMESPACE_BEGIN_
         void addTriangleBuffer(SharedHandle<GEBuffer> & buffer){
             Geometry g;
             g.setTriangleList(buffer);
+            data.push_back(g);
+        }
+        /// Add a triangle BLAS source whose vertices carry more than position
+        /// (e.g. a Position+Normal GEMesh buffer). `stride` is the full
+        /// per-vertex size and `count` the vertex count; positions are read from
+        /// offset 0. See `Geometry::TriangleList`.
+        void addTriangleBuffer(SharedHandle<GEBuffer> & buffer, size_t stride, size_t count){
+            Geometry g;
+            g.setTriangleList(buffer, stride, count);
             data.push_back(g);
         }
         void addBoundingBoxBuffer(SharedHandle<GEBuffer> & buffer){
@@ -663,8 +712,19 @@ _NAMESPACE_BEGIN_
 
 
 
+    /// A native render target is COLOR ONLY. No graphics API hands you a
+    /// swapchain with depth — D3D12, Metal and Vulkan all give you color images
+    /// only, and a depth buffer is always a separate texture you allocate and
+    /// attach. Render 3D OFFSCREEN into a `GETextureRenderTarget` that owns its
+    /// depth surface (`TextureRenderTargetDescriptor::depthTexture`), then blit /
+    /// resolve that result to the drawable. That is what real engines do, and not
+    /// primarily because of depth — a drawable is `BGRA8Unorm`, so HDR,
+    /// tonemapping, TAA, deferred G-buffers and compute readback are all
+    /// impossible against it. Once the scene has to live in an offscreen float
+    /// target anyway, the blit is free and direct-to-drawable buys nothing.
+    /// Enabling `GERenderPassDescriptor::depthStencilAttachment` against a native
+    /// render target is therefore a caller-contract violation.
     struct OMEGAGTE_EXPORT NativeRenderTargetDescriptor {
-        bool allowDepthStencilTesting = false;
         /// Color format for the swap chain / drawable. Only the portable
         /// intersection of D3D12, Metal, and Vulkan swap-chain formats is
         /// guaranteed to succeed across backends — see

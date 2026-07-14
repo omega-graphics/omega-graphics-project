@@ -99,7 +99,6 @@ namespace {
         OmegaGTE::NativeRenderTargetDescriptor nrt {};
         nrt.pixelFormat = gDesc ? gDesc->pixelFormat
                                 : OmegaGTE::PixelFormat::BGRA8Unorm;
-        nrt.allowDepthStencilTesting = gDesc ? gDesc->allowDepthStencilTesting : false;
         nrt.metalLayer = metalLayer;
 
         // makeNativeRenderTarget (called inside onReady) binds the GTE device

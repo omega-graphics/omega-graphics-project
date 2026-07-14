@@ -63,13 +63,21 @@ _NAMESPACE_BEGIN_
                     ClearColor(float r,float g,float b,float a);
                 };
                 ClearColor clearColor;
-                /// Optional per-attachment render-to-texture target.
+                /// Optional per-attachment render-to-texture target (MRT).
                 /// If null, attachment 0 falls back to the render pass's
                 /// `nRenderTarget` / `tRenderTarget`. Attachments with index
-                /// > 0 must supply a texture.
-                SharedHandle<GETexture> texture = nullptr;
+                /// > 0 must supply one.
+                ///
+                /// This is a `GETextureRenderTarget`, not a bare `GETexture`, so
+                /// an attachment carries everything needed to be rendered INTO —
+                /// including the optional depth texture that a render target may
+                /// own (`TextureRenderTargetDescriptor::depthTexture`). A bare
+                /// texture could name the color surface but had nowhere to put a
+                /// matching depth surface, which is how depth ended up aliased
+                /// onto the color target.
+                SharedHandle<GETextureRenderTarget> renderTarget = nullptr;
                 ColorAttachment(ClearColor clearColor,LoadAction loadAction);
-                ColorAttachment(ClearColor clearColor,LoadAction loadAction,SharedHandle<GETexture> texture);
+                ColorAttachment(ClearColor clearColor,LoadAction loadAction,SharedHandle<GETextureRenderTarget> renderTarget);
             };
             struct OMEGAGTE_EXPORT DepthStencilAttachment {
                 bool disabled = true;
@@ -83,6 +91,17 @@ _NAMESPACE_BEGIN_
                 LoadAction stencilLoadAction = Discard;
                 float clearDepth = 1.F;
                 unsigned clearStencil = 0;
+                /// The depth texture itself is NOT named here — it is owned by the
+                /// `GETextureRenderTarget` backing color attachment 0
+                /// (`TextureRenderTargetDescriptor::depthTexture`). This struct only
+                /// carries the per-pass depth/stencil *actions*.
+                ///
+                /// Setting `disabled = false` when that render target has no depth
+                /// texture is an error the backend reports. Previously there was
+                /// nowhere to put a depth texture at all, and Metal "resolved" that
+                /// by binding the COLOR target as the depth attachment — which
+                /// cannot work (a BGRA8 color texture is not a depth format), and is
+                /// why depth testing has never actually functioned.
             };
         /// Per-color-attachment load/clear state. Index 0 is the primary
         /// color attachment (falls back to the render target's native texture

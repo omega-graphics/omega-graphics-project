@@ -138,4 +138,101 @@ OmegaCommon::Vector<size_t> omegaSLStructMemberOffsets(OmegaCommon::Vector<omega
     return offsets;
 }
 
+PixelFormatInfo pixelFormatInfo(PixelFormat fmt) {
+    using A = PixelFormatInfo::Aspect;
+
+    /// Uncompressed: {aspect, bytesPerTexel, channels, srgb}.
+    auto plain = [](A aspect, std::uint8_t bpt, std::uint8_t channels, bool srgb = false){
+        PixelFormatInfo i;
+        i.aspect        = aspect;
+        i.bytesPerTexel = bpt;
+        i.channelCount  = channels;
+        i.isSRGB        = srgb;
+        return i;
+    };
+    /// Compressed: bytesPerTexel is 0 — size is derived from the block, so a
+    /// caller that multiplies width*height*bytesPerTexel gets 0 rather than a
+    /// plausible-but-wrong byte count.
+    auto block = [](std::uint8_t bw, std::uint8_t bh, std::uint8_t bytes,
+                    std::uint8_t channels, bool srgb = false){
+        PixelFormatInfo i;
+        i.aspect        = A::Color;
+        i.bytesPerTexel = 0;
+        i.blockWidth    = bw;
+        i.blockHeight   = bh;
+        i.blockBytes    = bytes;
+        i.isCompressed  = true;
+        i.channelCount  = channels;
+        i.isSRGB        = srgb;
+        return i;
+    };
+
+    switch (fmt) {
+        // ── 8-bit color ──
+        case PixelFormat::R8Unorm:            return plain(A::Color, 1, 1);
+        case PixelFormat::R8Snorm:            return plain(A::Color, 1, 1);
+        case PixelFormat::R8Uint:             return plain(A::Color, 1, 1);
+        case PixelFormat::RG8Unorm:           return plain(A::Color, 2, 2);
+        case PixelFormat::RG8Snorm:           return plain(A::Color, 2, 2);
+        case PixelFormat::RGBA8Unorm:         return plain(A::Color, 4, 4);
+        case PixelFormat::RGBA8Unorm_SRGB:    return plain(A::Color, 4, 4, true);
+        case PixelFormat::RGBA8Snorm:         return plain(A::Color, 4, 4);
+        case PixelFormat::BGRA8Unorm:         return plain(A::Color, 4, 4);
+        case PixelFormat::BGRA8Unorm_SRGB:    return plain(A::Color, 4, 4, true);
+
+        // ── 16-bit color ──
+        case PixelFormat::R16Unorm:           return plain(A::Color, 2, 1);
+        case PixelFormat::R16Float:           return plain(A::Color, 2, 1);
+        case PixelFormat::R16Uint:            return plain(A::Color, 2, 1);
+        case PixelFormat::RG16Unorm:          return plain(A::Color, 4, 2);
+        case PixelFormat::RG16Float:          return plain(A::Color, 4, 2);
+        case PixelFormat::RGBA16Unorm:        return plain(A::Color, 8, 4);
+        case PixelFormat::RGBA16Float:        return plain(A::Color, 8, 4);
+
+        // ── 32-bit color ──
+        case PixelFormat::R32Float:           return plain(A::Color, 4, 1);
+        case PixelFormat::R32Uint:            return plain(A::Color, 4, 1);
+        case PixelFormat::RG32Float:          return plain(A::Color, 8, 2);
+        case PixelFormat::RGBA32Float:        return plain(A::Color, 16, 4);
+
+        // ── Packed ──
+        case PixelFormat::RGB10A2Unorm:       return plain(A::Color, 4, 4);
+        case PixelFormat::R11G11B10Float:     return plain(A::Color, 4, 3);
+
+        // ── Depth / stencil ──
+        case PixelFormat::D16Unorm:           return plain(A::Depth, 2, 1);
+        case PixelFormat::D32Float:           return plain(A::Depth, 4, 1);
+        case PixelFormat::D24Unorm_S8Uint:    return plain(A::DepthStencil, 4, 2);
+        /// 5 logical bytes (32-bit depth + 8-bit stencil); every backend pads
+        /// this to 8 in memory.
+        case PixelFormat::D32Float_S8Uint:    return plain(A::DepthStencil, 8, 2);
+
+        // ── BC (8-byte blocks for BC1; 16-byte for BC3/BC5/BC7) ──
+        case PixelFormat::BC1_RGBA_Unorm:     return block(4, 4, 8, 4);
+        case PixelFormat::BC1_RGBA_Unorm_SRGB:return block(4, 4, 8, 4, true);
+        case PixelFormat::BC3_RGBA_Unorm:     return block(4, 4, 16, 4);
+        case PixelFormat::BC3_RGBA_Unorm_SRGB:return block(4, 4, 16, 4, true);
+        case PixelFormat::BC5_RG_Unorm:       return block(4, 4, 16, 2);
+        case PixelFormat::BC7_RGBA_Unorm:     return block(4, 4, 16, 4);
+        case PixelFormat::BC7_RGBA_Unorm_SRGB:return block(4, 4, 16, 4, true);
+
+        // ── ASTC (every block is 16 bytes; only the footprint changes) ──
+        case PixelFormat::ASTC_4x4_Unorm:     return block(4, 4, 16, 4);
+        case PixelFormat::ASTC_4x4_Unorm_SRGB:return block(4, 4, 16, 4, true);
+        case PixelFormat::ASTC_6x6_Unorm:     return block(6, 6, 16, 4);
+        case PixelFormat::ASTC_6x6_Unorm_SRGB:return block(6, 6, 16, 4, true);
+        case PixelFormat::ASTC_8x8_Unorm:     return block(8, 8, 16, 4);
+        case PixelFormat::ASTC_8x8_Unorm_SRGB:return block(8, 8, 16, 4, true);
+
+        // ── ETC2 / EAC ──
+        case PixelFormat::ETC2_RGB8_Unorm:      return block(4, 4, 8, 3);
+        case PixelFormat::ETC2_RGB8_Unorm_SRGB: return block(4, 4, 8, 3, true);
+        case PixelFormat::ETC2_RGBA8_Unorm:     return block(4, 4, 16, 4);
+        case PixelFormat::ETC2_RGBA8_Unorm_SRGB:return block(4, 4, 16, 4, true);
+        case PixelFormat::EAC_R11_Unorm:        return block(4, 4, 8, 1);
+    }
+    /// Unrecognized value — RGBA8Unorm-shaped default (total function).
+    return plain(A::Color, 4, 4);
+}
+
 _NAMESPACE_END_

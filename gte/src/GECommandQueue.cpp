@@ -154,8 +154,8 @@ _NAMESPACE_BEGIN_
     clearColor(clearColor),loadAction(loadAction){
 
     };
-    GERenderPassDescriptor::ColorAttachment::ColorAttachment(ClearColor clearColor,LoadAction loadAction,SharedHandle<GETexture> texture):
-    clearColor(clearColor),loadAction(loadAction),texture(texture){
+    GERenderPassDescriptor::ColorAttachment::ColorAttachment(ClearColor clearColor,LoadAction loadAction,SharedHandle<GETextureRenderTarget> renderTarget):
+    loadAction(loadAction),clearColor(clearColor),renderTarget(std::move(renderTarget)){
 
     };
 

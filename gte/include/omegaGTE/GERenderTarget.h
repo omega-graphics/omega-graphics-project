@@ -518,6 +518,18 @@ _NAMESPACE_BEGIN_
          public:
          OMEGACOMMON_CLASS("OmegaGTE.GETextureRenderTarget")
          virtual SharedHandle<GETexture> underlyingTexture() = 0;
+         /// The optional depth (or depth/stencil) surface this target is tested
+         /// against, from `TextureRenderTargetDescriptor::depthTexture`. Null for a
+         /// color-only target.
+         ///
+         /// A plain handle rather than a virtual: it is the same shared_ptr on every
+         /// backend, so there is nothing per-backend to dispatch on, and every
+         /// backend's `makeTextureRenderTarget` gets it for free.
+         ///
+         /// `GENativeRenderTarget` has no counterpart on purpose — 3D content renders
+         /// into a texture target that owns its depth and is then blitted to the
+         /// drawable, so the swapchain never needs depth of its own.
+         SharedHandle<GETexture> depthTexture = nullptr;
         virtual ~GETextureRenderTarget() = default;
      };
 

@@ -1,6 +1,82 @@
 # PixelFormat Completion Plan
 
-## Status
+## Status — Rollout steps 1 + 2 LANDED (2026-07-14)
+
+> **Done (2026-07-14):**
+> - **Step 1 — enum + `pixelFormatInfo`.** The full grouped-range enum below is
+>   live in `GTEBase.h` (color 0–63, depth 64–95, BC 96–127, ASTC 128–159, ETC
+>   160–191), together with `PixelFormatInfo` / `pixelFormatInfo()` in
+>   `GTEBase.cpp`. Compressed formats report `bytesPerTexel == 0` on purpose, so a
+>   caller doing `w*h*bytesPerTexel` gets 0 rather than a plausible-but-wrong size.
+>   The two per-backend `bytesPerTexel` switches (D3D12 `GED3D12Texture.cpp`,
+>   Vulkan `GEVulkanCommandQueue.cpp`) are gone — each was a 2-case switch that
+>   answered "4" for every format it did not know, i.e. the wrong row pitch for
+>   anything wider than 8-bit RGBA.
+> - **Step 2 — the three forward translation tables.** D3D12 / Metal / Vulkan all
+>   extended. Per decision (a), unsupported families fail LOUDLY rather than
+>   silently substituting: BC returns `MTLPixelFormatInvalid` on Metal (Apple GPUs
+>   do not implement it — ship ASTC), and ASTC/ETC2 return `DXGI_FORMAT_UNKNOWN`
+>   on D3D12. Vulkan can name every family.
+> - **Migration:** confirmed no `PixelFormat`-to-int serialization exists, so the
+>   renumbering (`RGBA8Unorm` 0 → 5) needed no mapping table. Asset loaders
+>   translate through DXGI/MTL/VK formats, not the enum integer.
+>
+> **Also landed alongside (the reason this plan was pulled forward): depth
+> attachments actually work now.** Depth had three independent defects, of which a
+> missing format was only the first:
+> 1. No depth `PixelFormat` existed. (Fixed here.)
+> 2. `DepthStencilAttachment` had nowhere to name a depth texture, and Metal
+>    "resolved" that by binding the COLOR render target as the depth AND stencil
+>    attachment — a BGRA8 color texture is not a depth format, so this could never
+>    work. Depth now lives on the render target
+>    (`TextureRenderTargetDescriptor::depthTexture` →
+>    `GETextureRenderTarget::depthTexture`), so a target owns the color surface and
+>    the depth surface it is tested against and the two cannot drift apart.
+>    `GENativeRenderTarget` deliberately has none: 3D renders into a texture target
+>    with depth and is blitted to the drawable.
+> 3. The Metal pipeline never set `depthAttachmentPixelFormat`, which leaves a
+>    depth-enabled pipeline silently inert. Added
+>    `RenderPipelineDescriptor::depthStencilPixelFormat` (+ the mesh equivalent)
+>    and wired all three Metal pipeline paths.
+> Plus: a depth texture may not carry `MTLTextureUsageShaderWrite` (Metal rejects
+> it), now special-cased in `makeTexture`. And MRT color attachments now name a
+> `GETextureRenderTarget` rather than a bare `GETexture`.
+>
+> **Verified** by `gte/tests/depth_format_test.cpp` (`omegagte_depth_format`) —
+> 13/13 assertions against the real Metal device, including the negative case that
+> a color-format texture is rejected as a depth surface.
+>
+> ### Architectural decision (2026-07-14): offscreen + blit is the standard
+>
+> `NativeRenderTargetDescriptor::allowDepthStencilTesting` is **DELETED** (2026-07-14).
+> A native render target is color only; there is no longer any way to ask for depth
+> on one. Enabling a render pass's `depthStencilAttachment` against a native target
+> is a caller-contract violation and is reported by `startRenderPass`
+> (`DEBUG_CRITICAL`, depth left unbound) on Metal and D3D12.
+>
+> The reasoning: **no graphics API hands you a swapchain WITH depth.** D3D12,
+> Vulkan and Metal all give you color images only; a depth buffer is always a
+> separate texture you allocate. Supporting the flag would mean allocating a
+> companion depth surface per back buffer — which neither backend ever did. D3D12
+> built a DSV heap whose descriptors aliased the COLOR back buffer (invalid) and
+> Metal ignored the flag and bound the color drawable as the depth attachment (also
+> invalid). Both backends independently produced the same silently-broken depth, so
+> the flag read as supported and lied.
+>
+> **The standard is: render 3D OFFSCREEN into a `GETextureRenderTarget` that owns
+> its depth surface, then blit / resolve to the drawable.** This is what Unreal
+> (SceneColor + SceneDepthZ → final pass to backbuffer) and Unity's SRP
+> (`_CameraColorAttachment` + `_CameraDepthAttachment` → final blit) both do by
+> default. The forcing function is not depth but FORMAT: a drawable is
+> `BGRA8Unorm`, so HDR, tonemapping, TAA, deferred G-buffers and compute readback
+> are all impossible against it. Once the scene must live in an offscreen float
+> target anyway, the blit is free and direct-to-drawable buys nothing.
+>
+> **Still open:** `supportsFormat()` on `OmegaGraphicsEngine` (rollout step 2's
+> device-capability query), rollout steps 3–5 (Vulkan aspect-mask wiring, asset
+> loader reverse mappings, compressed-asset upload path).
+
+## Original status (pre-2026-07-14)
 
 `OmegaGTE::PixelFormat` (defined in
 [gte/include/omegaGTE/GTEBase.h:976](../include/omegaGTE/GTEBase.h)) ships
