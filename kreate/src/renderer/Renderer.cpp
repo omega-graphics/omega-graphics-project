@@ -52,7 +52,7 @@ void Renderer::beginFrame(Color clearColor) {
     currentBuffer_->startRenderPass(passDesc);
 }
 
-void Renderer::draw(Pipeline &pipeline, Mesh &mesh, const Mat4 &mvp) {
+void Renderer::draw(Pipeline &pipeline, Mesh &mesh, const OmegaGTE::FMatrix<4,4> &mvp) {
     if (!currentBuffer_) return;
     auto &state = PipelineFactory::state(pipeline);
     auto &geMesh = MeshFactory::geMesh(mesh);
@@ -60,8 +60,16 @@ void Renderer::draw(Pipeline &pipeline, Mesh &mesh, const Mat4 &mvp) {
 
     currentBuffer_->setRenderPipelineState(state);
     // 64-byte push constant — single `float4x4` matches the Phase 1
-    // shader's `constant<PushData> { float4x4 mvp; }` declaration.
-    currentBuffer_->setRenderConstants(&mvp.data[0],
+    // shader's `constant<PushData> { float4x4 mvp; }` declaration. FMatrix is
+    // column-major (`mvp[c][r]`), so column c goes to floats [4c..4c+3] — the
+    // exact order the shader's column-major `float4x4` reads, no transpose.
+    float flat[16];
+    for (unsigned c = 0; c < 4; ++c) {
+        for (unsigned r = 0; r < 4; ++r) {
+            flat[c * 4 + r] = mvp[c][r];
+        }
+    }
+    currentBuffer_->setRenderConstants(&flat[0],
                                        static_cast<unsigned>(sizeof(float) * 16),
                                        0);
     currentBuffer_->drawMesh(geMesh, /*vertexSlot=*/0);

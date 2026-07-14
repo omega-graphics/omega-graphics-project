@@ -175,11 +175,13 @@ SharedHandle<GEAccelerationStruct> GED3D12Engine::allocateAccelerationStructure(
 >   `#requires(RAYTRACING)` (serialized to `requiredFeatures`), and a
 >   `FeatureScanner::inspectCall` trigger trips `OMEGASL_FEATURE_BIT_RAYTRACING`
 >   so an undeclared use warns (same shape as FLOAT16/INT64).
-> - **Deferred to sub-phase 1.5 (NOT built):** the `RayQuery` opaque type +
->   `ray_query_*` intrinsics; the 4-arg `intersect(as, ray, mask, rayFlags)`
->   overload and the `RAY_FLAG_*` constants (need a named-constant surface and a
->   non-trivial Metal flag mapping — HLSL/GLSL flag *values* align, Metal's
->   intersector does not take the same bitmask).
+> - **Sub-phase 1.5 (originally NOT built; now COMPLETE):** the `RayQuery`
+>   opaque type + `ray_query_*` traversal intrinsics (2026-07-13); the 4-arg
+>   `intersect(as, ray, mask, rayFlags)` overload + `RAY_FLAG_*` constants
+>   (2026-07-13); and procedural/AABB geometry — candidate-type discrimination,
+>   object-space candidate ray accessors, `ray_query_generate_intersection`, and
+>   the committed-type check (2026-07-13). See the sub-phase 1.5 notes below.
+>   Sub-phase 1.5 is fully landed on all three backends.
 > - **Test:** `gte/omegasl/tests/inline_raytracing.omegasl` (+ compile test in
 >   the tests `CMakeLists.txt`).
 
@@ -288,11 +290,117 @@ only — no new statement grammar), `Sema.cpp`, `omegasl.h` (RT metadata flag).
 > loop only) (2026-07-13).** Scope decision (2026-07-13): the *traversal loop* for
 > non-opaque / alpha-tested **triangle** geometry, which maps 1:1 across HLSL
 > `RayQuery`, GLSL `rayQueryEXT`, and Metal `intersection_query`. **Ray flags
-> (`RAY_FLAG_*` + 4-arg `intersect`) and procedural/AABB geometry
-> (`generate_intersection`) remain deferred** — the flag surface needs Metal
-> `intersection_params` decomposition and AABB needs Metal's divergent
-> `bounding_box` path.
+> (`RAY_FLAG_*` + 4-arg `intersect`) and procedural/AABB geometry are now DONE
+> (2026-07-13 — see the Ray-flags and Procedural/AABB notes below). Sub-phase 1.5
+> is complete.** The feared Metal `bounding_box` divergence turned out minor:
+> bounding-box candidates surface on the existing
+> `intersection_query<triangle_data, instancing>` (no `bounding_box_data` tag),
+> so the AABB path is the same per-backend one-liner shape as the triangle loop.
+
+### Sub-phase 1.5 — ray flags — IMPLEMENTED + VERIFIED (2026-07-13)
+
+> **Status: IMPLEMENTED + VERIFIED on all three backends (2026-07-13).** Adds a
+> small backend-neutral ray-flag constant surface plus the flag-carrying
+> overloads: `intersect(as, ray, mask, rayFlags)` (4-arg) and
+> `ray_query_init(q, as, ray, mask, rayFlags)` (5-arg).
 >
+> - **Constants** (`ast::rayflags` in AST.h, names in AST.def): `RAY_FLAG_NONE`
+>   (0), `RAY_FLAG_OPAQUE` (1), `RAY_FLAG_TERMINATE_ON_FIRST_HIT` (4, shadow
+>   rays), `RAY_FLAG_CULL_BACK_FACING` (16), `RAY_FLAG_CULL_FRONT_FACING` (32).
+>   Bit values match the DXR / SPIR-V ray-flag layout. They are **scoped to the
+>   `rayFlags` argument position** — NOT general-purpose uint constants — and the
+>   argument must be a **compile-time constant OR-chain** of them. That scoping
+>   is deliberate: Metal's `intersector` takes no flag bitmask, so a runtime flag
+>   value is un-lowerable, and Sema rejects one uniformly for all backends
+>   (`invalid_ray_flags_runtime` test) rather than letting HLSL/GLSL silently
+>   accept what Metal cannot.
+> - **Fold helper** `ast::tryFoldRayFlags(Expr*, uint32_t&)` (AST.cpp) walks a
+>   single `RAY_FLAG_*` id or a `|`-OR chain to a bitmask; used by Sema to
+>   validate and by every backend to emit. The flags arg is NOT run through
+>   `performSemForExpr` (the spellings aren't declared identifiers).
+> - **HLSL / GLSL** forward the flags by native name (`hlslRayFlagsSpelling` /
+>   `glslRayFlagsSpelling` reconstruct the OR-chain from the folded mask). HLSL:
+>   `TraceRayInline`'s RayFlags param (`RayQuery<RAY_FLAG_NONE>` template stays
+>   empty; per-trace flags OR in). GLSL: `rayQueryInitializeEXT`'s flags param.
+>   The one-shot `intersect` keeps its opaque-triangle base (`gl_RayFlagsOpaqueEXT`
+>   / implicit on HLSL); the low-level `ray_query_init` bases on
+>   `NONE`/`gl_RayFlagsNoneEXT` (it surfaces non-opaque candidates).
+> - **Metal** DECOMPOSES the folded bits into setter calls
+>   (`mslQueueRayFlagSetters`): `OPAQUE`→`force_opacity(forced_opacity::opaque)`,
+>   `TERMINATE_ON_FIRST_HIT`→`accept_any_intersection(true)`,
+>   `CULL_BACK_FACING`→`set_triangle_cull_mode(triangle_cull_mode::back)`,
+>   `CULL_FRONT_FACING`→`…::front`. Applied on the `intersector` for the one-shot;
+>   built into an `intersection_params` passed to `intersection_query::reset(r,
+>   as, mask, params)` for the low-level query. **Both cull flags together** map
+>   to `set_geometry_cull_mode(geometry_cull_mode::triangle)` (cull all triangle
+>   geometry — the correct equivalent of DXR cull-back | cull-front, which Metal's
+>   single-valued `triangle_cull_mode` cannot express).
+>
+> **Files**: `AST.def`, `AST.h`, `AST.cpp`, `Sema.cpp`, `HLSLTarget.cpp`,
+> `GLSLTarget.cpp`, `MSLTarget.cpp`; tests `ray_flags.omegasl` +
+> `invalid_ray_flags_runtime.omegasl` (registered in tests `CMakeLists.txt`).
+>
+> **Cross-backend compile verification (2026-07-13, on the macOS host):** all
+> three entries (`cast_shadow` TERMINATE, `cast_culled` OPAQUE|CULL_BACK,
+> `trace_culled` 5-arg CULL_FRONT) compiled to real object code — HLSL→DXIL
+> `.cso` via dxc `cs_6_5`, GLSL→SPIR-V `.spv` via glslc `--target-env=vulkan1.2`,
+> MSL→AIR `.air` via `metal -std=metal3.1`. Full omegaslc metal end-to-end
+> (`.omegasllib`) also passes. Full omegasl suite: 155/155.
+
+### Sub-phase 1.5 — procedural / AABB geometry — IMPLEMENTED + VERIFIED (2026-07-13)
+
+> **Status: IMPLEMENTED + VERIFIED on all three backends (2026-07-13).** Extends
+> the `ray_query_*` family with the loop shape for **procedural / AABB
+> geometry**: a BLAS of axis-aligned bounding boxes surfaces a *bounding-box
+> candidate* per AABB the ray enters, and the shader runs its own intersection
+> test (ray-sphere, ray-SDF, …) in the primitive's object space, committing a hit
+> distance. Same one-line-per-backend `tryEmitBuiltinCall` shape as the triangle
+> traversal loop — no new virtuals, no query-template change.
+>
+> Six new intrinsics (compute-only, arg0 a `RayQuery`):
+>
+> | OmegaSL | HLSL | GLSL | Metal |
+> |---|---|---|---|
+> | `ray_query_candidate_is_triangle(q)`→bool | `q.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE` | `…GetIntersectionTypeEXT(q,false)==…CandidateIntersectionTriangleEXT` | `q.get_candidate_intersection_type()==intersection_type::triangle` |
+> | `ray_query_candidate_is_aabb(q)`→bool | `q.CandidateType()==CANDIDATE_PROCEDURAL_PRIMITIVE` | `…==…CandidateIntersectionAABBEXT` | `…==intersection_type::bounding_box` |
+> | `ray_query_candidate_object_ray_origin(q)`→float3 | `q.CandidateObjectRayOrigin()` | `rayQueryGetIntersectionObjectRayOriginEXT(q,false)` | `q.get_candidate_ray_origin()` |
+> | `ray_query_candidate_object_ray_direction(q)`→float3 | `q.CandidateObjectRayDirection()` | `…ObjectRayDirectionEXT(q,false)` | `q.get_candidate_ray_direction()` |
+> | `ray_query_generate_intersection(q,t)`→void | `q.CommitProceduralPrimitiveHit(t)` | `rayQueryGenerateIntersectionEXT(q,t)` | `q.commit_bounding_box_intersection(t)` |
+> | `ray_query_committed_is_aabb(q)`→bool | `q.CommittedStatus()==COMMITTED_PROCEDURAL_PRIMITIVE_HIT` | `…GetIntersectionTypeEXT(q,true)==…CommittedIntersectionGeneratedEXT` | `q.get_committed_intersection_type()==intersection_type::bounding_box` |
+>
+> Also **broadened `ray_query_committed(q)`** from triangle-only to *any* hit
+> (triangle OR procedural): HLSL `!= COMMITTED_NOTHING`, GLSL
+> `!= …CommittedIntersectionNoneEXT` (Metal was already `!= none`). Matches the
+> documented "did any hit commit?" semantics and is required for AABB hits to
+> register; triangle-only scenes are unaffected (a committed hit is still true).
+>
+> **Metal note:** no query-template change — there is **no `bounding_box_data`
+> tag** in Metal's intersection-tag set, so bounding-box candidates and
+> `commit_bounding_box_intersection` / `get_candidate_ray_*` are available on the
+> existing `intersection_query<triangle_data, instancing>`.
+>
+> **Gotcha:** a new builtin must be registered in FIVE places — `AST.def` (name),
+> `AST.h` (`DECLARE_BUILTIN_FUNC`), `AST.cpp` (the `FuncType *` field, the
+> `new FuncType{…}` init, and `isReservedBuiltinName`), the Sema family branch,
+> and **the `Sem` ctor's `builtinFunctionMap` list** — the last is what
+> `resolveFuncTypeWithName` scans; omitting it makes the name resolve as an
+> unknown function (surfaced here as `committed_is_aabb` failing while the others
+> passed). `generate_intersection` is the only 2-arg member (q, float t); Sema
+> handles its arity alongside `ray_query_init` and validates a numeric-scalar
+> distance.
+>
+> **Files**: `AST.def`, `AST.h`, `AST.cpp`, `Sema.cpp`, `HLSLTarget.cpp`,
+> `GLSLTarget.cpp`, `MSLTarget.cpp`; test `ray_query_aabb.omegasl` (registered in
+> tests `CMakeLists.txt`).
+>
+> **Cross-backend compile verification (2026-07-13, macOS host):** the
+> `trace_procedural` entry (mixed triangle + AABB loop with an object-space
+> ray-sphere test) compiled to real object code on all three — HLSL→DXIL `.cso`
+> (dxc `cs_6_5`), GLSL→SPIR-V `.spv` (glslc `--target-env=vulkan1.2`), MSL→AIR
+> `.air` (`metal -std=metal3.1`). Full omegasl suite: 156/156.
+
+### Sub-phase 1.5 — traversal reference (RayQuery type + base intrinsic set)
+
 > `RayQuery` is a builtin opaque type (`builtin = true`, no fields), declared as
 > a local (`RayQuery q;`) and mutated in place by the intrinsics. Per backend:
 > HLSL `RayQuery<RAY_FLAG_NONE>`, GLSL `rayQueryEXT`, Metal

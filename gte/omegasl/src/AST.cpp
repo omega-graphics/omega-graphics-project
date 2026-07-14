@@ -188,6 +188,14 @@ namespace omegasl::ast {
         FuncType *ray_query_candidate_instance;
         FuncType *ray_query_candidate_barycentrics;
 
+        /// Sub-phase 1.5 — procedural / AABB geometry extension.
+        FuncType *ray_query_candidate_is_triangle;
+        FuncType *ray_query_candidate_is_aabb;
+        FuncType *ray_query_candidate_object_ray_origin;
+        FuncType *ray_query_candidate_object_ray_direction;
+        FuncType *ray_query_generate_intersection;
+        FuncType *ray_query_committed_is_aabb;
+
 
         void Initialize(){
             if(!builtinsOn){
@@ -548,6 +556,30 @@ namespace omegasl::ast {
                 ray_query_candidate_barycentrics = new FuncType{BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS,global_scope,true,{},{
                     {"q",TypeExpr::Create(ray_query_type)}
                     },TypeExpr::Create(float2_type)};
+
+                /// Sub-phase 1.5 — procedural / AABB geometry extension. Same
+                /// placeholder-param convention as the traversal family; only
+                /// the return type is load-bearing. `generate_intersection`
+                /// additionally takes a `float` hit distance (validated in Sema).
+                ray_query_candidate_is_triangle = new FuncType{BUILTIN_RAY_QUERY_CANDIDATE_IS_TRIANGLE,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(bool_type)};
+                ray_query_candidate_is_aabb = new FuncType{BUILTIN_RAY_QUERY_CANDIDATE_IS_AABB,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(bool_type)};
+                ray_query_candidate_object_ray_origin = new FuncType{BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_ORIGIN,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(float3_type)};
+                ray_query_candidate_object_ray_direction = new FuncType{BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_DIRECTION,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(float3_type)};
+                ray_query_generate_intersection = new FuncType{BUILTIN_RAY_QUERY_GENERATE_INTERSECTION,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)},
+                    {"t",TypeExpr::Create(float_type)}
+                    },TypeExpr::Create(void_type)};
+                ray_query_committed_is_aabb = new FuncType{BUILTIN_RAY_QUERY_COMMITTED_IS_AABB,global_scope,true,{},{
+                    {"q",TypeExpr::Create(ray_query_type)}
+                    },TypeExpr::Create(bool_type)};
             }
         }
 
@@ -892,9 +924,49 @@ namespace omegasl::ast {
             BUILTIN_RAY_QUERY_T, BUILTIN_RAY_QUERY_PRIMITIVE,
             BUILTIN_RAY_QUERY_INSTANCE, BUILTIN_RAY_QUERY_BARYCENTRICS,
             BUILTIN_RAY_QUERY_CANDIDATE_T, BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE,
-            BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE, BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS
+            BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE, BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS,
+            /// Sub-phase 1.5 — procedural / AABB geometry extension.
+            BUILTIN_RAY_QUERY_CANDIDATE_IS_TRIANGLE, BUILTIN_RAY_QUERY_CANDIDATE_IS_AABB,
+            BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_ORIGIN, BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_DIRECTION,
+            BUILTIN_RAY_QUERY_GENERATE_INTERSECTION, BUILTIN_RAY_QUERY_COMMITTED_IS_AABB
         };
         return reserved.count(std::string(name)) > 0;
+    }
+
+    bool isRayFlagName(OmegaCommon::StrRef name) {
+        return name == RAY_FLAG_NAME_NONE
+            || name == RAY_FLAG_NAME_OPAQUE
+            || name == RAY_FLAG_NAME_TERMINATE_ON_FIRST_HIT
+            || name == RAY_FLAG_NAME_CULL_BACK_FACING
+            || name == RAY_FLAG_NAME_CULL_FRONT_FACING;
+    }
+
+    bool tryFoldRayFlags(Expr *expr, uint32_t &outMask) {
+        if(expr == nullptr){ return false; }
+        /// A single `RAY_FLAG_*` identifier — the leaf case.
+        if(expr->type == ID_EXPR){
+            auto *id = (IdExpr *)expr;
+            if(id->id == RAY_FLAG_NAME_NONE)                     { outMask = rayflags::None; return true; }
+            if(id->id == RAY_FLAG_NAME_OPAQUE)                   { outMask = rayflags::Opaque; return true; }
+            if(id->id == RAY_FLAG_NAME_TERMINATE_ON_FIRST_HIT)   { outMask = rayflags::TerminateOnFirstHit; return true; }
+            if(id->id == RAY_FLAG_NAME_CULL_BACK_FACING)         { outMask = rayflags::CullBackFacing; return true; }
+            if(id->id == RAY_FLAG_NAME_CULL_FRONT_FACING)        { outMask = rayflags::CullFrontFacing; return true; }
+            return false;
+        }
+        /// A `|`-OR chain: fold both sides and combine. Any other operator
+        /// (`+`, `&`, …) is rejected — the only well-formed combination of ray
+        /// flags is a bitwise OR, and restricting to it keeps the folded value
+        /// unambiguous for Metal's decomposition.
+        if(expr->type == BINARY_EXPR){
+            auto *bin = (BinaryExpr *)expr;
+            if(bin->op != "|"){ return false; }
+            uint32_t l = 0, r = 0;
+            if(!tryFoldRayFlags(bin->lhs, l)){ return false; }
+            if(!tryFoldRayFlags(bin->rhs, r)){ return false; }
+            outMask = l | r;
+            return true;
+        }
+        return false;
     }
 
     unsigned payloadStructSize(StructDecl *decl) {

@@ -1832,16 +1832,42 @@ namespace omegasl {
     /// family; false otherwise. Unlike HLSL/MSL these are free functions taking
     /// the `rayQueryEXT` (and a committed/candidate `bool`), not methods; the
     /// int-returning index accessors are wrapped in `uint(...)`.
+    /// Sub-phase 1.5 — spell a folded ray-flag bitmask as a GLSL
+    /// `gl_RayFlags*EXT` OR-chain of the SET user bits (empty string when the
+    /// mask is 0). The bit values are shared (`ast::rayflags`); the spellings
+    /// here are `GL_EXT_ray_query`'s. The call site combines this with its base
+    /// flag (`gl_RayFlagsNoneEXT` for the low-level query, `gl_RayFlagsOpaqueEXT`
+    /// for the opaque-triangle one-shot).
+    static std::string glslRayFlagsSpelling(uint32_t m) {
+        std::string s;
+        auto add = [&](const char *n){ if (!s.empty()) s += " | "; s += n; };
+        if (m & ast::rayflags::Opaque)              add("gl_RayFlagsOpaqueEXT");
+        if (m & ast::rayflags::TerminateOnFirstHit) add("gl_RayFlagsTerminateOnFirstHitEXT");
+        if (m & ast::rayflags::CullBackFacing)      add("gl_RayFlagsCullBackFacingTrianglesEXT");
+        if (m & ast::rayflags::CullFrontFacing)     add("gl_RayFlagsCullFrontFacingTrianglesEXT");
+        return s;
+    }
+
     static bool glslEmitRayQuery(CodeGen &cg, ast::CallExpr *_expr,
                                  OmegaCommon::StrRef name, std::ostream &out) {
         if (name == BUILTIN_RAY_QUERY_INIT) {
             std::string q    = cg.renderExprToString(_expr->args[0]);
             std::string as   = cg.renderExprToString(_expr->args[1]);
             std::string ray  = cg.renderExprToString(_expr->args[2]);
-            std::string mask = (_expr->args.size() == 4)
+            std::string mask = (_expr->args.size() >= 4)
                 ? ("uint(" + cg.renderExprToString(_expr->args[3]) + ")")
                 : std::string("0xFFu");
-            out << "rayQueryInitializeEXT(" << q << ", " << as << ", gl_RayFlagsNoneEXT, "
+            /// 5-arg form adds rayFlags. Base is `gl_RayFlagsNoneEXT` (the
+            /// low-level query surfaces non-opaque candidates); the set user
+            /// bits replace it (None | X == X). Sema validated the fold.
+            std::string flags = "gl_RayFlagsNoneEXT";
+            if (_expr->args.size() == 5) {
+                uint32_t m = 0;
+                ast::tryFoldRayFlags(_expr->args[4], m);
+                std::string spell = glslRayFlagsSpelling(m);
+                if (!spell.empty()) flags = spell;
+            }
+            out << "rayQueryInitializeEXT(" << q << ", " << as << ", " << flags << ", "
                 << mask << ", " << ray << ".origin, " << ray << ".tmin, "
                 << ray << ".direction, " << ray << ".tmax)";
             return true;
@@ -1854,9 +1880,37 @@ namespace omegasl {
             out << "rayQueryConfirmIntersectionEXT("; cg.generateExpr(_expr->args[0]); out << ")";
             return true;
         }
+        /// `committed()` means "any hit committed" (triangle OR procedural), so
+        /// it tests `!= …NoneEXT`. `committed_is_aabb()` tests the generated
+        /// (procedural) committed type. The candidate-type checks read the
+        /// candidate intersection type (committed = false).
         if (name == BUILTIN_RAY_QUERY_COMMITTED) {
             out << "(rayQueryGetIntersectionTypeEXT("; cg.generateExpr(_expr->args[0]);
-            out << ", true) == gl_RayQueryCommittedIntersectionTriangleEXT)";
+            out << ", true) != gl_RayQueryCommittedIntersectionNoneEXT)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_COMMITTED_IS_AABB) {
+            out << "(rayQueryGetIntersectionTypeEXT("; cg.generateExpr(_expr->args[0]);
+            out << ", true) == gl_RayQueryCommittedIntersectionGeneratedEXT)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_CANDIDATE_IS_TRIANGLE) {
+            out << "(rayQueryGetIntersectionTypeEXT("; cg.generateExpr(_expr->args[0]);
+            out << ", false) == gl_RayQueryCandidateIntersectionTriangleEXT)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_CANDIDATE_IS_AABB) {
+            out << "(rayQueryGetIntersectionTypeEXT("; cg.generateExpr(_expr->args[0]);
+            out << ", false) == gl_RayQueryCandidateIntersectionAABBEXT)";
+            return true;
+        }
+        /// `generate_intersection(q, t)` — commit a procedural hit at distance t.
+        if (name == BUILTIN_RAY_QUERY_GENERATE_INTERSECTION) {
+            out << "rayQueryGenerateIntersectionEXT(";
+            cg.generateExpr(_expr->args[0]);
+            out << ", ";
+            cg.generateExpr(_expr->args[1]);
+            out << ")";
             return true;
         }
         /// The remaining accessors share the `rayQueryGetIntersection*EXT(q,
@@ -1873,6 +1927,8 @@ namespace omegasl {
         else if (name == BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE) { fn = "rayQueryGetIntersectionPrimitiveIndexEXT"; committed = "false"; castUint = true; }
         else if (name == BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE)  { fn = "rayQueryGetIntersectionInstanceIdEXT"; committed = "false"; castUint = true; }
         else if (name == BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS) { fn = "rayQueryGetIntersectionBarycentricsEXT"; committed = "false"; }
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_ORIGIN)    { fn = "rayQueryGetIntersectionObjectRayOriginEXT"; committed = "false"; }
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_DIRECTION) { fn = "rayQueryGetIntersectionObjectRayDirectionEXT"; committed = "false"; }
         else return false;
         if (castUint) out << "uint(";
         out << fn << "(";
@@ -2265,9 +2321,22 @@ namespace omegasl {
         std::string rayStr = cg.renderExprToString(_expr->args[1]);
         /// Missing mask ⇒ 0xFF. The GLSL cull mask is a `uint`; a literal like
         /// `0xFF` resolves to `int` in Sema, so wrap an explicit mask in uint().
-        std::string maskStr = (_expr->args.size() == 3)
+        std::string maskStr = (_expr->args.size() >= 3)
             ? ("uint(" + cg.renderExprToString(_expr->args[2]) + ")")
             : std::string("0xFFu");
+        /// Optional 4th arg — rayFlags. The one-shot's opaque-triangle contract
+        /// keeps `gl_RayFlagsOpaqueEXT` as the base (so non-opaque candidates
+        /// aren't missed by the un-confirming drain loop below); the set user
+        /// bits are OR'd on top. Sema validated the fold.
+        std::string flagsStr = "gl_RayFlagsOpaqueEXT";
+        if (_expr->args.size() == 4) {
+            uint32_t m = 0;
+            ast::tryFoldRayFlags(_expr->args[3], m);
+            /// The Opaque base already covers a user RAY_FLAG_OPAQUE — mask it
+            /// out so the spelling doesn't OR `gl_RayFlagsOpaqueEXT` twice.
+            std::string spell = glslRayFlagsSpelling(m & ~(uint32_t)ast::rayflags::Opaque);
+            if (!spell.empty()) flagsStr += " | " + spell;
+        }
 
         unsigned id = cg.rayQueryTempId++;
         std::string q = "_rq" + std::to_string(id);
@@ -2275,7 +2344,7 @@ namespace omegasl {
 
         cg.queuePendingStatement("rayQueryEXT " + q + ";");
         cg.queuePendingStatement("rayQueryInitializeEXT(" + q + ", " + asStr
-            + ", gl_RayFlagsOpaqueEXT, " + maskStr + ", "
+            + ", " + flagsStr + ", " + maskStr + ", "
             + rayStr + ".origin, " + rayStr + ".tmin, "
             + rayStr + ".direction, " + rayStr + ".tmax);");
         cg.queuePendingStatement("while(rayQueryProceedEXT(" + q + ")) {}");

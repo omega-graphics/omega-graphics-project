@@ -199,6 +199,17 @@ public:
     */
     static TETriangulationParams GraphicsPath3D(unsigned vectorPathCount,GVectorPath3D * const vectorPaths,float strokeWidth = 1.f);
 
+    /// @brief Whether these params describe a solid 3D primitive.
+    ///
+    /// True for exactly the seven volumetric shapes — RectangularPrism,
+    /// Pyramid, Cylinder, Cone, Torus, Sphere, Capsule — and false for
+    /// everything else (the flat 2D shapes Rect / RoundedRect / the Ellipsoid
+    /// fan, and the Path2D / Path3D strokes). This is the predicate
+    /// `GESpace::addPrimitive` uses to reject geometry that has no place in a
+    /// 3D coordinate space; it lets callers ask the question without reaching
+    /// into the private `TriangulationType`.
+    OMEGA_NODISCARD bool is3DPrimitive() const;
+
     /// @brief The coordinate space this geometry is authored in.
     ///
     /// When set, triangulation maps input coordinates into NDC relative to

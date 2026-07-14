@@ -426,7 +426,55 @@ GEMeshes, which already carry their own local-space vertices).
 
 ---
 
-## Phase 4: Placing 3D Primitives
+## Phase 4: Placing 3D Primitives — ✅ IMPLEMENTED
+
+Three decisions the text below left open or specified differently, all resolved during
+implementation and recorded here because they shape the shipped API:
+
+**Rejecting 2D types needed a public predicate, not a friend.** The plan says "reject
+`params` whose type is a 2D primitive," but `TETriangulationParams::type` (and its
+`TriangulationType` enum) is **private**, and the only friend is
+`OmegaTriangulationEngineContext` — GESpace cannot read it. Rather than make GESpace a
+friend (which would leak the private enum layout into `GESpace.cpp`), a public
+`bool TETriangulationParams::is3DPrimitive() const` was added (declared in `TE.h`, defined
+in `TE.cpp` where the private enum is in scope). It returns true for exactly the seven
+solids — RectangularPrism, Pyramid, Cylinder, Cone, Torus, Sphere, Capsule — and false for
+everything else (Rect, RoundedRect, the flat Ellipsoid fan, Path2D **and** Path3D). This is
+a cleaner, more modular surface than exposing the type, and it is reusable by any future
+caller that needs the same 2D/3D question. It puts two files (`TE.h`, `TE.cpp`) outside the
+"Files" list below.
+
+**Lazy GEMesh needed an engine-taking `meshOf` overload.** The plan says "expose `meshOf()`
+to trigger/return it," but the Phase 3 `meshOf(id) const` is const and takes no engine —
+and `buildMeshFromTriangulation` needs an `OmegaGraphicsEngine *` that GESpace does not own
+and `addPrimitive` (which only gets a *triangulation* context) never receives. So the lazy
+build is triggered by a **new overload** `meshOf(id, engine, desc = {})`: it flattens the
+stored `TETriangulationResult` into a GPU buffer once, caches it on the object, and returns
+the same handle on every later call (`engine`/`desc` then ignored). The const
+`meshOf(id)` is unchanged — it returns the cached/placed mesh or null (a not-yet-built
+primitive reads as null, which is not an error). `addPrimitive` therefore builds **no** GPU
+buffer; the CPU `TETriangulationResult` is enough to place and inspect the primitive.
+
+**`triangulationOf(id)` exposes the stored CPU geometry.** The plan's "as a
+TETriangulationResult **and/or** a GEMesh" is realized as: `addPrimitive` always stores the
+`TETriangulationResult` (in local/authored units), `triangulationOf(id)` returns it (or null
+for a mesh / transform-only / unknown object), and the GEMesh is the optional lazy artifact
+above. This is also the readback a local-units assertion needs (a unit sphere's stored
+vertices span its literal radius, never NDC).
+
+**Testing is split by device dependency.** `addPrimitive` triangulation is device-bound — it
+needs a live `OmegaTriangulationEngineContext`, which needs a device + render target — so it
+cannot run in the pure-CPU `omegagte_gespace` suite. That suite was extended with the parts
+that *are* device-free: `is3DPrimitive()` classification across all the shape factories, the
+null-context refusal (returns `GESpaceInvalidObject`, adds nothing to the space), and clean
+degradation of `triangulationOf` / `meshOf(engine)` on unknown / non-primitive handles. The
+on-device assertions Phase 6 calls for — primitive output is in local units, and
+`objectTransform` maps it to the expected NDC extent — belong to an on-device consumer (the
+same shape as MeshAndRaytracingTest) and are **not** part of this pass; they are the open
+verification surface for Phase 4. 16/16 GTE `omegagte_gespace` checks pass; OmegaGTE builds
+clean on the Metal host.
+
+---
 
 With local-space triangulation available (TE Phase 9.6), let GESpace place any supported 3D primitive
 directly — it triangulates the primitive in local units once, stores the resulting local
@@ -453,11 +501,92 @@ stores only the CPU `TETriangulationResult` until the caller asks is a small dec
 default to lazy GEMesh construction and expose `meshOf()` to trigger/return it. Reject
 `params` whose type is a 2D primitive with a clear error log.
 
-**Files**: `GESpace.h`, `GESpace.cpp`.
+As shipped, the surface is (see the findings above for why each landed this way):
+
+```cpp
+/// Triangulate `params` in LOCAL space (forces localSpace on) and place it.
+/// `frontFaceRotation` forwards to TE as the winding fallback. Rejects a null
+/// context or a non-3D-primitive with an error log + GESpaceInvalidObject.
+GESpaceObjectID addPrimitive(
+    OmegaTriangulationEngineContext * te,
+    const TETriangulationParams & params,
+    GTEPolygonFrontFaceRotation frontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise);
+
+/// The stored local-space CPU geometry, or null (mesh / transform-only / unknown).
+SharedHandle<TETriangulationResult> triangulationOf(GESpaceObjectID id) const;
+
+/// Build (once) + cache the primitive's GEMesh, then return it. For an addMesh
+/// object returns the placed mesh unchanged. Null on unknown/transform-only/null
+/// engine/build failure.
+SharedHandle<GEMesh> meshOf(GESpaceObjectID id, OmegaGraphicsEngine * engine,
+                            const GEMeshDescriptor & desc = GEMeshDescriptor());
+```
+
+**Files**: `GESpace.h`, `GESpace.cpp` (the primitive API), plus `TE.h` / `TE.cpp`
+(`is3DPrimitive` predicate — see finding) and `gte/tests/gespace_test.cpp` (device-free
+coverage).
 
 ---
 
-## Phase 5: Kreate Integration
+## Phase 5: Kreate Integration — ✅ IMPLEMENTED
+
+The Kreate owner resolved the forks this plan left open, and one of them **widened
+GESpace's own surface** (a GTE change, not just a Kreate one), so the decisions are recorded
+here where GESpace is specified:
+
+**Decision 1 — the projection moved INTO GESpace.** The plan below said "for a perspective
+scene, Kreate keeps its own projection/view and uses GESpace only for the model matrix." The
+owner overrode that: GESpace now **owns the camera**. It gained `setViewMatrix(FMatrix)` /
+`setProjectionMatrix(FMatrix)` / `clearProjectionMatrix()` (+ `viewMatrix()` /
+`projectionMatrix()` accessors), and `objectTransform(id)` composes the full
+`projection · view · model` itself — where `projection` is the override if set, else the
+viewport-linear `spaceToNDC()`. So a consumer never re-derives the MVP and never meets the
+reversed `operator*` doing it. This is backward compatible: with no camera set (view =
+identity, no projection override) `objectTransform` reduces to exactly `spaceToNDC · model`,
+so Phases 1–4 and their tests are unchanged. The projection is supplied as a matrix
+(built with `perspectiveProjection` / `orthographicProjection`), so GESpace does not bake in
+a camera model. `perspectiveProjection` already maps depth to [0,1], matching GESpace's
+Finding-B choice, so a perspective lens lands inside the clip volume with no extra work.
+
+**Decision 2 — Scene owns a GESpace object table (the plan's "full" option).** Kreate's
+`Scene` holds a `GESpace`; `Scene::add` registers each `Object` via `addObject(...)` and
+stores the `GESpaceObjectID` on its node; `Scene::render` pushes each object's transform
+into its slot (new `GESpace::setTransform(id, GESpaceTransform)` — the setter paired with
+`transformOf`) and draws it with `objectTransform(id)`. `Scene::setViewMatrix` /
+`setProjectionMatrix` forward into the space. The old hand-rolled `mvp = projection * view *
+cachedWorld` is gone, which is what closes the reversed-`operator*` bug below.
+
+**Decision 3 — `Object` is TRS-only.** `setTransform(Mat4)` / `transform()` were removed;
+`Object` now exposes `setPosition` / `setRotationEuler` / `setRotationAxis` / `setScale` and
+stores a `GESpaceTransform` (read by the Scene through an internal `ObjectAccess` bridge, so
+no GTE type leaks onto the public `Object` header). Rotation setters replace, not accumulate.
+
+**The reversed-`operator*` bug (below) was fixed the way the owner specified: Kreate's `Mat4`
+is now row-major** (`data[row*4+col]`) with a standard `operator*`, and the row↔column
+transpose is isolated to the GTE boundary (`Math.cpp`'s `toFMatrix`, the renderer's
+push-constant flatten). `projection * view * world` now reads as normal math and reaches the
+shader correct; the MVP itself no longer flows through `Mat4` at all (it comes straight off
+`objectTransform()` as a column-major `FMatrix`).
+
+**Deferred (documented, not silent):** parent-child hierarchy. GESpace objects are flat, and
+composing a hierarchical world transform correctly needs a GPU-order matrix multiply Kreate
+can't spell without re-exposing the reversed `operator*`. `Scene::render` treats every object
+as a root and logs a one-time note if a caller actually parents one; true hierarchy is left
+to the Scene-model phase (Kreate Engine-Roadmap Phase 6).
+
+**Open verification:** the cube in `kreate/tests/BasicGame.cpp` (rewritten to the TRS API)
+renders through the new path, but visual confirmation against a **non-identity view** — the
+regression this phase was meant to close — is a screenshot handoff per the AGENTS.md Visual
+Debugging workflow, pending at the time of writing.
+
+**Files:** GTE — `gte/include/omegaGTE/GESpace.h`, `gte/src/common/GESpace.cpp`,
+`gte/tests/gespace_test.cpp` (camera-composition coverage). Kreate —
+`kreate/include/kreate/{Math,Object}.h`, `kreate/src/{Math,Object,Scene}.cpp`,
+`kreate/src/renderer/Renderer.{h,cpp}`, new `kreate/src/{MathConvert,ObjectAccess}.h`,
+`kreate/tests/BasicGame.cpp`. Kreate-side breakdown:
+`kreate/.plans/GESpace-Integration-Plan.md`.
+
+---
 
 Refactor Kreate's `Scene`/`Object` to delegate to GESpace so there is one transform
 authority. The mapping is clean because Kreate's `Mat4` is column-major `float[16]`,
@@ -524,8 +653,9 @@ This phase is scoped in the Kreate module and should get its own short note in a
 
 | File | Changes |
 |---|---|
-| New `gte/include/omegaGTE/GESpace.h` | ✅ Phase 1: `GESpace` (viewport + `spaceToNDC`). ✅ Phase 2: `GESpaceObjectID`, `GESpaceTransform`, `addObject`, TRS mutators, `objectTransform`. ✅ Phase 3: `addMesh`, `meshOf`, `remove`, `objects` |
-| New `gte/src/common/GESpace.cpp` | ✅ Phase 1: space→NDC matrix. ✅ Phase 2: object table + transforms + retrieval (all composition via one `applyThen` helper). ✅ Phase 3: objects hold a shared GEMesh reference; handles retired, never recycled. Primitive placement in Phase 4 |
+| New `gte/include/omegaGTE/GESpace.h` | ✅ Phase 1: `GESpace` (viewport + `spaceToNDC`). ✅ Phase 2: `GESpaceObjectID`, `GESpaceTransform`, `addObject`, TRS mutators, `objectTransform`. ✅ Phase 3: `addMesh`, `meshOf`, `remove`, `objects`. ✅ Phase 4: `addPrimitive`, `triangulationOf`, engine-taking `meshOf` overload |
+| `gte/include/omegaGTE/TE.h`, `gte/src/TE.cpp` | ✅ Phase 4: public `TETriangulationParams::is3DPrimitive()` predicate (true for the seven solids), so GESpace can reject 2D types without befriending the private `TriangulationType` |
+| New `gte/src/common/GESpace.cpp` | ✅ Phase 1: space→NDC matrix. ✅ Phase 2: object table + transforms + retrieval (all composition via one `applyThen` helper). ✅ Phase 3: objects hold a shared GEMesh reference; handles retired, never recycled. ✅ Phase 4: `addPrimitive` (local-space triangulate + store CPU result), `triangulationOf`, lazy `meshOf(id, engine, desc)` cache |
 | `gte/include/omegaGTE/GTEMath.h` | ✅ Phase 1: `transformPoint` fixed to apply `M·v` column-major (was applying `Mᵀ` — Finding A). ✅ Phase 2: `rotationEuler` fixed to compose X→Y→Z (was composing Z→Y→X — Finding C) |
 | `gte/include/omegaGTE/GEMesh.h`, `gte/src/common/GEMesh.cpp` | ✅ Phase 3.1: `GEMeshBounds` (local-space AABB + `center`/`extent`/`longestExtent`), `geMeshComputeBounds()`, `GEMesh::bounds`; `buildMeshFromTriangulation` populates it. ✅ Finding E: `geMeshStrideFor` now defers to `omegaSLStructStride` (was hand-summing, wrongly); new `geMeshTightStrideFor` + `geMeshRepackToGPULayout` |
 | `gte/include/omegaGTE/GTEShader.h`, `gte/src/GTEBase.cpp` | ✅ Finding E: new `omegaSLStructMemberOffsets()` — per-member byte offsets under the same backend-aware standard `omegaSLStructStride` sizes with |
@@ -535,7 +665,8 @@ This phase is scoped in the Kreate module and should get its own short note in a
 | `gte/tests/MeshAndRaytracingTest/main.cpp`, `gte/tests/assets/MeshAndRaytracingTest/meshAndRaytracing.omegasl` | ✅ Phase 3.2: first consumer — push-constant MVP on the mesh stage, fed by `GESpace::objectTransform()`; mesh fitted to the viewport from its own bounds |
 | ~~`gte/CMakeLists.txt`~~ | Not needed — `file(GLOB COMMON_SRCS src/common/*.cpp)` already picks it up |
 | `gte/include/omegaGTE/TE.h` | `TEMesh` / `TETriangulationResult` `translate`/`rotate`/`scale` marked `OMEGA_DEPRECATED` (superseded — see below) |
-| `kreate/src/Scene.cpp`, `kreate/src/Object.cpp`, `kreate/include/kreate/*.h` | Delegate transform/space to GESpace (Phase 5; Kreate-owned) |
+| `gte/include/omegaGTE/GESpace.h`, `gte/src/common/GESpace.cpp` | ✅ Phase 5: GESpace owns the camera — `setViewMatrix`/`setProjectionMatrix`/`clearProjectionMatrix` + accessors; `objectTransform` composes `projection·view·model` (projection = override or `spaceToNDC`); new `setTransform(id, GESpaceTransform)` whole-transform setter |
+| `kreate/src/{Scene,Object,Math}.cpp`, `kreate/src/renderer/Renderer.{h,cpp}`, `kreate/include/kreate/{Scene,Object,Math}.h`, new `kreate/src/{MathConvert,ObjectAccess}.h`, `kreate/tests/BasicGame.cpp` | ✅ Phase 5 (Kreate-owned): Scene owns a GESpace + forwards view/projection; Object TRS-only storing a `GESpaceTransform`; `Mat4` → row-major + standard `operator*`, transpose isolated to the GTE boundary; renderer takes the MVP as a column-major `FMatrix`. Breakdown: `kreate/.plans/GESpace-Integration-Plan.md` |
 | `gte/tests/` | `GESpaceTest` |
 
 The local-space (un-baked) triangulation path GESpace consumes is **owned by the TE plan**
@@ -568,15 +699,21 @@ Phase 3 (Place GEMeshes + GEMesh::bounds)             ✅ ◄── GEMesh-in-a-
     │   TE Phase 9.6 (local-space triangulation) ── prerequisite, TE-plan-owned ✅
     │        │
     ▼        ▼
-Phase 4 (Place 3D primitives — needs TE 9.6)
+Phase 4 (Place 3D primitives — needs TE 9.6)          ✅ ◄── addPrimitive shipped (GTE-side)
+    │        └── open: on-device local-units / NDC-extent verification (Phase 6)
     │
-Phase 5 (Kreate integration)
+Phase 5 (Kreate integration)                          ✅ ◄── GESpace owns the camera; Kreate delegates
+    │        └── open: visual verification (spinning cube, non-identity view — screenshot handoff)
     │
 Phase 6 (Testing)
 ```
 
-Phases 1–3 are self-contained in GTE and are **done**: an existing GEMesh can be placed,
-transformed, and drawn from `objectTransform()`, and MeshAndRaytracingTest does exactly
-that. Phase 4's only external dependency is TE Phase 9.6 (local-space triangulation), which
-has landed. Phase 5 is the Kreate consumer and can begin now — note Finding D applies to it
-directly (Kreate's 2D/UI scene is a pixel-space viewport).
+Phases 1–4 are self-contained in GTE and are **done**: an existing GEMesh can be placed,
+transformed, and drawn from `objectTransform()` (MeshAndRaytracingTest does exactly that),
+and a 3D primitive can now be triangulated in local units and placed the same way via
+`addPrimitive`. Phase 4's only external dependency was TE Phase 9.6 (local-space
+triangulation), which has landed. Its one open item is the on-device verification Phase 6
+calls for (a placed primitive's stored vertices are in local units; `objectTransform` maps
+them to the expected NDC extent) — device-bound, so it rides on an on-device consumer rather
+than the pure-CPU suite. Phase 5 is the Kreate consumer and can begin now — note Finding D
+applies to it directly (Kreate's 2D/UI scene is a pixel-space viewport).

@@ -195,7 +195,14 @@ namespace omegasl {
             ast::builtins::ray_query_candidate_t,
             ast::builtins::ray_query_candidate_primitive,
             ast::builtins::ray_query_candidate_instance,
-            ast::builtins::ray_query_candidate_barycentrics
+            ast::builtins::ray_query_candidate_barycentrics,
+            /// Sub-phase 1.5 — procedural / AABB geometry extension.
+            ast::builtins::ray_query_candidate_is_triangle,
+            ast::builtins::ray_query_candidate_is_aabb,
+            ast::builtins::ray_query_candidate_object_ray_origin,
+            ast::builtins::ray_query_candidate_object_ray_direction,
+            ast::builtins::ray_query_generate_intersection,
+            ast::builtins::ray_query_committed_is_aabb
         }),currentContext(nullptr){
 
     };
@@ -2294,8 +2301,9 @@ namespace omegasl {
             /// (the shared CALL_EXPR tail returns `func_found->returnType`).
             else if(func_found == ast::builtins::intersect){
 
-                /// 2 args (mask defaults to 0xFF) or 3 args (explicit mask).
-                if(_expr->args.size() != 2 && _expr->args.size() != 3){
+                /// 2 args (mask defaults to 0xFF), 3 args (explicit mask), or
+                /// 4 args (mask + rayFlags — sub-phase 1.5).
+                if(_expr->args.size() < 2 || _expr->args.size() > 4){
                     auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_INTERSECT; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                     return nullptr;
                 }
@@ -2335,7 +2343,7 @@ namespace omegasl {
 
                 /// Optional arg2 is the instance-inclusion mask — an integer
                 /// scalar (`uint`/`int`; a literal `0xFF` resolves to `int`).
-                if(_expr->args.size() == 3){
+                if(_expr->args.size() >= 3){
                     auto mask_t_e = performSemForExpr(_expr->args[2],funcContext);
                     if(mask_t_e == nullptr){
                         return nullptr;
@@ -2343,6 +2351,23 @@ namespace omegasl {
                     auto mask_t = resolveTypeWithExpr(mask_t_e);
                     if(mask_t != ast::builtins::uint_type && mask_t != ast::builtins::int_type){
                         reportTypeErr("3rd param of function " + std::string(BUILTIN_INTERSECT) + " (instance mask) must be a uint or int.");
+                        return nullptr;
+                    }
+                }
+
+                /// Optional arg3 is `rayFlags` (sub-phase 1.5). It is NOT run
+                /// through `performSemForExpr`: the `RAY_FLAG_*` spellings are
+                /// not declared identifiers, so a normal type resolution would
+                /// report them undeclared. Instead it must fold to a
+                /// compile-time constant OR-chain of `RAY_FLAG_*` values —
+                /// Metal decomposes the folded bitmask into intersector setter
+                /// calls at codegen and cannot handle a runtime mask.
+                if(_expr->args.size() == 4){
+                    uint32_t flagsMask = 0;
+                    if(!ast::tryFoldRayFlags(_expr->args[3], flagsMask)){
+                        reportTypeErr("4th param of function " + std::string(BUILTIN_INTERSECT)
+                            + " (rayFlags) must be a compile-time constant combination of RAY_FLAG_* values"
+                              " (e.g. RAY_FLAG_OPAQUE | RAY_FLAG_CULL_BACK_FACING).");
                         return nullptr;
                     }
                 }
@@ -2365,7 +2390,14 @@ namespace omegasl {
                     || func_found == ast::builtins::ray_query_candidate_t
                     || func_found == ast::builtins::ray_query_candidate_primitive
                     || func_found == ast::builtins::ray_query_candidate_instance
-                    || func_found == ast::builtins::ray_query_candidate_barycentrics){
+                    || func_found == ast::builtins::ray_query_candidate_barycentrics
+                    /// Sub-phase 1.5 — procedural / AABB geometry extension.
+                    || func_found == ast::builtins::ray_query_candidate_is_triangle
+                    || func_found == ast::builtins::ray_query_candidate_is_aabb
+                    || func_found == ast::builtins::ray_query_candidate_object_ray_origin
+                    || func_found == ast::builtins::ray_query_candidate_object_ray_direction
+                    || func_found == ast::builtins::ray_query_generate_intersection
+                    || func_found == ast::builtins::ray_query_committed_is_aabb){
 
                 const std::string fname = std::string(_id_expr->id);
 
@@ -2380,12 +2412,22 @@ namespace omegasl {
                     return nullptr;
                 }
 
-                /// `ray_query_init` is (q, as, ray [, mask]); every other member
-                /// of the family is a unary accessor on the RayQuery.
+                /// `ray_query_init` is (q, as, ray [, mask [, flags]]);
+                /// `ray_query_generate_intersection` is (q, float t); every other
+                /// member of the family is a unary accessor on the RayQuery.
                 bool isInit = (func_found == ast::builtins::ray_query_init);
+                bool isGenerate = (func_found == ast::builtins::ray_query_generate_intersection);
                 if(isInit){
-                    if(_expr->args.size() != 3 && _expr->args.size() != 4){
+                    /// (q, as, ray), (q, as, ray, mask), or (q, as, ray, mask,
+                    /// rayFlags) — the 5-arg form adds ray flags (sub-phase 1.5).
+                    if(_expr->args.size() < 3 || _expr->args.size() > 5){
                         auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_RAY_QUERY_INIT; e->expected = 3; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
+                        return nullptr;
+                    }
+                } else if(isGenerate){
+                    /// (q, float t) — commit a procedural hit at distance t.
+                    if(_expr->args.size() != 2){
+                        auto e = std::make_unique<ArgumentCountMismatch>(); e->functionName = BUILTIN_RAY_QUERY_GENERATE_INTERSECTION; e->expected = 2; e->actual = (unsigned)_expr->args.size(); e->loc = _expr->loc.value_or(ErrorLoc{}); diagnostics->addError(std::move(e));
                         return nullptr;
                     }
                 } else {
@@ -2419,7 +2461,7 @@ namespace omegasl {
                         reportTypeErr("3rd param of function " + std::string(BUILTIN_RAY_QUERY_INIT) + " must be a Ray.");
                         return nullptr;
                     }
-                    if(_expr->args.size() == 4){
+                    if(_expr->args.size() >= 4){
                         auto mask_t_e = performSemForExpr(_expr->args[3],funcContext);
                         if(mask_t_e == nullptr){
                             return nullptr;
@@ -2430,10 +2472,35 @@ namespace omegasl {
                             return nullptr;
                         }
                     }
+                    /// Optional arg4 is `rayFlags` — the same compile-time
+                    /// constant `RAY_FLAG_*` fold as `intersect` (see the note
+                    /// there); not run through `performSemForExpr`.
+                    if(_expr->args.size() == 5){
+                        uint32_t flagsMask = 0;
+                        if(!ast::tryFoldRayFlags(_expr->args[4], flagsMask)){
+                            reportTypeErr("5th param of function " + std::string(BUILTIN_RAY_QUERY_INIT)
+                                + " (rayFlags) must be a compile-time constant combination of RAY_FLAG_* values"
+                                  " (e.g. RAY_FLAG_OPAQUE | RAY_FLAG_CULL_BACK_FACING).");
+                            return nullptr;
+                        }
+                    }
+                }
+                if(isGenerate){
+                    /// arg1 is the procedural hit distance — a numeric scalar
+                    /// (a `float` local / literal; the backends emit it in a
+                    /// float context).
+                    auto t_t_e = performSemForExpr(_expr->args[1],funcContext);
+                    if(t_t_e == nullptr){
+                        return nullptr;
+                    }
+                    if(!isNumericScalar(resolveTypeWithExpr(t_t_e))){
+                        reportTypeErr("2nd param of function " + std::string(BUILTIN_RAY_QUERY_GENERATE_INTERSECTION) + " (hit distance) must be a numeric scalar.");
+                        return nullptr;
+                    }
                 }
                 /// Success: fall through to the shared tail, which returns the
                 /// FuncType's declared return type (void / bool / uint / float /
-                /// float2 per intrinsic).
+                /// float2 / float3 per intrinsic).
             }
             /// @brief sample(sampler sampler,texture texture,texcoord coord) function
             else if(func_found == ast::builtins::sample){

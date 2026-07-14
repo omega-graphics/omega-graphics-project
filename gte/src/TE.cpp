@@ -232,6 +232,23 @@ TETriangulationParams TETriangulationParams::GraphicsPath3D(unsigned int vectorP
     return params;
 };
 
+bool TETriangulationParams::is3DPrimitive() const {
+    switch(type){
+        case TRIANGULATE_RECTANGULAR_PRISM:
+        case TRIANGULATE_PYRAMID:
+        case TRIANGULATE_CYLINDER:
+        case TRIANGULATE_CONE:
+        case TRIANGULATE_TORUS:
+        case TRIANGULATE_SPHERE:
+        case TRIANGULATE_CAPSULE:
+            return true;
+        // Rect / RoundedRect / the flat Ellipsoid fan / Path2D / Path3D are not
+        // solid 3D primitives; GESpace declines to place them in a 3D space.
+        default:
+            return false;
+    }
+}
+
 unsigned int TETriangulationResult::TEMesh::vertexCount() {
     auto polygonCount = vertexPolygons.size();
     return polygonCount * 3;

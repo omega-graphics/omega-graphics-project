@@ -113,11 +113,11 @@ public:
         const auto now = std::chrono::steady_clock::now();
         const float t = std::chrono::duration<float>(now - startTime).count();
 
-        // Spin around the Y axis at ~60 degrees per second, plus a
-        // slower wobble on X so the cube reads as a 3D object.
-        Kreate::Mat4 rotY = Kreate::Mat4::rotation(t * (kPi / 3.f), {0, 1, 0});
-        Kreate::Mat4 rotX = Kreate::Mat4::rotation(t * (kPi / 7.f), {1, 0, 0});
-        cube->setTransform(rotY * rotX);
+        // Spin around the Y axis at ~60 degrees per second, plus a slower
+        // wobble on X so the cube reads as a 3D object. setRotationEuler takes
+        // (pitch about X, yaw about Y, roll about Z) and replaces the
+        // orientation each frame.
+        cube->setRotationEuler(t * (kPi / 7.f), t * (kPi / 3.f), 0.f);
 
         scene->render(*this);
     }

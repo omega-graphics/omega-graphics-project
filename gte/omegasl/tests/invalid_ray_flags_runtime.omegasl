@@ -1,0 +1,30 @@
+// Negative test — a `rayFlags` argument that is NOT a compile-time constant
+// OR-chain of RAY_FLAG_* values must be rejected. Metal decomposes the folded
+// flag bitmask into intersector setter calls at codegen and cannot handle a
+// runtime flag value, so the front-end rejects one uniformly for all backends.
+//
+// Here the flags argument is a runtime `uint` derived from the thread id.
+
+#requires(RAYTRACING)
+
+struct HitResult { uint hit; };
+
+AccelerationStructure scene : 0;
+buffer<HitResult> results : 1;
+
+[in scene, out results]
+compute(x=8,y=1,z=1)
+void bad_runtime_flags(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+    uint runtimeFlags = idx;   // not a constant RAY_FLAG_* expression
+
+    Ray ray;
+    ray.origin = float3((float)idx, 0.0, 0.0);
+    ray.direction = float3(0.0, 0.0, 1.0);
+    ray.tmin = 0.0;
+    ray.tmax = 1000.0;
+
+    RayHit hit = intersect(scene, ray, 255, runtimeFlags);
+
+    results[idx].hit = hit.committed ? 1u : 0u;
+}

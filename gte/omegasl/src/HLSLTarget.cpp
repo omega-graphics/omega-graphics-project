@@ -825,6 +825,20 @@ namespace omegasl {
         return true;
     }
 
+    /// Sub-phase 1.5 — spell a folded ray-flag bitmask as an HLSL `RAY_FLAG_*`
+    /// OR-chain of the SET user bits (empty string when the mask is 0). The bit
+    /// values are shared (`ast::rayflags`); the spellings here are HLSL's. The
+    /// call site combines this with its base flag (`RAY_FLAG_NONE`).
+    static std::string hlslRayFlagsSpelling(uint32_t m) {
+        std::string s;
+        auto add = [&](const char *n){ if (!s.empty()) s += " | "; s += n; };
+        if (m & ast::rayflags::Opaque)              add("RAY_FLAG_FORCE_OPAQUE");
+        if (m & ast::rayflags::TerminateOnFirstHit) add("RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH");
+        if (m & ast::rayflags::CullBackFacing)      add("RAY_FLAG_CULL_BACK_FACING_TRIANGLES");
+        if (m & ast::rayflags::CullFrontFacing)     add("RAY_FLAG_CULL_FRONT_FACING_TRIANGLES");
+        return s;
+    }
+
     /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family (HLSL).
     /// Returns true (and emits) when `name` is one of the family; false
     /// otherwise. `ray_query_init` is statement-shaped (build a `RayDesc`
@@ -837,9 +851,20 @@ namespace omegasl {
             std::string q    = cg.renderExprToString(_expr->args[0]);
             std::string as   = cg.renderExprToString(_expr->args[1]);
             std::string ray  = cg.renderExprToString(_expr->args[2]);
-            std::string mask = (_expr->args.size() == 4)
+            std::string mask = (_expr->args.size() >= 4)
                 ? ("(uint)(" + cg.renderExprToString(_expr->args[3]) + ")")
                 : std::string("0xFFu");
+            /// 5-arg form adds rayFlags. Sema has already validated the arg
+            /// folds to a constant `RAY_FLAG_*` OR-chain. Base is `RAY_FLAG_NONE`
+            /// (the low-level query surfaces non-opaque candidates for the
+            /// shader to inspect); the set user bits replace it (NONE | X == X).
+            std::string flags = "RAY_FLAG_NONE";
+            if (_expr->args.size() == 5) {
+                uint32_t m = 0;
+                ast::tryFoldRayFlags(_expr->args[4], m);
+                std::string spell = hlslRayFlagsSpelling(m);
+                if (!spell.empty()) flags = spell;
+            }
             unsigned id = cg.rayQueryTempId++;
             std::string rd = "_rd" + std::to_string(id);
             cg.queuePendingStatement("RayDesc " + rd + ";");
@@ -847,14 +872,38 @@ namespace omegasl {
             cg.queuePendingStatement(rd + ".Direction = " + ray + ".direction;");
             cg.queuePendingStatement(rd + ".TMin = " + ray + ".tmin;");
             cg.queuePendingStatement(rd + ".TMax = " + ray + ".tmax;");
-            out << q << ".TraceRayInline(" << as << ", RAY_FLAG_NONE, " << mask << ", " << rd << ")";
+            out << q << ".TraceRayInline(" << as << ", " << flags << ", " << mask << ", " << rd << ")";
             return true;
         }
-        /// `committed()` is a status comparison, not a bare accessor.
+        /// `committed()` / `committed_is_aabb()` / the candidate-type checks are
+        /// status comparisons, not bare accessors. `committed()` means "any hit
+        /// committed" (triangle OR procedural), so it tests `!= COMMITTED_NOTHING`.
         if (name == BUILTIN_RAY_QUERY_COMMITTED) {
-            out << "(";
+            out << "("; cg.generateExpr(_expr->args[0]);
+            out << ".CommittedStatus() != COMMITTED_NOTHING)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_COMMITTED_IS_AABB) {
+            out << "("; cg.generateExpr(_expr->args[0]);
+            out << ".CommittedStatus() == COMMITTED_PROCEDURAL_PRIMITIVE_HIT)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_CANDIDATE_IS_TRIANGLE) {
+            out << "("; cg.generateExpr(_expr->args[0]);
+            out << ".CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_CANDIDATE_IS_AABB) {
+            out << "("; cg.generateExpr(_expr->args[0]);
+            out << ".CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE)";
+            return true;
+        }
+        /// `generate_intersection(q, t)` — commit a procedural hit at distance t.
+        if (name == BUILTIN_RAY_QUERY_GENERATE_INTERSECTION) {
             cg.generateExpr(_expr->args[0]);
-            out << ".CommittedStatus() == COMMITTED_TRIANGLE_HIT)";
+            out << ".CommitProceduralPrimitiveHit(";
+            cg.generateExpr(_expr->args[1]);
+            out << ")";
             return true;
         }
         const char *method = nullptr;
@@ -868,6 +917,8 @@ namespace omegasl {
         else if (name == BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE)method = "CandidatePrimitiveIndex";
         else if (name == BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE) method = "CandidateInstanceIndex";
         else if (name == BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS) method = "CandidateTriangleBarycentrics";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_ORIGIN)    method = "CandidateObjectRayOrigin";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_DIRECTION) method = "CandidateObjectRayDirection";
         else return false;
         cg.generateExpr(_expr->args[0]);
         out << "." << method << "()";
@@ -1913,9 +1964,21 @@ namespace omegasl {
         std::string rayStr = cg.renderExprToString(_expr->args[1]);
         /// Missing mask ⇒ 0xFF (include every instance). An explicit mask is
         /// cast to uint — a literal like `0xFF` resolves to `int` in Sema.
-        std::string maskStr = (_expr->args.size() == 3)
+        std::string maskStr = (_expr->args.size() >= 3)
             ? ("(uint)(" + cg.renderExprToString(_expr->args[2]) + ")")
             : std::string("0xFFu");
+        /// Optional 4th arg — rayFlags. Sema validated it folds to a constant
+        /// `RAY_FLAG_*` OR-chain; spell it for the `TraceRayInline` RayFlags
+        /// parameter (the `RayQuery<RAY_FLAG_NONE>` template flags stay empty —
+        /// per-trace flags are OR'd in at `TraceRayInline`). Base is
+        /// `RAY_FLAG_NONE`; the set user bits replace it (NONE | X == X).
+        std::string flagsStr = "RAY_FLAG_NONE";
+        if (_expr->args.size() == 4) {
+            uint32_t m = 0;
+            ast::tryFoldRayFlags(_expr->args[3], m);
+            std::string spell = hlslRayFlagsSpelling(m);
+            if (!spell.empty()) flagsStr = spell;
+        }
 
         unsigned id = cg.rayQueryTempId++;
         std::string q  = "_rq" + std::to_string(id);
@@ -1928,7 +1991,7 @@ namespace omegasl {
         cg.queuePendingStatement(rd + ".Direction = " + rayStr + ".direction;");
         cg.queuePendingStatement(rd + ".TMin = " + rayStr + ".tmin;");
         cg.queuePendingStatement(rd + ".TMax = " + rayStr + ".tmax;");
-        cg.queuePendingStatement(q + ".TraceRayInline(" + asStr + ", RAY_FLAG_NONE, " + maskStr + ", " + rd + ");");
+        cg.queuePendingStatement(q + ".TraceRayInline(" + asStr + ", " + flagsStr + ", " + maskStr + ", " + rd + ");");
         cg.queuePendingStatement(q + ".Proceed();");
         cg.queuePendingStatement("RayHit " + h + ";");
         cg.queuePendingStatement(h + ".committed = (" + q + ".CommittedStatus() == COMMITTED_TRIANGLE_HIT);");

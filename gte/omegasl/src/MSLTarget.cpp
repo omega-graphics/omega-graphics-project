@@ -1337,6 +1337,29 @@ using namespace metal;
     /// `M_PI / 180` for `radians(x)` and `180 / M_PI` for `degrees(x)`.
     /// Vector arguments work without extra glue because scalar * vec
     /// broadcasts in MSL.
+    /// Sub-phase 1.5 — Metal ray-flag decomposition. Metal's `intersector` /
+    /// `intersection_params` take no DXR-style flag bitmask, so each set flag is
+    /// lowered to a setter call on `obj` (an intersector for the one-shot
+    /// `intersect`, an `intersection_params` for the low-level query). The bit
+    /// values are shared (`ast::rayflags`); the setter names are Metal's. Culling
+    /// BOTH faces has no single `triangle_cull_mode`, so it maps to
+    /// `geometry_cull_mode::triangle` (cull all triangle geometry) — the correct
+    /// equivalent of DXR's cull-back | cull-front (no triangle can be hit).
+    static void mslQueueRayFlagSetters(CodeGen &cg, uint32_t m, const std::string &obj) {
+        if (m & ast::rayflags::Opaque)
+            cg.queuePendingStatement(obj + ".force_opacity(forced_opacity::opaque);");
+        if (m & ast::rayflags::TerminateOnFirstHit)
+            cg.queuePendingStatement(obj + ".accept_any_intersection(true);");
+        bool cb = (m & ast::rayflags::CullBackFacing) != 0;
+        bool cf = (m & ast::rayflags::CullFrontFacing) != 0;
+        if (cb && cf)
+            cg.queuePendingStatement(obj + ".set_geometry_cull_mode(geometry_cull_mode::triangle);");
+        else if (cb)
+            cg.queuePendingStatement(obj + ".set_triangle_cull_mode(triangle_cull_mode::back);");
+        else if (cf)
+            cg.queuePendingStatement(obj + ".set_triangle_cull_mode(triangle_cull_mode::front);");
+    }
+
     /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family (MSL,
     /// `intersection_query` from <metal_raytracing>). Returns true (and emits)
     /// when `name` is one of the family; false otherwise. `ray_query_init` is
@@ -1348,7 +1371,7 @@ using namespace metal;
             std::string q    = cg.renderExprToString(_expr->args[0]);
             std::string as   = cg.renderExprToString(_expr->args[1]);
             std::string ray  = cg.renderExprToString(_expr->args[2]);
-            std::string mask = (_expr->args.size() == 4)
+            std::string mask = (_expr->args.size() >= 4)
                 ? ("uint32_t(" + cg.renderExprToString(_expr->args[3]) + ")")
                 : std::string("0xFFu");
             unsigned id = cg.rayQueryTempId++;
@@ -1357,13 +1380,53 @@ using namespace metal;
             /// named `ray` cannot shadow the Metal type.
             cg.queuePendingStatement("metal::raytracing::ray " + r + "(" + ray + ".origin, "
                 + ray + ".direction, " + ray + ".tmin, " + ray + ".tmax);");
-            out << q << ".reset(" << r << ", " << as << ", " << mask << ")";
+            /// 5-arg form adds rayFlags. Metal has no flag bitmask; decompose
+            /// the folded set bits into `intersection_params` setters and pass
+            /// them to the 4-arg `reset`. With no flags (or a 0 mask) the plain
+            /// 3-arg `reset` is emitted, unchanged. Sema validated the fold.
+            uint32_t m = 0;
+            if (_expr->args.size() == 5 && ast::tryFoldRayFlags(_expr->args[4], m) && m != 0u) {
+                std::string ip = "_ip" + std::to_string(id);
+                cg.queuePendingStatement("intersection_params " + ip + ";");
+                mslQueueRayFlagSetters(cg, m, ip);
+                out << q << ".reset(" << r << ", " << as << ", " << mask << ", " << ip << ")";
+            } else {
+                out << q << ".reset(" << r << ", " << as << ", " << mask << ")";
+            }
             return true;
         }
+        /// `committed()` means "any hit committed" — Metal's committed type is
+        /// already `!= none` for both triangle and bounding-box hits.
         if (name == BUILTIN_RAY_QUERY_COMMITTED) {
             out << "(";
             cg.generateExpr(_expr->args[0]);
             out << ".get_committed_intersection_type() != intersection_type::none)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_COMMITTED_IS_AABB) {
+            out << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ".get_committed_intersection_type() == intersection_type::bounding_box)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_CANDIDATE_IS_TRIANGLE) {
+            out << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ".get_candidate_intersection_type() == intersection_type::triangle)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_CANDIDATE_IS_AABB) {
+            out << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ".get_candidate_intersection_type() == intersection_type::bounding_box)";
+            return true;
+        }
+        /// `generate_intersection(q, t)` — commit a procedural hit at distance t.
+        if (name == BUILTIN_RAY_QUERY_GENERATE_INTERSECTION) {
+            cg.generateExpr(_expr->args[0]);
+            out << ".commit_bounding_box_intersection(";
+            cg.generateExpr(_expr->args[1]);
+            out << ")";
             return true;
         }
         const char *method = nullptr;
@@ -1377,6 +1440,8 @@ using namespace metal;
         else if (name == BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE)method = "get_candidate_primitive_id";
         else if (name == BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE) method = "get_candidate_instance_id";
         else if (name == BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS) method = "get_candidate_triangle_barycentric_coord";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_ORIGIN)    method = "get_candidate_ray_origin";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_DIRECTION) method = "get_candidate_ray_direction";
         else return false;
         cg.generateExpr(_expr->args[0]);
         out << "." << method << "()";
@@ -2012,9 +2077,16 @@ using namespace metal;
         /// Missing mask ⇒ 0xFF. Metal's `intersect(...)` mask is `uint32_t`; a
         /// literal like `0xFF` resolves to `int` in Sema, so cast an explicit
         /// mask to uint32_t.
-        std::string maskStr = (_expr->args.size() == 3)
+        std::string maskStr = (_expr->args.size() >= 3)
             ? ("uint32_t(" + cg.renderExprToString(_expr->args[2]) + ")")
             : std::string("0xFFu");
+        /// Optional 4th arg — rayFlags. Metal has no flag bitmask; the folded
+        /// set bits are decomposed into setter calls on the intersector below.
+        /// Sema validated the fold.
+        uint32_t flagsMask = 0;
+        if (_expr->args.size() == 4) {
+            ast::tryFoldRayFlags(_expr->args[3], flagsMask);
+        }
 
         unsigned id = cg.rayQueryTempId++;
         std::string r = "_r" + std::to_string(id);
@@ -2030,6 +2102,8 @@ using namespace metal;
         cg.queuePendingStatement("metal::raytracing::ray " + r + "(" + rayStr + ".origin, "
             + rayStr + ".direction, " + rayStr + ".tmin, " + rayStr + ".tmax);");
         cg.queuePendingStatement("intersector<" + tag + "> " + isect + ";");
+        /// Apply any ray-flag setters on the intersector before intersecting.
+        mslQueueRayFlagSetters(cg, flagsMask, isect);
         cg.queuePendingStatement("intersection_result<" + tag + "> " + res + " = "
             + isect + ".intersect(" + r + ", " + asStr + ", " + maskStr + ");");
         cg.queuePendingStatement("RayHit " + h + ";");

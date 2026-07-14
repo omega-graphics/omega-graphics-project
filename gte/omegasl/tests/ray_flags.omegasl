@@ -1,0 +1,97 @@
+// Inline ray tracing sub-phase 1.5 — ray flags. Exercises the RAY_FLAG_*
+// constant surface plus the 4-arg `intersect(as, ray, mask, rayFlags)` and
+// 5-arg `ray_query_init(q, as, ray, mask, rayFlags)` overloads. The flags must
+// be a compile-time constant OR-chain of RAY_FLAG_* values (Sema folds them;
+// HLSL/GLSL forward them by name, Metal decomposes them into intersector /
+// intersection_params setter calls).
+//
+// Flags covered: TERMINATE_ON_FIRST_HIT (shadow rays), CULL_BACK_FACING,
+// CULL_FRONT_FACING, and an OPAQUE | CULL_BACK_FACING combination.
+
+#requires(RAYTRACING)
+
+struct HitResult {
+    uint hit;
+    float dist;
+    uint prim;
+};
+
+AccelerationStructure scene : 0;
+buffer<HitResult> results : 1;
+
+// Shadow ray — the one-shot 4-arg intersect with a single ray flag. A shadow
+// ray only needs to know whether *anything* is hit, so terminate on the first.
+[in scene, out results]
+compute(x=8,y=1,z=1)
+void cast_shadow(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+
+    Ray ray;
+    ray.origin = float3((float)idx, 0.0, 0.0);
+    ray.direction = float3(0.0, 0.0, 1.0);
+    ray.tmin = 0.001;
+    ray.tmax = 1000.0;
+
+    RayHit hit = intersect(scene, ray, 255, RAY_FLAG_TERMINATE_ON_FIRST_HIT);
+
+    results[idx].hit = hit.committed ? 1u : 0u;
+    results[idx].dist = hit.t;
+    results[idx].prim = hit.primitiveIndex;
+}
+
+// One-shot with a combined OR-chain: force opaque and cull back-facing
+// triangles. Exercises the multi-flag fold and the Metal multi-setter path.
+[in scene, out results]
+compute(x=8,y=1,z=1)
+void cast_culled(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+
+    Ray ray;
+    ray.origin = float3((float)idx, 1.0, 0.0);
+    ray.direction = float3(0.0, 0.0, 1.0);
+    ray.tmin = 0.0;
+    ray.tmax = 500.0;
+
+    RayHit hit = intersect(scene, ray, 255, RAY_FLAG_OPAQUE | RAY_FLAG_CULL_BACK_FACING);
+
+    results[idx].hit = 0u;
+    results[idx].dist = 0.0;
+    results[idx].prim = 0u;
+    if(hit.committed){
+        results[idx].hit = 1u;
+        results[idx].dist = hit.t;
+        results[idx].prim = hit.instanceIndex;
+    }
+}
+
+// Low-level traversal with the 5-arg init: explicit mask + a front-face cull
+// flag. Metal builds an intersection_params for this (the back|front pair would
+// map to geometry_cull_mode::triangle; a single face maps to triangle_cull_mode).
+[in scene, out results]
+compute(x=8,y=1,z=1)
+void trace_culled(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+
+    Ray ray;
+    ray.origin = float3((float)idx, 2.0, 0.0);
+    ray.direction = float3(0.0, 0.0, 1.0);
+    ray.tmin = 0.0;
+    ray.tmax = 750.0;
+
+    RayQuery q;
+    ray_query_init(q, scene, ray, 255, RAY_FLAG_CULL_FRONT_FACING);
+    while(ray_query_proceed(q)){
+        if(ray_query_candidate_t(q) < 700.0){
+            ray_query_commit(q);
+        }
+    }
+
+    results[idx].hit = 0u;
+    results[idx].dist = 0.0;
+    results[idx].prim = 0u;
+    if(ray_query_committed(q)){
+        results[idx].hit = 1u;
+        results[idx].dist = ray_query_t(q);
+        results[idx].prim = ray_query_primitive(q);
+    }
+}

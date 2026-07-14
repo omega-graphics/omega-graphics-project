@@ -69,12 +69,34 @@ struct GESpace::Impl {
     /// shares a single GPU buffer between the instances.
     struct Object {
         GESpaceTransform transform;
-        /// Null for a transform-only object (`addObject`).
+        /// Null for a transform-only object (`addObject`) or a primitive whose
+        /// GPU mesh has not been built yet. For an `addMesh` object this is the
+        /// caller's mesh; for an `addPrimitive` object it is filled lazily by
+        /// the engine-taking `meshOf` overload and cached here afterwards.
         SharedHandle<GEMesh> mesh;
+        /// Local-space CPU geometry, set only by `addPrimitive`. This is what
+        /// lets a primitive be placed and inspected before (or without) a GPU
+        /// buffer ever being built. Null for mesh / transform-only objects.
+        SharedHandle<TETriangulationResult> primitive;
     };
 
     GEViewport viewport;
     FMatrix<4,4> spaceToNDC = FMatrix<4,4>::Identity();
+
+    /// The camera. `view` defaults to identity (space units are already view
+    /// space); `projectionOverride` is empty until a caller sets a lens, in
+    /// which case it replaces `spaceToNDC` in `objectTransform`. Keeping the
+    /// override separate from `spaceToNDC` means a viewport re-anchor
+    /// (`setViewport`) does not disturb a camera projection, and a 2D space that
+    /// never sets one keeps its original viewport-linear behavior byte for byte.
+    FMatrix<4,4> view = FMatrix<4,4>::Identity();
+    OmegaCommon::Optional<FMatrix<4,4>> projectionOverride;
+
+    /// The projection actually composed into `objectTransform`: the override if
+    /// present, else the viewport-linear `spaceToNDC`.
+    FMatrix<4,4> effectiveProjection() const {
+        return projectionOverride.has_value() ? projectionOverride.value() : spaceToNDC;
+    }
 
     /// Insertion-ordered (IDs are monotonic and Map is ordered), so `objects()`
     /// enumerates deterministically — a renderer walking it draws in a stable
@@ -149,6 +171,30 @@ FMatrix<4,4> GESpace::spaceToNDC() const {
 }
 
 // -------------------------------------------------------------------------
+// Camera: view + projection
+// -------------------------------------------------------------------------
+
+void GESpace::setViewMatrix(const FMatrix<4,4> & view){
+    impl->view = view;
+}
+
+const FMatrix<4,4> & GESpace::viewMatrix() const {
+    return impl->view;
+}
+
+void GESpace::setProjectionMatrix(const FMatrix<4,4> & projection){
+    impl->projectionOverride = projection;
+}
+
+void GESpace::clearProjectionMatrix(){
+    impl->projectionOverride.reset();
+}
+
+FMatrix<4,4> GESpace::projectionMatrix() const {
+    return impl->effectiveProjection();
+}
+
+// -------------------------------------------------------------------------
 // Objects and transforms
 // -------------------------------------------------------------------------
 
@@ -178,12 +224,90 @@ GESpaceObjectID GESpace::addMesh(const SharedHandle<GEMesh> & mesh,
     return id;
 }
 
+GESpaceObjectID GESpace::addPrimitive(OmegaTriangulationEngineContext * te,
+                                      const TETriangulationParams & params,
+                                      GTEPolygonFrontFaceRotation frontFaceRotation){
+    if(te == nullptr){
+        std::cerr << "[GESpace] error: addPrimitive() called with a null "
+                     "triangulation context; returning GESpaceInvalidObject." << std::endl;
+        return GESpaceInvalidObject;
+    }
+    if(!params.is3DPrimitive()){
+        // A flat shape (Rect / RoundedRect / Ellipsoid fan) or a path stroke has
+        // no volume to place in a 3D space; refuse it here rather than let it
+        // triangulate into a degenerate object the caller then can't see.
+        std::cerr << "[GESpace] error: addPrimitive() requires a solid 3D primitive "
+                     "(RectangularPrism / Pyramid / Cylinder / Cone / Torus / Sphere / "
+                     "Capsule); the given params are 2D. Returning GESpaceInvalidObject."
+                  << std::endl;
+        return GESpaceInvalidObject;
+    }
+
+    // Triangulate in the primitive's authored units. localSpace forces TE's
+    // coordinate conversion to an identity pass, so the vertices come back in
+    // space units — GESpace's spaceToNDC (composed into objectTransform) is what
+    // takes them to clip space, and baking here would project them twice.
+    TETriangulationParams local = params;
+    local.localSpace = true;
+    auto result = std::make_shared<TETriangulationResult>(
+        te->triangulateSync(local, frontFaceRotation, nullptr));
+
+    const GESpaceObjectID id = impl->nextID++;
+    Impl::Object obj;
+    obj.primitive = result;
+    impl->objects[id] = obj;
+    return id;
+}
+
+SharedHandle<TETriangulationResult> GESpace::triangulationOf(GESpaceObjectID id) const {
+    const auto * obj = impl->findObject(id);
+    return obj == nullptr ? nullptr : obj->primitive;
+}
+
 SharedHandle<GEMesh> GESpace::meshOf(GESpaceObjectID id) const {
     const auto * obj = impl->findObject(id);
     // Deliberately quiet: a transform-only object having no mesh is normal, and
     // so is probing a handle you are about to discard. The mutators are the loud
     // ones, because there a bad handle means work silently going nowhere.
     return obj == nullptr ? nullptr : obj->mesh;
+}
+
+SharedHandle<GEMesh> GESpace::meshOf(GESpaceObjectID id,
+                                     OmegaGraphicsEngine * engine,
+                                     const GEMeshDescriptor & desc){
+    auto it = impl->objects.find(id);
+    if(it == impl->objects.end()){
+        std::cerr << "[GESpace] error: meshOf() on unknown object " << id
+                  << "; returning null." << std::endl;
+        return nullptr;
+    }
+    Impl::Object & obj = it->second;
+
+    // Already built (lazy cache hit) or an addMesh object: hand back what we have.
+    if(obj.mesh != nullptr){
+        return obj.mesh;
+    }
+    // Not a primitive — a transform-only object legitimately has no geometry to
+    // build. Quiet, like the const overload.
+    if(obj.primitive == nullptr){
+        return nullptr;
+    }
+    if(engine == nullptr){
+        std::cerr << "[GESpace] error: meshOf() needs an engine to build the mesh for "
+                     "primitive object " << id << "; returning null." << std::endl;
+        return nullptr;
+    }
+
+    auto mesh = buildMeshFromTriangulation(engine, *obj.primitive, desc);
+    if(mesh == nullptr){
+        // buildMeshFromTriangulation already logged the specific reason. Leave
+        // the object primitive-only so a later call can retry.
+        std::cerr << "[GESpace] error: meshOf() failed to build a mesh for primitive "
+                     "object " << id << "." << std::endl;
+        return nullptr;
+    }
+    obj.mesh = mesh;   // cache so repeated calls don't re-triangulate or re-upload
+    return obj.mesh;
 }
 
 void GESpace::remove(GESpaceObjectID id){
@@ -276,6 +400,12 @@ void GESpace::scale(GESpaceObjectID id, float sx, float sy, float sz){
     }
 }
 
+void GESpace::setTransform(GESpaceObjectID id, const GESpaceTransform & transform){
+    if(auto * t = impl->findForWrite(id, "setTransform")){
+        *t = transform;
+    }
+}
+
 const GESpaceTransform & GESpace::transformOf(GESpaceObjectID id) const {
     static const GESpaceTransform identity;
     const auto * t = impl->find(id);
@@ -288,15 +418,19 @@ const GESpaceTransform & GESpace::transformOf(GESpaceObjectID id) const {
 }
 
 FMatrix<4,4> GESpace::objectTransform(GESpaceObjectID id) const {
+    // projection · view is the camera; model places the object. Apply model
+    // first, then view, then projection — spelled through applyThen so the order
+    // reads correctly under the reversed operator*. `projection` is the override
+    // if one is set, else the viewport-linear spaceToNDC, so a 2D space with no
+    // camera composes exactly spaceToNDC · model as before.
+    const auto viewProjection = applyThen(impl->view, impl->effectiveProjection());
     const auto * t = impl->find(id);
     if(t == nullptr){
         std::cerr << "[GESpace] error: objectTransform() on unknown object " << id
-                  << "; returning the bare space->NDC matrix." << std::endl;
-        return impl->spaceToNDC;
+                  << "; returning the bare projection*view matrix." << std::endl;
+        return viewProjection;
     }
-    // Model takes the object from local units into space units; spaceToNDC takes
-    // it the rest of the way. Apply model, THEN spaceToNDC.
-    return applyThen(t->modelMatrix(), impl->spaceToNDC);
+    return applyThen(t->modelMatrix(), viewProjection);
 }
 
 _NAMESPACE_END_

@@ -4,6 +4,7 @@
 #include <kreate/Math.h>
 #include <kreate/Window.h>
 #include <omegaGTE/GTEDevice.h>
+#include <omegaGTE/GTEMath.h>
 #include <omegaGTE/GECommandQueue.h>
 #include <omegaGTE/GERenderTarget.h>
 #include <memory>
@@ -45,7 +46,12 @@ public:
     /// Phase 1 chose push constants for per-draw uniforms), then bind
     /// and draw the mesh at vertex resource slot 0. Must be called
     /// between `beginFrame` and `endFrameAndPresent`.
-    void draw(Pipeline &pipeline, Mesh &mesh, const Mat4 &mvp);
+    ///
+    /// `mvp` is a GTE `FMatrix<4,4>` (column-major) — the space's
+    /// `objectTransform()` output — flattened straight into the push
+    /// constant in the column-major order the shader's `float4x4` reads,
+    /// so no transpose happens here.
+    void draw(Pipeline &pipeline, Mesh &mesh, const OmegaGTE::FMatrix<4,4> &mvp);
 
 private:
     Renderer(OmegaGTE::GTE gte,

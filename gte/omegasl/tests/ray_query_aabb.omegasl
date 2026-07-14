@@ -1,0 +1,84 @@
+// Inline ray tracing sub-phase 1.5 — procedural / AABB geometry. A BLAS of
+// axis-aligned bounding boxes, each enclosing an analytic unit sphere. The
+// ray-query traversal surfaces a bounding-box candidate for every AABB the ray
+// enters; the shader runs a ray-sphere test in the candidate's object space and
+// commits the hit distance with `ray_query_generate_intersection`. A mixed
+// scene (triangles + AABBs) is handled by branching on the candidate type.
+//
+// Exercises: ray_query_candidate_is_triangle / _is_aabb, the object-space
+// candidate ray accessors, ray_query_generate_intersection, and the broadened
+// ray_query_committed plus ray_query_committed_is_aabb committed-type check.
+
+#requires(RAYTRACING)
+
+struct AABBResult {
+    uint hit;      // 1 when any geometry committed
+    uint isAABB;   // 1 when the committed hit was a procedural primitive
+    float dist;    // committed hit distance
+    uint prim;     // committed primitive index
+};
+
+AccelerationStructure scene : 0;
+buffer<AABBResult> results : 1;
+
+// Ray-sphere intersection in object space (unit sphere at the origin). Returns
+// the nearest positive root, or a negative sentinel on a miss.
+float intersect_unit_sphere(float3 o, float3 d){
+    float a = dot(d, d);
+    float b = 2.0 * dot(o, d);
+    float c = dot(o, o) - 1.0;
+    float disc = b * b - 4.0 * a * c;
+    if(disc < 0.0){
+        return -1.0;
+    }
+    float sq = sqrt(disc);
+    float t0 = (-b - sq) / (2.0 * a);
+    if(t0 > 0.0){
+        return t0;
+    }
+    return (-b + sq) / (2.0 * a);
+}
+
+[in scene, out results]
+compute(x=8,y=1,z=1)
+void trace_procedural(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+
+    Ray ray;
+    ray.origin = float3((float)idx, 0.0, -5.0);
+    ray.direction = float3(0.0, 0.0, 1.0);
+    ray.tmin = 0.0;
+    ray.tmax = 1000.0;
+
+    RayQuery q;
+    ray_query_init(q, scene, ray);
+    while(ray_query_proceed(q)){
+        if(ray_query_candidate_is_aabb(q)){
+            // Procedural candidate — run the analytic sphere test in the
+            // primitive's object space and commit if the ray actually hits.
+            float3 oo = ray_query_candidate_object_ray_origin(q);
+            float3 od = ray_query_candidate_object_ray_direction(q);
+            float tHit = intersect_unit_sphere(oo, od);
+            if(tHit > 0.0){
+                ray_query_generate_intersection(q, tHit);
+            }
+        }
+        else if(ray_query_candidate_is_triangle(q)){
+            // Non-opaque triangle candidate — trivial alpha test.
+            if((ray_query_candidate_primitive(q) % 2u) == 0u){
+                ray_query_commit(q);
+            }
+        }
+    }
+
+    results[idx].hit = 0u;
+    results[idx].isAABB = 0u;
+    results[idx].dist = 0.0;
+    results[idx].prim = 0u;
+    if(ray_query_committed(q)){
+        results[idx].hit = 1u;
+        results[idx].isAABB = ray_query_committed_is_aabb(q) ? 1u : 0u;
+        results[idx].dist = ray_query_t(q);
+        results[idx].prim = ray_query_primitive(q);
+    }
+}

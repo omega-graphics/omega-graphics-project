@@ -271,6 +271,14 @@ namespace omegasl {
             DECLARE_BUILTIN_FUNC(ray_query_candidate_primitive);
             DECLARE_BUILTIN_FUNC(ray_query_candidate_instance);
             DECLARE_BUILTIN_FUNC(ray_query_candidate_barycentrics);
+
+            /// Sub-phase 1.5 — procedural / AABB geometry extension (AST.def).
+            DECLARE_BUILTIN_FUNC(ray_query_candidate_is_triangle);
+            DECLARE_BUILTIN_FUNC(ray_query_candidate_is_aabb);
+            DECLARE_BUILTIN_FUNC(ray_query_candidate_object_ray_origin);
+            DECLARE_BUILTIN_FUNC(ray_query_candidate_object_ray_direction);
+            DECLARE_BUILTIN_FUNC(ray_query_generate_intersection);
+            DECLARE_BUILTIN_FUNC(ray_query_committed_is_aabb);
         }
 
         /// §5.1.0 — map a builtin alias spelling to its canonical name
@@ -323,6 +331,37 @@ namespace omegasl {
         struct FuncDecl;
         struct StructDecl;
         struct Expr;
+
+        /// Inline ray tracing sub-phase 1.5 — ray-flag bit values. The OmegaSL
+        /// `RAY_FLAG_*` constants (see AST.def) map to these bits, which match
+        /// the DXR / SPIR-V ray-flag layout, so the HLSL and GLSL backends
+        /// forward them by name and Metal DECOMPOSES the set bits into
+        /// `intersector` / `intersection_params` setter calls (Metal's
+        /// intersector takes no flag bitmask). See the per-backend mapping in
+        /// Raytracing-Full-Implementation-Plan.md §1.5.
+        namespace rayflags {
+            enum : uint32_t {
+                None                = 0x00,
+                Opaque              = 0x01,
+                TerminateOnFirstHit = 0x04,
+                CullBackFacing      = 0x10,
+                CullFrontFacing     = 0x20,
+            };
+        }
+
+        /// True if `name` is the spelling of an OmegaSL `RAY_FLAG_*` constant.
+        /// These are recognized only inside a `rayFlags` argument position, so
+        /// this is used by `tryFoldRayFlags` rather than the general ID_EXPR
+        /// resolution path.
+        bool isRayFlagName(OmegaCommon::StrRef name);
+
+        /// Sub-phase 1.5 — fold a `rayFlags` argument expression to its bitmask.
+        /// Accepts a single `RAY_FLAG_*` identifier or a `|`-OR chain of them
+        /// (the only shapes Metal can decompose at codegen time). Returns false
+        /// on any other expression — a runtime value, arithmetic, or a non-flag
+        /// identifier — leaving `outMask` untouched. Used by Sema to validate
+        /// the argument and by every backend to emit / decompose it.
+        bool tryFoldRayFlags(Expr *expr, uint32_t &outMask);
 
         /// @brief Provides useful semantics info about AST Nodes.
         /// @paragraph This includes resolving ast::Type using ast::TypeExpr
