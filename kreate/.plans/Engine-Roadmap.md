@@ -1,21 +1,38 @@
-# Omega kREATE — Roadmap to a Complete 3D Game Engine
+# Omega kREATE — Roadmap to a Complete 3D Engine & Creation Suite
 
-**Omega kREATE** (kREATE for short) is the project's 3D game engine.
+**Omega kREATE** (kREATE for short) is the project's 3D engine **and** 3D creation
+suite: a real-time engine for shipping games *and* a full authoring application —
+modeling, animation, a timeline, and offline rendering — in the class of Blender
+or Maya.
 
 This document describes, end to end, what it will take to grow kREATE from where it
-is today into a complete 3D game engine. It is deliberately incremental: every
+is today into that complete engine-plus-suite. It is deliberately incremental: every
 phase below is meant to land as a **runnable milestone**, not a big-bang rewrite.
-We expect this to play out over many months, and the ordering here is a proposal,
-not a contract — phases can be resequenced as priorities and findings change.
+We expect this to play out over many months — and the creation-suite track alone
+(Phase 18+) is a multi-year effort in its own right — so the ordering here is a
+proposal, not a contract; phases can be resequenced as priorities and findings change.
+
+**Every kREATE project is typed as a *game* or a *film*.** The two share the same
+core — scene, entities, modeling, materials, animation — but diverge in output and
+emphasis. A **game** targets the real-time runtime: input, gameplay, physics, a
+shippable build. A **film** targets an offline, high-quality render: a timeline of
+shots and cameras, path-traced frames via GTE raytracing, rendered to an image
+sequence or video. The project type is declared up front and gates the render path,
+the editor mode, and the export. It is a foundational decision (§6) even though the
+film-specific features land late (Phase 20).
 
 kREATE is a thin engine layer that sits on top of the Omega suite's dedicated
 engines: **OmegaGTE** (graphics/compute), **AQUA** (physics/simulation), and
-**OmegaSL** (shading language); the editor will be built on **OmegaWTK**. AQUA is
+**OmegaSL** (shading language); the editor and creation suite are built on
+**OmegaWTK**. AQUA is
 to simulation what OmegaGTE is to graphics — an in-house engine with its backend
 hidden behind a pimpl public API — and kREATE consumes it for collision and
 dynamics rather than embedding a physics implementation of its own.
 A guiding rule throughout: *if GTE or AQUA already does it, kREATE wraps it — it
-does not reimplement it.*
+does not reimplement it.* The one place kREATE genuinely *authors* rather than
+wraps is content creation: an editable mesh, a timeline, and a render queue are
+kREATE's own (GTE provides GPU meshes and raytracing; the editing model built on
+top of them is kREATE's).
 
 ---
 
@@ -67,8 +84,10 @@ layers that turn "draw a mesh" into "ship a game."
 
 ## 2. What "complete" means — subsystem inventory
 
-A complete 3D game engine is the union of these subsystems. kREATE has the first
-two partially and the rest not at all.
+A complete 3D engine-and-creation-suite is the union of these subsystems. kREATE
+has the first two partially and the rest not at all. The final block is the
+creation-suite (DCC) and film-output surface — the Blender/Maya side of kREATE's
+identity.
 
 | Subsystem | Today | Target |
 |---|---|---|
@@ -91,6 +110,11 @@ two partially and the rest not at all.
 | Tooling & debug | `std::cerr` | Logging, profiling, debug draw, console, validation |
 | Networking *(optional)* | None | Replication, client/server, prediction |
 | Packaging / distribution | Per-platform target scaffolding | Cooked builds, bundles, installers per platform |
+| **Modeling / mesh authoring (ModelBender)** | None (import only) | Editable-topology modeling: extrude/bevel/loop-cut, subdivision, boolean, UV editing (Blender/Maya-class) |
+| **Texturing / texture authoring (MaterialBender)** | None (import only) | Author textures in-app so import is optional: paint on the model in-viewport (Substance-Painter-class) **and** procedural node-graph materials (Substance-Designer-class), layer/mask stack, texture create/edit |
+| **Timeline / sequencer** | None | Keyframe curves, dope sheet, non-linear editor, shots & cameras, cinematics |
+| **Offline / film rendering** | None | Path-traced frames (GTE raytracing), render settings, denoise, render queue → image sequence / video |
+| **Project type** | None | Every project typed **game** or **film**; gates render path, editor mode, output |
 
 ---
 
@@ -110,6 +134,13 @@ two partially and the rest not at all.
    gets written first.
 5. **Author for the 3am on-call engineer.** Loud failures, useful logs, no
    silent default-returns in the runtime path.
+6. **A project is a game or a film.** Declared up front; the type gates the render
+   path (real-time vs. offline path-traced), the editor's mode, and the output.
+   Shared core, divergent tail. (§6)
+7. **The creation suite is a co-equal deliverable, sequenced after the runtime
+   foundation.** Full DCC parity (Blender/Maya-class modeling, timeline, film
+   render) is a *direction*, not a near-term milestone; it lands as its own track
+   (Phase 18+) once the engine and editor exist, each phase independently useful.
 
 ---
 
@@ -209,7 +240,9 @@ light plus ambient, with correct normals.
 - `Material`: a shader (pipeline) + named parameter set (scalars, vectors,
   textures) + render state. Objects reference a material, not a raw pipeline.
 - A standard surface shader (OmegaSL) and a parameter-binding path
-  (per-material/per-object uniform buffers).
+  (per-material/per-object uniform buffers). OmegaSL is kREATE's default and
+  standard shading language; supporting **Slang** as an alternative authoring
+  path is Phase 17 (additive, optional) and does not change this phase.
 - `Light` types: directional, point, spot — with color/intensity/range.
 - A lighting model in the standard shader (start with a single light, then
   multiple); decide forward vs. deferred (see decision).
@@ -353,6 +386,10 @@ clips blended.
 - Components: Animator, SkinnedMeshRenderer.
 
 **Depends on:** Phases 4 (materials/shaders), 6 (components), 3 (import).
+
+**Note:** this phase provides the animation *runtime*. The full non-linear
+**timeline / sequencer** authoring surface (curve editor, dope sheet, shots,
+cinematics) that keys and drives it is **Phase 19** in the creation-suite track.
 
 ---
 
@@ -505,6 +542,224 @@ each platform.
 
 ---
 
+### Phase 17 — Alternate shader authoring: Slang *(optional, additive)*
+
+**Goal:** Let people author kREATE materials in **Slang** as an alternative to
+OmegaSL, so teams with an existing Slang codebase — or who want its language
+features (generics, modules, autodiff) — can use the engine without rewriting
+their shaders.
+
+**Deliverable:** A Phase 4 material whose surface shader is authored in a
+`.slang` file, compiled and rendered on every backend the target device
+supports, sitting side by side with OmegaSL materials in the same scene.
+
+**Why:** Slang is a mature, Khronos-hosted neutral shading language with genuine
+native back-ends — it emits SPIR-V, HLSL, MSL, and WGSL directly rather than
+transpiling through one platform's model. Those are exactly the per-backend
+artifacts OmegaGTE already consumes, so Slang slots in as a *second front-end*
+producing the same kind of output `omegaslc` does. OmegaSL stays kREATE's
+default and standard shading language; Slang is an opt-in path for users who
+already have Slang shaders or prefer its language surface. This is meeting users
+where they are, not replacing the in-house language.
+
+**Work:**
+- A **Slang → GTE artifact path**: drive `slangc` to emit the per-backend module
+  (SPIR-V for Vulkan/WebGPU, DXIL/HLSL for D3D12, MSL for Metal) that GTE's
+  shader-library loader can ingest, wired through AUTOMDEPS like every other dep.
+- A `Material` (Phase 4) can reference a `.slang` source (or precompiled Slang
+  artifact) in place of an OmegaSL shader — the material abstraction is the seam.
+- **Reflection / binding metadata reconciliation.** OmegaGTE's `.omegasllib`
+  carries the reflection, feature bits, and tessellation descriptors that
+  `omegaslc` produces. Slang has its own reflection API; the integration must map
+  it onto what GTE's pipeline creation and kREATE's per-material parameter
+  binding expect. This is the real work — the compile step is the easy part.
+- **Feature-gating still flows through `GTEDeviceFeatures`.** A Slang shader that
+  uses a capability the device lacks is skipped and reported exactly as an
+  OmegaSL one is; kREATE does not gain a second, parallel capability model.
+- Docs: a Slang↔OmegaSL parity note so users know which stages/built-ins have a
+  Slang equivalent.
+
+**Depends on:** Phase 4 (the material + shader-binding system Slang plugs into),
+and an **OmegaGTE-side seam** to load shader artifacts not produced by
+`omegaslc` (tracked in `gte/.plans/` — today `loadShaderLibrary` assumes the
+`.omegasllib` container). Placed late only because it is additive; it can be
+pulled forward once Phase 4 lands, since no later phase blocks it.
+
+**Key decision:** **How Slang output enters GTE** — wrap `slangc` output into the
+existing `.omegasllib` container (reuses all downstream loading + feature
+masking, but needs a container writer that isn't `omegaslc`) vs. a parallel
+raw-per-backend-module load path on `OmegaGraphicsEngine` (less reuse, but does
+not couple Slang to OmegaSL's container format). This is a GTE-boundary choice —
+coordinate with `gte/.plans/`, do not solve it silently inside kREATE.
+
+---
+
+## Creation Suite (DCC) & Film — a track, not a single phase
+
+Phases 18–21 turn kREATE from an engine-with-an-editor into a full 3D **creation
+suite** — the Blender/Maya side of the identity. This is the single largest
+expansion in the roadmap: modeling, texturing, a timeline/sequencer, and an offline
+film renderer are each a multi-year effort on their own, so "parity with Blender or
+Maya" is a **direction**, not a deliverable. The track is scoped so every phase is
+independently useful, is sequenced after the editor (Phase 13) exists, and leans on
+GTE wherever it can (GPU meshes, triangulation, raytracing) — the editable model,
+the texture tools, the timeline, and the render queue built on top are kREATE's own.
+
+### Phase 18 — ModelBender: editable meshes (DCC core)
+
+**ModelBender** is kREATE's modeling editor — the geometry-authoring counterpart to
+MaterialBender's texturing (Phase 21). Like MaterialBender, it can run **docked in
+the main editor shell or detached as its own window**; "ModelBender" names this
+modeling surface throughout the rest of the roadmap.
+
+**Goal:** Author and edit geometry inside the editor, not just import it.
+
+**Deliverable:** Create a cube in the editor, enter edit mode, extrude/bevel/loop-cut
+faces, apply a subdivision surface, and see it render — round-tripping through
+save/load.
+
+**Work:**
+- An **editable mesh representation** kREATE owns (half-edge / BMesh-class:
+  vertices, edges, faces, loops) — distinct from GTE's `GEMesh` (GPU buffers),
+  which the editable mesh **bakes down to** for rendering.
+- **Edit-mode tools:** extrude, inset, bevel, loop cut, knife, merge/dissolve,
+  subdivision surfaces, boolean; vertex/edge/face selection + transforms.
+- **UV editing:** unwrap, seams, a UV view.
+- **Modeling gizmos** and viewport interaction on the Phase 13 editor shell.
+- A non-destructive **modifier stack** (subsurf, mirror, array, boolean) evaluated
+  down to the baked `GEMesh`.
+- Serialize editable meshes in the scene/asset format (Phase 6/14).
+
+**Depends on:** Phase 13 (editor shell, gizmos, picking), Phases 1/3 (mesh render +
+import), Phase 6 (serialization). **Key decision:** the editable-mesh data
+structure (§6).
+
+**Scope note:** the largest single phase in the roadmap; it will itself split into
+sub-phases (basic edit-mode → modifiers → …). **Sculpting, retopology, and
+procedural/geometry-nodes are explicitly future sub-tracks**, not part of the first
+cut — calling that out so "full modeling" is not read as "all of it at once."
+
+### Phase 19 — Timeline, sequencer & non-linear animation
+
+**Goal:** A real animation/authoring timeline — the surface Phase 9's runtime
+animation is keyed and sequenced from.
+
+**Deliverable:** Keyframe an object's transform and a material parameter on a curve,
+scrub the timeline, animate a camera, and arrange two shots into a sequence.
+
+**Work:**
+- **Keyframe any animatable property** (transforms, material params, camera,
+  light) with a **curve editor** (bezier/ease) and a **dope sheet**.
+- A **sequencer / NLE**: tracks, clips, shots, camera cuts — cinematics for games
+  and shot layout for film.
+- Playback/scrub tied to the Phase 5 clock; drives Phase 9's animation system.
+- Serialize timelines/sequences in the scene format.
+
+**Depends on:** Phase 9 (animation runtime), Phase 13 (editor), Phase 5 (time).
+
+### Phase 20 — Film mode: offline rendering & output
+
+**Goal:** Deliver the **film** project type's payoff — high-quality rendered frames,
+not a real-time build.
+
+**Deliverable:** Render a Phase 19 sequence to a denoised image sequence / video via
+path tracing, from a film-typed project.
+
+**Work:**
+- **Project-type wiring (game | film):** the declared type gates the render path
+  (real-time render graph vs. offline), the editor mode, and the output target.
+  This is the concrete implementation of the §6 project-type decision.
+- **Offline / path-traced renderer** built on **GTE raytracing** (the acceleration
+  structures + ray-dispatch API GTE already exposes) — progressive sampling,
+  configurable samples/bounces, **denoise**.
+- **Render settings + render queue:** resolution, frame range, AOVs/passes, output
+  format (image sequence, video), batch/background rendering.
+- Film-oriented camera/lens controls (depth of field, motion blur from the timeline).
+
+**Depends on:** Phase 7 (render graph), Phase 19 (timeline/sequencer), Phases 3/14
+(assets), and GTE raytracing. **Key decision:** project-type model (§6).
+
+### Phase 21 — MaterialBender: author textures in-app (paint & procedural)
+
+**MaterialBender** is kREATE's texturing suite — the texture-side counterpart to
+ModelBender's modeling (Phase 18). Like ModelBender, it can run **docked in the main
+editor shell or detached as its own window**. It is the surface this whole phase
+delivers; "MaterialBender" names it throughout the rest of the roadmap.
+
+**Goal:** Create and edit textures inside the editor two ways — by **painting**
+colour/roughness/normal detail onto a mesh's UVs in the viewport
+(Substance-Painter-class), and by **procedurally generating** materials from a node
+graph (Substance-Designer-class). The intent is that a user never *has* to author
+textures in another tool: kREATE authors its own maps end to end. Importing an
+outside texture (Phase 3) stays supported, but over this track becomes **optional
+rather than required** — the default path is authoring in-app. This is the
+texture-side analogue of Phase 18's modeling: kREATE authors the map, it does not
+just consume one that arrived with the import.
+
+**Deliverable:** Select a UV-unwrapped model in the editor, paint base-colour and
+roughness onto it across several brush strokes *and* build a small procedural graph
+(a noise → warp → levels chain feeding roughness) that drives another channel, with
+both visible on the shaded surface in real time — then save and reload with the
+painted maps, the graph, and its parameters intact and bound through the model's
+Phase 4 material.
+
+**Work — painting (Substance-Painter-class):**
+- A **texture-paint mode** on the Phase 13 editor shell: a brush (size, hardness,
+  strength, colour) that projects paint onto the mesh through its Phase 18 UVs,
+  painting into an off-screen map via GTE render-to-texture.
+- **Per-channel painting** across the PBR channels a Phase 4 material exposes (base
+  colour, roughness, metallic, normal, height/AO), each backed by a `GETexture` the
+  material binds.
+- A **2D texture view** beside the 3D viewport: paint in UV space as well as on the
+  model, seam-aware so strokes don't bleed across UV islands.
+- **Image-texture create/edit primitives** kREATE owns — new blank map at a chosen
+  resolution, fill, adjust — the "creation/editing" half, distinct from painting.
+
+**Work — procedural (Substance-Designer-class):**
+- A **procedural material graph**: nodes for generators (noise, patterns, shapes),
+  filters (blur, warp, levels, blend, normal-from-height), and outputs wired to PBR
+  channels — evaluated on the GPU (GTE compute / render-to-texture) into the maps a
+  Phase 4 material samples.
+- **Parametric, resolution-independent** graphs: expose named parameters and
+  re-evaluate at any output resolution, so one graph drives many instances and both
+  runtime and film-grade output.
+- Graphs and paint **compose into one texturing stack**: a procedural graph can feed
+  a paint layer's fill or mask, and a painted map can feed a graph input — the two
+  authoring modes are strands of the same non-destructive stack, the texture-side
+  counterpart of Phase 18's modifier stack.
+
+**Work — shared:**
+- Serialize painted maps, the layer stack, and procedural graphs (nodes +
+  parameters) in the scene/asset format (Phase 6/14), with a bake step that
+  flattens the stack to flat maps for runtime and film use.
+
+**Depends on:** Phase 18 (UV editing — you paint into UVs), Phase 4 (materials —
+authored maps bind as material parameters), Phase 13 (editor shell), Phase 6/14
+(serialization), and GTE's `GETexture`, compute, + render-to-texture. It depends on
+Phase 18, **not** on the timeline (Phase 19) or film (Phase 20), so it can be pulled
+forward to run in parallel with Phase 19 once modeling's UV work lands.
+
+**Key decision:** the **texture-authoring model** — how the two modes unify. A
+non-destructive layer/mask stack (Substance-Painter-class) and a procedural node
+graph (Substance-Designer-class) are two authoring surfaces over one baked result;
+decide whether they are one composed stack or two systems with a hand-off, and where
+the GPU evaluation of graphs lives (a general node-graph evaluator kREATE could also
+reuse for geometry-nodes later). Plus the map resolution / tiling scheme (a single
+map, or UDIM-style tiles for film-grade detail), which the editable-mesh UV work
+(Phase 18) has to accommodate. Surfaced in §6.
+
+**Scope note:** this track is large enough to sub-phase — the natural first cut is
+**painting** onto existing UVs (small brush set + basic image create/edit), with the
+**procedural node graph** as the second major strand (itself sub-phased: a small
+generator/filter node set first, broader Designer-parity later). **Smart materials,
+mesh-map baking** (curvature, AO, thickness maps that drive masks), and a full
+Designer node library remain future sub-tracks within this phase — the same way
+sculpting and geometry-nodes are called out as future in Phase 18. The "no external
+import required" goal is the *direction* of the whole track, reached as both strands
+mature, not a single-milestone claim.
+
+---
+
 ## 5. Cross-cutting concerns
 
 These don't fit one phase — they thread through several and should be designed
@@ -549,6 +804,31 @@ phases above so they can be decided deliberately:
 7. **In-game UI — reuse OmegaWTK vs. dedicated game UI.** (Phase 12)
 8. **Networking in scope?** (Phase 15) If yes, decide the topology before
    Phase 11, because it constrains gameplay and physics.
+9. **Slang shader ingestion path.** (Phase 17) If Slang authoring is in scope,
+   decide how its compiled output enters OmegaGTE — wrapped into `.omegasllib`
+   vs. a parallel raw-module load path — and who owns the reflection metadata.
+   A GTE-boundary decision; coordinate with `gte/.plans/`. Not on the critical
+   path, so it can wait until after Phase 4.
+10. **Project type — game vs. film.** (framing / Phase 20) A project is declared a
+    game or a film; the type gates the render path (real-time render graph vs.
+    offline path-traced), the editor mode, and the output (runnable build vs.
+    rendered footage). Decide the project model early — it threads through the
+    renderer, editor, and asset/output pipeline — even though the film features
+    land in Phase 20.
+11. **Editable-mesh representation (ModelBender).** (Phase 18) The data structure
+    behind modeling — half-edge / BMesh-class vs. an alternative — and how it bakes
+    down to GTE's `GEMesh` for rendering. Foundational to the whole creation-suite
+    track and expensive to change once tools are built on it.
+12. **Texture-authoring model (MaterialBender).** (Phase 21) How the two in-app authoring modes —
+    paint layers (Substance-Painter-class) and a procedural node graph
+    (Substance-Designer-class) — unify: one composed non-destructive stack vs. two
+    systems with a hand-off, and where the GPU evaluation of graphs lives (a general
+    node-graph evaluator kREATE could reuse for geometry-nodes later). Plus the map
+    resolution / UDIM tiling scheme the UV work (Phase 18) must accommodate. Sits
+    alongside the editable-mesh decision as a creation-suite fork and is expensive to
+    change once painted content, graphs, and material bindings depend on it. The
+    guiding intent: authoring in-app is the default path, external import (Phase 3)
+    stays supported but optional.
 
 ---
 
@@ -581,11 +861,22 @@ Phase 14  Assets II & streaming  ◄── needs 3, 6, 7 (+ job system)
 Phase 15  Networking (optional)  ◄── needs 6, 11
    │
 Phase 16  Tooling & distribution ◄── matures alongside everything
+
+Phase 17  Slang shader support (optional) ◄── needs 4; additive
+
+Creation Suite (DCC) & Film track — the second identity, branches off Phase 13:
+Phase 18  ModelBender: editable meshes ◄── needs 13, 1, 3, 6
+Phase 19  Timeline & sequencer       ◄── needs 9, 13, 5
+Phase 20  Film mode: offline render  ◄── needs 7, 19, 14 (+ GTE raytracing)
+Phase 21  MaterialBender: texturing  ◄── needs 18, 4, 13 (parallel to 19)
 ```
 
 The critical path to "you can build a game in it" runs **Phase 1 → 6**, after
 which several tracks (rendering, physics, animation, gameplay, editor) can
-progress in parallel as resourcing allows.
+progress in parallel as resourcing allows. The **creation-suite / film** identity
+(Phases 18–21) is kREATE's second act: it branches off the editor (Phase 13) and
+is sequenced after the engine foundation, since you cannot author content in an
+editor that does not exist yet.
 
 ---
 

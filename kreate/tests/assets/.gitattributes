@@ -1,0 +1,24 @@
+# Git LFS for the kREATE test assets.
+#
+# These patterns are deliberately scoped to this directory rather than declared
+# repo-wide: a top-level `*.png filter=lfs` would also capture the textures
+# already committed under gte/tests/assets, wtk/tests, and the public/ logos, and
+# convert them on their next touch. Keeping the rules here means the filter can
+# only ever apply to the art in this folder.
+#
+# The `-text` flag disables the LF normalization that the repo-wide `* text=auto`
+# in kreate/.gitattributes would otherwise try to apply to these files.
+
+# Meshes and scene data
+*.fbx  filter=lfs diff=lfs merge=lfs -text
+*.glb  filter=lfs diff=lfs merge=lfs -text
+*.gltf filter=lfs diff=lfs merge=lfs -text
+*.bin  filter=lfs diff=lfs merge=lfs -text
+*.obj  filter=lfs diff=lfs merge=lfs -text
+*.mtl  filter=lfs diff=lfs merge=lfs -text
+
+# Textures
+*.png  filter=lfs diff=lfs merge=lfs -text
+*.jpg  filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+*.tga  filter=lfs diff=lfs merge=lfs -text

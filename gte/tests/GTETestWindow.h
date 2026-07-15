@@ -21,7 +21,6 @@ namespace OmegaGTETests {
         unsigned     width  = 500;
         unsigned     height = 500;
         OmegaGTE::PixelFormat pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
-        bool         allowDepthStencilTesting = false;
 
         /// Optional: capture the first rendered frame to PNG and exit.
         /// Empty (default) = interactive window. Hookup is deferred to Phase 5

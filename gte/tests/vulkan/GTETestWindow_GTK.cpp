@@ -145,8 +145,6 @@ namespace {
         OmegaGTE::NativeRenderTargetDescriptor nrt {};
         nrt.pixelFormat = gDesc ? gDesc->pixelFormat
                                 : OmegaGTE::PixelFormat::BGRA8Unorm;
-        nrt.allowDepthStencilTesting = gDesc ? gDesc->allowDepthStencilTesting
-                                             : false;
 
 #if defined(VULKAN_TARGET_WAYLAND) && defined(VULKAN_TARGET_X11)
         // Co-build: choose the surface path from the live display at runtime,

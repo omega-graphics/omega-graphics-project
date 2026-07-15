@@ -17,9 +17,18 @@ struct KREATE_EXPORT Color {
     float r = 0.f, g = 0.f, b = 0.f, a = 1.f;
 };
 
-/// Column-major 4x4 matrix. `data[col*4 + row]` matches the storage order
-/// expected by GTE's `FMatrix<4,4>`, so the impl in Math.cpp can memcpy
-/// rows out without transposing.
+/// Row-major 4x4 matrix: `data[row*4 + col]` is element (row, col), and
+/// `operator*` is a standard mathematical product — `A * B` means the logical
+/// matrix A·B, so `projection * view * world` reads left to right and, applied
+/// to a column vector, transforms world first, then view, then projection.
+///
+/// GTE's `FMatrix<4,4>` is column-major AND its `operator*` composes in reverse
+/// (see GESpace-Implementation-Plan Finding A). Keeping Kreate's own math
+/// conventional and isolating that quirk to a single transpose at the GTE
+/// boundary (Math.cpp's `toFMatrix` / `copyFromFMatrix`, and the renderer's
+/// push-constant flatten) is what makes the composition order come out right.
+/// A row-major store transposed into a column-major store IS the same logical
+/// matrix, so the boundary transpose changes storage, not meaning.
 struct KREATE_EXPORT Mat4 {
     float data[16];
 

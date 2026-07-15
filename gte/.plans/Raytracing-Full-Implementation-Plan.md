@@ -151,6 +151,40 @@ SharedHandle<GEAccelerationStruct> GED3D12Engine::allocateAccelerationStructure(
 
 ## Phase 1: OmegaSL Inline Ray Tracing (Ray Query)
 
+> **Status: IMPLEMENTED + VERIFIED on all three backends (2026-07-13).**
+> What landed vs. what this section originally scoped:
+> - **Types:** `Ray`, `RayHit`, `AccelerationStructure` are added as builtin
+>   types (`Toks.def`, `AST.h/.def/.cpp`, `Lexer.cpp` `isKeywordType`, Sema
+>   `builtinsTypeMap`). `Ray`/`RayHit` are the first builtin *struct* types —
+>   declared `builtin = false` with a populated `fields` map so `ray.origin` /
+>   `hit.t` take Sema's MEMBER_EXPR struct-field path (the `builtin` flag hard-
+>   forks member access to vector-swizzle otherwise) and so each backend emits a
+>   real `struct` (pre-seeded into `generatedStructs` in `emitDefaultHeaders`,
+>   RT-bit-gated). `RayHit` fields: `committed`, `t`, `primitiveIndex`,
+>   `instanceIndex`, `barycentrics`.
+> - **Intrinsic:** `intersect(as, ray)` and `intersect(as, ray, mask)` — one
+>   `intersect` `FuncType`, overloads distinguished by arg count in the Sema
+>   branch (mirrors `sample`). Compute-stage-only; returns `RayHit`.
+> - **Resource binding:** `AccelerationStructure name : N` declared + listed in
+>   a compute resource map (read-only `In` access, enforced in Sema). Required a
+>   new `OMEGASL_SHADER_ACCELERATION_STRUCTURE_DESC` layout-descriptor enum in
+>   `omegasl.h` (appended at the tail) — implied by §1.4/§1.5 but not in the
+>   original file summary. The runtime side that consumes it to bind a
+>   `GEAccelerationStruct` is Phase 6.
+> - **Feature gate:** follows the codebase convention — the author writes
+>   `#requires(RAYTRACING)` (serialized to `requiredFeatures`), and a
+>   `FeatureScanner::inspectCall` trigger trips `OMEGASL_FEATURE_BIT_RAYTRACING`
+>   so an undeclared use warns (same shape as FLOAT16/INT64).
+> - **Sub-phase 1.5 (originally NOT built; now COMPLETE):** the `RayQuery`
+>   opaque type + `ray_query_*` traversal intrinsics (2026-07-13); the 4-arg
+>   `intersect(as, ray, mask, rayFlags)` overload + `RAY_FLAG_*` constants
+>   (2026-07-13); and procedural/AABB geometry — candidate-type discrimination,
+>   object-space candidate ray accessors, `ray_query_generate_intersection`, and
+>   the committed-type check (2026-07-13). See the sub-phase 1.5 notes below.
+>   Sub-phase 1.5 is fully landed on all three backends.
+> - **Test:** `gte/omegasl/tests/inline_raytracing.omegasl` (+ compile test in
+>   the tests `CMakeLists.txt`).
+
 This is the prerequisite for everything else. Ray tracing is exposed as a
 **capability of `compute` shaders** via the inline ray-query model — no new
 shader stages, no pipeline, no SBT. A compute shader builds a ray, runs a
@@ -250,9 +284,207 @@ only — no new statement grammar), `Sema.cpp`, `omegasl.h` (RT metadata flag).
 **Not touched**: shader-stage keywords in `Toks.def` / `Lexer.cpp`, the
 `omegasl_shader_type` / `ShaderDecl::Type` stage enums.
 
+### Sub-phase 1.5 — low-level `RayQuery` traversal loop — IMPLEMENTED (traversal only)
+
+> **Status: IMPLEMENTED + VERIFIED on all three backends (triangle traversal
+> loop only) (2026-07-13).** Scope decision (2026-07-13): the *traversal loop* for
+> non-opaque / alpha-tested **triangle** geometry, which maps 1:1 across HLSL
+> `RayQuery`, GLSL `rayQueryEXT`, and Metal `intersection_query`. **Ray flags
+> (`RAY_FLAG_*` + 4-arg `intersect`) and procedural/AABB geometry are now DONE
+> (2026-07-13 — see the Ray-flags and Procedural/AABB notes below). Sub-phase 1.5
+> is complete.** The feared Metal `bounding_box` divergence turned out minor:
+> bounding-box candidates surface on the existing
+> `intersection_query<triangle_data, instancing>` (no `bounding_box_data` tag),
+> so the AABB path is the same per-backend one-liner shape as the triangle loop.
+
+### Sub-phase 1.5 — ray flags — IMPLEMENTED + VERIFIED (2026-07-13)
+
+> **Status: IMPLEMENTED + VERIFIED on all three backends (2026-07-13).** Adds a
+> small backend-neutral ray-flag constant surface plus the flag-carrying
+> overloads: `intersect(as, ray, mask, rayFlags)` (4-arg) and
+> `ray_query_init(q, as, ray, mask, rayFlags)` (5-arg).
+>
+> - **Constants** (`ast::rayflags` in AST.h, names in AST.def): `RAY_FLAG_NONE`
+>   (0), `RAY_FLAG_OPAQUE` (1), `RAY_FLAG_TERMINATE_ON_FIRST_HIT` (4, shadow
+>   rays), `RAY_FLAG_CULL_BACK_FACING` (16), `RAY_FLAG_CULL_FRONT_FACING` (32).
+>   Bit values match the DXR / SPIR-V ray-flag layout. They are **scoped to the
+>   `rayFlags` argument position** — NOT general-purpose uint constants — and the
+>   argument must be a **compile-time constant OR-chain** of them. That scoping
+>   is deliberate: Metal's `intersector` takes no flag bitmask, so a runtime flag
+>   value is un-lowerable, and Sema rejects one uniformly for all backends
+>   (`invalid_ray_flags_runtime` test) rather than letting HLSL/GLSL silently
+>   accept what Metal cannot.
+> - **Fold helper** `ast::tryFoldRayFlags(Expr*, uint32_t&)` (AST.cpp) walks a
+>   single `RAY_FLAG_*` id or a `|`-OR chain to a bitmask; used by Sema to
+>   validate and by every backend to emit. The flags arg is NOT run through
+>   `performSemForExpr` (the spellings aren't declared identifiers).
+> - **HLSL / GLSL** forward the flags by native name (`hlslRayFlagsSpelling` /
+>   `glslRayFlagsSpelling` reconstruct the OR-chain from the folded mask). HLSL:
+>   `TraceRayInline`'s RayFlags param (`RayQuery<RAY_FLAG_NONE>` template stays
+>   empty; per-trace flags OR in). GLSL: `rayQueryInitializeEXT`'s flags param.
+>   The one-shot `intersect` keeps its opaque-triangle base (`gl_RayFlagsOpaqueEXT`
+>   / implicit on HLSL); the low-level `ray_query_init` bases on
+>   `NONE`/`gl_RayFlagsNoneEXT` (it surfaces non-opaque candidates).
+> - **Metal** DECOMPOSES the folded bits into setter calls
+>   (`mslQueueRayFlagSetters`): `OPAQUE`→`force_opacity(forced_opacity::opaque)`,
+>   `TERMINATE_ON_FIRST_HIT`→`accept_any_intersection(true)`,
+>   `CULL_BACK_FACING`→`set_triangle_cull_mode(triangle_cull_mode::back)`,
+>   `CULL_FRONT_FACING`→`…::front`. Applied on the `intersector` for the one-shot;
+>   built into an `intersection_params` passed to `intersection_query::reset(r,
+>   as, mask, params)` for the low-level query. **Both cull flags together** map
+>   to `set_geometry_cull_mode(geometry_cull_mode::triangle)` (cull all triangle
+>   geometry — the correct equivalent of DXR cull-back | cull-front, which Metal's
+>   single-valued `triangle_cull_mode` cannot express).
+>
+> **Files**: `AST.def`, `AST.h`, `AST.cpp`, `Sema.cpp`, `HLSLTarget.cpp`,
+> `GLSLTarget.cpp`, `MSLTarget.cpp`; tests `ray_flags.omegasl` +
+> `invalid_ray_flags_runtime.omegasl` (registered in tests `CMakeLists.txt`).
+>
+> **Cross-backend compile verification (2026-07-13, on the macOS host):** all
+> three entries (`cast_shadow` TERMINATE, `cast_culled` OPAQUE|CULL_BACK,
+> `trace_culled` 5-arg CULL_FRONT) compiled to real object code — HLSL→DXIL
+> `.cso` via dxc `cs_6_5`, GLSL→SPIR-V `.spv` via glslc `--target-env=vulkan1.2`,
+> MSL→AIR `.air` via `metal -std=metal3.1`. Full omegaslc metal end-to-end
+> (`.omegasllib`) also passes. Full omegasl suite: 155/155.
+
+### Sub-phase 1.5 — procedural / AABB geometry — IMPLEMENTED + VERIFIED (2026-07-13)
+
+> **Status: IMPLEMENTED + VERIFIED on all three backends (2026-07-13).** Extends
+> the `ray_query_*` family with the loop shape for **procedural / AABB
+> geometry**: a BLAS of axis-aligned bounding boxes surfaces a *bounding-box
+> candidate* per AABB the ray enters, and the shader runs its own intersection
+> test (ray-sphere, ray-SDF, …) in the primitive's object space, committing a hit
+> distance. Same one-line-per-backend `tryEmitBuiltinCall` shape as the triangle
+> traversal loop — no new virtuals, no query-template change.
+>
+> Six new intrinsics (compute-only, arg0 a `RayQuery`):
+>
+> | OmegaSL | HLSL | GLSL | Metal |
+> |---|---|---|---|
+> | `ray_query_candidate_is_triangle(q)`→bool | `q.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE` | `…GetIntersectionTypeEXT(q,false)==…CandidateIntersectionTriangleEXT` | `q.get_candidate_intersection_type()==intersection_type::triangle` |
+> | `ray_query_candidate_is_aabb(q)`→bool | `q.CandidateType()==CANDIDATE_PROCEDURAL_PRIMITIVE` | `…==…CandidateIntersectionAABBEXT` | `…==intersection_type::bounding_box` |
+> | `ray_query_candidate_object_ray_origin(q)`→float3 | `q.CandidateObjectRayOrigin()` | `rayQueryGetIntersectionObjectRayOriginEXT(q,false)` | `q.get_candidate_ray_origin()` |
+> | `ray_query_candidate_object_ray_direction(q)`→float3 | `q.CandidateObjectRayDirection()` | `…ObjectRayDirectionEXT(q,false)` | `q.get_candidate_ray_direction()` |
+> | `ray_query_generate_intersection(q,t)`→void | `q.CommitProceduralPrimitiveHit(t)` | `rayQueryGenerateIntersectionEXT(q,t)` | `q.commit_bounding_box_intersection(t)` |
+> | `ray_query_committed_is_aabb(q)`→bool | `q.CommittedStatus()==COMMITTED_PROCEDURAL_PRIMITIVE_HIT` | `…GetIntersectionTypeEXT(q,true)==…CommittedIntersectionGeneratedEXT` | `q.get_committed_intersection_type()==intersection_type::bounding_box` |
+>
+> Also **broadened `ray_query_committed(q)`** from triangle-only to *any* hit
+> (triangle OR procedural): HLSL `!= COMMITTED_NOTHING`, GLSL
+> `!= …CommittedIntersectionNoneEXT` (Metal was already `!= none`). Matches the
+> documented "did any hit commit?" semantics and is required for AABB hits to
+> register; triangle-only scenes are unaffected (a committed hit is still true).
+>
+> **Metal note:** no query-template change — there is **no `bounding_box_data`
+> tag** in Metal's intersection-tag set, so bounding-box candidates and
+> `commit_bounding_box_intersection` / `get_candidate_ray_*` are available on the
+> existing `intersection_query<triangle_data, instancing>`.
+>
+> **Gotcha:** a new builtin must be registered in FIVE places — `AST.def` (name),
+> `AST.h` (`DECLARE_BUILTIN_FUNC`), `AST.cpp` (the `FuncType *` field, the
+> `new FuncType{…}` init, and `isReservedBuiltinName`), the Sema family branch,
+> and **the `Sem` ctor's `builtinFunctionMap` list** — the last is what
+> `resolveFuncTypeWithName` scans; omitting it makes the name resolve as an
+> unknown function (surfaced here as `committed_is_aabb` failing while the others
+> passed). `generate_intersection` is the only 2-arg member (q, float t); Sema
+> handles its arity alongside `ray_query_init` and validates a numeric-scalar
+> distance.
+>
+> **Files**: `AST.def`, `AST.h`, `AST.cpp`, `Sema.cpp`, `HLSLTarget.cpp`,
+> `GLSLTarget.cpp`, `MSLTarget.cpp`; test `ray_query_aabb.omegasl` (registered in
+> tests `CMakeLists.txt`).
+>
+> **Cross-backend compile verification (2026-07-13, macOS host):** the
+> `trace_procedural` entry (mixed triangle + AABB loop with an object-space
+> ray-sphere test) compiled to real object code on all three — HLSL→DXIL `.cso`
+> (dxc `cs_6_5`), GLSL→SPIR-V `.spv` (glslc `--target-env=vulkan1.2`), MSL→AIR
+> `.air` (`metal -std=metal3.1`). Full omegasl suite: 156/156.
+
+### Sub-phase 1.5 — traversal reference (RayQuery type + base intrinsic set)
+
+> `RayQuery` is a builtin opaque type (`builtin = true`, no fields), declared as
+> a local (`RayQuery q;`) and mutated in place by the intrinsics. Per backend:
+> HLSL `RayQuery<RAY_FLAG_NONE>`, GLSL `rayQueryEXT`, Metal
+> `intersection_query<triangle_data, instancing>`.
+>
+> Intrinsic set (12) — one Sema family branch (compute-only, arg0 is a
+> `RayQuery`); codegen lives in each backend's `tryEmitBuiltinCall` (NOT new
+> virtuals), since all but `ray_query_init` are one-line method rewrites.
+> `ray_query_init` is statement-shaped on HLSL/Metal (build a `RayDesc`/`ray`
+> first), so it uses `queuePendingStatement`.
+>
+> | OmegaSL | HLSL | GLSL | Metal (`q` = intersection_query) |
+> |---|---|---|---|
+> | `ray_query_init(q,as,ray[,mask])` | `RayDesc`+`q.TraceRayInline(as,RAY_FLAG_NONE,mask,rd)` | `rayQueryInitializeEXT(q,as,gl_RayFlagsNoneEXT,mask,o,tmin,d,tmax)` | `ray`+`q.reset(r,as,mask)` |
+> | `ray_query_proceed(q)`→bool | `q.Proceed()` | `rayQueryProceedEXT(q)` | `q.next()` |
+> | `ray_query_commit(q)`→void | `q.CommitNonOpaqueTriangleHit()` | `rayQueryConfirmIntersectionEXT(q)` | `q.commit_triangle_intersection()` |
+> | `ray_query_committed(q)`→bool | `q.CommittedStatus()==COMMITTED_TRIANGLE_HIT` | `rayQueryGetIntersectionTypeEXT(q,true)==…TriangleEXT` | `q.get_committed_intersection_type()!=…none` |
+> | `ray_query_t(q)`→float | `q.CommittedRayT()` | `…GetIntersectionTEXT(q,true)` | `q.get_committed_distance()` |
+> | `ray_query_primitive(q)`→uint | `q.CommittedPrimitiveIndex()` | `uint(…PrimitiveIndexEXT(q,true))` | `q.get_committed_primitive_id()` |
+> | `ray_query_instance(q)`→uint | `q.CommittedInstanceIndex()` | `uint(…InstanceIdEXT(q,true))` | `q.get_committed_instance_id()` |
+> | `ray_query_barycentrics(q)`→float2 | `q.CommittedTriangleBarycentrics()` | `…BarycentricsEXT(q,true)` | `q.get_committed_triangle_barycentric_coord()` |
+> | `ray_query_candidate_t(q)`→float | `q.CandidateTriangleRayT()` | `…GetIntersectionTEXT(q,false)` | `q.get_candidate_triangle_distance()` |
+> | `ray_query_candidate_primitive(q)`→uint | `q.CandidatePrimitiveIndex()` | `uint(…PrimitiveIndexEXT(q,false))` | `q.get_candidate_primitive_id()` |
+> | `ray_query_candidate_instance(q)`→uint | `q.CandidateInstanceIndex()` | `uint(…InstanceIdEXT(q,false))` | `q.get_candidate_instance_id()` |
+> | `ray_query_candidate_barycentrics(q)`→float2 | `q.CandidateTriangleBarycentrics()` | `…BarycentricsEXT(q,false)` | `q.get_candidate_triangle_barycentric_coord()` |
+>
+> **Files**: `Toks.def`, `AST.h/.def/.cpp`, `Lexer.cpp`, `Sema.cpp`,
+> `FeatureScanner.cpp`, `HLSLTarget.cpp`, `GLSLTarget.cpp`, `MSLTarget.cpp`;
+> test `ray_query_loop.omegasl`.
+
+### Cross-backend compile verification (2026-07-13)
+
+All three backends were transpiled with `omegaslc --<backend> --emit-source-only`
+and compiled to real object code with the platform toolchains (Windows host) —
+for both the `intersect` one-shot and the `ray_query` loop: HLSL→DXIL `.cso`,
+MSL→AIR `.air`, GLSL→SPIR-V `.spv`. The GLSL body-loop fix was proven
+regression-free by diffing 22 non-RT GLSL outputs (byte-identical pre/post-fix).
+
+- **HLSL** — verified via DXC (`cs_6_5`): the `omegasl_compile_inline_raytracing`
+  / `omegasl_compile_ray_query_loop` ctest cases pass on the DirectX build.
+- **MSL** — verified via `metal.exe` (Metal 3.x, `-std=metal3.1`): all four
+  entries (`intersect` one-shot + `ray_query` loop) compile to `.air`.
+- **GLSL** — verified via `glslc` (Vulkan SDK 1.4.350, `--target-env=vulkan1.2`)
+  after fixing **two GLSL-only bugs** the Metal/GLSL verification surfaced:
+  1. **Statement-injection was silently dropped in a GLSL shader body.**
+     `GLSLTarget::emitShaderEntryBody` had a custom body loop that emitted
+     statements inline and never flushed `CodeGen::pendingStatements` — so the
+     `intersect` lowering's injected `rayQueryEXT`/`RayHit` block vanished
+     (`_rh0` undeclared). Fixed by routing non-return body statements through
+     the shared `cg.emitStatementLine` (byte-identical when nothing is queued),
+     matching what the HLSL/MSL bodies already did. Latent until inline RT — no
+     prior GLSL body builtin used injection.
+  2. **`GL_EXT_ray_query` requires GLSL 4.60**, but `emitDefaultHeaders` emitted
+     `#version 450` (→ `rayQueryEXT` undeclared). Fixed to emit `#version 460`
+     only when the shader `#requires(RAYTRACING)` (non-RT output unchanged).
+
 ---
 
 ## Phase 2: OmegaSL Inline Ray Tracing Code Generation
+
+> **Status: IMPLEMENTED + VERIFIED on all three backends (2026-07-13).**
+> `intersect()` lowers through a new `Target::emitIntersect` virtual (dispatched
+> from `CodeGen.cpp`, alongside the texture builtins — NOT `tryEmitBuiltinCall`).
+> Because inline ray query is statement-shaped (declare a query/intersector, run
+> traversal, read the committed hit) and cannot be a sub-expression, each backend
+> queues the block via `cg.queuePendingStatement(...)` and emits the injected
+> `RayHit` temp inline — the same statement-injection pattern as
+> `emitTextureGetDimensions` (shared temp counter `CodeGen::rayQueryTempId`).
+> - **HLSL** (`HLSLTarget.cpp`): `RayQuery<RAY_FLAG_NONE>` + `RayDesc` +
+>   `TraceRayInline` + one `Proceed()`; `RaytracingAccelerationStructure` at a
+>   `t` register; compute profile bumped to `cs_6_5` when RT is required (offline
+>   dxc), runtime `D3DCompile` path fails loud (SM 5.1 max). No preamble needed.
+> - **GLSL** (`GLSLTarget.cpp`): `rayQueryEXT` + `rayQueryInitializeEXT` +
+>   drain-loop; `accelerationStructureEXT` uniform; `#extension GL_EXT_ray_query`
+>   in `emitDefaultHeaders`; glslc pinned to `--target-env=vulkan1.2` for RT
+>   (SPV_KHR_ray_query needs SPIR-V 1.4). primitiveIndex/instanceId cast to uint.
+> - **MSL** (`MSLTarget.cpp`): `intersector<triangle_data, instancing>` +
+>   `intersection_result`; `acceleration_structure<instancing>` bound at a buffer
+>   index; `#include <metal_raytracing>` + `using namespace metal::raytracing` in
+>   `emitDefaultHeaders`. The `ray` type is spelled fully-qualified
+>   (`metal::raytracing::ray`) to avoid being shadowed by a user `Ray` local
+>   named `ray`.
+> - Serialization needed no change — `#requires(RAYTRACING)` already flows
+>   through `fileRequiredFeatures` → `meta.requiredFeatures`.
 
 Every backend emits a **regular compute shader** that uses the backend's inline
 ray-query API. No DXIL libraries, no RT pipeline stages, no SBT — the generated
@@ -643,6 +875,34 @@ void GEMetalCommandBuffer::dispatchRays(unsigned int x, unsigned int y, unsigned
 > the inline-first plan, the dependency order is **Phase 1 → 2 → 6 → 7**, and
 > Phases 3–5 are skipped unless the Advanced Track is taken up.
 
+> **Status: D3D12 IMPLEMENTED (2026-07-13); Vulkan + Metal DEFERRED.** Per the
+> context-budget decision, only the D3D12 backend is built out this pass.
+> - **Public API (`GE.h`):** added `GEAccelerationStructInstance` (3x4 row-major
+>   transform + `instanceID`/`instanceMask`/`instanceContributionToHitGroupIndex`/
+>   `flags` bitfields + a `blas` handle), a backend-neutral
+>   `GEAccelerationStructInstanceFlags` enum (values match
+>   `D3D12_RAYTRACING_INSTANCE_FLAG_*` / Vulkan / Metal), and extended
+>   `GEAccelerationStructDescriptor` with `enum Level { BottomLevel, TopLevel }`,
+>   `Level level = BottomLevel`, an `instances` vector, and an `addInstance(...)`
+>   helper that flips `level` to TopLevel and **defaults the mask to 0xFF** (a
+>   0 mask is invisible to the 0xFF default ray mask — a silent-no-hits trap).
+> - **D3D12 (`GED3D12.{h,cpp}`, `GED3D12CommandQueue.cpp`):**
+>   `allocateAccelerationStructure` now sizes a TLAS by `instances.size()` off
+>   the `level` field (was a fragile `geometryDescs.empty()` check that built a
+>   0-instance TLAS). `buildAccelerationStructure` / `refitAccelerationStructure`
+>   translate the GE instances into a `D3D12_RAYTRACING_INSTANCE_DESC` array
+>   (field-by-field — GE bitfield packing need not match D3D12's), upload it to an
+>   Upload-heap buffer (GENERIC_READ satisfies the build's NON_PIXEL_SHADER_RESOURCE
+>   requirement) stored on the TLAS so it outlives the recorded command, and point
+>   the build at it via `InstanceDescs`. Shared helper `fillTLASInstancesFromGE`.
+> - **Binding already worked:** `bindResourceAtComputeShader(GEAccelerationStruct)`
+>   binds the TLAS as a compute root SRV (`SetComputeRootShaderResourceView`) —
+>   no change needed; the inline `intersect` / `ray_query_*` shaders can trace the
+>   built TLAS on D3D12 now.
+> - **Deferred:** the Vulkan (`VkAccelerationStructureInstanceKHR` +
+>   `TYPE_TOP_LEVEL_KHR`) and Metal (`MTLInstanceAccelerationStructureDescriptor`)
+>   equivalents — §6.2 rows below.
+
 The current API only supports bottom-level acceleration structures (BLAS). For real-world ray tracing, we need TLAS that reference instances of BLAS with per-instance transforms.
 
 ### 6.1 Extend public API
@@ -681,6 +941,199 @@ struct GEAccelerationStructDescriptor {
 **Metal**: Use `MTLInstanceAccelerationStructureDescriptor` with `MTLAccelerationStructureInstanceDescriptor` array.
 
 **Files**: `GE.h`, all three backend engine files, all three backend command queue files
+
+---
+
+## Phase 6-M: Metal acceleration structures (BLAS + TLAS) — IN PROGRESS (2026-07-14)
+
+> **Finding that reshapes this phase:** Metal raytracing was not merely "missing
+> TLAS" — it was **effectively unimplemented**. `GEMetalEngine::allocateAccelerationStructure`
+> built an *empty* `MTLPrimitiveAccelerationStructureDescriptor` (ignoring `desc`
+> entirely), sized it, and allocated an accel struct from that; and
+> `GEMetalCommandBuffer::buildAccelerationStructure` built a second empty
+> descriptor. No geometry ever reached the GPU. `copyAccelerationStructure` was a
+> commented-out stub. So the BLAS geometry path has to be built before TLAS can
+> mean anything.
+
+### 6-M1 — TriangleList vertex stride / count (public API, all backends)
+
+`GEAccelerationStructDescriptor::Geometry::TriangleList` carries **only a buffer**,
+and the D3D12 builder hardcodes `StrideInBytes = 12` with
+`VertexCount = size / 12` — i.e. it assumes a tightly-packed `float3` position
+buffer with no index buffer. That silently breaks the moment a mesh's vertex
+buffer carries any other attribute (a Position+Normal mesh has a 24- or 32-byte
+stride, so the BLAS would read every vertex at the wrong offset and the geometry
+would come out shredded). This is a hard blocker for Phase 7-B, which needs the
+SAME mesh buffer to be both rasterized (with normals) and traced.
+
+Add optional fields, defaulting to the existing inferred behavior so D3D12 and
+every current caller are byte-for-byte unchanged:
+
+```cpp
+struct TriangleList {
+    SharedHandle<GEBuffer> buffer;
+    size_t vertexStride = 0;   // 0 ⇒ infer sizeof(float)*3 (tightly packed)
+    size_t vertexCount  = 0;   // 0 ⇒ infer buffer.size() / vertexStride
+};
+```
+
+Position is required to be the FIRST attribute at offset 0 of the vertex struct —
+which is exactly what `geMeshFieldsFor` already guarantees (Position always leads
+the attribute order). So a strided GEMesh buffer traces correctly with no
+repacking and no second position-only buffer.
+
+### 6-M2 — Metal BLAS geometry
+
+One shared helper builds a real `MTLPrimitiveAccelerationStructureDescriptor`
+from `desc.data`, used by allocate / build / refit alike (today each hand-rolls
+its own empty one, which is why they could drift):
+- `TRIANGLES` → `MTLAccelerationStructureTriangleGeometryDescriptor`
+  (`vertexBuffer`, `vertexStride`, `vertexFormat = MTLAttributeFormatFloat3`,
+  `triangleCount = vertexCount / 3`).
+- `AABB` → `MTLAccelerationStructureBoundingBoxGeometryDescriptor`
+  (`boundingBoxBuffer`, `boundingBoxCount`, stride
+  `sizeof(MTLAxisAlignedBoundingBox)`) — pairs with the existing
+  `createBoundingBoxesBuffer`, and is what the sub-phase 1.5 procedural/AABB
+  shader path needs at runtime.
+
+Scratch buffer is sized from `accelerationStructureSizesWithDescriptor` as today.
+
+### 6-M3 — Metal TLAS
+
+`MTLInstanceAccelerationStructureDescriptor`:
+- `instancedAccelerationStructures` — an `NSArray` of the referenced BLAS
+  (`id<MTLAccelerationStructure>`); each GE instance's `blas` handle is
+  de-duplicated into this array and its position becomes the instance's
+  `accelerationStructureIndex`.
+- `instanceDescriptorBuffer` — a GPU buffer of
+  `MTLAccelerationStructureInstanceDescriptor`, one per GE instance: 4x3
+  column-major `transformationMatrix` (transposed from GE's 3x4 row-major),
+  `mask`, `intersectionFunctionTableOffset` (= hitGroupIndex), `options` (from
+  the GE instance flags), `accelerationStructureIndex`.
+- Both the instance buffer AND the retained BLAS array must be stored on
+  `GEMetalAccelerationStruct` so they outlive the recorded command — the same
+  lifetime rule the D3D12 TLAS already follows for its Upload-heap instance
+  buffer.
+
+**Metal instance-flag mapping.** GE's flags are DXR-valued; Metal's
+`MTLAccelerationStructureInstanceOptions` are a different bitset, so they are
+translated (not cast): `TRIANGLE_CULL_DISABLE` → `Disable­Triangle­Culling`,
+`TRIANGLE_FRONT_CCW` → `TriangleFrontFacingWindingCounterClockwise`,
+`FORCE_OPAQUE` → `Opaque`, `FORCE_NON_OPAQUE` → `NonOpaque`. (D3D12 casts
+directly; Metal cannot.)
+
+**Files**: `GE.h`, `GEMetal.h`, `GEMetal.mm`, `GEMetalCommandQueue.mm`,
+`GED3D12CommandQueue.cpp` (honor the new stride/count).
+
+---
+
+## Phase 7-V: Visual raytracing in MeshAndRaytracingTest — DONE + VISUALLY VERIFIED (2026-07-14)
+
+> **Status: VERIFIED on Metal by human screenshot (2026-07-14).** The frame shows
+> ray-traced SOFT shadows: a lit floor disc, five TE primitives + the FBX racket,
+> each casting a penumbra that widens with distance from the caster — including the
+> shadow cast THROUGH the torus's hole.
+>
+> That one image validates the whole chain at once, which is exactly why it was
+> worth insisting on a visual: Metal BLAS geometry (reaching the GPU for the first
+> time), TLAS instancing + the 3x4 row-major → 4x3 column-major transpose, BLAS
+> residency (`useResource`), §6-M1's `vertexStride`/`vertexCount` (the FBX vertex is
+> 16B, not 12), TE normals surviving through GESpace, MRT + depth attachments, float
+> G-buffer formats, and `RAY_FLAG_TERMINATE_ON_FIRST_HIT` decomposing into Metal's
+> `accept_any_intersection`. Any one of those being wrong would have been obvious.
+>
+> **Camera gotcha worth remembering.** The first run drew the floor as a 1-PIXEL
+> LINE and no visible shadows. The shadows were being traced correctly the whole
+> time — the floor is a horizontal disc in the XZ plane, and GESpace's DEFAULT map
+> is viewport-linear (orthographic, looking straight down -Z), which sees a
+> horizontal plane edge-on by construction. Nothing was broken; there was simply
+> nowhere for a shadow to land. Fixed by giving the space a real camera
+> (`lookAt` + `perspectiveProjection` → `setViewMatrix`/`setProjectionMatrix`), which
+> is what GESpace Phase 5 exists for, and re-authoring the scene in WORLD units
+> instead of pixels. A "3D scene" placed in the viewport-linear space is really a 2D
+> scene that happens to have Z.
+>
+> **Soft shadows.** The light has a radius and the kernel fires 32 jittered shadow
+> rays per pixel across the light disc (~15M rays/frame at 800x600). A single ray
+> gives a stencil-hard edge — the giveaway that the light has no size. Residual
+> grain in the penumbrae is sampling noise from the hash-based jitter, not a bug;
+> stratifying the samples (or raising the count) is the fix if it ever matters.
+>
+> Runtime evidence from the live Metal run:
+> - 4/4 pipelines created — the MRT+depth G-buffer (prim), the mesh pipeline
+>   (amp→mesh→frag), the ray-query compute kernel, and the composite.
+> - **6 BLAS built with REAL geometry** (5 TE primitives + the 1,168,176-vertex
+>   FBX), each with a non-trivial scratch size. Before §6-M2 the Metal BLAS was
+>   sized from an EMPTY descriptor, so this number was ~0 and no geometry ever
+>   reached the GPU.
+> - **TLAS created with 6 instances.** Frame submitted. No CRITICAL, no errors.
+> - The FBX vertex buffer reports a **16-byte** stride (Position-only, padded by
+>   Metal), not the 12 a tightly-packed float3 would give — which is precisely why
+>   §6-M1's `vertexStride`/`vertexCount` had to exist. The old BLAS would have
+>   stepped 12B at a time through a 16B vertex and traced shredded geometry.
+>
+> **Shader library:** one `.omegasllib` holding all 8 stages, and it transpiles on
+> ALL THREE backends (`omegaslc --hlsl/--glsl/--metal`, 8 files each, exit 0) and
+> compiles to AIR on Metal. The shadow kernel's generated MSL confirms the
+> sub-phase 1.5 ray-flag path end to end:
+> `_isect0.accept_any_intersection(true)` — that is `RAY_FLAG_TERMINATE_ON_FIRST_HIT`
+> decomposed into Metal's intersector, exactly as designed.
+
+## Phase 7-V (original plan)
+
+Goal: make raytracing *visible*, so a wrong TLAS fails loudly instead of silently
+returning zeros. Decision (2026-07-14): **ray-traced shadows over the rasterized
+scene** — the scene is rasterized as today, then an inline ray-query compute pass
+casts a shadow ray per pixel toward a light and darkens occluded pixels. A broken
+TLAS shows up immediately as missing or wrong shadows; a readback-only test would
+not.
+
+### 7-V.a — GESpace / TE primitive normals (opt-in)
+
+TE already computes vertex normals (`AttachmentData::normal`), and
+`buildMeshFromTriangulation`'s `writeOneVertex` already honors `GEMeshAttrNormal`.
+The only gap is that GESpace's primitive path hands out **blank AttachmentData**,
+so the normals TE generated are dropped on the floor.
+
+Fix: carry TE's generated `AttachmentData` (normals) through the primitive
+triangulation into the `TETriangulationResult` GESpace stores, so
+`meshOf(id, engine, desc)` with `GEMeshAttrNormal` returns real normals.
+
+**The Position-only DEFAULT is unchanged and stays the rule** — `GEMeshDescriptor::
+attributes` still defaults to `GEMeshAttrPosition`, and GESpace still never
+re-bakes geometry. This is strictly an *opt-in*: a caller that asks for normals
+gets the ones TE already made, instead of a "descriptor requests non-position
+attributes but vertex has no AttachmentData; writing zeros" warning. Lighting and
+materials remain the shader's job — GTE is only no longer discarding data it
+already had.
+
+### 7-V.b — Shaders, linked into ONE library
+
+All stages merged into a single `.omegasllib` (via `add_omegasl_lib` /
+`omegaslc --link`, the AQUA `AQKernels.omegasllib` pattern):
+- **G-buffer raster** — vertex + fragment for the TE primitives, writing world
+  position + normal + albedo. The existing amplification/mesh/fragment trio for
+  the FBX is extended to write the same G-buffer.
+- **RT shadow compute** — `#requires(RAYTRACING)`; reads the G-buffer, builds a
+  shadow ray from the world position toward the light, and calls
+  `intersect(scene, ray, 0xFF, RAY_FLAG_TERMINATE_ON_FIRST_HIT)` — the sub-phase
+  1.5 ray-flag path, which is exactly what a shadow ray is for. Writes the lit /
+  shadowed result to an output texture.
+- **Composite** — fullscreen pass presenting the shaded result.
+
+### 7-V.c — Test app
+
+Scene: several TE 3D primitives (Sphere / Cylinder / Cone / Torus / RectPrism —
+all already exist in TE) placed via GESpace, plus the existing FBX mesh, lit by a
+single light. Offscreen G-buffer (`GETextureRenderTarget`, depth via
+`RenderTargetAndDepthStencil` — the test's long-standing "no depth attachment"
+TODO has to be closed here, since a G-buffer without depth records whichever
+triangle drew last, not the nearest). Per object: a BLAS from its mesh buffer
+(using 6-M1's stride/count); one TLAS instanced from GESpace's transforms; bound
+to the shadow kernel via `bindResourceAtComputeShader`.
+
+**Files**: `gte/tests/MeshAndRaytracingTest/main.cpp`,
+`gte/tests/assets/MeshAndRaytracingTest/*.omegasl`, `GESpace.{h,cpp}`, `TE.cpp`.
 
 ---
 

@@ -75,7 +75,6 @@ namespace OmegaWTK::Composition {
         presentQueueDesc.label = "WTK::MTLVisualBinder presentQueue";
         auto presentQueue = gte.graphicsEngine->makeCommandQueue(presentQueueDesc);
         OmegaGTE::NativeRenderTargetDescriptor desc{};
-        desc.allowDepthStencilTesting = false;
         desc.pixelFormat = OmegaGTE::PixelFormat::BGRA8Unorm;
         desc.metalLayer = layer;
         auto nativeTarget = gte.graphicsEngine->makeNativeRenderTarget(desc, presentQueue);

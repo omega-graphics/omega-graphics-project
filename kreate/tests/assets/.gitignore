@@ -1,0 +1,35 @@
+# The downloaded asset payloads are NOT committed. autom-deps fetches them from
+# their upstream archives on demand (see the asset entries in kreate/AUTOMDEPS),
+# which keeps ~650MB of art out of git history and out of every clone.
+#
+# What IS committed, and must stay committed:
+#
+#   * each asset's LICENSE.txt / license.txt — Sketchfab does not put the license
+#     inside the downloadable zip, so it exists nowhere but here. If it is lost,
+#     the attribution obligation goes with it and the asset's provenance becomes
+#     unreconstructible. This is the one file autom-deps cannot re-fetch.
+#   * orange_tennis_racket/ in full — it was generated with Meshy AI rather than
+#     downloaded, so there is no upstream URL to pull it from. It has to live in
+#     the tree (through LFS; see .gitattributes).
+#   * this file, .gitattributes, and README.md.
+
+# Ignore the contents of every asset folder...
+/*/**
+
+# ...but keep the provenance that cannot be re-downloaded.
+!/*/LICENSE.txt
+!/*/license.txt
+
+# The racket has no download link, so it stays in-tree in full.
+!/orange_tennis_racket/**
+
+# Wavefront meshes are not compiled object files.
+#
+# Both the root .gitignore and kreate/.gitignore carry a `*.obj` rule aimed at
+# MSVC object files, and it cannot tell a compiler artifact from a mesh. It was
+# silently swallowing the .obj models here — `git add` reported success while the
+# geometry never entered the index, and the loss would only have surfaced as a
+# failing test on a fresh clone. The negation is kept (it is moot while the
+# payloads are ignored) so the trap cannot reappear if an asset is ever committed
+# directly.
+!*.obj

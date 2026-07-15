@@ -505,6 +505,101 @@ typedef int ASTType;
 ///          it is an `object_data T& [[payload]]` reference parameter)
 #define BUILTIN_DISPATCH_MESH "dispatchMesh"
 
+/// Inline ray tracing (Raytracing plan §1.3). `intersect(as, ray)` casts a
+/// single ray against a top-level acceleration structure and returns a
+/// `RayHit` describing the committed opaque-triangle hit (or a miss). Overloads
+/// (validated by arg count in Sema, like the `sample`/`gather` family):
+///   intersect(AccelerationStructure as, Ray ray)               — mask = 0xFF
+///   intersect(AccelerationStructure as, Ray ray, uint mask)    — instance mask
+/// Compute-stage only; lowers to inline ray-query on every backend (HLSL
+/// `RayQuery::TraceRayInline`, GLSL `rayQueryEXT`, MSL `intersector`). The
+/// 4-arg `rayFlags` overload + `RAY_FLAG_*` constants are deferred to
+/// sub-phase 1.5 (they need a named-constant surface and a non-trivial Metal
+/// flag mapping).
+#define BUILTIN_INTERSECT "intersect"
+
+/// Inline ray tracing sub-phase 1.5 — low-level `ray_query_*` traversal loop
+/// (Raytracing plan §1.5). The explicit-loop form for non-opaque / alpha-tested
+/// TRIANGLE geometry, where the shader must inspect each candidate and decide
+/// whether to commit it. All 12 take a `RayQuery` as arg0 and are compute-only.
+///   ray_query_init(q, as, ray [, mask])  — void; start a traversal
+///   ray_query_proceed(q)                 — bool; advance to the next candidate
+///   ray_query_commit(q)                  — void; accept the current candidate
+///   ray_query_committed(q)               — bool; did any hit commit?
+/// Committed-hit accessors (valid after the loop, when committed() is true):
+///   ray_query_t / _primitive / _instance / _barycentrics
+/// Current-candidate accessors (valid inside the loop, for alpha testing):
+///   ray_query_candidate_t / _candidate_primitive / _candidate_instance /
+///   ray_query_candidate_barycentrics
+/// See the per-backend lowering table in Raytracing-Full-Implementation-Plan.md
+/// §1.5. (Ray flags — the `intersect`/`ray_query_init` `rayFlags` overloads —
+/// and the procedural/AABB extension below are the sub-phase 1.5 follow-ons.)
+#define BUILTIN_RAY_QUERY_INIT "ray_query_init"
+#define BUILTIN_RAY_QUERY_PROCEED "ray_query_proceed"
+#define BUILTIN_RAY_QUERY_COMMIT "ray_query_commit"
+#define BUILTIN_RAY_QUERY_COMMITTED "ray_query_committed"
+#define BUILTIN_RAY_QUERY_T "ray_query_t"
+#define BUILTIN_RAY_QUERY_PRIMITIVE "ray_query_primitive"
+#define BUILTIN_RAY_QUERY_INSTANCE "ray_query_instance"
+#define BUILTIN_RAY_QUERY_BARYCENTRICS "ray_query_barycentrics"
+#define BUILTIN_RAY_QUERY_CANDIDATE_T "ray_query_candidate_t"
+#define BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE "ray_query_candidate_primitive"
+#define BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE "ray_query_candidate_instance"
+#define BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS "ray_query_candidate_barycentrics"
+
+/// Inline ray tracing sub-phase 1.5 — procedural / AABB geometry. When a BLAS
+/// holds axis-aligned bounding boxes rather than triangles, the ray-query
+/// traversal surfaces a *bounding-box candidate* for each AABB the ray enters,
+/// and the shader runs its own intersection test (ray-sphere, ray-SDF, …) in
+/// the primitive's object space, committing a hit distance when the primitive
+/// is actually hit. These intrinsics expose that loop; they extend the
+/// `ray_query_*` family and are compute-only, arg0 a `RayQuery`.
+///   ray_query_candidate_is_triangle(q) -> bool  — current candidate is a
+///       (non-opaque) triangle (use the triangle candidate accessors)
+///   ray_query_candidate_is_aabb(q)     -> bool  — current candidate is an AABB
+///       / procedural primitive (run the custom intersection test)
+///   ray_query_candidate_object_ray_origin(q)    -> float3 — candidate ray
+///       origin in the primitive's object space (for the intersection math)
+///   ray_query_candidate_object_ray_direction(q) -> float3 — object-space dir
+///   ray_query_generate_intersection(q, t) -> void — commit a procedural hit at
+///       distance `t` (the AABB analogue of `ray_query_commit`)
+///   ray_query_committed_is_aabb(q)     -> bool  — after the loop, whether the
+///       committed hit was a procedural primitive (vs a triangle)
+/// Per-backend lowering: HLSL `CandidateType()`/`CommitProceduralPrimitiveHit`/
+/// `CandidateObjectRay*`; GLSL `rayQueryGetIntersectionTypeEXT(q,false)` vs the
+/// `AABBEXT` type / `rayQueryGenerateIntersectionEXT` / `…ObjectRay*EXT(q,false)`;
+/// MSL `get_candidate_intersection_type()` vs `intersection_type::bounding_box` /
+/// `commit_bounding_box_intersection` / `get_candidate_ray_origin`/`_direction`.
+/// Metal needs NO query-template change — bounding-box candidates surface on the
+/// existing `intersection_query<triangle_data, instancing>` (there is no
+/// `bounding_box_data` tag). See Raytracing-Full-Implementation-Plan.md §1.5.
+#define BUILTIN_RAY_QUERY_CANDIDATE_IS_TRIANGLE "ray_query_candidate_is_triangle"
+#define BUILTIN_RAY_QUERY_CANDIDATE_IS_AABB "ray_query_candidate_is_aabb"
+#define BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_ORIGIN "ray_query_candidate_object_ray_origin"
+#define BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_DIRECTION "ray_query_candidate_object_ray_direction"
+#define BUILTIN_RAY_QUERY_GENERATE_INTERSECTION "ray_query_generate_intersection"
+#define BUILTIN_RAY_QUERY_COMMITTED_IS_AABB "ray_query_committed_is_aabb"
+
+/// Inline ray tracing sub-phase 1.5 — ray-flag constants. A small
+/// backend-neutral set OR'd together and passed as the FINAL `rayFlags`
+/// argument of `intersect(as, ray, mask, flags)` / `ray_query_init(q, as, ray,
+/// mask, flags)`. The bit values (AST.h `ast::rayflags`) match the DXR /
+/// SPIR-V ray-flag layout, so the HLSL and GLSL backends forward them by their
+/// native spelling; Metal's `intersector` takes no bitmask, so each set flag is
+/// DECOMPOSED into an `intersector` / `intersection_params` setter call at
+/// codegen (see the per-backend table in Raytracing-Full-Implementation-Plan.md
+/// §1.5). `TERMINATE_ON_FIRST_HIT` is the shadow-ray flag (accept the first hit
+/// and stop); the two cull flags drop back- or front-facing triangles.
+///
+/// These are recognized ONLY in the `rayFlags` argument position, and the
+/// argument must be a compile-time constant OR-chain of them: a runtime flag
+/// mask cannot be decomposed for Metal, so Sema rejects one.
+#define RAY_FLAG_NAME_NONE "RAY_FLAG_NONE"
+#define RAY_FLAG_NAME_OPAQUE "RAY_FLAG_OPAQUE"
+#define RAY_FLAG_NAME_TERMINATE_ON_FIRST_HIT "RAY_FLAG_TERMINATE_ON_FIRST_HIT"
+#define RAY_FLAG_NAME_CULL_BACK_FACING "RAY_FLAG_CULL_BACK_FACING"
+#define RAY_FLAG_NAME_CULL_FRONT_FACING "RAY_FLAG_CULL_FRONT_FACING"
+
 //Internal Shader Attributes
 #define ATTRIBUTE_VERTEX_ID "VertexID"
 #define ATTRIBUTE_INSTANCE_ID "InstanceID"

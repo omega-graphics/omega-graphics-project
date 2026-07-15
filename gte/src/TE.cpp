@@ -232,6 +232,23 @@ TETriangulationParams TETriangulationParams::GraphicsPath3D(unsigned int vectorP
     return params;
 };
 
+bool TETriangulationParams::is3DPrimitive() const {
+    switch(type){
+        case TRIANGULATE_RECTANGULAR_PRISM:
+        case TRIANGULATE_PYRAMID:
+        case TRIANGULATE_CYLINDER:
+        case TRIANGULATE_CONE:
+        case TRIANGULATE_TORUS:
+        case TRIANGULATE_SPHERE:
+        case TRIANGULATE_CAPSULE:
+            return true;
+        // Rect / RoundedRect / the flat Ellipsoid fan / Path2D / Path3D are not
+        // solid 3D primitives; GESpace declines to place them in a 3D space.
+        default:
+            return false;
+    }
+}
+
 unsigned int TETriangulationResult::TEMesh::vertexCount() {
     auto polygonCount = vertexPolygons.size();
     return polygonCount * 3;
@@ -471,6 +488,26 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
     auto makeTex3DAttachment = [&](float u, float v, float w, const FVec<3> & normal){
         return TETriangulationResult::AttachmentData{FVec<4>::Create(), FVec<2>::Create(), makeVec3(u,v,w), normal};
     };
+    /// Raytracing plan §7-V.a — an attachment carrying ONLY the generated normal.
+    ///
+    /// The 3D primitives all compute a per-vertex normal, but historically that
+    /// normal was only ever stored as a rider on some OTHER attachment (a UV or a
+    /// color). With no UV/color attachment requested — which is exactly what
+    /// GESpace's primitive path does — `vert.attachment` was left empty and the
+    /// normal TE had already computed was thrown away. A caller who then asked
+    /// `buildMeshFromTriangulation` for `GEMeshAttrNormal` got the "vertex has no
+    /// AttachmentData; writing zeros" warning and a mesh that could not be lit.
+    ///
+    /// This hands that normal back instead of discarding it. It does NOT change
+    /// what geometry is emitted by default: Position-only remains the default
+    /// vertex layout (`GEMeshDescriptor::attributes`), and `writeOneVertex` still
+    /// only writes a normal when the caller explicitly asks for one. GESpace
+    /// stays position-only in what it *requires*; it simply no longer destroys
+    /// data it already had.
+    auto makeNormalAttachment = [&](const FVec<3> & normal){
+        return TETriangulationResult::AttachmentData{FVec<4>::Create(), FVec<2>::Create(), FVec<3>::Create(), normal};
+    };
+    (void)makeNormalAttachment;
     (void)makeTex2DAttachment;
     (void)makeTex3DAttachment;
 
@@ -848,6 +885,11 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                             auto d = *colorAttachment;
                             d.normal = normal;
                             vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                        } else {
+                            // §7-V.a — no UV/color attachment was requested, but a
+                            // normal was still computed. Hand it back, don't drop it.
+                            vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                                makeNormalAttachment(normal));
                         }
                     };
                     setAttachment(p.a, *verts[0]);
@@ -1273,6 +1315,11 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     auto d = *colorAttachment;
                     d.normal = normal;
                     vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                } else {
+                    // §7-V.a — no UV/color attachment was requested, but a normal
+                    // was still computed. Hand it back instead of dropping it.
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeNormalAttachment(normal));
                 }
             };
 
@@ -1371,6 +1418,11 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     auto d = *colorAttachment;
                     d.normal = normal;
                     vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                } else {
+                    // §7-V.a — no UV/color attachment was requested, but a normal
+                    // was still computed. Hand it back instead of dropping it.
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeNormalAttachment(normal));
                 }
             };
             const FVec<3> upN = makeVec3(0.f,1.f,0.f);
@@ -1464,6 +1516,11 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     auto d = *colorAttachment;
                     d.normal = normal;
                     vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                } else {
+                    // §7-V.a — no UV/color attachment was requested, but a normal
+                    // was still computed. Hand it back instead of dropping it.
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeNormalAttachment(normal));
                 }
             };
             const FVec<3> downN = makeVec3(0.f,-1.f,0.f);
@@ -1546,6 +1603,11 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     auto d = *colorAttachment;
                     d.normal = normal;
                     vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                } else {
+                    // §7-V.a — no UV/color attachment was requested, but a normal
+                    // was still computed. Hand it back instead of dropping it.
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeNormalAttachment(normal));
                 }
             };
 
@@ -1633,6 +1695,11 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     auto d = *colorAttachment;
                     d.normal = normal;
                     vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                } else {
+                    // §7-V.a — no UV/color attachment was requested, but a normal
+                    // was still computed. Hand it back instead of dropping it.
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeNormalAttachment(normal));
                 }
             };
 
@@ -1726,6 +1793,11 @@ inline void OmegaTriangulationEngineContext::_triangulatePriv(const TETriangulat
                     auto d = *colorAttachment;
                     d.normal = normal;
                     vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(d);
+                } else {
+                    // §7-V.a — no UV/color attachment was requested, but a normal
+                    // was still computed. Hand it back instead of dropping it.
+                    vert.attachment = std::make_optional<TETriangulationResult::AttachmentData>(
+                        makeNormalAttachment(normal));
                 }
             };
             auto vForY = [&](float wy){ return totalH > 1e-6f ? (wy - vBase) / totalH : 0.f; };

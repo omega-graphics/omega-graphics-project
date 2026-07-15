@@ -1,102 +1,132 @@
-// MeshAndRaytracingTest shader pair.
+// MeshAndRaytracingTest — G-buffer raster + ray-traced shadows.
 //
-// Mesh stage: drives a `GEMeshAsset`-loaded mesh through the D3D12 mesh
-// shader. Each mesh threadgroup is responsible for ONE triangle of the
-// source FBX — the dispatch count on the C++ side is `vertexCount / 3`.
-// Per-triangle dispatch is the trivial integration with `GEMeshAsset`
-// (it produces a flat vertex buffer with no index buffer today; every
-// 3 consecutive vertices form a triangle). Real meshlet partitioning
-// — packing 64+ verts and 124+ primitives per threadgroup, the
-// performance win mesh shaders are designed for — is a follow-up that
-// needs a CPU-side meshlet builder we don't have yet.
+// Every stage the test needs lives in this ONE translation unit, so omegaslc emits
+// a single .omegasllib and the test loads exactly one library:
 //
-// Vertex layout matches `GEMeshDescriptor::attributes =
-// GEMeshAttrPosition` (Position only).
+//   1. primVert / primFrag  — the TE 3D primitives (Sphere, Cylinder, Cone, Torus,
+//                             ...) placed by GESpace. Their vertices are
+//                             Position+Normal, because GESpace now hands back the
+//                             normals TE already generated (Raytracing plan §7-V.a)
+//                             instead of dropping them on the floor.
+//   2. ampFunc / meshFunc / — the GEMeshAsset-loaded FBX, through the mesh-shader
+//      meshFrag               pipeline. Its vertex buffer is Position-only, so the
+//                             mesh stage derives a FLAT face normal per triangle.
+//   3. shadowKernel         — the point of the test. An inline ray-query compute
+//                             pass that reads the G-buffer, casts one shadow ray per
+//                             pixel at the light, and shades the result.
+//   4. compositeVert /      — fullscreen pass resolving the lit image onto the
+//      compositeFrag          drawable.
 //
-// The buffer's element stride is NOT 12 bytes on every backend, and this
-// comment used to claim it was ("a lone float3 needs no padding"). It
-// does: under std430 a `float3` has a 16-byte base alignment, so this
-// struct's array stride is 16 — the compiled SPIR-V decorates it
-// `ArrayStride = 16`. D3D12's scalar StructuredBuffer really is 12 and
-// Metal's simd_float3 is 16. Nothing here has to care, because the CPU
-// side no longer hand-sums the stride: `geMeshStrideFor` asks
-// `omegaSLStructStride` for whatever the active backend uses, and the
-// loader re-lays the vertex stream into that layout before upload. When
-// they disagreed, the GPU read each vertex 4 bytes further off than the
-// last and the mesh came out shredded.
-//
-// Why `: TexCoord` (not `: Color(N)`) for the inter-stage color: see
-// the prior revision of this file in git — `Color(N)` is OmegaSL's
-// fragment-output slot and lowers to HLSL `SV_Target<N>`, which DXC
-// rejects on a struct field consumed by a fragment shader as input.
-//
-// The shader-side feature gate (`#requires(MESH_SHADERS)`) makes the
-// runtime loader reject this library cleanly on devices that lack
-// GTEDEVICE_FEATURE_MESH_SHADER — matches how the C++ side of the test
-// reads `features.hasFeature(...)`.
-//
-// The MVP arrives as a push constant (`constant<T>` + `[in pc]`, the
-// same shape as kreate's Phase1Basic.omegasl). It is composed on the
-// CPU by `GESpace::objectTransform()`: the mesh's vertex buffer stays
-// in the FBX's own local units — GESpace never re-bakes geometry — and
-// this one matrix carries it local → space → NDC. Without it the raw
-// FBX coordinates land outside the clip volume and nothing draws, which
-// is precisely what this test used to do.
+// Why a G-buffer: ray-traced shadows need the WORLD POSITION and NORMAL of whatever
+// is visible at each pixel, and neither survives an 8-bit unorm drawable —
+// positions are unbounded and normals are signed. So the raster half renders
+// offscreen into float targets (RGBA32Float position, RGBA16Float normal, RGBA8
+// albedo) with a real depth buffer, and the drawable only ever receives the final
+// resolved image. That is also the engine-wide standard: a swapchain has no depth
+// buffer on any API, so 3D renders offscreen and is blitted/resolved.
 
+#requires(RAYTRACING)
 #requires(MESH_SHADERS)
 
-struct VertexIn {
+// ── Shared G-buffer layout ──────────────────────────────────────────────────
+//
+// Color(0) worldPos : xyz = world position, w = COVERAGE (1 = geometry, 0 = sky).
+//   The coverage flag is what the shadow kernel tests to skip background pixels.
+//   Without it there is no way to tell "a surface at the world origin" from
+//   "nothing was drawn here", and the background would trace rays from (0,0,0).
+// Color(1) normal   : xyz = world normal. Signed — hence a float format.
+// Color(2) albedo   : base color.
+struct GBuffer internal {
+    float4 worldPos : Color(0);
+    float4 normal   : Color(1);
+    float4 albedo   : Color(2);
+};
+
+// Per-object transforms. `mvp` is local→NDC (composed by GESpace::objectTransform);
+// `model` is local→WORLD.
+//
+// The G-buffer stores WORLD space because the acceleration structure the shadow
+// rays are traced against is built in world space. If the two disagreed, every
+// shadow would land somewhere else entirely.
+//
+// `normalMat` is the inverse-transpose of `model`. Rotating a normal by `model`
+// directly is only correct under uniform scale; the moment an object is scaled
+// non-uniformly it skews normals off the surface and the lighting goes quietly
+// wrong everywhere.
+struct ObjectXform {
+    float4x4 mvp;
+    float4x4 model;
+    float4x4 normalMat;
+    float4   albedo;
+    uint     triCount;   // amplification stage only
+};
+
+constant<ObjectXform> pc : 0;
+
+// ── 1. TE primitives — Position + Normal ────────────────────────────────────
+
+struct PrimVertex {
+    float3 pos;
+    float3 normal;
+};
+
+struct PrimRaster internal {
+    float4 pos      : Position;
+    float4 worldPos : TexCoord;
+    float4 normal   : Color;
+};
+
+buffer<PrimVertex> primVerts : 1;
+
+[in pc, in primVerts]
+vertex PrimRaster primVert(uint vid : VertexID){
+    PrimVertex v = primVerts[vid];
+
+    PrimRaster r;
+    r.pos      = pc.mvp * float4(v.pos, 1.0);
+    r.worldPos = pc.model * float4(v.pos, 1.0);
+    r.normal   = pc.normalMat * float4(v.normal, 0.0);
+    return r;
+}
+
+[in pc]
+fragment GBuffer primFrag(PrimRaster raster){
+    float3 n = normalize(float3(raster.normal[0], raster.normal[1], raster.normal[2]));
+
+    GBuffer o;
+    o.worldPos = float4(raster.worldPos[0], raster.worldPos[1], raster.worldPos[2], 1.0);
+    o.normal   = float4(n, 0.0);
+    o.albedo   = pc.albedo;
+    return o;
+}
+
+// ── 2. FBX mesh — Position only, flat normals ───────────────────────────────
+
+struct MeshVertexIn {
     float3 pos;
 };
 
-// Local → NDC for the placed mesh, straight from GESpace::objectTransform().
-// Column-major, matching FMatrix<4,4>'s storage, so the C++ side flattens it
-// column by column with no transpose.
-//
-// `triCount` rides along because the AMPLIFICATION stage (below) needs it: the
-// last batch of triangles is almost never a full batch, and dispatching a full
-// batch anyway would run mesh threadgroups off the end of the vertex buffer.
-struct MeshTransform {
-    float4x4 mvp;
-    uint     triCount;
-};
-
-// The payload the amplification stage hands each mesh threadgroup it launches.
-// A plain (non-`internal`) struct: it carries no interstage semantics, it is
-// just a block of workgroup-shared data crossing the stage boundary.
 struct MeshletBatch {
     uint baseTriangle;
 };
 
-constant<MeshTransform> pc      : 0;
-buffer<VertexIn>        vertBuf : 1;
-
-struct MeshletVertex internal {
-    float4 pos   : Position;
-    float4 color : TexCoord;
+struct MeshRaster internal {
+    float4 pos      : Position;
+    float4 worldPos : TexCoord;
+    float4 normal   : Color;
 };
 
-// How many triangles one amplification threadgroup is responsible for.
-// The C++ side dispatches ceil(triCount / 32) of them.
-//
-// This is what mesh shaders are actually for: instead of the host issuing one
-// dispatch per triangle, it issues one per BATCH and the GPU decides how much
-// work each batch is worth. Here the decision is only "clamp the tail", but it
-// is the same hook a real culler would use — the amplification stage is where
-// you drop meshlets that face away or fall outside the frustum, and the mesh
-// threadgroups for them are then never launched at all.
+buffer<MeshVertexIn> vertBuf : 2;
 
-// One amplification threadgroup per 32-triangle batch. Single-threaded (x=1)
-// so the payload write needs no cross-thread coordination.
+// One amplification threadgroup per 32-triangle batch. The tail batch is clamped so
+// mesh threadgroups are never launched past the end of the vertex buffer.
 [in pc]
 amplification(x=1, y=1, z=1)
 void ampFunc(uint3 gid : ThreadGroupID,
              out payload MeshletBatch p){
-    uint base = gid.x * 32u;
+    uint base = gid[0] * 32u;
     p.baseTriangle = base;
 
-    // The tail batch is short. `base` is always < triCount (the host dispatches
-    // exactly ceil(triCount/32) groups), so this subtraction cannot underflow.
     uint remaining = pc.triCount - base;
     uint count = remaining < 32u ? remaining : 32u;
 
@@ -105,45 +135,229 @@ void ampFunc(uint3 gid : ThreadGroupID,
     dispatchMesh(count, 1u, 1u, p);
 }
 
-// `gid.x` is the CHILD index within the grid this shader's amplification stage
-// dispatched — 0..31 within one batch — NOT a global triangle index. Recovering
-// the global index from the payload is the entire point of the payload.
+// GEMeshAsset produces a Position-only vertex buffer, so there are no authored
+// normals to interpolate. The face normal is derived here from the triangle's own
+// edges. That yields a faceted look — correct, just not smooth — which is all the
+// shadow term needs, since it only asks which way the surface points.
 [in pc, in vertBuf]
 mesh(max_vertices=3, max_primitives=1, topology=triangle)
 void meshFunc(uint3 gid : ThreadGroupID,
               in payload MeshletBatch p,
-              out vertices MeshletVertex verts[3],
-              out indices  uint3         tris[1]){
-    uint tri  = p.baseTriangle + gid.x;
+              out vertices MeshRaster verts[3],
+              out indices  uint3      tris[1]){
+    uint tri  = p.baseTriangle + gid[0];
     uint base = tri * 3u;
 
-    // Cycle through a small palette by triangle index so adjacent
-    // triangles have visibly distinct colors — gives a faceted look
-    // without per-vertex normals. The hue ramp here is intentionally
-    // low-saturation so a moderately complex FBX (a few hundred
-    // triangles) does not turn into noise; the orange-ish base tint
-    // matches the racket's intended look without depending on the
-    // FBX's diffuse texture.
-    //
-    // Keyed on the payload-derived GLOBAL triangle index, not on gid.x: if the
-    // payload were dropped, every batch would tint identically from 0..31 and
-    // the model would come out in 32-triangle stripes instead of a smooth ramp.
-    float tintShift = float(tri % 7u) / 7.0;
-    float4 tint = float4(0.55 + 0.30 * tintShift,
-                         0.35 + 0.20 * tintShift,
-                         0.10 + 0.05 * tintShift,
-                         1.0);
+    float3 p0 = vertBuf[base + 0u].pos;
+    float3 p1 = vertBuf[base + 1u].pos;
+    float3 p2 = vertBuf[base + 2u].pos;
 
-    verts[0].pos   = pc.mvp * float4(vertBuf[base + 0u].pos, 1.0);
-    verts[0].color = tint;
-    verts[1].pos   = pc.mvp * float4(vertBuf[base + 1u].pos, 1.0);
-    verts[1].color = tint;
-    verts[2].pos   = pc.mvp * float4(vertBuf[base + 2u].pos, 1.0);
-    verts[2].color = tint;
+    float3 faceN = normalize(cross(p1 - p0, p2 - p0));
+    float4 nWorld = pc.normalMat * float4(faceN, 0.0);
+
+    verts[0].pos      = pc.mvp * float4(p0, 1.0);
+    verts[0].worldPos = pc.model * float4(p0, 1.0);
+    verts[0].normal   = nWorld;
+
+    verts[1].pos      = pc.mvp * float4(p1, 1.0);
+    verts[1].worldPos = pc.model * float4(p1, 1.0);
+    verts[1].normal   = nWorld;
+
+    verts[2].pos      = pc.mvp * float4(p2, 1.0);
+    verts[2].worldPos = pc.model * float4(p2, 1.0);
+    verts[2].normal   = nWorld;
 
     tris[0] = uint3(0, 1, 2);
 }
 
-fragment float4 fragFunc(MeshletVertex raster){
-    return raster.color;
+[in pc]
+fragment GBuffer meshFrag(MeshRaster raster){
+    float3 n = normalize(float3(raster.normal[0], raster.normal[1], raster.normal[2]));
+
+    GBuffer o;
+    o.worldPos = float4(raster.worldPos[0], raster.worldPos[1], raster.worldPos[2], 1.0);
+    o.normal   = float4(n, 0.0);
+    o.albedo   = pc.albedo;
+    return o;
+}
+
+// ── 3. Ray-traced shadows (the point of the test) ───────────────────────────
+
+struct ShadowParams {
+    float4 lightPos;   // xyz = light position (world), w = light RADIUS
+    float4 ambient;    // rgb = ambient term, w = shadow strength (0..1)
+    float4 dims;       // xy = G-buffer extent in pixels
+};
+
+// Shadow rays per pixel. A single ray gives a hard, stencil-sharp edge — which is
+// what a POINT light produces, and it is a giveaway that the "light" has no size.
+// Sampling a light of nonzero radius over many rays is what produces a real
+// penumbra: pixels that see part of the light are partly lit.
+//
+// This is the ray budget. 32/pixel at 800x600 is ~15M shadow rays a frame, which is
+// nothing for the hardware this targets.
+#define SHADOW_SAMPLES 32u
+
+// Cheap per-pixel hash. Deterministic, so the image does not shimmer, but decorrelated
+// enough between neighbouring pixels that the sample pattern reads as soft noise
+// rather than as banding.
+float hash1(float2 p){
+    return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+constant<ShadowParams> sp : 3;
+
+AccelerationStructure scene : 4;
+texture2d gWorldPos : 5;
+texture2d gNormal   : 6;
+texture2d gAlbedo   : 7;
+texture2d litOut    : 8;
+
+[in sp, in scene, in gWorldPos, in gNormal, in gAlbedo, out litOut]
+compute(x=8, y=8, z=1)
+void shadowKernel(uint3 tid : GlobalThreadID){
+    int px = (int)tid[0];
+    int py = (int)tid[1];
+
+    if(px >= (int)sp.dims[0]){
+        return;
+    }
+    if(py >= (int)sp.dims[1]){
+        return;
+    }
+
+    float4 wp = read(gWorldPos, int2(px, py));
+
+    // Coverage: nothing was rasterized here, so paint the sky and DO NOT trace.
+    // Tracing background pixels would cast rays from the world origin and speckle
+    // the sky with meaningless hits.
+    if(wp[3] < 0.5){
+        write(litOut, int2(px, py), float4(0.05, 0.06, 0.09, 1.0));
+        return;
+    }
+
+    float3 P = float3(wp[0], wp[1], wp[2]);
+
+    float4 nRaw = read(gNormal, int2(px, py));
+    float3 N = normalize(float3(nRaw[0], nRaw[1], nRaw[2]));
+
+    float4 albedo = read(gAlbedo, int2(px, py));
+
+    float3 toLight = float3(sp.lightPos[0], sp.lightPos[1], sp.lightPos[2]) - P;
+    float lightDist = length(toLight);
+    float3 L = normalize(toLight);
+
+    float ndotl = dot(N, L);
+    if(ndotl < 0.0){
+        ndotl = 0.0;
+    }
+
+    // ── the shadow ray ──
+    //
+    // The origin is pushed off the surface along the normal first. Without that
+    // bias the ray starts exactly ON the surface it came from and immediately
+    // re-hits its own triangle at t≈0, so every lit surface shadows itself and the
+    // whole image collapses to black. That is the classic shadow-acne failure and
+    // it is worth the one line to avoid.
+    //
+    // RAY_FLAG_TERMINATE_ON_FIRST_HIT is exactly what a shadow ray wants: we only
+    // need to know whether ANYTHING blocks the light, never which thing or how far,
+    // so traversal can stop at the first hit instead of searching for the closest.
+    //
+    // tmax is clamped to the light distance so geometry BEHIND the light cannot
+    // occlude it.
+    float3 origin = P + N * 0.02;
+    float radius = sp.lightPos[3];
+
+    // Build a basis on the light plane so the jitter spreads ACROSS the light disc
+    // rather than along the ray (which would just move the light nearer/further and
+    // change nothing about occlusion).
+    float3 up = float3(0.0, 1.0, 0.0);
+    if(abs(L[1]) > 0.95){
+        up = float3(1.0, 0.0, 0.0);
+    }
+    float3 tangent = normalize(cross(up, L));
+    float3 bitangent = cross(L, tangent);
+
+    float2 seed = float2((float)px, (float)py);
+    float visible = 0.0;
+
+    for(uint i = 0u; i < SHADOW_SAMPLES; i = i + 1u){
+        float fi = (float)i;
+        // Two decorrelated randoms per sample, jittered per pixel.
+        float r1 = hash1(seed + float2(fi * 1.37, fi * 2.71));
+        float r2 = hash1(seed + float2(fi * 3.14 + 11.0, fi * 0.77 + 5.0));
+
+        // Uniform point on a disc: sqrt(r) keeps samples from bunching at the centre.
+        float rad = radius * sqrt(r1);
+        float ang = 6.2831853 * r2;
+        float3 jitter = tangent * (rad * cos(ang)) + bitangent * (rad * sin(ang));
+
+        float3 target = float3(sp.lightPos[0], sp.lightPos[1], sp.lightPos[2]) + jitter;
+        float3 dir = target - origin;
+        float dist = length(dir);
+        dir = normalize(dir);
+
+        Ray shadowRay;
+        shadowRay.origin    = origin;
+        shadowRay.direction = dir;
+        shadowRay.tmin      = 0.0;
+        shadowRay.tmax      = dist - 0.02;
+
+        // TERMINATE_ON_FIRST_HIT: a shadow ray only asks "is ANYTHING in the way",
+        // never which thing or how far, so traversal stops at the first hit instead
+        // of hunting for the closest. Over 32 rays a pixel that is the difference
+        // between a real cost and a silly one.
+        RayHit hit = intersect(scene, shadowRay, 255, RAY_FLAG_TERMINATE_ON_FIRST_HIT);
+        if(!hit.committed){
+            visible = visible + 1.0;
+        }
+    }
+
+    visible = visible / (float)SHADOW_SAMPLES;
+
+    // Fully occluded -> (1 - strength); fully visible -> 1. Partially occluded
+    // pixels land in between, and THAT is the penumbra.
+    float shadow = (1.0 - sp.ambient[3]) + sp.ambient[3] * visible;
+
+    float3 amb = float3(sp.ambient[0], sp.ambient[1], sp.ambient[2]);
+    float lit = ndotl * shadow;
+    float3 base = float3(albedo[0], albedo[1], albedo[2]);
+    float3 color = base * (amb + float3(lit, lit, lit));
+
+    write(litOut, int2(px, py), float4(color, 1.0));
+}
+
+// ── 4. Composite to the drawable ────────────────────────────────────────────
+
+struct FSRaster internal {
+    float4 pos : Position;
+    float2 uv  : TexCoord;
+};
+
+static sampler2d litSampler(filter=linear, address_mode=clamp_to_edge);
+texture2d litTex : 9;
+
+// A fullscreen TRIANGLE, not a quad: three vertices, no vertex buffer, no index
+// buffer — the positions come from the vertex id alone. Written without bit tricks
+// so it reads identically on every backend.
+vertex FSRaster compositeVert(uint vid : VertexID){
+    float x = 0.0;
+    float y = 0.0;
+    if(vid == 1u){
+        x = 2.0;
+    }
+    if(vid == 2u){
+        y = 2.0;
+    }
+
+    FSRaster r;
+    r.uv  = float2(x, y);
+    r.pos = float4(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    return r;
+}
+
+[in litTex, in litSampler]
+fragment float4 compositeFrag(FSRaster raster){
+    return sample(litSampler, litTex, raster.uv);
 }

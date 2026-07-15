@@ -507,13 +507,112 @@ _NAMESPACE_BEGIN_
     };
 
     /// @brief Describes a pixel format for render targets, textures, and pipelines.
+    /// @paragraph Values are grouped into numeric ranges (color = 0–63,
+    /// depth/stencil = 64–95, BC = 96–127, ASTC = 128–159, ETC = 160–191) so a new
+    /// entry can be appended within its group without renumbering its siblings —
+    /// which would otherwise be a soft-ABI break for anything that has serialized a
+    /// `PixelFormat`. Naming is `<channels><bits><type>[_SRGB]`; compressed families
+    /// put the block size first (`ASTC_4x4_Unorm`). See PixelFormat-Completion-Plan.md.
     enum class PixelFormat : int {
-        RGBA8Unorm,
-        RGBA16Unorm,
-        RGBA8Unorm_SRGB,
-        BGRA8Unorm,
-        BGRA8Unorm_SRGB
+        // ── 8-bit color ──────────────────────────────────────────────
+        R8Unorm                     = 0,    // glyph atlas, single-channel masks
+        R8Snorm                     = 1,
+        R8Uint                      = 2,
+        RG8Unorm                    = 3,
+        RG8Snorm                    = 4,
+        RGBA8Unorm                  = 5,
+        RGBA8Unorm_SRGB             = 6,
+        RGBA8Snorm                  = 7,
+        BGRA8Unorm                  = 8,    // Windows swapchain default
+        BGRA8Unorm_SRGB             = 9,
+
+        // ── 16-bit color ─────────────────────────────────────────────
+        R16Unorm                    = 16,
+        R16Float                    = 17,
+        R16Uint                     = 18,
+        RG16Unorm                   = 19,
+        RG16Float                   = 20,
+        RGBA16Unorm                 = 21,
+        RGBA16Float                 = 22,   // HDR framebuffer / G-buffer normals
+
+        // ── 32-bit color ─────────────────────────────────────────────
+        R32Float                    = 32,
+        R32Uint                     = 33,
+        RG32Float                   = 34,
+        RGBA32Float                 = 35,   // ground-truth HDR / G-buffer world pos
+
+        // ── Packed ───────────────────────────────────────────────────
+        RGB10A2Unorm                = 48,
+        R11G11B10Float              = 49,
+
+        // ── Depth / stencil ──────────────────────────────────────────
+        D16Unorm                    = 64,
+        D32Float                    = 65,
+        D24Unorm_S8Uint             = 66,
+        D32Float_S8Uint             = 67,
+
+        // ── Block-compressed: BC (desktop; NOT on Apple Silicon) ─────
+        BC1_RGBA_Unorm              = 96,
+        BC1_RGBA_Unorm_SRGB         = 97,
+        BC3_RGBA_Unorm              = 98,
+        BC3_RGBA_Unorm_SRGB         = 99,
+        BC5_RG_Unorm                = 100,
+        BC7_RGBA_Unorm              = 101,
+        BC7_RGBA_Unorm_SRGB         = 102,
+
+        // ── Block-compressed: ASTC (mobile / Apple) ──────────────────
+        ASTC_4x4_Unorm              = 128,
+        ASTC_4x4_Unorm_SRGB         = 129,
+        ASTC_6x6_Unorm              = 130,
+        ASTC_6x6_Unorm_SRGB         = 131,
+        ASTC_8x8_Unorm              = 132,
+        ASTC_8x8_Unorm_SRGB         = 133,
+
+        // ── Block-compressed: ETC2 (Android baseline) ────────────────
+        ETC2_RGB8_Unorm             = 160,
+        ETC2_RGB8_Unorm_SRGB        = 161,
+        ETC2_RGBA8_Unorm            = 162,
+        ETC2_RGBA8_Unorm_SRGB       = 163,
+        EAC_R11_Unorm               = 164
     };
+
+    /// @brief Device-independent structural facts about a `PixelFormat` — bit
+    /// counts, channel layout, block shape, and which attachment aspect it can
+    /// serve. One source of truth, so the backends stop re-deriving
+    /// `bytesPerTexel` from their own `switch` (which does not scale past a
+    /// handful of formats).
+    ///
+    /// Device-DEPENDENT questions ("can *this* adapter render to this format?")
+    /// are not answerable here — they belong on the engine.
+    struct OMEGAGTE_EXPORT PixelFormatInfo {
+        enum class Aspect : std::uint8_t {
+            Color,
+            Depth,
+            Stencil,
+            DepthStencil
+        };
+
+        Aspect        aspect        = Aspect::Color;
+        /// Bytes per texel for an uncompressed format; 0 when compressed (use
+        /// `blockBytes` and the block dimensions instead).
+        std::uint8_t  bytesPerTexel = 4;
+        std::uint8_t  blockWidth    = 1;   // 1 when uncompressed
+        std::uint8_t  blockHeight   = 1;
+        /// Bytes per compressed block; 0 when uncompressed.
+        std::uint8_t  blockBytes    = 0;
+        bool          isCompressed  = false;
+        bool          isSRGB        = false;
+        std::uint8_t  channelCount  = 4;
+
+        /// True when the format can back a depth and/or stencil attachment.
+        OMEGA_NODISCARD bool isDepthStencil() const {
+            return aspect != Aspect::Color;
+        }
+    };
+
+    /// @brief Structural facts about `fmt`. Total function — an unrecognized
+    /// value yields the RGBA8Unorm-shaped default rather than throwing.
+    OMEGAGTE_EXPORT PixelFormatInfo pixelFormatInfo(PixelFormat fmt);
 
     struct OMEGAGTE_EXPORT TextureRegion {
         unsigned x,y,z;

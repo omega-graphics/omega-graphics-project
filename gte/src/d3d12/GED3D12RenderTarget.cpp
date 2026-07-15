@@ -57,7 +57,6 @@ _NAMESPACE_BEGIN_
     GED3D12NativeRenderTarget::GED3D12NativeRenderTarget(
         IDXGISwapChain3 * swapChain,
         ID3D12DescriptorHeap * descriptorHeapForRenderTarget,
-        ID3D12DescriptorHeap * dsvDescHeap,
         SharedHandle<GECommandQueue> presentQueue,
         unsigned frameIndex,
         ID3D12Resource *const *renderTargets,
@@ -72,7 +71,6 @@ _NAMESPACE_BEGIN_
                                                  rtvDxgiFormat_(rtvDxgiFormat),
                                                  hwnd(hwnd),
                                                    rtvDescHeap(descriptorHeapForRenderTarget),
-                                                 dsvDescHeap(dsvDescHeap),
                                                   frameIndex(frameIndex),
                                                  renderTargets(renderTargets,renderTargets + renderTargetViewCount){
         // Phase F-G: seed the live source dims from the creation back-buffer

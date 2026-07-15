@@ -107,6 +107,47 @@ _NAMESPACE_BEGIN_
         OMEGA_NODISCARD FMatrix<4,4> spaceToNDC() const;
 
         // -------------------------------------------------------------------
+        // Camera: view + projection
+        // -------------------------------------------------------------------
+        //
+        // By default the space is viewport-linear: `objectTransform()` maps a
+        // placed object straight to NDC through `spaceToNDC()` (an orthographic
+        // map with an identity view). That is all a 2D / UI scene needs. A 3D
+        // scene with a camera sets a view and a projection here, and GESpace
+        // becomes the full model→clip authority — it composes
+        // `projection · view · model` itself, so a consumer never re-derives the
+        // MVP (and never trips over the reversed `operator*` doing it). The
+        // projection is supplied as a matrix, so the caller picks the lens
+        // (`perspectiveProjection` / `orthographicProjection` from GTEMath.h);
+        // GESpace does not bake in a camera model.
+
+        /// @brief Set the world→view (camera) matrix. Defaults to identity —
+        /// i.e. the space's units are already view space until a camera is set.
+        void setViewMatrix(const FMatrix<4,4> & view);
+
+        /// @brief The current view matrix (identity until `setViewMatrix`).
+        OMEGA_NODISCARD const FMatrix<4,4> & viewMatrix() const;
+
+        /// @brief Override the view→clip (projection) matrix — a perspective or
+        /// custom orthographic lens built with the GTEMath.h helpers.
+        ///
+        /// When set, this **replaces** `spaceToNDC()` in `objectTransform()`, so
+        /// the space stops being viewport-linear and projects through the given
+        /// lens instead. Depth must map to [0,1] to stay inside the clip volume
+        /// on every backend (`perspectiveProjection` already does; see
+        /// `spaceToNDC`'s depth note). `clearProjectionMatrix()` reverts to the
+        /// viewport-linear `spaceToNDC()` map.
+        void setProjectionMatrix(const FMatrix<4,4> & projection);
+
+        /// @brief Drop the projection override and go back to the viewport-linear
+        /// `spaceToNDC()` map.
+        void clearProjectionMatrix();
+
+        /// @brief The projection currently in effect: the override if one was
+        /// set, otherwise the viewport-linear `spaceToNDC()`.
+        OMEGA_NODISCARD FMatrix<4,4> projectionMatrix() const;
+
+        // -------------------------------------------------------------------
         // Objects and transforms
         // -------------------------------------------------------------------
 
@@ -136,10 +177,67 @@ _NAMESPACE_BEGIN_
         GESpaceObjectID addMesh(const SharedHandle<GEMesh> & mesh,
                                 const GESpaceTransform & transform = GESpaceTransform());
 
+        /// @brief Triangulate a 3D primitive in local space and place it.
+        ///
+        /// This is the primitive counterpart of `addMesh()`: instead of taking
+        /// an already-built GEMesh, it triangulates `params` **once, in the
+        /// primitive's own authored units** (it forces `localSpace` on, so TE
+        /// does not bake the geometry to NDC — GESpace owns that conversion) and
+        /// stores the resulting CPU geometry. The object is then transformed and
+        /// drawn like any other: `addPrimitive()` → `translate()` / `rotate()` /
+        /// `scale()` → `objectTransform()` → draw.
+        ///
+        /// Triangulation is device-bound, so this needs a live
+        /// `OmegaTriangulationEngineContext` (the same one a caller already has
+        /// for its render target). `frontFaceRotation` forwards to TE as the
+        /// winding fallback — `params.frontFaceRotation`, if the caller set it,
+        /// still wins.
+        ///
+        /// Only the seven solid primitives are accepted
+        /// (`TETriangulationParams::is3DPrimitive()`): a 2D shape or a null
+        /// context is refused with an error log and returns
+        /// `GESpaceInvalidObject`.
+        ///
+        /// The GEMesh is **not** built here — the CPU `TETriangulationResult` is
+        /// enough to place and inspect the primitive, and building a GPU buffer
+        /// needs an engine the caller has not handed over yet. Call
+        /// `meshOf(id, engine)` to build (and cache) it lazily when a draw
+        /// actually needs it.
+        GESpaceObjectID addPrimitive(
+            OmegaTriangulationEngineContext * te,
+            const TETriangulationParams & params,
+            GTEPolygonFrontFaceRotation frontFaceRotation = GTEPolygonFrontFaceRotation::Clockwise);
+
+        /// @brief The local-space CPU geometry stored for a primitive object
+        /// (`addPrimitive`), or null for a mesh / transform-only object or an
+        /// unknown handle. The vertices are in the primitive's authored units,
+        /// never NDC — a unit sphere spans its literal radius.
+        OMEGA_NODISCARD SharedHandle<TETriangulationResult> triangulationOf(GESpaceObjectID id) const;
+
         /// @brief The mesh placed at `id`, or null if the handle is unknown or
-        /// names a transform-only object (`addObject`). Not an error either
-        /// way — a transform node legitimately has no geometry.
+        /// names a transform-only object (`addObject`) or an as-yet-unbuilt
+        /// primitive (`addPrimitive`). Not an error in any of those cases — a
+        /// transform node legitimately has no geometry, and a primitive's GPU
+        /// mesh is built lazily by the engine-taking overload below.
         OMEGA_NODISCARD SharedHandle<GEMesh> meshOf(GESpaceObjectID id) const;
+
+        /// @brief Build (once) and return the GEMesh for a primitive object,
+        /// caching it so a later `meshOf(id)` returns the same handle.
+        ///
+        /// This is the lazy step deferred by `addPrimitive()`: it flattens the
+        /// stored `TETriangulationResult` into a GPU buffer via
+        /// `buildMeshFromTriangulation`, using `desc` for the vertex layout /
+        /// topology (default: Position-only, non-indexed triangles). The result
+        /// is cached on the object, so calling it again returns the built mesh
+        /// without re-triangulating or re-uploading; `engine` / `desc` are then
+        /// ignored.
+        ///
+        /// For a mesh object (`addMesh`) it returns the placed mesh unchanged.
+        /// Returns null on an unknown handle, a transform-only object, a null
+        /// engine, or a build failure (each logged).
+        SharedHandle<GEMesh> meshOf(GESpaceObjectID id,
+                                    OmegaGraphicsEngine * engine,
+                                    const GEMeshDescriptor & desc = GEMeshDescriptor());
 
         /// @brief Remove an object from the space, dropping this space's
         /// reference to its mesh. The handle is retired, never recycled.
@@ -181,21 +279,32 @@ _NAMESPACE_BEGIN_
         /// @brief Multiply the object's current scale by these factors.
         void scale(GESpaceObjectID id, float sx, float sy, float sz);
 
+        /// @brief Replace the object's whole TRS transform at once. The setter
+        /// paired with `transformOf` — a consumer that keeps its own transform
+        /// (e.g. Kreate's `Object`) pushes it into the space's slot with this
+        /// rather than replaying translate/rotate/scale. Unknown handle logs and
+        /// is a no-op.
+        void setTransform(GESpaceObjectID id, const GESpaceTransform & transform);
+
         /// @brief The object's current TRS transform. An unknown handle logs an
         /// error and yields an identity transform.
         OMEGA_NODISCARD const GESpaceTransform & transformOf(GESpaceObjectID id) const;
 
-        /// @brief The object's composed local→NDC matrix:
-        /// `spaceToNDC()` applied after `transformOf(id).modelMatrix()`.
+        /// @brief The object's composed local→clip matrix:
+        /// `projection · view · model` (GPU order), where `model` is
+        /// `transformOf(id).modelMatrix()`, `view` is `viewMatrix()`, and
+        /// `projection` is `projectionMatrix()` (the override, or the
+        /// viewport-linear `spaceToNDC()` when none is set).
         ///
         /// **This is the final result** — hand it to the draw pipeline as the
         /// object's transform (Kreate consumes it as the per-object MVP; see
-        /// Phase 5 of the plan). Geometry is never re-baked on the CPU: the
-        /// mesh's vertex buffer stays in its own local space and this matrix
-        /// does the work on the GPU.
+        /// Phase 5 of the plan). With no view/projection set it reduces to
+        /// `spaceToNDC · model`, the viewport-linear map. Geometry is never
+        /// re-baked on the CPU: the mesh's vertex buffer stays in its own local
+        /// space and this matrix does the work on the GPU.
         ///
-        /// An unknown handle logs an error and yields `spaceToNDC()` alone
-        /// (i.e. the object treated as untransformed), never a garbage matrix.
+        /// An unknown handle logs an error and yields `projection · view` (the
+        /// object treated as untransformed), never a garbage matrix.
         OMEGA_NODISCARD FMatrix<4,4> objectTransform(GESpaceObjectID id) const;
 
         // Primitive placement (addPrimitive) arrives in Phase 4.

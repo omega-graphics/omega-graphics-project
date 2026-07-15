@@ -1748,15 +1748,21 @@ _NAMESPACE_BEGIN_
                 geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
                 geom.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
                 geom.geometry.triangles.pNext = nullptr;
+                /// Raytracing plan §6-M1 — an explicit stride/count traces a vertex
+                /// buffer that interleaves more than position (positions read from
+                /// offset 0). Zero keeps the tightly-packed-float3 default.
+                const auto & tl = g.getTriangleList();
+                const size_t vstride = tl.vertexStride ? tl.vertexStride : (sizeof(float) * 3);
                 geom.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-                geom.geometry.triangles.vertexStride = sizeof(float) * 3;
+                geom.geometry.triangles.vertexStride = vstride;
                 geom.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
-                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.getTriangleList().buffer);
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(tl.buffer);
                 if(vkBuf && engine->vkGetBufferDeviceAddressKhr){
                     VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
                     addrInfo.buffer = vkBuf->buffer;
                     geom.geometry.triangles.vertexData.deviceAddress = engine->vkGetBufferDeviceAddressKhr(engine->device, &addrInfo);
-                    uint32_t vertexCount = static_cast<uint32_t>(vkBuf->size() / (sizeof(float) * 3));
+                    uint32_t vertexCount = static_cast<uint32_t>(tl.vertexCount ? tl.vertexCount
+                                                                                : (vkBuf->size() / vstride));
                     geom.geometry.triangles.maxVertex = vertexCount > 0 ? vertexCount - 1 : 0;
                     rangeInfo.primitiveCount = vertexCount / 3;
                 }
@@ -1878,15 +1884,21 @@ _NAMESPACE_BEGIN_
                 geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
                 geom.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
                 geom.geometry.triangles.pNext = nullptr;
+                /// Raytracing plan §6-M1 — an explicit stride/count traces a vertex
+                /// buffer that interleaves more than position (positions read from
+                /// offset 0). Zero keeps the tightly-packed-float3 default.
+                const auto & tl = g.getTriangleList();
+                const size_t vstride = tl.vertexStride ? tl.vertexStride : (sizeof(float) * 3);
                 geom.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-                geom.geometry.triangles.vertexStride = sizeof(float) * 3;
+                geom.geometry.triangles.vertexStride = vstride;
                 geom.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
-                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(g.getTriangleList().buffer);
+                auto vkBuf = std::dynamic_pointer_cast<GEVulkanBuffer>(tl.buffer);
                 if(vkBuf && engine->vkGetBufferDeviceAddressKhr){
                     VkBufferDeviceAddressInfoKHR addrInfo {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR};
                     addrInfo.buffer = vkBuf->buffer;
                     geom.geometry.triangles.vertexData.deviceAddress = engine->vkGetBufferDeviceAddressKhr(engine->device, &addrInfo);
-                    uint32_t vertexCount = static_cast<uint32_t>(vkBuf->size() / (sizeof(float) * 3));
+                    uint32_t vertexCount = static_cast<uint32_t>(tl.vertexCount ? tl.vertexCount
+                                                                                : (vkBuf->size() / vstride));
                     geom.geometry.triangles.maxVertex = vertexCount > 0 ? vertexCount - 1 : 0;
                     rangeInfo.primitiveCount = vertexCount / 3;
                 }
@@ -2564,11 +2576,11 @@ _NAMESPACE_BEGIN_
         if(bytesPerRow > 0){
             // Derive bytes-per-texel from the image format. For supported formats this table
             // covers the PixelFormat enum; unknown formats fall back to tightly packed.
-            uint32_t bytesPerTexel = 4;
-            switch(dest_img->descriptor.pixelFormat){
-                case PixelFormat::RGBA16Unorm: bytesPerTexel = 8; break;
-                default: bytesPerTexel = 4; break;
-            }
+            /// PixelFormat-Completion-Plan — one source of truth. This used to be
+            /// a 2-case switch that answered "4" for every format it didn't know.
+            /// A compressed format reports 0 here (size comes from the block), so
+            /// the `> 0` guard below correctly skips the row-length derivation.
+            uint32_t bytesPerTexel = pixelFormatInfo(dest_img->descriptor.pixelFormat).bytesPerTexel;
             if(bytesPerTexel > 0){
                 bufferRowLength = static_cast<uint32_t>(bytesPerRow / bytesPerTexel);
             }

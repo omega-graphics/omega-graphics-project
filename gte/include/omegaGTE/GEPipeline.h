@@ -187,6 +187,17 @@ _NAMESPACE_BEGIN_
         /// Index `i` corresponds to color attachment `i`. Empty vector is
         /// treated as a single default-format attachment.
         OmegaCommon::Vector<PixelFormat> colorPixelFormats = { PixelFormat::RGBA8Unorm };
+        /// Format of the depth (or depth/stencil) attachment this pipeline is
+        /// tested against. Must match the `depthTexture` of the render target the
+        /// pipeline is used with.
+        ///
+        /// Consulted only when `depthAndStencilDesc.enableDepth` /
+        /// `enableStencil` is set; ignored otherwise, which is why the default is
+        /// a harmless color format rather than a depth one. Metal in particular
+        /// requires `depthAttachmentPixelFormat` on the pipeline — without it a
+        /// depth-enabled pipeline is silently inert, which is one of the reasons
+        /// depth testing has never worked here.
+        PixelFormat depthStencilPixelFormat = PixelFormat::D32Float;
         /// Primitive category the pipeline rasterizes. Must match the
         /// polygon type passed to draw commands bound to this pipeline on
         /// D3D12. Ignored on Metal / Vulkan.
@@ -313,6 +324,9 @@ _NAMESPACE_BEGIN_
         /// Reuses @c RenderPipelineDescriptor::DepthStencilDesc so the
         /// caller writes the same struct shape for both pipeline kinds.
         RenderPipelineDescriptor::DepthStencilDesc depthAndStencilDesc;
+        /// Format of the depth attachment this pipeline is tested against — same
+        /// contract as @c RenderPipelineDescriptor::depthStencilPixelFormat.
+        PixelFormat depthStencilPixelFormat = PixelFormat::D32Float;
     };
 
     using GERenderPipelineState = struct __GERenderPipelineState;

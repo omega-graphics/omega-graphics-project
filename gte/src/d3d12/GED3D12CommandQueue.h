@@ -136,6 +136,10 @@ _NAMESPACE_BEGIN_
        /// Combine a runtime swizzle override with the shader layout's
        /// `swizzle_desc` (texture-swizzle proposal §4 precedence rule).
        TextureSwizzle resolveEffectiveSwizzle(const TextureSwizzle & runtime,unsigned id,omegasl_shader &shader);
+       /// §5 — shared guard for the three `bindResourceAtAmplificationShader`
+       /// overloads: the bound pipeline must be a mesh PSO that actually carries
+       /// an amplification stage. `what` names the caller for the diagnostic.
+       bool amplificationValidForBind(const char *what);
     public:
 
         bool multisampleResolvePass = false;
@@ -303,11 +307,6 @@ _NAMESPACE_BEGIN_
         // destructors to defer descriptor-slot frees behind GPU completion.
         Retention::FenceGate gateForRetiredSubmissions() const;
     private:
-
-        /// §5 — shared guard for the three `bindResourceAtAmplificationShader`
-        /// overloads: the bound pipeline must be a mesh PSO that actually carries
-        /// an amplification stage. `what` names the caller for the diagnostic.
-        bool amplificationValidForBind(const char *what);
 
         // Move every accumulated retained command buffer / descriptor heap
         // into the engine retention queue under `gate`, then clear the local

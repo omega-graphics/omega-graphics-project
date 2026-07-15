@@ -76,7 +76,20 @@ enum omegasl_shader_layout_desc_type : int {
     /// pipeline-layout push range reservation) is Phase B and is not yet
     /// wired — a shader using `constant<T>` compiles but cannot be bound
     /// until that lands.
-    OMEGASL_SHADER_PUSH_CONSTANT_DESC
+    OMEGASL_SHADER_PUSH_CONSTANT_DESC,
+
+    /// Inline ray tracing (Raytracing plan §1.4). A top-level acceleration
+    /// structure bound as a read-only compute resource: HLSL
+    /// `RaytracingAccelerationStructure` at a `t` (SRV) register, Vulkan a
+    /// `VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR` binding
+    /// (`uniform accelerationStructureEXT`), Metal an
+    /// `acceleration_structure<instancing>` bound at a buffer index via
+    /// `setAccelerationStructure:atBufferIndex:`. Appended at the tail so the
+    /// numeric value of every pre-existing descriptor type is preserved. The
+    /// compiler emits this layout entry now (Phase 1–2); the runtime side that
+    /// consumes it to bind a `GEAccelerationStruct` via
+    /// `bindResourceAtComputeShader` is wired with the TLAS work (Phase 6).
+    OMEGASL_SHADER_ACCELERATION_STRUCTURE_DESC
 };
 
 enum omegasl_shader_static_sampler_filter : int {

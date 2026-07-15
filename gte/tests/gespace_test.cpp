@@ -635,6 +635,100 @@ int main() {
         }
     }
 
+    // --- Phase 4: primitive classification and addPrimitive guards. ---------
+    //
+    // The triangulation itself is device-bound (addPrimitive needs a live
+    // OmegaTriangulationEngineContext, which needs a device + render target), so
+    // it is exercised by an on-device consumer, not this pure-CPU suite. What is
+    // testable here without a device is the gate in front of it: which params
+    // GESpace will even accept, and that it refuses a null context loudly rather
+    // than dereferencing it.
+    {
+        // is3DPrimitive() — the predicate addPrimitive rejects on. The seven
+        // solids are placeable; the flat shapes are not.
+        GRectangularPrism prism; prism.pos = {0.f, 0.f, 0.f}; prism.w = prism.h = prism.d = 1.f;
+        GPyramid pyramid{0.f, 0.f, 0.f, 1.f, 1.f, 1.f};
+        GCylinder cyl; cyl.pos = {0.f, 0.f, 0.f}; cyl.r = 1.f; cyl.h = 2.f;
+        GCone cone{0.f, 0.f, 0.f, 1.f, 2.f};
+        GTorus torus; torus.center = {0.f, 0.f, 0.f}; torus.majorRadius = 2.f; torus.minorRadius = 0.5f;
+        GSphere sphere; sphere.center = {0.f, 0.f, 0.f}; sphere.radius = 1.f;
+        GCapsule capsule; capsule.pos = {0.f, 0.f, 0.f}; capsule.radius = 0.5f; capsule.height = 1.f;
+
+        assert(TETriangulationParams::RectangularPrism(prism).is3DPrimitive() && "RectangularPrism is a 3D primitive");
+        assert(TETriangulationParams::Pyramid(pyramid).is3DPrimitive() && "Pyramid is a 3D primitive");
+        assert(TETriangulationParams::Cylinder(cyl).is3DPrimitive() && "Cylinder is a 3D primitive");
+        assert(TETriangulationParams::Cone(cone).is3DPrimitive() && "Cone is a 3D primitive");
+        assert(TETriangulationParams::Torus(torus).is3DPrimitive() && "Torus is a 3D primitive");
+        assert(TETriangulationParams::Sphere(sphere).is3DPrimitive() && "Sphere is a 3D primitive");
+        assert(TETriangulationParams::Capsule(capsule).is3DPrimitive() && "Capsule is a 3D primitive");
+
+        GRect rect; rect.pos = {0.f, 0.f}; rect.w = rect.h = 1.f;
+        GRoundedRect rrect; rrect.pos = {0.f, 0.f}; rrect.w = rrect.h = 1.f; rrect.rad_x = rrect.rad_y = 0.1f;
+        GEllipsoid ellipsoid{0.f, 0.f, 0.f, 1.f, 1.f, 1.f};
+        assert(!TETriangulationParams::Rect(rect).is3DPrimitive() && "Rect is not a 3D primitive");
+        assert(!TETriangulationParams::RoundedRect(rrect).is3DPrimitive() && "RoundedRect is not a 3D primitive");
+        assert(!TETriangulationParams::Ellipsoid(ellipsoid).is3DPrimitive() && "the flat Ellipsoid fan is not a 3D primitive");
+
+        // A null context is refused with GESpaceInvalidObject, not a crash —
+        // and nothing is added to the space.
+        const GEViewport vp{0.f, 0.f, 800.f, 600.f, -1000.f, 1000.f};
+        GESpace space(vp);
+        const auto before = space.objects().size();
+        const auto placed = space.addPrimitive(nullptr, TETriangulationParams::Sphere(sphere));
+        assert(placed == GESpaceInvalidObject && "addPrimitive with a null context returns GESpaceInvalidObject");
+        assert(space.objects().size() == before && "a refused addPrimitive adds nothing to the space");
+
+        // Primitive accessors degrade cleanly on unknown / non-primitive handles.
+        assert(space.triangulationOf(GESpaceInvalidObject) == nullptr && "triangulationOf on the invalid handle is null");
+        const auto anchor = space.addObject();
+        assert(space.triangulationOf(anchor) == nullptr && "a transform-only object has no triangulation");
+        assert(space.meshOf(anchor, nullptr) == nullptr && "a transform-only object builds no mesh");
+    }
+
+    // --- Phase 5: camera (view + projection) composition. -------------------
+    //
+    // objectTransform is projection · view · model. Default (no camera) must
+    // reduce to spaceToNDC · model exactly, so Phases 1-3 behavior is preserved;
+    // a set view/projection must compose in model,view,projection order.
+    {
+        const GEViewport vp{0.f, 0.f, 800.f, 600.f, 0.f, 1.f};
+        GESpace space(vp);
+        const auto id = space.addObject();
+        space.setTranslation(id, GPoint3D{10.f, 0.f, 0.f});
+
+        // No camera set: objectTransform == spaceToNDC * model, byte-compatible
+        // with the pre-Phase-5 behavior.
+        {
+            const GPoint3D p{2.f, 3.f, 0.f};
+            const auto model = space.transformOf(id).modelMatrix();
+            const auto viaHand = transformPoint(space.spaceToNDC(), transformPoint(model, p));
+            const auto viaObject = transformPoint(space.objectTransform(id), p);
+            expectPoint(viaObject, viaHand.x, viaHand.y, viaHand.z,
+                        "no-camera objectTransform equals spaceToNDC * model");
+        }
+
+        // A view translation shifts the object; an identity projection override
+        // replaces spaceToNDC. Object sits at (10,0,0); the view moves the world
+        // by (0,0,-5), so the origin-relative object lands at (10,0,-5).
+        space.setViewMatrix(translationMatrix(0.f, 0.f, -5.f));
+        space.setProjectionMatrix(FMatrix<4,4>::Identity());
+        expectPoint(transformPoint(space.objectTransform(id), GPoint3D{0.f, 0.f, 0.f}),
+                    10.f, 0.f, -5.f,
+                    "projection*view*model composes model, then view, then projection");
+
+        // clearProjectionMatrix reverts to spaceToNDC while keeping the view.
+        space.clearProjectionMatrix();
+        {
+            const GPoint3D q{1.f, 1.f, 0.f};
+            const auto model = space.transformOf(id).modelMatrix();
+            const auto viaHand = transformPoint(space.spaceToNDC(),
+                                    transformPoint(space.viewMatrix(), transformPoint(model, q)));
+            const auto viaObject = transformPoint(space.objectTransform(id), q);
+            expectPoint(viaObject, viaHand.x, viaHand.y, viaHand.z,
+                        "clearProjectionMatrix reverts to spaceToNDC with the view retained");
+        }
+    }
+
     std::printf("gespace_test: all checks passed\n");
     return 0;
 }

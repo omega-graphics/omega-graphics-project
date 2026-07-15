@@ -172,6 +172,22 @@ _NAMESPACE_BEGIN_
         bool renderToExistingTexture = false;
         SharedHandle<GETexture> texture = nullptr;
         TextureRegion region;
+        /// Optional depth (or depth/stencil) surface for this render target.
+        ///
+        /// Must be created with a depth-aspect `PixelFormat` (`D32Float`,
+        /// `D32Float_S8Uint`, …) — check with `pixelFormatInfo(fmt).isDepthStencil()`
+        /// — and `RenderTargetAndDepthStencil` usage, at the same dimensions as
+        /// `texture`. Leave null for a color-only target; a render pass that then
+        /// sets `depthStencilAttachment.disabled = false` is an error the backend
+        /// reports.
+        ///
+        /// Depth lives HERE, on the render target, rather than on the render pass:
+        /// a target is the thing you render *into*, so the color surface and the
+        /// depth surface it is tested against belong together and cannot drift out
+        /// of sync. `GENativeRenderTarget` deliberately has no equivalent — 3D
+        /// content renders into a texture target with depth and is then blitted to
+        /// the drawable, so the swapchain never needs a depth buffer of its own.
+        SharedHandle<GETexture> depthTexture = nullptr;
     };
 
     /// @brief A 3D Space sized to fixed dimensions.
@@ -333,6 +349,36 @@ _NAMESPACE_BEGIN_
         float minX,minY,minZ,maxX,maxY,maxZ;
     };
 
+    struct GEAccelerationStruct;
+
+    /// Inline ray tracing (Raytracing plan §6.1) — instance-flag bits for a
+    /// TLAS instance. Values match `D3D12_RAYTRACING_INSTANCE_FLAG_*` (and the
+    /// Vulkan `VkGeometryInstanceFlagBitsKHR` / Metal equivalents) so each
+    /// backend casts the 8-bit field directly.
+    enum GEAccelerationStructInstanceFlags : unsigned {
+        GE_ACCEL_INSTANCE_FLAG_NONE                 = 0x0,
+        GE_ACCEL_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE = 0x1,
+        GE_ACCEL_INSTANCE_FLAG_TRIANGLE_FRONT_CCW    = 0x2,
+        GE_ACCEL_INSTANCE_FLAG_FORCE_OPAQUE          = 0x4,
+        GE_ACCEL_INSTANCE_FLAG_FORCE_NON_OPAQUE      = 0x8
+    };
+
+    /// Inline ray tracing (Raytracing plan §6.1) — one instance of a bottom-
+    /// level acceleration structure (BLAS) inside a top-level one (TLAS).
+    /// `transform` is a 3x4 row-major affine matrix (the implicit last row is
+    /// [0 0 0 1]). `instanceMask` is AND-ed against the ray's instance-inclusion
+    /// mask during traversal; `instanceID` is the user id read back through
+    /// `RayHit.instanceIndex` / `ray_query_instance`. Build one via
+    /// `GEAccelerationStructDescriptor::addInstance`.
+    struct OMEGAGTE_EXPORT GEAccelerationStructInstance {
+        float transform[3][4];
+        unsigned instanceID : 24;
+        unsigned instanceMask : 8;
+        unsigned instanceContributionToHitGroupIndex : 24;
+        unsigned flags : 8;
+        SharedHandle<GEAccelerationStruct> blas;
+    };
+
      /// @brief Describes the Layout of a Acceleration Structure.
     struct OMEGAGTE_EXPORT GEAccelerationStructDescriptor {
         struct Geometry {
@@ -340,12 +386,36 @@ _NAMESPACE_BEGIN_
                 TRIANGLES,
                 AABB
             } type;
-            struct TriangleList { SharedHandle<GEBuffer> buffer; };
+            /// A BLAS triangle source. The backends read POSITION ONLY, from
+            /// offset 0 of each vertex — which is safe for any GEMesh vertex
+            /// buffer, because `geMeshFieldsFor` always lays Position first.
+            ///
+            /// `vertexStride` / `vertexCount` default to 0, meaning "infer a
+            /// tightly-packed `float3` position buffer" (stride 12, count =
+            /// buffer size / 12) — the behavior every caller had before these
+            /// fields existed, so defaulted callers are byte-for-byte unchanged.
+            /// Set them explicitly to trace a mesh whose vertices carry MORE than
+            /// position (a Position+Normal vertex has a 24- or 32-byte stride);
+            /// leaving them at 0 for such a buffer makes the BLAS read every
+            /// vertex at the wrong offset and the traced geometry comes out
+            /// shredded.
+            struct TriangleList {
+                SharedHandle<GEBuffer> buffer;
+                size_t vertexStride = 0;
+                size_t vertexCount = 0;
+            };
             struct Aabb { SharedHandle<GEBuffer> buffer; };
             std::variant<TriangleList, Aabb> data;
 
             Geometry() : type(TRIANGLES), data(TriangleList{}) {}
             void setTriangleList(SharedHandle<GEBuffer>& buffer) { type = TRIANGLES; data = TriangleList{buffer}; }
+            /// Strided overload — for a vertex buffer that interleaves more than
+            /// position (see TriangleList). `stride` is the full per-vertex size;
+            /// `count` is the number of vertices (a multiple of 3).
+            void setTriangleList(SharedHandle<GEBuffer>& buffer, size_t stride, size_t count) {
+                type = TRIANGLES;
+                data = TriangleList{buffer, stride, count};
+            }
             void setAabb(SharedHandle<GEBuffer>& buffer) { type = AABB; data = Aabb{buffer}; }
             TriangleList& getTriangleList() { return std::get<TriangleList>(data); }
             OMEGA_NODISCARD const TriangleList& getTriangleList() const { return std::get<TriangleList>(data); }
@@ -353,16 +423,57 @@ _NAMESPACE_BEGIN_
             OMEGA_NODISCARD const Aabb& getAabb() const { return std::get<Aabb>(data); }
         };
         OmegaCommon::Vector<Geometry> data;
+
+        /// Inline ray tracing (Raytracing plan §6.1) — bottom-level (geometry)
+        /// vs top-level (instances). Defaults to BottomLevel so existing callers
+        /// that only use addTriangleBuffer / addBoundingBoxBuffer are unchanged;
+        /// addInstance flips it to TopLevel.
+        enum Level { BottomLevel, TopLevel };
+        Level level = BottomLevel;
+        OmegaCommon::Vector<GEAccelerationStructInstance> instances;
     public:
         void addTriangleBuffer(SharedHandle<GEBuffer> & buffer){
             Geometry g;
             g.setTriangleList(buffer);
             data.push_back(g);
         }
+        /// Add a triangle BLAS source whose vertices carry more than position
+        /// (e.g. a Position+Normal GEMesh buffer). `stride` is the full
+        /// per-vertex size and `count` the vertex count; positions are read from
+        /// offset 0. See `Geometry::TriangleList`.
+        void addTriangleBuffer(SharedHandle<GEBuffer> & buffer, size_t stride, size_t count){
+            Geometry g;
+            g.setTriangleList(buffer, stride, count);
+            data.push_back(g);
+        }
         void addBoundingBoxBuffer(SharedHandle<GEBuffer> & buffer){
             Geometry g;
             g.setAabb(buffer);
             data.push_back(g);
+        }
+        /// Add a BLAS instance to a TLAS and flip `level` to TopLevel. `mask`
+        /// defaults to 0xFF (visible to every ray) — a zero mask, which a
+        /// default-constructed instance would carry, is invisible to the 0xFF
+        /// default ray mask, so defaulting here avoids a silent "no hits" trap.
+        /// C++17 forbids default member initializers on the bitfields, so the
+        /// defaults live here instead.
+        void addInstance(SharedHandle<GEAccelerationStruct> & blas,
+                         const float transform[3][4],
+                         unsigned mask = 0xFF,
+                         unsigned instanceID = 0,
+                         unsigned flags = GE_ACCEL_INSTANCE_FLAG_NONE,
+                         unsigned hitGroupIndex = 0){
+            GEAccelerationStructInstance inst{};
+            for(int r = 0; r < 3; ++r)
+                for(int c = 0; c < 4; ++c)
+                    inst.transform[r][c] = transform[r][c];
+            inst.instanceID = instanceID;
+            inst.instanceMask = mask;
+            inst.instanceContributionToHitGroupIndex = hitGroupIndex;
+            inst.flags = flags;
+            inst.blas = blas;
+            instances.push_back(inst);
+            level = TopLevel;
         }
     };
 
@@ -601,8 +712,19 @@ _NAMESPACE_BEGIN_
 
 
 
+    /// A native render target is COLOR ONLY. No graphics API hands you a
+    /// swapchain with depth — D3D12, Metal and Vulkan all give you color images
+    /// only, and a depth buffer is always a separate texture you allocate and
+    /// attach. Render 3D OFFSCREEN into a `GETextureRenderTarget` that owns its
+    /// depth surface (`TextureRenderTargetDescriptor::depthTexture`), then blit /
+    /// resolve that result to the drawable. That is what real engines do, and not
+    /// primarily because of depth — a drawable is `BGRA8Unorm`, so HDR,
+    /// tonemapping, TAA, deferred G-buffers and compute readback are all
+    /// impossible against it. Once the scene has to live in an offscreen float
+    /// target anyway, the blit is free and direct-to-drawable buys nothing.
+    /// Enabling `GERenderPassDescriptor::depthStencilAttachment` against a native
+    /// render target is therefore a caller-contract violation.
     struct OMEGAGTE_EXPORT NativeRenderTargetDescriptor {
-        bool allowDepthStencilTesting = false;
         /// Color format for the swap chain / drawable. Only the portable
         /// intersection of D3D12, Metal, and Vulkan swap-chain formats is
         /// guaranteed to succeed across backends — see

@@ -118,6 +118,17 @@ add_omegasl_compile_test(omegasl_compile_half_pack           half_pack.omegasl)
 add_omegasl_compile_test(omegasl_compile_pack_norm           pack_norm.omegasl)
 # §5.6 Phase A — atomic ops (add/min/max/and/or/xor/exchange + load/store).
 add_omegasl_compile_test(omegasl_compile_atomic_ops          atomic_ops.omegasl)
+# Raytracing plan §1-2 — inline ray query: Ray/RayHit/AccelerationStructure
+# builtin types + intersect() lowered to inline ray query on every backend.
+add_omegasl_compile_test(omegasl_compile_inline_raytracing   inline_raytracing.omegasl)
+# Raytracing plan §1.5 — low-level RayQuery traversal loop (ray_query_*).
+add_omegasl_compile_test(omegasl_compile_ray_query_loop      ray_query_loop.omegasl)
+# Raytracing plan §1.5 — ray flags: RAY_FLAG_* constants + 4-arg intersect() /
+# 5-arg ray_query_init() (HLSL/GLSL forward by name; Metal decomposes to setters).
+add_omegasl_compile_test(omegasl_compile_ray_flags           ray_flags.omegasl)
+# Raytracing plan §1.5 — procedural / AABB geometry: candidate-type branch,
+# object-space ray accessors, ray_query_generate_intersection, committed type.
+add_omegasl_compile_test(omegasl_compile_ray_query_aabb      ray_query_aabb.omegasl)
 # §5.1.0 — modf / frexp out-param intrinsics + mod / mad aliases.
 add_omegasl_compile_test(omegasl_compile_math_modf_frexp     math_modf_frexp.omegasl)
 # §4.1 / §4.2 / §4.3 — 16-bit, 64-bit, and double numeric type families.
@@ -325,6 +336,12 @@ add_omegasl_fail_test(omegasl_invalid_amp_no_payload            invalid_amp_no_p
 add_omegasl_fail_test(omegasl_invalid_payload_wrong_direction   invalid_payload_wrong_direction.omegasl)
 add_omegasl_diag_test(omegasl_invalid_payload_wrong_direction_diag invalid_payload_wrong_direction.omegasl
                       "use `in payload`")
+# Raytracing plan §1.5 — a runtime (non-constant) rayFlags argument must be
+# rejected: Metal decomposes the folded flag bitmask at codegen and cannot lower
+# a runtime flag value.
+add_omegasl_fail_test(omegasl_invalid_ray_flags_runtime         invalid_ray_flags_runtime.omegasl)
+add_omegasl_diag_test(omegasl_invalid_ray_flags_runtime_diag    invalid_ray_flags_runtime.omegasl
+                      "must be a compile-time constant combination of RAY_FLAG")
 
 # =============================================================
 # 4. ShaderArchive Read->Write byte-identical round-trip (Phase 1)

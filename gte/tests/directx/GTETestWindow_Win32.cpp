@@ -120,7 +120,6 @@ int RunGTETestWindow(int argc,
     // Populate the descriptor from the realized window and hand it to the test.
     OmegaGTE::NativeRenderTargetDescriptor nrt {};
     nrt.pixelFormat              = desc.pixelFormat;
-    nrt.allowDepthStencilTesting = desc.allowDepthStencilTesting;
     nrt.isHwnd                   = true;
     nrt.hwnd                     = hwnd;
 

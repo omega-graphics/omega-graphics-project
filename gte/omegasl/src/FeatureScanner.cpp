@@ -402,6 +402,15 @@ void FeatureScanner::inspectCall(ast::CallExpr *call, ast::FuncDecl *enclosing) 
     auto *id = static_cast<ast::IdExpr *>(call->callee);
     const auto &name = id->id;
 
+    /// Inline ray tracing (Raytracing plan §1.6) — `intersect()` and the
+    /// low-level `ray_query_*` family (sub-phase 1.5) need hardware ray query.
+    /// Trips OMEGASL_FEATURE_BIT_RAYTRACING so the portability scanner warns
+    /// when the shader omits `#requires(RAYTRACING)` (the serialized gate the
+    /// runtime loader masks against device features).
+    if (name == BUILTIN_INTERSECT || name.rfind("ray_query_", 0) == 0) {
+        enclosing->usedFeatures |= OMEGASL_FEATURE_BIT_RAYTRACING;
+    }
+
     /// Trigger table — backend-asymmetric texture ops on cube/MS textures.
     if (name == BUILTIN_READ || name == BUILTIN_WRITE) {
         if (!call->args.empty()) {

@@ -225,6 +225,17 @@ namespace omegasl {
                           res_desc->typeExpr->args[0]->pointer, out);
             out << " &";
             layoutDescType = OMEGASL_SHADER_PUSH_CONSTANT_DESC;
+        } else if (type_ == builtins::acceleration_structure_type) {
+            /// Inline ray tracing (Raytracing plan §2.3). A TLAS is a
+            /// value-typed `acceleration_structure<instancing>` (from
+            /// <metal_raytracing>, in scope via `using namespace
+            /// metal::raytracing` in emitDefaultHeaders) bound at a buffer index
+            /// through `setAccelerationStructure:atBufferIndex:`. It rides the
+            /// buffer index space (isBuffer) but takes no address-space prefix —
+            /// it is a value, not a `constant`/`device` pointer/reference.
+            isBuffer = true;
+            out << "acceleration_structure<instancing>";
+            layoutDescType = OMEGASL_SHADER_ACCELERATION_STRUCTURE_DESC;
         } else if (type_ == builtins::texture1d_type) {
             isTexture = true;
             out << "texture1d<float,";
@@ -389,12 +400,48 @@ using namespace metal;
         return ".metallib";
     }
 
-    void MSLTarget::emitDefaultHeaders(CodeGen &/*cg*/, std::ostream &out) {
+    /// Inline ray tracing (Raytracing plan §1.2/§2.3). Fixed MSL text for the
+    /// `Ray` / `RayHit` builtin structs (`float3`/`float2` spellings, identical
+    /// to HLSL). The trailing `};\n` matches what `emitStructDecl` caches so the
+    /// used-struct emission path spells them identically. `Ray` (capitalized)
+    /// does not collide with Metal's `metal::raytracing::ray`.
+    static const char mslRayStruct[] =
+        "struct Ray {\n"
+        "    float3 origin;\n"
+        "    float3 direction;\n"
+        "    float tmin;\n"
+        "    float tmax;\n"
+        "};\n";
+    static const char mslRayHitStruct[] =
+        "struct RayHit {\n"
+        "    bool committed;\n"
+        "    float t;\n"
+        "    uint primitiveIndex;\n"
+        "    uint instanceIndex;\n"
+        "    float2 barycentrics;\n"
+        "};\n";
+
+    void MSLTarget::emitDefaultHeaders(CodeGen &cg, std::ostream &out) {
         /// MSL has `half`, `short`/`ushort`, and `long`/`ulong` (MSL 2.0+)
         /// in the standard library; no per-feature `#extension`-style
         /// preamble is needed. Runtime gating handles devices that
         /// can't run the resulting shader.
         out << defaultMetalHeaders;
+        /// Inline ray tracing (Raytracing plan §2.3) — `<metal_raytracing>`
+        /// supplies `ray`, `intersector`, `intersection_result`,
+        /// `acceleration_structure`, and the `triangle_data`/`instancing` tags.
+        /// Bring the `metal::raytracing` namespace into scope so the emitted
+        /// lowering and resource types can be spelled unqualified. Pre-seed the
+        /// `Ray`/`RayHit` struct text so the used-struct emission spells them
+        /// (they resolve `builtin = false`). Gated on the RT feature bit.
+        if (cg.fileRequiredFeatures & OMEGASL_FEATURE_BIT_RAYTRACING) {
+            out << "#include <metal_raytracing>\n";
+            out << "using namespace metal::raytracing;\n\n";
+            generatedStructs.insert(std::make_pair(OmegaCommon::String("Ray"),
+                                                   OmegaCommon::String(mslRayStruct)));
+            generatedStructs.insert(std::make_pair(OmegaCommon::String("RayHit"),
+                                                   OmegaCommon::String(mslRayHitStruct)));
+        }
     }
 
     bool MSLTarget::tryEmitReturnDecl(CodeGen &cg, ast::ReturnDecl *decl) {
@@ -596,6 +643,7 @@ using namespace metal;
         meshVertsStructDecl = nullptr;
         meshMaxVertices = 0;
         meshMaxPrimitives = 0;
+        meshIdxTmpSerial = 0;
         if (_decl->shaderType == ast::ShaderDecl::Mesh) {
             for (auto &p : _decl->params) {
                 if (p.meshOutput == ast::AttributedFieldDecl::Vertices) {
@@ -1062,6 +1110,7 @@ using namespace metal;
             meshVertsStructDecl = nullptr;
             meshMaxVertices = 0;
             meshMaxPrimitives = 0;
+            meshIdxTmpSerial = 0;
         }
         /// §5 — the payload rides BOTH mesh-pipeline stages, so its reset is
         /// unconditional rather than folded into the mesh-only block above.
@@ -1178,7 +1227,11 @@ using namespace metal;
 
         std::string idxStr  = cg.renderExprToString(_idx->idx_expr);
         std::string rhsStr  = cg.renderExprToString(expr->rhs);
-        std::string tmpName = "__omegasl_mesh_idx_tmp";
+        /// Unique per write: the decl below is queued as a pre-statement into the
+        /// enclosing block, so a shader writing `tris[0]` and `tris[1]` would
+        /// declare the same name twice in one scope (MSL: "redefinition of
+        /// '__omegasl_mesh_idx_tmp'").
+        std::string tmpName = "__omegasl_mesh_idx_tmp" + std::to_string(meshIdxTmpSerial++);
 
         cg.queuePendingStatement(std::string(vecTy) + " " + tmpName + " = " + rhsStr + ";");
         for (unsigned k = 0; k + 1 < K; ++k) {
@@ -1290,10 +1343,123 @@ using namespace metal;
     /// `M_PI / 180` for `radians(x)` and `180 / M_PI` for `degrees(x)`.
     /// Vector arguments work without extra glue because scalar * vec
     /// broadcasts in MSL.
+    /// Sub-phase 1.5 — Metal ray-flag decomposition. Metal's `intersector` /
+    /// `intersection_params` take no DXR-style flag bitmask, so each set flag is
+    /// lowered to a setter call on `obj` (an intersector for the one-shot
+    /// `intersect`, an `intersection_params` for the low-level query). The bit
+    /// values are shared (`ast::rayflags`); the setter names are Metal's. Culling
+    /// BOTH faces has no single `triangle_cull_mode`, so it maps to
+    /// `geometry_cull_mode::triangle` (cull all triangle geometry) — the correct
+    /// equivalent of DXR's cull-back | cull-front (no triangle can be hit).
+    static void mslQueueRayFlagSetters(CodeGen &cg, uint32_t m, const std::string &obj) {
+        if (m & ast::rayflags::Opaque)
+            cg.queuePendingStatement(obj + ".force_opacity(forced_opacity::opaque);");
+        if (m & ast::rayflags::TerminateOnFirstHit)
+            cg.queuePendingStatement(obj + ".accept_any_intersection(true);");
+        bool cb = (m & ast::rayflags::CullBackFacing) != 0;
+        bool cf = (m & ast::rayflags::CullFrontFacing) != 0;
+        if (cb && cf)
+            cg.queuePendingStatement(obj + ".set_geometry_cull_mode(geometry_cull_mode::triangle);");
+        else if (cb)
+            cg.queuePendingStatement(obj + ".set_triangle_cull_mode(triangle_cull_mode::back);");
+        else if (cf)
+            cg.queuePendingStatement(obj + ".set_triangle_cull_mode(triangle_cull_mode::front);");
+    }
+
+    /// Sub-phase 1.5 — the low-level `ray_query_*` traversal family (MSL,
+    /// `intersection_query` from <metal_raytracing>). Returns true (and emits)
+    /// when `name` is one of the family; false otherwise. `ray_query_init` is
+    /// statement-shaped (build a `ray` first, via statement injection); every
+    /// other member is a one-line method call on the RayQuery arg0.
+    static bool mslEmitRayQuery(CodeGen &cg, ast::CallExpr *_expr,
+                                OmegaCommon::StrRef name, std::ostream &out) {
+        if (name == BUILTIN_RAY_QUERY_INIT) {
+            std::string q    = cg.renderExprToString(_expr->args[0]);
+            std::string as   = cg.renderExprToString(_expr->args[1]);
+            std::string ray  = cg.renderExprToString(_expr->args[2]);
+            std::string mask = (_expr->args.size() >= 4)
+                ? ("uint32_t(" + cg.renderExprToString(_expr->args[3]) + ")")
+                : std::string("0xFFu");
+            unsigned id = cg.rayQueryTempId++;
+            std::string r = "_r" + std::to_string(id);
+            /// Fully qualify `ray` (see emitIntersect) so a user `Ray` local
+            /// named `ray` cannot shadow the Metal type.
+            cg.queuePendingStatement("metal::raytracing::ray " + r + "(" + ray + ".origin, "
+                + ray + ".direction, " + ray + ".tmin, " + ray + ".tmax);");
+            /// 5-arg form adds rayFlags. Metal has no flag bitmask; decompose
+            /// the folded set bits into `intersection_params` setters and pass
+            /// them to the 4-arg `reset`. With no flags (or a 0 mask) the plain
+            /// 3-arg `reset` is emitted, unchanged. Sema validated the fold.
+            uint32_t m = 0;
+            if (_expr->args.size() == 5 && ast::tryFoldRayFlags(_expr->args[4], m) && m != 0u) {
+                std::string ip = "_ip" + std::to_string(id);
+                cg.queuePendingStatement("intersection_params " + ip + ";");
+                mslQueueRayFlagSetters(cg, m, ip);
+                out << q << ".reset(" << r << ", " << as << ", " << mask << ", " << ip << ")";
+            } else {
+                out << q << ".reset(" << r << ", " << as << ", " << mask << ")";
+            }
+            return true;
+        }
+        /// `committed()` means "any hit committed" — Metal's committed type is
+        /// already `!= none` for both triangle and bounding-box hits.
+        if (name == BUILTIN_RAY_QUERY_COMMITTED) {
+            out << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ".get_committed_intersection_type() != intersection_type::none)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_COMMITTED_IS_AABB) {
+            out << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ".get_committed_intersection_type() == intersection_type::bounding_box)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_CANDIDATE_IS_TRIANGLE) {
+            out << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ".get_candidate_intersection_type() == intersection_type::triangle)";
+            return true;
+        }
+        if (name == BUILTIN_RAY_QUERY_CANDIDATE_IS_AABB) {
+            out << "(";
+            cg.generateExpr(_expr->args[0]);
+            out << ".get_candidate_intersection_type() == intersection_type::bounding_box)";
+            return true;
+        }
+        /// `generate_intersection(q, t)` — commit a procedural hit at distance t.
+        if (name == BUILTIN_RAY_QUERY_GENERATE_INTERSECTION) {
+            cg.generateExpr(_expr->args[0]);
+            out << ".commit_bounding_box_intersection(";
+            cg.generateExpr(_expr->args[1]);
+            out << ")";
+            return true;
+        }
+        const char *method = nullptr;
+        if (name == BUILTIN_RAY_QUERY_PROCEED)                 method = "next";
+        else if (name == BUILTIN_RAY_QUERY_COMMIT)             method = "commit_triangle_intersection";
+        else if (name == BUILTIN_RAY_QUERY_T)                  method = "get_committed_distance";
+        else if (name == BUILTIN_RAY_QUERY_PRIMITIVE)          method = "get_committed_primitive_id";
+        else if (name == BUILTIN_RAY_QUERY_INSTANCE)           method = "get_committed_instance_id";
+        else if (name == BUILTIN_RAY_QUERY_BARYCENTRICS)       method = "get_committed_triangle_barycentric_coord";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_T)        method = "get_candidate_triangle_distance";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_PRIMITIVE)method = "get_candidate_primitive_id";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_INSTANCE) method = "get_candidate_instance_id";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_BARYCENTRICS) method = "get_candidate_triangle_barycentric_coord";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_ORIGIN)    method = "get_candidate_ray_origin";
+        else if (name == BUILTIN_RAY_QUERY_CANDIDATE_OBJECT_RAY_DIRECTION) method = "get_candidate_ray_direction";
+        else return false;
+        cg.generateExpr(_expr->args[0]);
+        out << "." << method << "()";
+        return true;
+    }
+
     bool MSLTarget::tryEmitBuiltinCall(CodeGen &cg,
                                        ast::CallExpr *_expr,
                                        OmegaCommon::StrRef name,
                                        std::ostream &out) {
+        /// Sub-phase 1.5 — low-level ray-query traversal family.
+        if (mslEmitRayQuery(cg, _expr, name, out)) return true;
         if (name == BUILTIN_DEGREES) {
             if (_expr->args.size() != 1) return false;
             out << "((";
@@ -1904,6 +2070,58 @@ using namespace metal;
         out << ")";
     }
 
+    void MSLTarget::emitIntersect(CodeGen &cg, ast::CallExpr *_expr, std::ostream &out) {
+        /// Inline ray tracing (Raytracing plan §2.3). `intersect(as, ray[,
+        /// mask])` → a Metal `intersector<triangle_data, instancing>`: build a
+        /// `ray`, intersect against the `acceleration_structure`, and copy the
+        /// result into a `RayHit`. Statement-shaped, so queued as preceding
+        /// statements and the expression is the injected `RayHit` temp (same
+        /// pattern as the HLSL/GLSL backends). `metal::raytracing` is in scope
+        /// via emitDefaultHeaders.
+        std::string asStr = cg.renderExprToString(_expr->args[0]);
+        std::string rayStr = cg.renderExprToString(_expr->args[1]);
+        /// Missing mask ⇒ 0xFF. Metal's `intersect(...)` mask is `uint32_t`; a
+        /// literal like `0xFF` resolves to `int` in Sema, so cast an explicit
+        /// mask to uint32_t.
+        std::string maskStr = (_expr->args.size() >= 3)
+            ? ("uint32_t(" + cg.renderExprToString(_expr->args[2]) + ")")
+            : std::string("0xFFu");
+        /// Optional 4th arg — rayFlags. Metal has no flag bitmask; the folded
+        /// set bits are decomposed into setter calls on the intersector below.
+        /// Sema validated the fold.
+        uint32_t flagsMask = 0;
+        if (_expr->args.size() == 4) {
+            ast::tryFoldRayFlags(_expr->args[3], flagsMask);
+        }
+
+        unsigned id = cg.rayQueryTempId++;
+        std::string r = "_r" + std::to_string(id);
+        std::string isect = "_isect" + std::to_string(id);
+        std::string res = "_res" + std::to_string(id);
+        std::string h = "_rh" + std::to_string(id);
+        std::string tag = "triangle_data, instancing";
+
+        /// Fully qualify the `ray` type: Metal's `metal::raytracing::ray` is
+        /// hidden by ordinary lookup if the user's `Ray` local happens to be
+        /// named `ray` (the natural spelling), which would make a bare `ray
+        /// _rN(...)` declaration ill-formed. The qualified name is immune.
+        cg.queuePendingStatement("metal::raytracing::ray " + r + "(" + rayStr + ".origin, "
+            + rayStr + ".direction, " + rayStr + ".tmin, " + rayStr + ".tmax);");
+        cg.queuePendingStatement("intersector<" + tag + "> " + isect + ";");
+        /// Apply any ray-flag setters on the intersector before intersecting.
+        mslQueueRayFlagSetters(cg, flagsMask, isect);
+        cg.queuePendingStatement("intersection_result<" + tag + "> " + res + " = "
+            + isect + ".intersect(" + r + ", " + asStr + ", " + maskStr + ");");
+        cg.queuePendingStatement("RayHit " + h + ";");
+        cg.queuePendingStatement(h + ".committed = (" + res + ".type != intersection_type::none);");
+        cg.queuePendingStatement(h + ".t = " + res + ".distance;");
+        cg.queuePendingStatement(h + ".primitiveIndex = " + res + ".primitive_id;");
+        cg.queuePendingStatement(h + ".instanceIndex = " + res + ".instance_id;");
+        cg.queuePendingStatement(h + ".barycentrics = " + res + ".triangle_barycentric_coord;");
+
+        out << h;
+    }
+
     void MSLTarget::writeAttribute(OmegaCommon::StrRef attributeName,
                                    std::optional<unsigned> attributeIndex,
                                    std::ostream &out) {
@@ -2007,6 +2225,17 @@ using namespace metal;
         /// `<metal_stdlib>`); every access goes through `atomic_*_explicit`.
         else if(_t == builtins::atomic_int_type){ out << "atomic_int"; }
         else if(_t == builtins::atomic_uint_type){ out << "atomic_uint"; }
+        /// Inline ray tracing (Raytracing plan §2.3). Spelled when the TLAS
+        /// handle is passed to a user helper; the resource declaration itself
+        /// is emitted in `emitResourceBinding`. `metal::raytracing` is in scope
+        /// via emitDefaultHeaders. `Ray`/`RayHit` fall through to the default
+        /// (`_t->name`) — their names match the emitted structs.
+        else if(_t == builtins::acceleration_structure_type){ out << "acceleration_structure<instancing>"; }
+        /// Sub-phase 1.5 — the low-level ray-query object. Declared as a local
+        /// (`intersection_query<triangle_data, instancing> q;`) and mutated by
+        /// the `ray_query_*` intrinsics. `metal::raytracing` is in scope via
+        /// emitDefaultHeaders.
+        else if(_t == builtins::ray_query_type){ out << "intersection_query<triangle_data, instancing>"; }
         /// §4.1 16-bit family — Metal natively supports all of these
         /// since MSL 1.0 (`half`) / MSL 1.0 (`short`,`ushort`).
         else if(_t == builtins::half_type)   { out << "half"; }

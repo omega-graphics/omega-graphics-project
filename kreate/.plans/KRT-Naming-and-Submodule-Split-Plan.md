@@ -191,9 +191,131 @@ just move library.
 ## Phases
 
 The refactor is dominated by mechanical renames, but the API redesign and
-the binary split are real architectural changes. Six phases keep each
+the binary split are real architectural changes. The phases below keep each
 landing reviewable on its own, and — critically — **each phase ends with the
 Linux Vulkan build green and `BasicGame` still drawing the spinning cube.**
+
+**Phase 0 runs first** (it predates the rename/split): it swaps the cube over
+to a real primitive API and the shader over to a precompiled pak, so every
+later phase inherits the finished asset/primitive flow instead of the
+hand-authored 36-vertex cube and runtime-compiled loose `.omegasl`.
+
+### Phase 0 — Precompiled base-shader pak + 3D primitive API
+
+Two changes land together because they reshape *how the cube exists* — where
+its shader comes from and where its geometry comes from — and the test that
+proves both is the same spinning cube. This is the plan's **first** executable
+work, ahead of the rename (Phase 1).
+
+Nothing here needs new engine machinery: `add_omegasl_lib` (precompile),
+`omega-assetc` (pak), `OmegaCommon::AssetBundle` +
+`loadShaderLibraryFromInputStream` (runtime load), and
+`GESpace::addPrimitive` / `meshOf` (primitives) all exist and are proven — WTK
+ships its compositor shader library through exactly this pak path
+(`wtk/cmake/OmegaWTKApp.cmake`, `wtk/src/Composition/backend/Pipeline.cpp`),
+and GESpace Phase 4 shipped `addPrimitive`. Phase 0 is wiring, not invention.
+
+**0.1 — Base shaders move to `kreate/src/shaders/` and precompile.**
+`tests/shaders/Phase1Basic.omegasl` moves to `kreate/src/shaders/` — the home
+for every engine ("main Kreate") shader — and is compiled at build time by
+`add_omegasl_lib(KRTBaseShaderLib kreate/src/shaders/*.omegasl)` (the helper
+from `gte/OmegaGTE.cmake` that WTK uses for `OmegaWTKCompositorShaderLib`),
+producing a host-native `.omegasllib`. `add_dependencies(... omegaslc)` gates
+it on the compiler, as WTK does. *(Optional: rename `Phase1Basic` →
+`KRTBaseMesh` since it is becoming the engine base shader, not a test shader —
+see decision P-A.)*
+
+**0.2 — Bundle into `krt-base.pak` via `omega-assetc`.** A CMake recipe
+modeled on `OmegaWTKApp`'s `default.pak` build: a generated manifest lists the
+`.omegasllib` as `type=shader`, `--strip-prefix` trims it to a clean logical
+entry name, `--no-encrypt` for now, output `krt-base.pak`. This is the engine's
+**base** asset bundle — the container for *all* main Kreate shaders, seeded
+with the base mesh shader and extended as the default mesh renderer (KRT plan
+Phase 3) and future engine shaders land. `KreateGame.cmake` stages it next to
+the executable (and into `Contents/Resources/` on macOS) the same way it
+stages loose shader sources today — replacing that loose-source staging.
+
+**0.3 — Load the base shader library from the pak at runtime.** At engine
+init the Renderer opens `krt-base.pak` (`AssetBundle::open`, exe-relative),
+streams the base-shader entry, and builds the library with
+`loadShaderLibraryFromInputStream` — the compositor path WTK already runs. The
+base/default pipeline resolves its shaders from that library instead of
+runtime-compiling a loose `.omegasl`. Runtime compile-from-source stays for
+*user* custom shaders (`createPipeline`), but the engine's own shaders ship
+precompiled. **This resolves existing decision D2** (default-shader
+packaging): the default mesh renderer's shaders live in `krt-base.pak`.
+
+**0.4 — Expose basic 3D primitives (TEParams under the hood).** Kreate gains a
+primitive API for the seven solids GESpace Phase 4 accepts — RectangularPrism,
+Pyramid, Cylinder, Cone, Torus, Sphere, Capsule — each a thin wrapper over the
+matching `TETriangulationParams` factory. The `Scene` already owns the
+`Renderer` (GTE stack) and a `GESpace`, so it mints a TE context from its
+render target and drives `GESpace::addPrimitive` → `meshOf(engine)` under the
+hood. **`BasicGame` builds its cube from `RectangularPrism`** (unit dims),
+deleting `makeCubeVertices()` and the 36-vertex hand-authored buffer — the
+concrete proof the primitive path renders. See decision P-C for the exact
+surface and the primitive-vs-`Object`-vs-GESpace-slot reconciliation.
+
+**Exit criteria:** `BasicGame` still draws the spinning cube — now (a) built
+from a `RectangularPrism` primitive and (b) drawn with the base shader loaded
+from `krt-base.pak` — with the Linux Vulkan build green. No hand-authored cube
+vertices and no loose runtime-compiled base `.omegasl` remain.
+
+**Decisions surfaced (Phase 0) — all resolved:**
+
+- **P-C ✅ RESOLVED → `scene->createPrimitive(type, dims)` returns an
+  `Object`** whose GESpace slot *is* the `addPrimitive` object (one
+  registration; geometry + transform together; `meshOf(engine)` builds the
+  drawn mesh lazily). This means Kreate's `Object`/`Scene` registration model
+  (Phase 5) must let an `Object` be created **already bound** to a GESpace slot
+  rather than only registering on `Scene::add` — a primitive object is
+  pre-placed in the space by `createPrimitive`.
+- **P-D ✅ RESOLVED → push-constant tint.** The base mesh shader takes a single
+  `float4` color via the push constant alongside the MVP (block grows 64→80B;
+  `Renderer::draw` gains a tint arg, `Object` gains a color, `Scene` passes the
+  object's color). The primitive cube is single-shaded; per-vertex face colors
+  do not survive (real per-object/material color = Roadmap Phase 4).
+- **P-A — base-shader naming/home.** Move to `kreate/src/shaders/` (agreed).
+  Rename `Phase1Basic.omegasl` → a base name (`KRTBaseMesh.omegasl`) now, or
+  keep `Phase1Basic` to minimize churn? **Recommend rename** — it is the engine
+  base shader, not a Phase-1 test artifact. Compilation unit that *loads* the
+  pak lives in the render layer (Renderer → GTE), so despite the `krt-base`
+  name it compiles into `KRTPipeline` post-split, honoring the
+  header-vs-compilation-unit rule (`KRTBase` never touches GTE loading).
+- **P-B — pak ownership + lifetime.** `krt-base.pak` is engine-built (one pak,
+  shipped with the engine, holding the main Kreate shaders) and opened once at
+  Renderer init, its `AssetBundle` held for the process. **Recommend** this over
+  a per-app pak; per-app *game* assets can be a separate `app.pak` later
+  (parallels WTK's per-app `default.pak`, but here the base pak is engine-owned).
+- **P-C — primitive API surface + GESpace reconciliation.** A primitive is
+  already a GESpace object (`addPrimitive` registers it with a transform), but
+  today Kreate's `Object` also registers itself in the Scene's GESpace as a
+  plain `addObject`. Two options: **(rec)** `scene->createPrimitive(type,
+  dims)` returns a fully-formed `Object` whose GESpace slot *is* the
+  `addPrimitive` object (one registration, geometry + transform together), and
+  `meshOf(engine)` lazily builds the drawn `KRTMesh`; or a lower-level
+  `KRTMesh`-only factory that leaves placement to a separate `Object`
+  (two registrations, geometry decoupled from transform). Recommend the former
+  — it matches "a primitive is a placeable thing," avoids double-registration,
+  and keeps `Object`'s transform authority in the space. Confirm before 0.4.
+- **P-D — draw path for a primitive's `KRTMesh`.** `meshOf(engine)` builds a
+  `GEMesh`; Kreate's `Mesh` already wraps a `GEMesh` (`MeshFactory::geMesh`),
+  so a primitive's `Mesh` is that GEMesh adopted into a `KRTMesh` handle. The
+  base shader consumes Position-only vertices (per
+  [[project-gespace-primitives-position-only]] — attachment data is blank;
+  material shaders own the rest), so the base mesh shader must be
+  Position-only-compatible. **Confirmed risk (read the shader):**
+  `Phase1Basic.omegasl`'s `VertexIn` is `{float3 pos; float4 color}` (32-byte
+  std430 stride) and the fragment stage returns the per-vertex color. A
+  primitive supplies a **Position-only** buffer (16-byte stride, no color), so
+  feeding it to this shader mismatches the stride — the Finding-E failure that
+  shreds geometry — and reads garbage color. So Phase 0 **must** rework the base
+  mesh shader to a Position-only input, and get its color from somewhere other
+  than the vertex (options: a constant/push-constant tint, a normal-based shade,
+  or a flat debug color). This is the one substantive code change in Phase 0
+  beyond wiring; pick the color source when 0.4 lands. (BasicGame's six distinct
+  face colors do not survive this — a primitive cube is single-shaded until the
+  material system, Roadmap Phase 4, carries real per-object color.)
 
 ### Phase 1 — Public type renames (no surface or binary changes)
 

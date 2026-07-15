@@ -140,6 +140,17 @@ namespace omegasl {
         /// constructor over the temporaries inline.
         virtual void emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) = 0;
 
+        /// Inline ray tracing (Raytracing plan §2). `intersect(as, ray [,
+        /// mask])` lowers to inline ray query — a control-flow shape (declare a
+        /// query/intersector, run traversal, read the committed hit) that
+        /// cannot be a sub-expression, so each backend queues the query block
+        /// through `cg.queuePendingStatement(...)` (flushed before the current
+        /// statement by `generateBlock`, exactly like `emitTextureGetDimensions`)
+        /// and emits the name of the injected `RayHit` temp inline. Per backend:
+        /// HLSL `RayQuery<>::TraceRayInline` (SM 6.5), GLSL `rayQueryEXT`
+        /// (GL_EXT_ray_query), MSL `intersector<triangle_data, instancing>`.
+        virtual void emitIntersect(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) = 0;
+
         /// Phase 5: small per-statement target hooks.
 
         /// The keyword that aborts a fragment shader: `"discard"` for
@@ -490,6 +501,7 @@ namespace omegasl {
         void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) override;
         void emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitIntersect(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
@@ -505,6 +517,10 @@ namespace omegasl {
         /// emission) so a definition and every reference end up with
         /// the same `_`-prefixed spelling.
         void writeIdentifier(OmegaCommon::StrRef name, std::ostream &out) const override;
+        /// Inline ray tracing (Raytracing plan §2.4) — pre-seed `Ray`/`RayHit`
+        /// struct text into `generatedStructs`. See the class-body override
+        /// comment above; HLSL emits no preamble text otherwise.
+        void emitDefaultHeaders(CodeGen &cg, std::ostream &out) override;
         void emitResourceBinding(CodeGen &cg,
                                  ast::ResourceDecl *res,
                                  ast::ShaderDecl *shader,
@@ -617,6 +633,7 @@ namespace omegasl {
         void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) override;
         void emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitIntersect(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;
@@ -743,6 +760,11 @@ namespace omegasl {
         ast::ShaderDecl::MeshDesc::Topology meshTopology = ast::ShaderDecl::MeshDesc::Triangle;
         unsigned meshMaxVertices = 0;
         unsigned meshMaxPrimitives = 0;
+        /// Suffixes the index-slot scratch temp `tryEmitBinaryExpr` declares per
+        /// `tris[i] = ...` write. The declaration lands in the enclosing block, so
+        /// a mesh shader emitting two primitives would otherwise redeclare one
+        /// name in the same scope and MSL rejects the shader. Reset per entry.
+        unsigned meshIdxTmpSerial = 0;
 
         /// §5 — mesh-pipeline payload param name on either stage. MSL passes the
         /// payload by reference in the `object_data` address space (writable on
@@ -790,6 +812,7 @@ namespace omegasl {
         void emitTextureGather(CodeGen &cg, ast::CallExpr *expr, int channel, std::ostream &out) override;
         void emitTextureCalculateLOD(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         void emitTextureGetDimensions(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
+        void emitIntersect(CodeGen &cg, ast::CallExpr *expr, std::ostream &out) override;
         OmegaCommon::StrRef discardStatement() override;
         void writeCast(CodeGen &cg, ast::TypeExpr *target, std::ostream &out) override;
         bool supportsPointerExpr() const override;

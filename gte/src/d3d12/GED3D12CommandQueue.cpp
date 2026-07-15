@@ -7,6 +7,7 @@
 #include "GED3D12Texture.h"
 
 #include <memory>
+#include <cstring>
 
 #include <d3d12.h>
 _NAMESPACE_BEGIN_
@@ -1203,12 +1204,19 @@ static void fillGeometryDescsFromGE(const GEAccelerationStructDescriptor &desc,
         gd.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
         if (g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES) {
             gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-            auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(g.getTriangleList().buffer);
+            const auto &tl = g.getTriangleList();
+            auto d3dBuf = std::dynamic_pointer_cast<GED3D12Buffer>(tl.buffer);
             if (d3dBuf) {
+                /// Raytracing plan §6-M1 — an explicit stride/count traces a
+                /// vertex buffer that interleaves more than position (positions
+                /// are read from offset 0). Zero means the historical default:
+                /// a tightly-packed float3 position buffer.
+                const size_t stride = tl.vertexStride ? tl.vertexStride : (sizeof(float) * 3);
+                const size_t count  = tl.vertexCount ? tl.vertexCount : (d3dBuf->size() / stride);
                 gd.Triangles.VertexBuffer.StartAddress = d3dBuf->buffer->GetGPUVirtualAddress();
-                gd.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3;
+                gd.Triangles.VertexBuffer.StrideInBytes = stride;
                 gd.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-                gd.Triangles.VertexCount = static_cast<UINT>(d3dBuf->size() / (sizeof(float) * 3));
+                gd.Triangles.VertexCount = static_cast<UINT>(count);
             }
         } else {
             gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
@@ -1221,6 +1229,52 @@ static void fillGeometryDescsFromGE(const GEAccelerationStructDescriptor &desc,
         }
         out.push_back(gd);
     }
+}
+
+/// Raytracing plan §6.2 — translate the GE descriptor's TLAS instances into a
+/// `D3D12_RAYTRACING_INSTANCE_DESC` array (field-by-field, since the GE bitfield
+/// packing need not match D3D12's), upload it to an Upload-heap buffer the build
+/// reads, store that buffer on `dst` (so it outlives the recorded command until
+/// the GPU consumes it), and fill the build inputs' Type / NumDescs /
+/// InstanceDescs. Shared by build and refit.
+static void fillTLASInstancesFromGE(GED3D12Engine *engine,
+                                    const GEAccelerationStructDescriptor &desc,
+                                    GED3D12AccelerationStruct *dst,
+                                    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS &inputs) {
+    std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instanceDescs;
+    instanceDescs.reserve(desc.instances.size());
+    for (auto &inst : desc.instances) {
+        D3D12_RAYTRACING_INSTANCE_DESC id{};
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 4; ++c)
+                id.Transform[r][c] = inst.transform[r][c];
+        id.InstanceID = inst.instanceID;
+        id.InstanceMask = inst.instanceMask;
+        id.InstanceContributionToHitGroupIndex = inst.instanceContributionToHitGroupIndex;
+        id.Flags = inst.flags;
+        auto blas = std::dynamic_pointer_cast<GED3D12AccelerationStruct>(inst.blas);
+        id.AccelerationStructure =
+            blas ? blas->structBuffer->buffer->GetGPUVirtualAddress() : 0;
+        instanceDescs.push_back(id);
+    }
+
+    size_t bytes = sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * instanceDescs.size();
+    auto instBuf = std::dynamic_pointer_cast<GED3D12Buffer>(
+        engine->makeBuffer({BufferDescriptor::Upload,
+                            bytes ? bytes : sizeof(D3D12_RAYTRACING_INSTANCE_DESC),
+                            sizeof(D3D12_RAYTRACING_INSTANCE_DESC)}));
+    if (!instanceDescs.empty()) {
+        CD3DX12_RANGE noRead(0, 0);
+        void *dataPtr = nullptr;
+        instBuf->buffer->Map(0, &noRead, &dataPtr);
+        memmove(dataPtr, instanceDescs.data(), bytes);
+        instBuf->buffer->Unmap(0, nullptr);
+    }
+    dst->instanceBuffer = instBuf;
+
+    inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    inputs.NumDescs = static_cast<UINT>(instanceDescs.size());
+    inputs.InstanceDescs = instBuf->buffer->GetGPUVirtualAddress();
 }
 
 void GED3D12CommandBuffer::buildAccelerationStructure(SharedHandle<GEAccelerationStruct> &src,
@@ -1236,8 +1290,8 @@ void GED3D12CommandBuffer::buildAccelerationStructure(SharedHandle<GEAcceleratio
     d.ScratchAccelerationStructureData = accel_struct->scratchBuffer->buffer->GetGPUVirtualAddress();
     d.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     d.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
-    if (geometryDescs.empty()) {
-        d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    if (desc.level == GEAccelerationStructDescriptor::TopLevel) {
+        fillTLASInstancesFromGE(parentQueue->engine, desc, accel_struct.get(), d.Inputs);
     } else {
         d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
         d.Inputs.NumDescs = static_cast<UINT>(geometryDescs.size());
@@ -1277,8 +1331,11 @@ void GED3D12CommandBuffer::refitAccelerationStructure(SharedHandle<GEAcceleratio
     d.ScratchAccelerationStructureData = accel_struct_dest->scratchBuffer->buffer->GetGPUVirtualAddress();
     d.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     d.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
-    if (geometryDescs.empty()) {
-        d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    if (desc.level == GEAccelerationStructDescriptor::TopLevel) {
+        /// Raytracing plan §6.2 — a TLAS update re-uploads its instance descs
+        /// (transforms may have changed) onto the destination and points the
+        /// update at them, same as the initial build.
+        fillTLASInstancesFromGE(parentQueue->engine, desc, accel_struct_dest.get(), d.Inputs);
     } else {
         d.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
         d.Inputs.NumDescs = static_cast<UINT>(geometryDescs.size());
@@ -1309,10 +1366,13 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
     CD3DX12_CPU_DESCRIPTOR_HANDLE cpu_handle;
     CD3DX12_CPU_DESCRIPTOR_HANDLE ds_cpu_handle;
 
+    // Depth is only bindable where a DSV actually exists: on a texture render
+    // target (or an MSAA resolve source) that owns a depth surface. A native
+    // target is color only, so this can be forced off below.
+    bool depthEnabled = !desc.depthStencilAttachment.disabled;
+
     const auto rtvDescSize =
         parentQueue->engine->d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    const auto dsvDescSize =
-        parentQueue->engine->d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 
     if (desc.nRenderTarget) {
         auto *nativeRenderTarget = (GED3D12NativeRenderTarget *)desc.nRenderTarget;
@@ -1322,7 +1382,7 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
             cpu_handle =
                 CD3DX12_CPU_DESCRIPTOR_HANDLE(resolveTexture->rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
 
-            if (!desc.depthStencilAttachment.disabled) {
+            if (depthEnabled) {
                 ds_cpu_handle =
                     CD3DX12_CPU_DESCRIPTOR_HANDLE(resolveTexture->dsvDescHeap->GetCPUDescriptorHandleForHeapStart());
             }
@@ -1367,10 +1427,17 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
             cpu_handle =
                 CD3DX12_CPU_DESCRIPTOR_HANDLE(nativeRenderTarget->rtvDescHeap->GetCPUDescriptorHandleForHeapStart(),
                                               nativeRenderTarget->frameIndex, rtvDescSize);
-            if (!desc.depthStencilAttachment.disabled) {
-                ds_cpu_handle =
-                    CD3DX12_CPU_DESCRIPTOR_HANDLE(nativeRenderTarget->dsvDescHeap->GetCPUDescriptorHandleForHeapStart(),
-                                                  nativeRenderTarget->frameIndex, dsvDescSize);
+            /// The swap chain owns no depth surface, so there is no DSV to bind
+            /// (this used to hand the pass DSV descriptors that aliased the COLOR
+            /// back buffer — invalid, and silently broken depth). Depth against a
+            /// drawable is a caller-contract violation: render 3D into a
+            /// GETextureRenderTarget with a depthTexture, then blit here. Mirrors
+            /// the Metal backend's guard.
+            if (depthEnabled) {
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT,
+                    "startRenderPass: depth/stencil is not supported on a native render target — "
+                    "render 3D into a GETextureRenderTarget with a depthTexture, then blit to the drawable");
+                depthEnabled = false;
             }
             // Move the back buffer to RENDER_TARGET, gating on the state
             // tracked per buffer on the native target rather than the
@@ -1400,7 +1467,7 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
             auto resolveTexture = (GED3D12Texture *)desc.resolveDesc.multiSampleTextureSrc.get();
             cpu_handle =
                 CD3DX12_CPU_DESCRIPTOR_HANDLE(resolveTexture->rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
-            if (!desc.depthStencilAttachment.disabled) {
+            if (depthEnabled) {
                 ds_cpu_handle =
                     CD3DX12_CPU_DESCRIPTOR_HANDLE(resolveTexture->dsvDescHeap->GetCPUDescriptorHandleForHeapStart());
             }
@@ -1446,7 +1513,7 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
             }
             cpu_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(
                 textureRenderTarget->texture->rtvDescHeap->GetCPUDescriptorHandleForHeapStart());
-            if (!desc.depthStencilAttachment.disabled) {
+            if (depthEnabled) {
                 ds_cpu_handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(
                     textureRenderTarget->texture->dsvDescHeap->GetCPUDescriptorHandleForHeapStart());
             }
@@ -1532,13 +1599,11 @@ void GED3D12CommandBuffer::startRenderPass(const GERenderPassDescriptor &desc) {
         }
     }
 
-    if (!desc.depthStencilAttachment.disabled) {
-        ds_desc.cpuDescriptor = ds_cpu_handle;
-    }
-
-    if (desc.depthStencilAttachment.disabled) {
+    if (!depthEnabled) {
         commandList->BeginRenderPass(attachmentCount, rt_descs, nullptr, D3D12_RENDER_PASS_FLAG_ALLOW_UAV_WRITES);
     } else {
+        ds_desc.cpuDescriptor = ds_cpu_handle;
+
 
         if (desc.multisampleResolve) {
             ds_desc.DepthEndingAccess.Type = ds_desc.StencilEndingAccess.Type =
@@ -1899,9 +1964,10 @@ bool GED3D12CommandBuffer::amplificationValidForBind(const char *what) {
     const bool ok = currentRenderPipeline != nullptr
                     && currentRenderPipeline->isMesh
                     && currentRenderPipeline->amplificationShader != nullptr;
-    d3d12RequireOrReturn(ok, DEBUG_DOMAIN_RESOURCE, what
-                         << ": no amplification stage on the bound pipeline "
-                            "(bind a mesh pipeline built with `amplificationFunc`)");
+    d3d12RequireOrReturnValue(ok, DEBUG_DOMAIN_RESOURCE,
+                              std::string(what) + ": no amplification stage on the bound pipeline "
+                                 "(bind a mesh pipeline built with `amplificationFunc`)",
+                              false);
     return ok;
 }
 

@@ -139,7 +139,13 @@ namespace omegasl {
         (subject == KW_TY_SAMPLERCUBE) ||
         /// §5.6 — atomic scalar types.
         (subject == KW_TY_ATOMIC_INT) ||
-        (subject == KW_TY_ATOMIC_UINT);
+        (subject == KW_TY_ATOMIC_UINT) ||
+        /// Inline ray tracing (Raytracing plan §1.2).
+        (subject == KW_TY_RAY) ||
+        (subject == KW_TY_RAY_HIT) ||
+        (subject == KW_TY_ACCELERATION_STRUCTURE) ||
+        /// Sub-phase 1.5 — the opaque ray-query object.
+        (subject == KW_TY_RAY_QUERY);
     }
 
 

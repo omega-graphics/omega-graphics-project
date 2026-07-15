@@ -1,0 +1,89 @@
+// Inline ray tracing sub-phase 1.5 (Raytracing plan §1.5). The low-level
+// `ray_query_*` explicit traversal loop for non-opaque / alpha-tested TRIANGLE
+// geometry: the shader declares a `RayQuery`, initializes it, drives the
+// traversal with `ray_query_proceed`, inspects each candidate (the alpha-test
+// hook), commits the ones that pass, then reads the committed hit. Exercises all
+// twelve `ray_query_*` intrinsics across HLSL RayQuery / GLSL rayQueryEXT / MSL
+// intersection_query.
+
+#requires(RAYTRACING)
+
+struct RQResult {
+    uint hit;
+    float dist;
+    uint prim;
+    float2 bary;
+};
+
+AccelerationStructure scene : 0;
+buffer<RQResult> results : 1;
+
+// Primary traversal — 3-arg init (mask defaults to 0xFF). Alpha-tests each
+// candidate on a trivial primitive-parity rule and commits when it passes.
+[in scene, out results]
+compute(x=8,y=1,z=1)
+void trace_rayquery(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+
+    Ray ray;
+    ray.origin = float3((float)idx, 0.0, 0.0);
+    ray.direction = float3(0.0, 0.0, 1.0);
+    ray.tmin = 0.0;
+    ray.tmax = 1000.0;
+
+    RayQuery q;
+    ray_query_init(q, scene, ray);
+    while(ray_query_proceed(q)){
+        uint candPrim = ray_query_candidate_primitive(q);
+        uint candInst = ray_query_candidate_instance(q);
+        float candT = ray_query_candidate_t(q);
+        float2 candBary = ray_query_candidate_barycentrics(q);
+        // "Alpha test": commit only even primitives of the first instance that
+        // are closer than the tmax window and inside the barycentric interior.
+        if((candPrim % 2u) == 0u && candInst == 0u && candT < 900.0 && candBary.x > 0.0){
+            ray_query_commit(q);
+        }
+    }
+
+    results[idx].hit = 0u;
+    results[idx].dist = 0.0;
+    results[idx].prim = 0u;
+    results[idx].bary = float2(0.0, 0.0);
+    if(ray_query_committed(q)){
+        results[idx].hit = 1u;
+        results[idx].dist = ray_query_t(q);
+        results[idx].prim = ray_query_primitive(q);
+        results[idx].bary = ray_query_barycentrics(q);
+    }
+}
+
+// Masked traversal — 4-arg init with an explicit instance-inclusion mask.
+[in scene, out results]
+compute(x=8,y=1,z=1)
+void trace_rayquery_masked(uint3 tid : GlobalThreadID){
+    uint idx = tid[0];
+
+    Ray ray;
+    ray.origin = float3((float)idx, 1.0, 0.0);
+    ray.direction = float3(0.0, 0.0, 1.0);
+    ray.tmin = 0.001;
+    ray.tmax = 500.0;
+
+    RayQuery q;
+    ray_query_init(q, scene, ray, 255);
+    while(ray_query_proceed(q)){
+        if(ray_query_candidate_t(q) < 100.0){
+            ray_query_commit(q);
+        }
+    }
+
+    results[idx].hit = 0u;
+    results[idx].dist = 0.0;
+    results[idx].prim = 0u;
+    results[idx].bary = float2(0.0, 0.0);
+    if(ray_query_committed(q)){
+        results[idx].hit = 1u;
+        results[idx].dist = ray_query_t(q);
+        results[idx].prim = ray_query_instance(q);
+    }
+}

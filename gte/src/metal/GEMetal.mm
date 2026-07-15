@@ -30,14 +30,127 @@
 
 _NAMESPACE_BEGIN_
 
-    inline MTLPixelFormat pixelFormatToMTLPixelFormat(PixelFormat fmt, bool renderTargetUsage = false){
+    /// PixelFormat-Completion-Plan — Metal translation table.
+    ///
+    /// The BC family is DELIBERATELY unsupported here: Apple Silicon GPUs do not
+    /// implement it. Per the plan's decision (a), we surface that as a loud error
+    /// and return an invalid format rather than silently substituting a different
+    /// one — a caller that wants a compressed format on Apple hardware should ship
+    /// ASTC. Returning MTLPixelFormatInvalid makes Metal reject the texture at
+    /// creation with a real message, which is far easier to debug than a texture
+    /// that silently came back in the wrong format.
+    /// The table is a straight translation in BOTH directions: a caller who asks
+    /// for RGBA8 gets RGBA8, even as a render target. This used to substitute
+    /// BGRA8 whenever the texture was render-target-usable, on the theory that a
+    /// color target must match the drawable. It must not: the drawable is reached
+    /// by BLITTING an offscreen target to it, and the two are separate surfaces
+    /// with separate formats. The substitution was self-consistent on the GPU
+    /// (pipelines got the same swap) so nothing looked broken, but it handed the
+    /// CPU byte-reversed pixels on readback and made `PixelFormat` a lie — which
+    /// is why the tests that read back a color had to hedge on channel order.
+    /// A native render target is BGRA8 because it says so:
+    /// `NativeRenderTargetDescriptor::pixelFormat` defaults to `BGRA8Unorm` and
+    /// `isPortableNativeRenderTargetFormat` rejects anything but BGRA8, so the
+    /// drawable path needs no help from here.
+    inline MTLPixelFormat pixelFormatToMTLPixelFormat(PixelFormat fmt){
         switch(fmt){
-            case PixelFormat::RGBA8Unorm:      return renderTargetUsage ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm;
-            case PixelFormat::RGBA16Unorm:     return MTLPixelFormatRGBA16Unorm;
-            case PixelFormat::RGBA8Unorm_SRGB: return renderTargetUsage ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm_sRGB;
-            case PixelFormat::BGRA8Unorm:      return MTLPixelFormatBGRA8Unorm;
-            case PixelFormat::BGRA8Unorm_SRGB: return MTLPixelFormatBGRA8Unorm_sRGB;
-            default:                           return MTLPixelFormatRGBA8Unorm;
+            // ── 8-bit color ──
+            case PixelFormat::R8Unorm:            return MTLPixelFormatR8Unorm;
+            case PixelFormat::R8Snorm:            return MTLPixelFormatR8Snorm;
+            case PixelFormat::R8Uint:             return MTLPixelFormatR8Uint;
+            case PixelFormat::RG8Unorm:           return MTLPixelFormatRG8Unorm;
+            case PixelFormat::RG8Snorm:           return MTLPixelFormatRG8Snorm;
+            case PixelFormat::RGBA8Unorm:         return MTLPixelFormatRGBA8Unorm;
+            case PixelFormat::RGBA8Unorm_SRGB:    return MTLPixelFormatRGBA8Unorm_sRGB;
+            case PixelFormat::RGBA8Snorm:         return MTLPixelFormatRGBA8Snorm;
+            case PixelFormat::BGRA8Unorm:         return MTLPixelFormatBGRA8Unorm;
+            case PixelFormat::BGRA8Unorm_SRGB:    return MTLPixelFormatBGRA8Unorm_sRGB;
+
+            // ── 16-bit color ──
+            case PixelFormat::R16Unorm:           return MTLPixelFormatR16Unorm;
+            case PixelFormat::R16Float:           return MTLPixelFormatR16Float;
+            case PixelFormat::R16Uint:            return MTLPixelFormatR16Uint;
+            case PixelFormat::RG16Unorm:          return MTLPixelFormatRG16Unorm;
+            case PixelFormat::RG16Float:          return MTLPixelFormatRG16Float;
+            case PixelFormat::RGBA16Unorm:        return MTLPixelFormatRGBA16Unorm;
+            case PixelFormat::RGBA16Float:        return MTLPixelFormatRGBA16Float;
+
+            // ── 32-bit color ──
+            case PixelFormat::R32Float:           return MTLPixelFormatR32Float;
+            case PixelFormat::R32Uint:            return MTLPixelFormatR32Uint;
+            case PixelFormat::RG32Float:          return MTLPixelFormatRG32Float;
+            case PixelFormat::RGBA32Float:        return MTLPixelFormatRGBA32Float;
+
+            // ── Packed ──
+            case PixelFormat::RGB10A2Unorm:       return MTLPixelFormatRGB10A2Unorm;
+            case PixelFormat::R11G11B10Float:     return MTLPixelFormatRG11B10Float;
+
+            // ── Depth / stencil ──
+            /// macOS has no Depth24Unorm_Stencil8 on Apple Silicon; Depth32Float_Stencil8
+            /// is universally available and is the safe target for the combined format.
+            case PixelFormat::D16Unorm:           return MTLPixelFormatDepth16Unorm;
+            case PixelFormat::D32Float:           return MTLPixelFormatDepth32Float;
+            case PixelFormat::D24Unorm_S8Uint:    return MTLPixelFormatDepth32Float_Stencil8;
+            case PixelFormat::D32Float_S8Uint:    return MTLPixelFormatDepth32Float_Stencil8;
+
+            // ── BC — not implemented by Apple Silicon GPUs. Fail loudly. ──
+            case PixelFormat::BC1_RGBA_Unorm:
+            case PixelFormat::BC1_RGBA_Unorm_SRGB:
+            case PixelFormat::BC3_RGBA_Unorm:
+            case PixelFormat::BC3_RGBA_Unorm_SRGB:
+            case PixelFormat::BC5_RG_Unorm:
+            case PixelFormat::BC7_RGBA_Unorm:
+            case PixelFormat::BC7_RGBA_Unorm_SRGB:
+                DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE,
+                    "BC (block-compressed) pixel formats are not supported on Apple GPUs — ship ASTC instead");
+                return MTLPixelFormatInvalid;
+
+            // ── ASTC ──
+            case PixelFormat::ASTC_4x4_Unorm:      return MTLPixelFormatASTC_4x4_LDR;
+            case PixelFormat::ASTC_4x4_Unorm_SRGB: return MTLPixelFormatASTC_4x4_sRGB;
+            case PixelFormat::ASTC_6x6_Unorm:      return MTLPixelFormatASTC_6x6_LDR;
+            case PixelFormat::ASTC_6x6_Unorm_SRGB: return MTLPixelFormatASTC_6x6_sRGB;
+            case PixelFormat::ASTC_8x8_Unorm:      return MTLPixelFormatASTC_8x8_LDR;
+            case PixelFormat::ASTC_8x8_Unorm_SRGB: return MTLPixelFormatASTC_8x8_sRGB;
+
+            // ── ETC2 / EAC ──
+            case PixelFormat::ETC2_RGB8_Unorm:       return MTLPixelFormatETC2_RGB8;
+            case PixelFormat::ETC2_RGB8_Unorm_SRGB:  return MTLPixelFormatETC2_RGB8_sRGB;
+            case PixelFormat::ETC2_RGBA8_Unorm:      return MTLPixelFormatEAC_RGBA8;
+            case PixelFormat::ETC2_RGBA8_Unorm_SRGB: return MTLPixelFormatEAC_RGBA8_sRGB;
+            case PixelFormat::EAC_R11_Unorm:         return MTLPixelFormatEAC_R11Unorm;
+        }
+        return MTLPixelFormatRGBA8Unorm;
+    }
+
+    /// Metal requires the PIPELINE to declare the depth attachment's format. Without
+    /// it a depth-enabled pipeline is silently inert — no validation error, depth
+    /// simply never tests — which is one of the reasons depth testing has never
+    /// worked in this engine. Only set when the caller actually enabled depth or
+    /// stencil, so a color-only pipeline is not forced to own a depth format it
+    /// never uses. The stencil format is bound only when the chosen format really
+    /// has a stencil aspect.
+    /// Templated on the descriptor type: the graphics and MESH pipelines use two
+    /// unrelated Obj-C classes (MTLRenderPipelineDescriptor /
+    /// MTLMeshRenderPipelineDescriptor) that merely happen to share these two
+    /// property names, so there is no common base to take a pointer to.
+    template <typename PipelineDescT>
+    static void applyMetalDepthFormat(PipelineDescT *pd,
+                                      const RenderPipelineDescriptor::DepthStencilDesc &ds,
+                                      PixelFormat depthFmt){
+        if(!ds.enableDepth && !ds.enableStencil){
+            return;
+        }
+        const auto info = pixelFormatInfo(depthFmt);
+        if(!info.isDepthStencil()){
+            DEBUG_CRITICAL(DEBUG_DOMAIN_PIPELINE,
+                "depth/stencil enabled but depthStencilPixelFormat is not a depth format");
+            return;
+        }
+        const MTLPixelFormat mtlFmt = pixelFormatToMTLPixelFormat(depthFmt);
+        pd.depthAttachmentPixelFormat = mtlFmt;
+        if(info.aspect == PixelFormatInfo::Aspect::DepthStencil){
+            pd.stencilAttachmentPixelFormat = mtlFmt;
         }
     }
 
@@ -289,6 +402,78 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
     GEMetalAccelerationStruct::GEMetalAccelerationStruct(NSSmartPtr & accelStruct,
     SharedHandle<GEMetalBuffer> & scratchBuffer):accelStruct(accelStruct),scratchBuffer(scratchBuffer){
 
+    }
+
+    /// MRR: `descriptor` is +1 from alloc/init in allocateAccelerationStructure.
+    GEMetalAccelerationStruct::~GEMetalAccelerationStruct(){
+        if(descriptor.handle() != nullptr){
+            [NSOBJECT_OBJC_BRIDGE(MTLAccelerationStructureDescriptor *,descriptor.handle()) release];
+        }
+    }
+
+    /// Raytracing plan §6-M3 — map GE's (DXR-valued) instance flags onto Metal's
+    /// MTLAccelerationStructureInstanceOptions. The two bitsets happen to agree
+    /// numerically today, but they are separate enums owned by separate vendors,
+    /// so translate rather than cast.
+    static MTLAccelerationStructureInstanceOptions metalInstanceOptions(unsigned geFlags){
+        MTLAccelerationStructureInstanceOptions o = MTLAccelerationStructureInstanceOptionNone;
+        if(geFlags & GE_ACCEL_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE)
+            o |= MTLAccelerationStructureInstanceOptionDisableTriangleCulling;
+        if(geFlags & GE_ACCEL_INSTANCE_FLAG_TRIANGLE_FRONT_CCW)
+            o |= MTLAccelerationStructureInstanceOptionTriangleFrontFacingWindingCounterClockwise;
+        if(geFlags & GE_ACCEL_INSTANCE_FLAG_FORCE_OPAQUE)
+            o |= MTLAccelerationStructureInstanceOptionOpaque;
+        if(geFlags & GE_ACCEL_INSTANCE_FLAG_FORCE_NON_OPAQUE)
+            o |= MTLAccelerationStructureInstanceOptionNonOpaque;
+        return o;
+    }
+
+    /// Raytracing plan §6-M3 — the BLAS referenced by a TLAS descriptor, de-duped,
+    /// in first-use order. An instance's `accelerationStructureIndex` is its BLAS's
+    /// position in THIS vector, so allocate and refit must derive it identically —
+    /// which they do by both calling this on the same `desc.instances` order.
+    static OmegaCommon::Vector<SharedHandle<GEAccelerationStruct>>
+    uniqueBLASOf(const GEAccelerationStructDescriptor &desc){
+        OmegaCommon::Vector<SharedHandle<GEAccelerationStruct>> out;
+        for(auto & inst : desc.instances){
+            if(!inst.blas) continue;
+            bool seen = false;
+            for(auto & b : out){ if(b == inst.blas){ seen = true; break; } }
+            if(!seen) out.push_back(inst.blas);
+        }
+        return out;
+    }
+
+    /// Raytracing plan §6-M3 — write the GE instances into `dst` as
+    /// MTLAccelerationStructureInstanceDescriptor records. Shared by the initial
+    /// fill (allocate) and refit (updated transforms), so a refit cannot drift
+    /// from the layout the TLAS was built with.
+    void fillMetalTLASInstances(const GEAccelerationStructDescriptor &desc,
+                                GEMetalBuffer *dst){
+        if(dst == nullptr) return;
+        auto blas = uniqueBLASOf(desc);
+        auto *recs = (MTLAccelerationStructureInstanceDescriptor *)
+            [NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,dst->metalBuffer.handle()) contents];
+        for(size_t i = 0; i < desc.instances.size(); ++i){
+            const auto & src = desc.instances[i];
+            MTLAccelerationStructureInstanceDescriptor r{};
+            /// GE's transform is a 3x4 ROW-major affine matrix (transform[row][col]);
+            /// Metal's MTLPackedFloat4x3 is COLUMN-major (columns[col] is a packed
+            /// float3 of that column's three rows). This is the transpose.
+            for(int c = 0; c < 4; ++c){
+                r.transformationMatrix.columns[c].x = src.transform[0][c];
+                r.transformationMatrix.columns[c].y = src.transform[1][c];
+                r.transformationMatrix.columns[c].z = src.transform[2][c];
+            }
+            r.options = metalInstanceOptions(src.flags);
+            r.mask = src.instanceMask;
+            r.intersectionFunctionTableOffset = src.instanceContributionToHitGroupIndex;
+            r.accelerationStructureIndex = 0;
+            for(size_t b = 0; b < blas.size(); ++b){
+                if(blas[b] == src.blas){ r.accelerationStructureIndex = (uint32_t)b; break; }
+            }
+            recs[i] = r;
+        }
     }
 
 
@@ -1114,17 +1299,123 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             return std::static_pointer_cast<GEBuffer>(buffer);
         }
 
+        /// Raytracing plan §6-M2/M3. Builds the REAL Metal descriptor for `desc` —
+        /// a primitive (bottom-level) descriptor carrying the triangle / AABB
+        /// geometry, or an instance (top-level) descriptor carrying the instance
+        /// buffer and the BLAS it references — sizes the structure from it, and
+        /// RETAINS the descriptor on the result so the later build/refit commands
+        /// use the exact descriptor the allocation was sized against.
+        ///
+        /// This previously created an EMPTY MTLPrimitiveAccelerationStructureDescriptor
+        /// and ignored `desc` entirely, so no geometry ever reached the GPU and
+        /// every ray missed.
         SharedHandle<GEAccelerationStruct> allocateAccelerationStructure(const GEAccelerationStructDescriptor &desc) override {
             if(!gteDevice->features.hasFeature(GTEDEVICE_FEATURE_RAYTRACING)){
                 DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE, "Raytracing not supported on this device");
                 return nullptr;
             }
-            MTLPrimitiveAccelerationStructureDescriptor *d = [[MTLPrimitiveAccelerationStructureDescriptor alloc]init];
-            auto sizes = [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) accelerationStructureSizesWithDescriptor:d];
-            NSSmartPtr handle = NSObjectHandle{NSOBJECT_CPP_BRIDGE [NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle()) newAccelerationStructureWithSize:sizes.accelerationStructureSize]};
-            auto buffer = std::dynamic_pointer_cast<GEMetalBuffer>(makeBuffer({BufferDescriptor::GPUOnly,sizes.buildScratchBufferSize}));
-            DEBUG_INFO(DEBUG_DOMAIN_RESOURCE, "Acceleration structure created");
-            return (SharedHandle<GEAccelerationStruct>)new GEMetalAccelerationStruct (handle,buffer);
+            id<MTLDevice> dev = NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle());
+
+            const bool topLevel = (desc.level == GEAccelerationStructDescriptor::TopLevel);
+
+            /// The instance buffer (TLAS only) has to exist before the descriptor
+            /// that points at it, and has to outlive the build — so it is created
+            /// here and handed to the GEMetalAccelerationStruct below.
+            SharedHandle<GEMetalBuffer> instBuf;
+            OmegaCommon::Vector<SharedHandle<GEAccelerationStruct>> blasRefs;
+
+            MTLAccelerationStructureDescriptor *d = nil;
+
+            if(topLevel){
+                blasRefs = uniqueBLASOf(desc);
+
+                NSMutableArray *asArray = [NSMutableArray arrayWithCapacity:blasRefs.size()];
+                for(auto & b : blasRefs){
+                    auto mb = std::dynamic_pointer_cast<GEMetalAccelerationStruct>(b);
+                    if(mb){
+                        [asArray addObject:NSOBJECT_OBJC_BRIDGE(id<MTLAccelerationStructure>,mb->accelStruct.handle())];
+                    }
+                }
+
+                /// One MTLAccelerationStructureInstanceDescriptor per instance.
+                /// Never size a zero-length buffer — Metal rejects it — and a
+                /// 0-instance TLAS is a caller bug worth surfacing anyway.
+                const size_t instCount = desc.instances.size();
+                const size_t recSize = sizeof(MTLAccelerationStructureInstanceDescriptor);
+                instBuf = std::dynamic_pointer_cast<GEMetalBuffer>(
+                    makeBuffer({BufferDescriptor::Upload,
+                                recSize * (instCount ? instCount : 1),
+                                recSize}));
+                if(instCount == 0){
+                    DEBUG_CRITICAL(DEBUG_DOMAIN_RESOURCE,
+                        "TLAS requested with 0 instances — every ray will miss");
+                }
+                fillMetalTLASInstances(desc, instBuf.get());
+
+                MTLInstanceAccelerationStructureDescriptor *id_ =
+                    [[MTLInstanceAccelerationStructureDescriptor alloc]init];
+                id_.instancedAccelerationStructures = asArray;
+                id_.instanceCount = instCount;
+                id_.instanceDescriptorBuffer = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,instBuf->metalBuffer.handle());
+                id_.instanceDescriptorBufferOffset = 0;
+                id_.instanceDescriptorStride = recSize;
+                d = id_;
+            }
+            else {
+                MTLPrimitiveAccelerationStructureDescriptor *pd =
+                    [[MTLPrimitiveAccelerationStructureDescriptor alloc]init];
+
+                NSMutableArray *geoms = [NSMutableArray arrayWithCapacity:desc.data.size()];
+                for(auto & g : desc.data){
+                    if(g.type == GEAccelerationStructDescriptor::Geometry::TRIANGLES){
+                        const auto & tl = g.getTriangleList();
+                        auto vb = std::dynamic_pointer_cast<GEMetalBuffer>(tl.buffer);
+                        if(!vb) continue;
+                        /// §6-M1 — an explicit stride/count traces a vertex buffer
+                        /// that interleaves more than position (positions are read
+                        /// from offset 0). Zero keeps the tightly-packed-float3
+                        /// default every earlier caller relied on.
+                        const size_t stride = tl.vertexStride ? tl.vertexStride : (sizeof(float) * 3);
+                        const size_t count  = tl.vertexCount ? tl.vertexCount : (vb->size() / stride);
+                        auto *tg = [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+                        tg.vertexBuffer = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,vb->metalBuffer.handle());
+                        tg.vertexBufferOffset = 0;
+                        tg.vertexStride = stride;
+                        tg.triangleCount = count / 3;
+                        [geoms addObject:tg];
+                    }
+                    else {
+                        auto bb = std::dynamic_pointer_cast<GEMetalBuffer>(g.getAabb().buffer);
+                        if(!bb) continue;
+                        auto *bg = [MTLAccelerationStructureBoundingBoxGeometryDescriptor descriptor];
+                        bg.boundingBoxBuffer = NSOBJECT_OBJC_BRIDGE(id<MTLBuffer>,bb->metalBuffer.handle());
+                        bg.boundingBoxBufferOffset = 0;
+                        bg.boundingBoxStride = sizeof(MTLAxisAlignedBoundingBox);
+                        bg.boundingBoxCount = bb->size() / sizeof(MTLAxisAlignedBoundingBox);
+                        [geoms addObject:bg];
+                    }
+                }
+                pd.geometryDescriptors = geoms;
+                d = pd;
+            }
+
+            auto sizes = [dev accelerationStructureSizesWithDescriptor:d];
+            NSSmartPtr handle = NSObjectHandle{NSOBJECT_CPP_BRIDGE [dev newAccelerationStructureWithSize:sizes.accelerationStructureSize]};
+            auto buffer = std::dynamic_pointer_cast<GEMetalBuffer>(
+                makeBuffer({BufferDescriptor::GPUOnly,
+                            sizes.buildScratchBufferSize ? sizes.buildScratchBufferSize : 1}));
+
+            auto *out = new GEMetalAccelerationStruct(handle,buffer);
+            /// `d` is +1 from alloc/init and is released in ~GEMetalAccelerationStruct.
+            out->descriptor = NSObjectHandle{NSOBJECT_CPP_BRIDGE d};
+            out->isTopLevel = topLevel;
+            out->instanceBuffer = instBuf;
+            out->blasRefs = blasRefs;
+
+            DEBUG_INFO(DEBUG_DOMAIN_RESOURCE,
+                (topLevel ? "TLAS created, instances=" : "BLAS created, geometries=")
+                << (topLevel ? desc.instances.size() : desc.data.size()));
+            return (SharedHandle<GEAccelerationStruct>)out;
         }
 
         /// Phase-2 typed-pool path. Metal has no native split between queue
@@ -1243,6 +1534,15 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                         case GETexture::FromGPU: usage = MTLTextureUsageShaderWrite; break;
                         case GETexture::GPUAccessOnly: usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; break;
                         default: usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; break;
+                    }
+                    /// A DEPTH-format texture may not carry MTLTextureUsageShaderWrite —
+                    /// Metal rejects it (depth is written by the depth test, not by a
+                    /// shader store). Sampling one back (a shadow map, or the G-buffer
+                    /// depth) is fine, so keep ShaderRead. Without this, every attempt
+                    /// to create a depth attachment fails at texture creation.
+                    if(pixelFormatInfo(desc.pixelFormat).isDepthStencil()){
+                        usage &= ~MTLTextureUsageShaderWrite;
+                        usage |= MTLTextureUsageRenderTarget;
                     }
 
                     // §6.2 — drive MTLTextureType from the descriptor's kind so
@@ -1376,7 +1676,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             desc.metalLayer.device = NSOBJECT_OBJC_BRIDGE(id<MTLDevice>,metalDevice.handle());
             // Apply the requested format to the layer so the drawable's
             // texture is created in that format.
-            desc.metalLayer.pixelFormat = pixelFormatToMTLPixelFormat(desc.pixelFormat, /*renderTargetUsage=*/true);
+            desc.metalLayer.pixelFormat = pixelFormatToMTLPixelFormat(desc.pixelFormat);
             return std::shared_ptr<GENativeRenderTarget>(new GEMetalNativeRenderTarget(std::move(presentQueue),desc.metalLayer,desc.pixelFormat));
         };
 
@@ -1475,13 +1775,15 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             }
             pipelineDesc.maxTessellationFactor = 16;
 
+            applyMetalDepthFormat(pipelineDesc, desc.depthAndStencilDesc, desc.depthStencilPixelFormat);
+
             /// Color attachments + blend — same shape as the graphics path.
             {
                 const unsigned attachmentCount = desc.colorPixelFormats.empty() ? 1u : (unsigned)desc.colorPixelFormats.size();
                 for(unsigned i = 0; i < attachmentCount; ++i){
                     const PixelFormat pf = desc.colorPixelFormats.empty() ? PixelFormat::RGBA8Unorm : desc.colorPixelFormats[i];
                     MTLRenderPipelineColorAttachmentDescriptor *ca = pipelineDesc.colorAttachments[i];
-                    ca.pixelFormat = pixelFormatToMTLPixelFormat(pf, true);
+                    ca.pixelFormat = pixelFormatToMTLPixelFormat(pf);
                     if(i < desc.colorBlendDescriptors.size()){
                         const auto & b = desc.colorBlendDescriptors[i];
                         ca.blendingEnabled             = b.blendEnabled ? YES : NO;
@@ -1633,6 +1935,8 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             }
 
             {
+                applyMetalDepthFormat(pipelineDesc, desc.depthAndStencilDesc, desc.depthStencilPixelFormat);
+
                 const unsigned attachmentCount =
                     desc.colorPixelFormats.empty() ? 1u : (unsigned)desc.colorPixelFormats.size();
                 for(unsigned i = 0; i < attachmentCount; ++i){
@@ -1640,7 +1944,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                                                ? PixelFormat::RGBA8Unorm
                                                : desc.colorPixelFormats[i];
                     MTLRenderPipelineColorAttachmentDescriptor *ca = pipelineDesc.colorAttachments[i];
-                    ca.pixelFormat = pixelFormatToMTLPixelFormat(pf, true);
+                    ca.pixelFormat = pixelFormatToMTLPixelFormat(pf);
                     if(i < desc.colorBlendDescriptors.size()){
                         const auto & b = desc.colorBlendDescriptors[i];
                         ca.blendingEnabled             = b.blendEnabled ? YES : NO;
@@ -1838,6 +2142,8 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
             /// mesh descriptor's, but they share the same per-element
             /// interface so the loop body is byte-identical).
             {
+                applyMetalDepthFormat(pipelineDesc, desc.depthAndStencilDesc, desc.depthStencilPixelFormat);
+
                 const unsigned attachmentCount =
                     desc.colorPixelFormats.empty() ? 1u : (unsigned)desc.colorPixelFormats.size();
                 for(unsigned i = 0; i < attachmentCount; ++i){
@@ -1845,7 +2151,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                                                ? PixelFormat::RGBA8Unorm
                                                : desc.colorPixelFormats[i];
                     MTLRenderPipelineColorAttachmentDescriptor *ca = pipelineDesc.colorAttachments[i];
-                    ca.pixelFormat = pixelFormatToMTLPixelFormat(pf, true);
+                    ca.pixelFormat = pixelFormatToMTLPixelFormat(pf);
                     if(i < desc.colorBlendDescriptors.size()){
                         const auto & b = desc.colorBlendDescriptors[i];
                         ca.blendingEnabled             = b.blendEnabled ? YES : NO;
@@ -1974,7 +2280,22 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
 
                 texture = makeTexture(textureDescriptor);
             }
-            return SharedHandle<GETextureRenderTarget>(new GEMetalTextureRenderTarget(texture));
+            auto rt = SharedHandle<GETextureRenderTarget>(new GEMetalTextureRenderTarget(texture));
+            /// Optional depth surface. Validated here rather than at first draw:
+            /// a color-format texture handed in as depth would otherwise fail deep
+            /// inside the render pass with a Metal validation message that says
+            /// nothing about which render target was at fault.
+            if(desc.depthTexture){
+                auto info = pixelFormatInfo(desc.depthTexture->getPixelFormat());
+                if(!info.isDepthStencil()){
+                    DEBUG_CRITICAL(DEBUG_DOMAIN_RENDERTGT,
+                        "makeTextureRenderTarget: depthTexture must have a depth-aspect PixelFormat "
+                        "(D32Float, D32Float_S8Uint, ...)");
+                    return nullptr;
+                }
+                rt->depthTexture = desc.depthTexture;
+            }
+            return rt;
         };
         SharedHandle<GETexture> makeTexture(const TextureDescriptor &desc) override{
             assert(desc.sampleCount >= 1 && "Can only create textures with 1 or more samples");
@@ -2069,11 +2390,7 @@ static inline NSString *ns_string_from_str_ref(OmegaCommon::StrRef str){
                     break;
             }
 
-            const bool renderTargetUsage =
-                    desc.usage == GETexture::RenderTarget ||
-                    desc.usage == GETexture::RenderTargetAndDepthStencil ||
-                    desc.usage == GETexture::MSResolveSrc;
-            MTLPixelFormat pixelFormat = pixelFormatToMTLPixelFormat(desc.pixelFormat, renderTargetUsage);
+            MTLPixelFormat pixelFormat = pixelFormatToMTLPixelFormat(desc.pixelFormat);
 
             mtlDesc.pixelFormat = pixelFormat;
             mtlDesc.mipmapLevelCount = effectiveMips;

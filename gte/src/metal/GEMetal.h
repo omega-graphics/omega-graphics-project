@@ -83,10 +83,44 @@ struct GEMetalAccelerationStruct : public GEAccelerationStruct {
     NSSmartPtr accelStruct;
     SharedHandle<GEMetalBuffer> scratchBuffer;
 
+    /// Raytracing plan §6-M2/M3 — the MTLAccelerationStructureDescriptor this
+    /// structure was SIZED against, retained (+1 from alloc/init, released in
+    /// the destructor — this backend is MRR, not ARC). Metal derives an
+    /// acceleration structure's size from its descriptor, so the build and refit
+    /// commands must use the very same descriptor the allocation was sized for;
+    /// keeping it here is what guarantees that. (Before this, allocate and build
+    /// each hand-rolled their own EMPTY descriptor, so no geometry ever reached
+    /// the GPU.)
+    NSSmartPtr descriptor;
+
+    /// TLAS only. The MTLAccelerationStructureInstanceDescriptor array backing
+    /// `instanceDescriptorBuffer`. Owned here so it outlives the recorded build
+    /// command — the same lifetime rule D3D12's Upload-heap instance buffer
+    /// follows.
+    SharedHandle<GEMetalBuffer> instanceBuffer;
+
+    /// TLAS only. The BLAS this TLAS instances, in `instancedAccelerationStructures`
+    /// order (an instance's `accelerationStructureIndex` indexes this). Held for
+    /// two reasons: it keeps them alive for as long as the TLAS references them,
+    /// and Metal requires every referenced BLAS to be made RESIDENT on the
+    /// encoder (`useResource:`) before a shader can trace the TLAS — without that
+    /// the traversal reads nothing and every ray misses.
+    OmegaCommon::Vector<SharedHandle<GEAccelerationStruct>> blasRefs;
+
+    bool isTopLevel = false;
+
     explicit GEMetalAccelerationStruct(NSSmartPtr & accelStruct,
     SharedHandle<GEMetalBuffer> & scratchBuffer);
-    ~GEMetalAccelerationStruct() override = default;
+    ~GEMetalAccelerationStruct() override;
 };
+
+/// Raytracing plan §6-M3 — write `desc`'s instances into `dst` as
+/// MTLAccelerationStructureInstanceDescriptor records (3x4 row-major GE transform
+/// transposed into Metal's column-major MTLPackedFloat4x3). Shared by the initial
+/// fill at allocation and by refit, so an updated transform cannot drift from the
+/// instance layout the TLAS was built with.
+void fillMetalTLASInstances(const GEAccelerationStructDescriptor &desc,
+                            GEMetalBuffer *dst);
 
 
 SharedHandle<OmegaGraphicsEngine> CreateMetalEngine(SharedHandle<GTEDevice> & device);
