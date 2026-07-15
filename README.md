@@ -1,5 +1,7 @@
 # Omega Graphics Project
 
+> **This repository has moved.** Development now happens on GitLab at [gitlab.com/omega-graphics/omega-graphics-project](https://gitlab.com/omega-graphics/omega-graphics-project). This GitHub repo is archived and no longer updated — please update your remotes and links accordingly.
+
 Omega Graphics Project is a multi-module C++ codebase for graphics, UI, build tooling, and engine work. The root build currently wires together six primary modules: `AUTOM`, `OmegaCommon`, `OmegaGTE`, `OmegaWTK`, `AQUA`, and `Omega kREATE`.
 
 ## Modules
